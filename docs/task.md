@@ -35,12 +35,47 @@ At completion, a user on the target workstation must be able to:
 
 The completed system must not depend on a human repeatedly starting runs, correcting navigation, buying upgrades, dismissing known screens, selecting checkpoints, or recovering actors during normal operation.
 
+### 3.1 Engineering MVP
+
+The engineering MVP is the first trustworthy end-to-end vertical slice. It is
+reached after M0 through M3 pass and a minimal visible playback path can run a
+selected checkpoint. It requires:
+
+- one genuine game instance using a fixed Tier-1 baseline;
+- one deterministic semantic interactor covering every supported in-run action;
+- the M2 1,000-attempt reliability gate;
+- one real-game actor feeding replay and a minimal learner;
+- checkpoint save/resume and isolated evaluation;
+- exploration-free visible playback of the selected checkpoint.
+
+The MVP proves the complete real-game learning loop, but it is not completion of
+V1 and does not satisfy the Definition of Done by itself.
+
+### 3.2 Complete V1
+
+Complete V1 is the end state in this task and requires M4 through M7 in addition
+to the engineering MVP. It includes distributed recurrent training, measured
+multi-actor scaling, trustworthy best-model promotion, complete operator modes,
+overnight reliability, and final acceptance evidence.
+
+### 3.3 Post-V1 progression
+
+Autonomous Workshop spending, Lab scheduling, milestone claiming, and other
+permanent account progression require a separate objective, environment contract,
+safety model, and acceptance criteria. V1 may preserve clean architectural seams
+for that later work but must not expose those actions to the V1 run policy.
+
 ## 4. Target environment
 
-The initial target is one user-owned workstation with:
+Development and delivery use two user-owned hosts:
 
-- 128 GB system RAM;
-- an NVIDIA RTX 4090;
+- a development host with Apple M2 Pro and 16 GB system RAM, used to prove one
+  ARM64 Android instance and the single-device end-to-end engineering MVP;
+- a later training workstation with 28 GB system RAM, an NVIDIA RTX 4090, and
+  CPU/host-OS details to be characterized before the multi-actor scale gate.
+
+The training workstation must provide:
+
 - sufficient CPU capacity for multiple Android guests, with the optimal actor count to be established empirically;
 - hardware virtualization enabled;
 - local storage adequate for Android images, logs, replay data, evaluation records, and model checkpoints.
@@ -256,6 +291,7 @@ Implementation-specific decisions, commands, dependency choices, directory struc
 Create and maintain, at minimum:
 
 - `README.md` — purpose, status, quick start, and documentation map;
+- `docs/architecture.md` — component boundaries, dependency rules, runtime topology, action authority, and principal flows;
 - `docs/setup.md` — prerequisites and complete local setup;
 - `docs/operations.md` — calibrate, train, pause/resume, evaluate, watch, recover, and troubleshoot;
 - `docs/environment-contract.md` — baseline, observation, action, reward, episode, and termination schemas;

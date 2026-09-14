@@ -9,9 +9,13 @@ The target system has two primary modes:
 
 ## Project status
 
-**Phase M0 — repository initialization and environment reconnaissance.**
+**Phase M0 — environment reconnaissance in progress.**
 
-No gameplay automation or RL implementation is considered complete yet. The next technical step is to inspect the locally supplied XAPK, determine its package structure and ABI requirements, and prove that one compatible Android instance can launch it.
+The supplied XAPK has been characterized as The Tower 29.0.1, an ARM64 split-APK
+set requiring Android API 27 or newer. The validated runtime is the Play-installed
+29.0.3 build on an API 36 Google Play ARM64 AVD. A pinned-renderer golden Tier-1
+snapshot and bounded offline navigation probe are available; full gameplay
+automation and RL remain milestone work.
 
 ## Authoritative documentation
 
@@ -19,6 +23,9 @@ Future orchestrators and contributors must read these documents completely befor
 
 1. [docs/task.md](docs/task.md) — authoritative product scope, required outcomes, milestones, acceptance gates, and Definition of Done.
 2. [docs/solution.md](docs/solution.md) — technical architecture and implementation strategy for satisfying the task.
+3. [docs/architecture.md](docs/architecture.md) — concise component, interaction, runtime, and dependency view.
+4. [docs/experiments.md](docs/experiments.md) — feasibility evidence, benchmarks, and failed experiments.
+5. [docs/workstation-handoff.md](docs/workstation-handoff.md) — machine-local snapshot location and workstation reprovisioning procedure.
 
 The task defines **what must be achieved**. The solution defines **how it will be achieved**. A technical discovery may justify updating the solution; it must not silently weaken the task.
 
@@ -44,11 +51,42 @@ tower-rl evaluate
 tower-rl watch
 ```
 
-These entry points do not exist yet. Their required behavior is specified in the documentation.
+Their required behavior is specified in the documentation. The initial `doctor`
+and M0 `probe` slices exist today.
+
+The first M0 `doctor` slice is now available:
+
+```text
+uv sync --all-groups
+uv run tower-rl doctor \
+  --xapk local/the-tower-29-0-1.xapk \
+  --serial emulator-5554
+```
+
+`doctor` and `probe` are implemented at this stage; training, evaluation, and
+watch remain milestone deliverables.
+
+For a new workstation, start with the repository preflight and AVD helpers in
+[`scripts/`](scripts/), then follow
+[`docs/workstation-handoff.md`](docs/workstation-handoff.md). These helpers stop
+before Play sign-in and account-bearing snapshot creation.
+
+The probe can validate the baseline and run the bounded no-upgrade navigation
+smoke flow, restoring the canonical snapshot afterwards:
+
+```text
+uv run tower-rl probe \
+  --serial emulator-5554 \
+  --navigate \
+  --restore-snapshot tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
+```
 
 ## Local XAPK
 
-Place the downloaded XAPK at `local/the-tower.xapk` inside the cloned workspace. The entire `local/` directory is ignored by Git. The M0 reconnaissance process will inspect it locally, record only non-proprietary compatibility metadata, and determine the correct installation set for one test Android device.
+Place the reference XAPK at `local/the-tower-29-0-1.xapk` inside the cloned
+workspace if metadata inspection is needed. The entire `local/` directory is
+ignored by Git. The validated runtime is acquired through Google Play; the XAPK
+is not installed by the workstation handoff procedure.
 
 ## License
 

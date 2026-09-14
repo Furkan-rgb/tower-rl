@@ -1,0 +1,180 @@
+schema_version: 1
+profile_id: m0-dev-macos-arm64-api36-v1
+status: partial
+recorded_at: 2026-09-14
+
+development_host:
+  purpose: single-device engineering MVP
+  operating_system: macOS 26.6.2
+  architecture: arm64
+  cpu: Apple M2 Pro
+  physical_cpu_count: 10
+  logical_cpu_count: 10
+  memory_bytes: 17179869184
+  hardware_virtualization_available: true
+  gpu: integrated Apple GPU
+  free_storage_observed_gib: 88
+
+training_host:
+  purpose: multi-actor training and final scale validation
+  memory_gib: 28
+  gpu: NVIDIA RTX 4090
+  operating_system: pending discovery
+  cpu: pending discovery
+  virtualization: pending discovery
+  storage: pending discovery
+
+game_package:
+  source_archive: local ignored XAPK
+  archive_sha256: 6496e4f07904723c190c9728e47e621da9bdb40d24b66e1800af1f85211bf0c0
+  package_name: com.TechTreeGames.TheTower
+  version_name: 29.0.1
+  version_code: 1178
+  min_sdk: 27
+  target_sdk: 36
+  required_gles: "3.0"
+  supported_abis:
+    - arm64-v8a
+  launch_activity: com.unity3d.player.UnityPlayerActivity
+  signing:
+    verified: true
+    signer_count: 1
+    certificate_sha256: b6c646d31fc34415445c6901450fe0a6690d413f9ef67af5ca5a64ce4ae2ee52
+    common_schemes:
+      - v2
+      - v3
+  split_install:
+    required: true
+    files:
+      - role: base
+        name: com.TechTreeGames.TheTower.apk
+        size_bytes: 176517733
+        sha256: 7ad6cd466fd2f392e937617209be39661db6749f120ff47f3d67ff837811d2bd
+      - role: base_abi
+        name: config.arm64_v8a.apk
+        size_bytes: 36231248
+        sha256: f3e46e65f17ecda771dc757bd5b463e768c9f1a8a8437af1d08546f85b590d31
+      - role: feature
+        name: gpdeku.apk
+        size_bytes: 119049
+        sha256: 5e253accec9aa58e91744b266e67e0947aa3b053b6a9d7f44e69a7dd1b8de1af
+      - role: feature_abi
+        name: gpdeku.config.arm64_v8a.apk
+        size_bytes: 176549
+        sha256: facddf45a35727020f60395934cd508ee3f03838c4e77a62fafdb19b0c1871a0
+
+android_profiles:
+  rejected:
+    - avd_name: tower_rl_api36_arm64
+      device_definition: pixel_2
+      api_level: 36
+      image: google_apis
+      abi: arm64-v8a
+      emulator_version: 37.1.11
+      platform_tools_version: 37.0.1
+      renderer: gfxstream_auto
+      logical_resolution: 1080x1920
+      install_result: success
+      cold_launch_result: success
+      rejection_reason: >-
+        After first-run consent, initialization stalled at Purchaser.Initialize.
+        The image's minimal com.android.vending package exposed no
+        InAppBillingService, and BillingClient repeatedly failed.
+  candidate:
+    avd_name: tower_rl_api36_play_arm64
+    device_definition: pixel_2
+    api_level: 36
+    image: google_apis_playstore
+    abi: arm64-v8a
+    emulator_version: 37.1.11
+    platform_tools_version: 37.0.1
+    renderer: gfxstream_lavapipe_vulkan_swangle_gles_pinned
+    logical_resolution: 1080x1920
+    billing_service_available: true
+    google_play_account: user_provisioned_manually
+    runtime_install_source: com.android.vending
+    runtime_version_name: 29.0.3
+    runtime_version_code: 1199
+    runtime_split_sha256:
+      base.apk: 267e4d43e252dd74f2fd254ea25042caa28c67e9734e0c0658357611117d8fd0
+      split_config.arm64_v8a.apk: b208b5264b3154cec42604563fd5c32a60b51819b14ac20fea4fea5228e68e81
+      split_gpdeku.apk: f76e0ca2b8d301c31f22ca78b02f5169a79ccc20930ce42a2522aba62ea58f3c
+      split_gpdeku.config.arm64_v8a.apk: 5dfe35abb1458c47435c5dfc18121fc669c47d95adc1990479eb9933d7472d00
+    runtime_install_result: success
+    online_cold_launch_result: success
+    offline_cold_launch_result: blocked_by_google_play_licensing_panel
+    first_run_consent: accepted_by_user
+    purchaser_initialization: success
+    tier_1_no_action_result_wave: 2
+    offline_snapshot_resume: one_retry_cycle_passed
+    current_connectivity: airplane_mode_no_external_route
+    current_screen: battle_home_tier_1_selected_from_golden_snapshot
+    local_snapshots:
+      - tower_post_consent_play_29_0_3_online_20260914
+      - tower_post_consent_play_29_0_3_offline_running_20260914
+      - tower_golden_t1_v1_play_29_0_3_offline_running_20260914
+      - tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
+
+golden_baseline_candidate:
+  baseline_id: tower-t1-initial-v1
+  status: validated
+  snapshot: tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
+  snapshot_host_path: '${ANDROID_AVD_HOME:-$HOME/.android/avd}/tower_rl_api36_play_arm64.avd/snapshots/<snapshot>'
+  superseded_snapshot: tower_golden_t1_v1_play_29_0_3_offline_running_20260914
+  snapshot_storage: local_avd_only_ignored
+  approximate_snapshot_size_on_disk: 2.9GiB
+  renderer: lavapipe_vulkan_swangle_gles
+  start_screen: battle_home_tier_1_selected
+  network_state: airplane_mode_no_external_route
+  display:
+    logical_size: 1080x1920
+    density_dpi: 420
+    rotation: 0
+    locale: en-US
+    refresh_rate_hz: 60
+  visible_account_state:
+    tier: 1
+    highest_wave: 2
+    coins_unspent: 53
+    gems: 0
+    total_coin_bonus: 1.0
+    labs: locked
+    other_post_workshop_progression_tabs: locked
+    active_lab_research: impossible_while_locked
+  onboarding:
+    workshop_grant_claimed: 50
+    rationale: unavoidable_first_run_setup_grant
+  permanent_workshop_state:
+    coins_spent_by_tower_rl: 0
+    attack:
+      damage: 3
+      attack_speed: 1.0
+      critical_chance_percent: 1.0
+      critical_factor: 1.2
+      range_upgrades: locked
+    defense:
+      health: 5
+      health_regen_per_second: 0.0
+      additional_defense_upgrades: locked
+    utility:
+      cash_bonuses: locked
+    ultimate_weapons: none_observed
+  representative_home_frame:
+    storage: temporary_local_only_not_committed
+    sha256: 32ffeb8f5dd1a2d5b5da03b0e694059debe0f49c4ae46162ad2b9e2f44084a25
+  restore_check:
+    snapshot_load: success
+    game_process_alive: true
+    game_foreground: true
+    airplane_mode_preserved: true
+    external_route_absent: true
+    visual_capture: success_via_adb_exec_out
+
+pending_validation:
+  - fixed logical resolution, density, orientation, and locale
+  - supported home-to-Tier-1 navigation and manual start
+  - baseline account state and available in-run actions
+  - normal in-game speed range
+  - offline snapshot aging and force-stop recovery behavior
+  - two-actor identity and random-stream isolation
+  - production training host characterization

@@ -4,7 +4,7 @@
 
 This document defines **how** to deliver the outcome specified in `task.md`.
 
-`task.md` remains authoritative for scope, acceptance criteria, boundaries, and Definition of Done. This solution supplies the architecture, implementation strategy, component boundaries, data contracts, reinforcement-learning design, verification approach, and staged delivery plan.
+`task.md` remains authoritative for scope, acceptance criteria, boundaries, and Definition of Done. This solution supplies the technical approach, implementation strategy, selected tools, data contracts, reinforcement-learning design, verification approach, and staged delivery plan. `architecture.md` is the concise structural view derived from this solution: it shows component boundaries, dependency rules, runtime topology, action authority, and principal flows without replacing this document as the authority for technical choices.
 
 When implementation evidence invalidates a technical decision here, update this document and record the reason. Do not silently weaken a requirement from `task.md`. If the task and solution conflict, the task wins until both are deliberately reconciled.
 
@@ -35,6 +35,12 @@ flowchart TD
 ```
 
 Prototype with one standard Android virtual device. Scale only after the single-actor reliability gate passes. Use multiple standard emulator devices first; evaluate Cuttlefish on native Linux only if standard devices become the demonstrated scaling bottleneck and the APK/device compatibility permits it.
+
+The single-device prototype runs first on the Apple M2 Pro/16 GB development
+host with a native ARM64 Android image. Multi-actor scale validation moves later
+to the 28 GB/RTX 4090 workstation after its host OS, CPU, virtualization, and
+compatible Android ABI path are characterized. Results from one host do not
+silently establish performance or renderer compatibility on the other.
 
 ## 3. Guiding decisions
 
@@ -99,6 +105,25 @@ Use this decision order:
 
 The environment and learner must depend on an `AndroidDevice` interface, not on emulator-specific commands, so a backend can change without changing RL code.
 
+For the supplied The Tower 29.0.1 XAPK on the ARM64 macOS development host, the plain API 36
+`google_apis` image is rejected: after first-run consent it exposes no Play
+Billing service and the game stalls at purchaser initialization. The API 36
+`google_apis_playstore` ARM64 image exposes that service, but the unentitled
+ADB-installed game still reports billing as unsupported. After user-owned Play
+Store sign-in and installation from the production listing, version 29.0.3
+(`versionCode=1199`) completed purchaser initialization and entered Tier 1. This
+Play-installed build replaces the supplied XAPK as the runtime candidate.
+
+A named snapshot of the running game can be resumed with Android networking
+disabled, and one no-action offline retry cycle has completed. A force-stopped
+game cannot currently cold-launch offline: Google Play intercepts startup with
+its licensing panel. Offline actors therefore require snapshot-resume semantics
+plus explicit aging, recovery, identity, and randomness validation; offline mode
+is not assumed to remove account or service constraints. The image becomes
+selected only after baseline, navigation, snapshot, renderer, and isolation
+validation complete. Do not falsify installer identity, bypass Play licensing,
+automate credentials, make purchases, or automate advertisements.
+
 ## 5. Proposed repository structure
 
 Use a Python package with feature-oriented boundaries:
@@ -116,18 +141,21 @@ Tower-RL/
 ├── docs/
 │   ├── task.md
 │   ├── solution.md
+│   ├── architecture.md
+│   ├── environment-profile.yaml
 │   ├── setup.md
+│   ├── workstation-handoff.md
 │   ├── operations.md
 │   ├── environment-contract.md
 │   ├── experiments.md
 │   ├── limitations.md
 │   └── adr/
 ├── src/tower_rl/
-│   ├── cli/
-│   ├── config/
-│   ├── android/
-│   ├── vision/
-│   ├── environment/
+│   ├── domain/              # entities, value objects, invariants, schemas
+│   ├── application/         # use cases and orchestration
+│   ├── ports/               # inbound/outbound protocols
+│   ├── infrastructure/      # ADB, vision, persistence, process adapters
+│   ├── cli/                 # composition root
 │   ├── policies/
 │   ├── replay/
 │   ├── learning/
@@ -148,6 +176,17 @@ Tower-RL/
 Keep proprietary and generated material out of Git. `.gitignore` must cover the APK, Android device data, user/account state, golden snapshots, screenshots containing user data, replay storage, checkpoints, logs, and local runtime configuration. Provide `.example` configuration files where useful.
 
 Use Python 3.12 unless the selected PyTorch/Android integration on the target host requires a different supported version. Manage dependencies and reproducible commands with `uv`. Use PyTorch for the model and learner. Prefer small, explicit internal abstractions over adopting a large distributed-RL framework before the environment is proven. TorchRL components may be used where they reduce risk, but the stored data contracts and orchestration must remain project-owned and testable.
+
+The package uses domain-driven design with dependencies pointing inward:
+infrastructure adapters depend on application use cases and ports; application
+services depend on domain contracts and ports; domain code depends on neither
+Android nor persistence. The CLI is the composition root. Root-level compatibility
+modules are temporary shims and must not become new dependency targets.
+
+The M0 `probe` uses Pillow only for deterministic PNG decoding and conservative
+profile-anchor checks. It is a transport and navigation smoke tool, not the
+final observation extractor; the planned vision layer remains OpenCV-backed and
+must pass the fixture-accuracy gate before training.
 
 ## 6. Component architecture
 
@@ -290,7 +329,7 @@ Do not implement a generic "tap until it works" loop. Each transition has:
 
 ### 6.5 `TowerController`
 
-`TowerController` converts semantic intent into state-machine transitions.
+`TowerController` is the V1 run interactor. It converts semantic intent into state-machine transitions.
 
 Responsibilities:
 
@@ -304,6 +343,18 @@ Responsibilities:
 - request baseline recovery when invariants fail.
 
 It maintains controller-owned facts such as the last successful action, last verified upgrade levels/costs, current tab, and timestamps. This is memory of observed UI and executed actions, not a reimplementation of game mechanics.
+
+Keep action domains type-separated:
+
+- `RunAction` contains only `WAIT` and supported in-run purchases and is the only
+  learned action type accepted by `TowerEnv.step`;
+- navigation commands are private controller operations;
+- permanent `MetaAction` operations such as Workshop spending or Lab scheduling
+  are absent from V1 APIs.
+
+A future meta-progression project may reuse the device, vision, and navigator
+layers through a separate `MetaEnv` and controller contract. That extension seam
+does not grant the V1 policy permanent-progression authority.
 
 ### 6.6 `TowerEnv`
 
@@ -538,6 +589,31 @@ Create the baseline once per supported device backend/profile after the user est
 - known exclusions such as purchases, ads, tournaments, and cloud actions.
 
 Create separate writable actor clones from the canonical baseline. Do not let multiple running devices share a writable user-data directory.
+
+Maintain two different local checkpoints. A post-consent setup state preserves
+user-completed legal and unavoidable first-run screens. The golden Tier-1
+baseline is created later, after the intended legitimate account progression is
+reached and no Lab research or automatic research continuation is active. Stop
+the app at a stable supported screen before taking either named snapshot.
+
+An emulator snapshot preserves local device/app state but is not assumed to
+rewind PlayFab, Firebase, cloud save, Lab timers, or any other server-authoritative
+state. After every restore, re-establish network/session health and verify the
+visible baseline before admitting an episode. Do not run cloned snapshots of one
+online identity concurrently until an explicit isolation experiment shows that
+the game and service behavior remain safe and deterministic enough for V1.
+
+The validated initial baseline, `tower-t1-initial-v1`, uses the Play-installed
+29.0.3 game at Battle home with Tier 1 selected, highest wave 2, 53 unspent coins,
+0 gems, no Tower-RL Workshop spending, and all post-Workshop progression systems
+including Labs still locked. The 53-coin balance includes an unavoidable 50-coin
+first-run Workshop grant. Its canonical local snapshot is
+`tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914`, created
+with a pinned Lavapipe Vulkan/Swangle GLES renderer. In-place restore preserved
+the game process, Battle-home/Tier-1 state, airplane mode, and a successful
+post-restore visual fingerprint. The earlier 1.5-GiB snapshot remains retained as
+a superseded artifact. Offline cold launch after a force-stop is still
+unsupported; recovery uses the running snapshot or a controlled online restart.
 
 ### 8.2 Normal episode start
 
@@ -958,9 +1034,11 @@ Deliverable: trusted `TowerEnv` suitable for learning.
 3. Validate learner math on toy environments.
 4. Integrate minimal Double/Dueling DQN with real `TowerEnv`.
 5. Verify checkpoint/resume and isolated deterministic evaluation.
-6. Demonstrate end-to-end learning health; investigate observation/reward issues before scaling.
+6. Add a minimal visible, exploration-free playback path for a selected checkpoint.
+7. Demonstrate end-to-end learning health; investigate observation/reward issues before scaling.
 
-Deliverable: one real actor feeding a functioning resumable learner and evaluator.
+Deliverable: the engineering MVP—one real actor feeding a functioning resumable
+learner and evaluator, with visible checkpoint playback.
 
 ### Phase 4 — R2D2 and parallelism (`M4`)
 

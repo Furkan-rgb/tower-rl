@@ -1,0 +1,69 @@
+# Proprietary Android packages and assets
+*.xapk
+*.apk
+*.apks
+*.aab
+*.obb
+extracted-xapk/
+extracted_xapk/
+local-apk/
+game-files/
+vendor/game/
+
+# Android devices, SDK-local state, snapshots, and account data
+.android/
+*.avd/
+*.img
+*.qcow2
+android-runtime/
+emulators/
+snapshots/
+account-data/
+save-data/
+
+# Tower-RL runtime and generated artifacts
+runtime/
+artifacts/
+checkpoints/
+models/
+replay/
+logs/
+failure-bundles/
+screenshots/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.tfevents.*
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+configs/local.yaml
+configs/local-*.yaml
+*.keystore
+*.jks
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

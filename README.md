@@ -48,7 +48,7 @@ These entry points do not exist yet. Their required behavior is specified in the
 
 ## Local XAPK
 
-Keep the downloaded XAPK outside Git. The M0 reconnaissance process will inspect it locally, record only non-proprietary compatibility metadata, and determine the correct installation set for one test Android device.
+Place the downloaded XAPK at `local/the-tower.xapk` inside the cloned workspace. The entire `local/` directory is ignored by Git. The M0 reconnaissance process will inspect it locally, record only non-proprietary compatibility metadata, and determine the correct installation set for one test Android device.
 
 ## License
 

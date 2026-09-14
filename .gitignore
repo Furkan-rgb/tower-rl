@@ -21,6 +21,9 @@ snapshots/
 account-data/
 save-data/
 
+# Local workspace assets (including the XAPK and extracted contents)
+/local/
+
 # Tower-RL runtime and generated artifacts
 runtime/
 artifacts/

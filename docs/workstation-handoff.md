@@ -50,7 +50,9 @@ external route.
 
 ## Prepare the RTX 4090 workstation
 
-Treat the workstation as a new device profile. Do not assume this Mac snapshot
+Treat the workstation as a new device profile. The observed workstation is
+Ubuntu 26.04.1 x86_64 with an i9-14900, 125 GiB RAM, RTX 4090, and accessible
+KVM. Do not assume this Mac snapshot
 will boot there: an RTX 4090 machine is commonly x86_64, while this snapshot is
 from an ARM64 AVD and is also tied to the pinned Lavapipe/Swangle renderer.
 
@@ -113,3 +115,145 @@ Machine-local only:
 The first workstation milestone is therefore **reprovision and revalidate**, not
 snapshot copying. Once it passes, add the workstation profile as a separate
 environment version and only then begin multi-actor isolation work.
+
+## Current continuation state — 2026-09-15
+
+Workstation reprovisioning is complete. The authoritative local runtime is the
+Play-installed The Tower 29.0.3 build (`versionCode 1199`) on
+`tower_rl_api36_play_x86_64`, serial `emulator-5554`, using `-gpu lavapipe` and
+the validated ANGLE/Swangle path. The AVD now has `hw.ramSize=6144`. The new
+golden candidate is
+`tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_6gb_offline_home_20260914_workstation`.
+The prior 2 GiB snapshot
+`tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914_workstation`
+is retained unchanged. The emulator is left at the new snapshot with airplane
+mode enabled and no route.
+
+The 6 GiB candidate passes the profile probe, bounded navigation/restore, and
+one 4/4 natural-death diagnostic. It does **not** pass M1 reliability: the fresh
+100-consecutive run stopped after seven valid episodes with an explicit device
+failure and restored the baseline. The subsequent Wave 3 stall interpretation
+has been rejected by bounded progression evidence: an offline sparse-capture
+run advanced through Wave 6 and died naturally at about 377 seconds. The old
+120-second deadline expired during valid gameplay, and the first post-baseline
+death's `New Highest Wave!` layout moved the Game Stats HOME-button border and
+was classified as a modal. Production now permits 600 seconds, polls at the
+configured one-second interval, and recognizes both result layouts. A live
+1/1 natural-death smoke passed in 351.3 seconds and restored this same snapshot.
+No renderer/profile change or replacement snapshot was required. Do not declare
+M1 complete until the unchanged 6 GiB baseline passes the required 100 episodes.
+
+A subsequent 10-episode qualification stopped after three valid episodes because
+the result-to-home transition completed just after the controller exhausted its
+three five-second waits. The captured failure frame was already valid Battle
+home, and there was no device/lifecycle failure. Those bounded waits are now 12
+seconds; a production-path 2/2 natural-death verification passed in 687.0
+seconds and restored the offline baseline. The 100 gate has not been restarted.
+
+The fresh 10-episode retry also stopped after three valid episodes. Evidence then
+showed a delayed generic modal-close tap crossing the result-to-home transition,
+opening Home Settings, and allowing subsequent lifecycle taps to reach an
+unlinked-cloud-save account warning. No confirmation or account action was
+selected, and recovery restored the baseline. Generic modal taps are now
+disabled: lifecycle waits observe a modal without input and either continue when
+it settles or fail explicitly. The narrow remaining blocker is positive subtype
+recognition and a destination-safe action for any modal that truly requires
+dismissal. Do not start the 100 gate before that path passes a fresh 10/10 run.
+
+The 2 GiB configuration backup is private local state at
+`$HOME/.local/state/tower-rl/avd-config-backups/20260914-workstation-2gb/`.
+To launch the 6 GiB candidate explicitly:
+
+```text
+./scripts/launch_avd.sh tower_rl_api36_play_x86_64 lavapipe \
+  tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_6gb_offline_home_20260914_workstation
+```
+
+The XAPK is no longer required for this workstation runtime. Its sanitized
+metadata remains in `docs/environment-profile.yaml`; do not copy proprietary
+archive bytes into the repository.
+
+M0 is complete: host/device characterization, Play installation, renderer
+selection, offline baseline, snapshot restore, and bounded navigation probe are
+recorded in `docs/experiments.md` (M0-E001 through M0-E014). M1 implementation
+is in `src/tower_rl/vision.py`, `src/tower_rl/infrastructure/adb_device.py`,
+and `src/tower_rl/application/controller.py`. The repeatable gate is
+`scripts/m1_reliability.py`; reports belong under `/tmp` or another ignored
+machine-local directory. The post-diagnosis one-episode smoke passed, but the
+earlier 100-episode run did not. A future run must finish with `passed: true`,
+`valid_episodes: 100`, and `baseline_restored: true` before M1 is declared
+complete.
+
+Before changing code, read `AGENTS.md`, `docs/task.md`, `docs/solution.md`,
+relevant ADRs, and current controller/vision tests. After any live run, restore
+the golden snapshot and verify with `uv run tower-rl probe --serial
+emulator-5554 --restore-snapshot <snapshot-name>`.
+
+## Experimental no-OCR continuation — 2026-09-15
+
+The scalability investigation in `M1-E007` established a viable behind-the-GUI
+path, but it has not replaced the V1 visual contract yet. Two private disposable
+AVDs exist outside Git:
+
+- `tower_rl_instrumented_api36` is a rooted clone with the unchanged
+  Play-installed 29.0.3 package.
+- `tower_rl_gadget_api36` is a throwaway re-signed-XAPK clone used only to
+  isolate native instrumentation behavior.
+
+Frida server attachment works at the x86 process level but cannot enumerate the
+translated ARM64 IL2CPP module. ARM64 Frida Gadget aborts under
+`libndk_translation`. Do not spend another iteration on those routes unless the
+host or Android ABI changes.
+
+A small custom ARM64 dependency does work under translation. It starts inside
+the Unity process, resolves IL2CPP exports, finds `Main` dynamically, and reads
+`Main.gameSpeed`. It was proven first in a temporary re-signed XAPK and then in
+the Play-installed package by placing a reversible Magisk bind mount over the
+extracted `libunity.so`. In the second proof, package version 29.0.3,
+`installerPackageName=com.android.vending`, signed APK bytes, and app data all
+remained unchanged. The mount was removed and the bridge/probe files were deleted
+afterward; no emulator is intentionally left running.
+
+ADR 0006 now defines the separate instrumented-training and official-evaluation
+profiles. The first production bridge slice lives under `native/tower_bridge/`
+with its strict host client in
+`src/tower_rl/infrastructure/instrumented_bridge.py`. A live 29.0.3 run passed
+the exact compatibility handshake and returned both active and terminal
+observations with all 60 in-run upgrades (20 Attack, 20 Defense, 20 Utility).
+Startup observations fail closed until `Main.Instance` and run scalar state are
+initialized. The temporary overlay was removed, a clean reboot restored the
+original `libunity.so` hash, and no emulator is intentionally left running.
+
+Step 3 of the six-step sequence in `M1-E007` is now proven live and recorded in
+`M1B-E001`. On the rooted clone, `WAIT`, duplicate/stale rejection, locked and
+unpriced rejection, and confirmed `attack` and `defense` purchases all execute
+through Unity's main thread with game-owned before/after evidence, corroborated
+by sparse pixels. Utility is unavailable at this fixed baseline, with evidence.
+Five defects in the previously unexecuted command slice were corrected first; the
+important ones are that IL2CPP resolution must happen on the first client
+connection rather than at library load, `tier_unlocked` never gates a purchase,
+and cash is not a confirmation signal.
+
+Continue from step 4. The open gates are family cost coverage without an
+undocumented manual step (a family's cost array only populates after its tab has
+been displayed), deterministic normal-speed scripted parity against the visible
+controller, protocol-loss and thread-affinity quarantine behavior, and the speed
+equivalence gate. Only after parity should higher `Time.timeScale` values or
+actor-count scaling be tested, and no instrumented transition may enter replay
+before those gates pass. Keep the canonical emulator and all evaluation
+unchanged, unrooted, normal-speed, and pixel-observed.
+
+Operate the private clone with `scripts/instrumented_bridge.sh`
+(`verify`/`deploy`/`cleanup`) and `TOWER_BRIDGE_BUILD_DIR` pointing at the private
+NDK build directory that holds `libtower_bridge.so` and the patched
+`libunity-bridge.so`. Launch that clone with `-gpu lavapipe`; `swiftshader_indirect`
+produced an unusable System UI ANR on this host. Always finish with `cleanup` and
+confirm the original `libunity.so` SHA-256, unchanged package identity, no
+remaining mounts, and no running emulator. Never send a tap without first
+classifying the screen.
+
+Private/local-only material includes the copied rooted system image, disposable
+AVDs, temporary XAPK/APK extraction, IL2CPP dumps, patched native libraries,
+temporary signing key, save bytes, logs, and account-bearing state. None may be
+committed. The only durable repository evidence is the sanitized experiment and
+this handoff.

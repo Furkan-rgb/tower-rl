@@ -4,6 +4,8 @@
 *.apks
 *.aab
 *.obb
+*.so
+*.idsig
 extracted-xapk/
 extracted_xapk/
 local-apk/
@@ -64,6 +66,7 @@ coverage.xml
 htmlcov/
 dist/
 build/
+native/**/build/
 
 # Editors and operating systems
 .idea/

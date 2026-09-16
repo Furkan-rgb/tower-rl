@@ -28,6 +28,8 @@ class ScreenKind(StrEnum):
     HOME = "battle_home_tier_1"
     ACTIVE_RUN = "tier_1_active_run"
     WAVE_INFO = "tier_1_wave_info_modal"
+    ACCOUNT_LINK_REMINDER = "account_link_reminder_modal"
+    MODAL = "supported_modal"
     RESULT = "tier_1_result"
     UNKNOWN = "unknown"
 
@@ -96,10 +98,56 @@ def classify_frame(image: Image.Image) -> ScreenKind:
 
     top_left = pixel(10, 10)
     center = pixel(540, 1000)
+    account_link_reminder_border = (
+        pixel(130, 500),
+        pixel(130, 600),
+        pixel(950, 500),
+        pixel(950, 600),
+    )
+    account_link_reminder_action_border = (
+        pixel(300, 1405),
+        pixel(780, 1405),
+        pixel(300, 1535),
+        pixel(780, 1535),
+    )
+    account_link_reminder_close = (
+        pixel(884, 531),
+        pixel(870, 520),
+        pixel(900, 550),
+    )
+    account_link_reminder_close_background = (
+        pixel(884, 500),
+        pixel(850, 531),
+        pixel(915, 531),
+        pixel(884, 560),
+    )
+    if (
+        all(sum(sample) >= 600 for sample in account_link_reminder_border)
+        and all(sum(sample) >= 600 for sample in account_link_reminder_action_border)
+        and all(sum(sample) >= 600 for sample in account_link_reminder_close)
+        and all(sum(sample) < 180 for sample in account_link_reminder_close_background)
+    ):
+        return ScreenKind.ACCOUNT_LINK_REMINDER
+    result_borders = (
+        (
+            pixel(570, 1350),
+            pixel(990, 1350),
+            pixel(570, 1480),
+            pixel(990, 1480),
+        ),
+        (
+            pixel(570, 1400),
+            pixel(990, 1400),
+            pixel(570, 1530),
+            pixel(990, 1530),
+        ),
+    )
+    if any(all(sum(sample) >= 600 for sample in border) for border in result_borders):
+        return ScreenKind.RESULT
     if sum(top_left) < 70 and sum(pixel(540, 180)) >= 200:
         return ScreenKind.WAVE_INFO
     if sum(top_left) < 70 and sum(center) >= 70:
-        return ScreenKind.RESULT
+        return ScreenKind.MODAL
     if sum(top_left) < 70 and sum(center) < 70:
         return ScreenKind.ACTIVE_RUN
     return ScreenKind.UNKNOWN
@@ -195,7 +243,17 @@ class AndroidProbe:
         """Restore a named local AVD snapshot through the emulator console."""
 
         self._run("emu", "avd", "snapshot", "load", name, timeout=30.0)
-        time.sleep(2.0)
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            try:
+                report = self.report()
+            except ProbeError:
+                time.sleep(1.0)
+                continue
+            if report.valid and report.screen is ScreenKind.HOME:
+                return
+            time.sleep(1.0)
+        raise ProbeError(f"snapshot {name!r} did not settle to a valid Battle home")
 
     def wait_for(self, expected: ScreenKind, timeout: float = 12.0) -> ProbeReport:
         deadline = time.monotonic() + timeout

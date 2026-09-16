@@ -57,29 +57,42 @@ overnight operation, and final acceptance evidence.
 V1 optimizes in-run Tier-1 decisions from a fixed permanent account baseline. It
 does not optimize permanent progression.
 
-### 2.3 Future meta-progression
+### 2.3 Post-V1 progression program
 
-A later project may add a slower policy for Workshop spending, Lab scheduling,
-milestone claims, or other explicitly authorized account progression. That work
-requires a new objective, state/action contract, safety model, and acceptance
-criteria. V1 preserves an extension seam for it but does not implement or train
-it.
+M8–M11 add the separately bounded progression program after engineering V1. It
+optimizes long-horizon Tier-1 performance per real elapsed time using visible,
+ordinary, earned-resource progression. `MetaObservation`, `MetaAction`,
+`MetaEnv`, and `MetaController` are separate versioned types; they never union
+with V1 `RunAction`, `TowerEnv`, replay, or fixed-baseline evaluation.
+
+Only calibrated, fail-closed allowlisted capabilities may operate autonomously.
+Safe deterministic reward/milestone claims may be controller-owned after their
+non-strategic behavior is verified. Strategic irreversible choices remain
+evaluation-gated `MetaAction` requests. This program does not change M0–M7 or
+the comparability of fixed-baseline V1 results.
 
 ## 3. Architectural drivers
 
 The architecture is shaped by these non-negotiable constraints:
 
 - The official APK is the only authoritative gameplay environment.
-- Only visually observable state and controller-owned history enter the
-  environment contract.
+- Official evaluation admits visually observable state and controller-owned
+  history. Instrumented training admits only allowlisted exact state owned by the
+  same running game, after bridge/visual parity.
 - Learned outputs are semantic run actions, never screen coordinates.
 - UI navigation is deterministic, state-aware, verified, and bounded.
 - Permanent account choices are frozen for V1.
+- Permanent progression is a separate M8–M11 capability domain with immutable
+  verified profiles; recovery may not silently rewind a successful change.
+- Timed research is progression-only; fixed-baseline run evaluation uses an
+  idle/frozen profile.
 - Invalid observations and failed actions cannot silently become normal replay.
 - Evaluation is exploration-free and isolated from replay and learning.
 - Actor failures are contained; shared learner and artifact state remain valid.
-- Normal game speed and ordinary Android input are permitted; external time
-  manipulation and speed hacks are not.
+- Official evaluation uses normal game speed and ordinary Android input.
+  Instrumented training may use Unity-main-thread semantic commands and a
+  parity-approved in-process time scale; external clock manipulation is not
+  permitted.
 - Aggregate valid experience, rather than raw actor count or render frame rate,
   is the performance objective.
 - Proprietary packages, account state, screenshots, replay, and models remain
@@ -104,7 +117,7 @@ flowchart LR
     Game --> Vision["Visual observation"]
     Vision --> Env
 
-    Meta["Future meta-policy"] -. "separate contract" .-> MetaController["Future MetaController"]
+    Meta["M8–M11 meta policy"] -. "MetaAction only" .-> MetaController["MetaController"]
     MetaController -.-> Device
 ```
 
@@ -208,16 +221,16 @@ Tower-RL keeps three action domains type-separated.
 | --- | --- | --- |
 | Run actions | `WAIT`, `BUY_HEALTH`, `BUY_DAMAGE` | Learned run policy |
 | Navigation commands | select tab, scroll, start T1, close a known modal | `TowerController` only |
-| Meta actions | spend coins, start Lab research, claim a milestone | Disabled and outside the V1 API |
+| Meta actions | spend coins, start Lab research, strategic milestone choice | Separate M8–M11 `MetaEnv`; absent from V1 API |
 
 The separation is enforced in code and configuration, not only by convention.
 `TowerEnv.step` accepts only the versioned `RunAction` type. Navigation commands
 are private implementation details of the controller. No V1 enum contains a
 permanent-progression action.
 
-A future meta-progression system must use a separate `MetaAction` schema and a
-separate `MetaEnv`/`MetaController` boundary. Reuse of screen recognition or the
-device adapter does not grant a run policy access to meta actions.
+The M8–M11 progression system uses a separate `MetaAction` schema and separate
+`MetaEnv`/`MetaController` boundary. Reuse of screen recognition or the device
+adapter does not grant a run policy access to meta actions.
 
 ## 6. Logical components
 
@@ -356,6 +369,17 @@ Telemetry owns structured logs, metrics, and concise operator health output.
 Atomicity, checksums, compatibility identifiers, and retention are cross-cutting
 requirements of both components.
 
+### 6.14 `MetaEnv` and `MetaController` (M8–M11)
+
+`MetaEnv` owns progression observation, long-horizon reward/evaluation context,
+profile identity, and capability-compatible `MetaAction` admission. `MetaController`
+executes only calibrated ordinary earned-resource paths, confirms outcomes, and
+may make a deterministic non-strategic claim without asking a policy. Strategic
+or irreversible choices remain `MetaAction` requests and must pass the configured
+evaluation gate before autonomous operation. Both components fail closed for
+unknown, new, modal-ambiguous, real-money/store purchase, advertisement,
+credential, cloud/save, tournament, competitive, event, and bypass capabilities.
+
 ## 7. Dependency rules
 
 The intended dependency direction is:
@@ -383,7 +407,8 @@ Rules:
    shared mutable Python objects.
 6. Evaluation and watch reuse environment code but receive capability-limited
    sinks that cannot write replay or model state.
-7. Permanent-progression capabilities are absent from V1 process APIs.
+7. Permanent-progression capabilities are absent from V1 process APIs and use
+   separately versioned M8–M11 records.
 
 Fast contract tests must enforce the most important import and message-boundary
 rules where practical.
@@ -481,8 +506,16 @@ game speed, app version, and device/UI profile.
 
 V1 permits unavoidable persistent currency balances to change only when evidence
 shows that the balance itself cannot affect combat without a prohibited meta
-action. Coins, gems, cells, milestones, and similar persistent resources are not
-policy observations and are never spent or claimed by automation.
+action. In V1, coins, gems, cells, milestones, and similar persistent resources
+are not policy observations and are never spent or claimed by automation.
+
+M8–M11 progression profiles are distinct from the fixed V1 baseline. Each
+successful permanent change creates a new immutable, verified profile linked to
+its parent and visible-state fingerprint. Recovery verifies the current profile
+and must not silently restore an earlier one. Every run record carries the exact
+profile identity; replay and evaluation reject incompatible profiles. Timed
+research may run only in progression mode. Fixed-baseline run training and
+evaluation require an idle/frozen profile.
 
 Before creating the baseline:
 
@@ -513,10 +546,13 @@ Tower-RL distinguishes game-time speed from system throughput.
 
 ### 11.1 Game-time speed
 
-The controller selects and verifies one normal in-game speed supported by the
-fixed baseline. That speed is part of environment compatibility and is identical
-for training and evaluation. External clock manipulation and speed hacks are
-outside the system.
+The official controller selects and verifies one normal in-game speed supported
+by the fixed baseline. That speed remains the authoritative evaluation/watch
+profile. Per ADR 0006, the separate instrumented-training profile may select a
+higher in-process Unity time scale only after deterministic and distributional
+parity, reliability, and throughput gates. Each accepted speed is a distinct
+environment compatibility value. External clock manipulation remains outside
+the system.
 
 ### 11.2 Emulator and observation efficiency
 
@@ -602,7 +638,10 @@ screens wherever possible.
 | Evaluation promotion | M5 | Not implemented |
 | Complete operator modes | M6 | Not implemented |
 | Final acceptance evidence | M7 | Not started |
-| Permanent meta-progression | Post-V1 | Deferred |
+| Meta contract and capability safety | M8 | Not started |
+| Verified progression lifecycle | M9 | Not started |
+| Long-horizon progression control/evaluation | M10 | Not started |
+| Progression validation and handoff | M11 | Not started |
 
 Update this table only from recorded evidence. A launched APK, mock adapter, or
 running learner does not advance a gate by itself.

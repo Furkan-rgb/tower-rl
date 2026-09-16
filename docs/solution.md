@@ -10,10 +10,16 @@ When implementation evidence invalidates a technical decision here, update this 
 
 ## 2. Solution summary
 
-Build the system in two layers that meet at a strict environment interface:
+Build the V1 system in two layers that meet at a strict run-environment interface:
 
 1. **Real-game environment layer** — manages independent Android instances running the official APK, turns screenshots into validated structured observations, translates semantic actions into UI interactions, controls episode lifecycle, and produces trustworthy transitions.
 2. **Learning and operations layer** — runs distributed recurrent Q-learning, replay, checkpointing, evaluation, promotion, metrics, and the user-facing commands.
+
+After M7, add a separate progression bounded context for M8–M11. Its
+`MetaObservation`, `MetaAction`, `MetaEnv`, and `MetaController` may reuse the
+device, navigator, and visible-state extraction layers, but not `TowerEnv`'s
+action space, replay, or fixed-baseline evaluation records. Its objective is
+long-horizon Tier-1 performance per real elapsed time, not V1 final-wave ranking.
 
 The real APK is always authoritative. The system does not recreate game rules or generate synthetic Tower transitions.
 
@@ -48,9 +54,13 @@ silently establish performance or renderer compatibility on the other.
 
 No learner may train on the environment until a deterministic scripted controller passes the 1,000-attempt reliability gate. Incorrect observations and episode boundaries create plausible-looking but poisoned replay data, making RL failures extremely difficult to diagnose.
 
-### 3.2 Use visible UI state and ordinary input automation
+### 3.2 Separate instrumented training from official evaluation
 
-V1 observes screenshots and uses normal device input through supported Android control interfaces. It does not depend on APK modification, process memory, private implementation details, network interception, or anti-cheat bypasses.
+Per ADR 0006, training may use a private rooted clone, a reversible native-library
+overlay, exact IL2CPP observations, and Unity-main-thread semantic commands. The
+unchanged unrooted Play-installed package remains authoritative for normal-speed,
+pixel-observed evaluation and headed watch mode. Neither profile bypasses
+licensing/integrity, edits saves, or automates transactional or competitive paths.
 
 ### 3.3 Separate normal reset from recovery
 
@@ -66,7 +76,10 @@ Validate the complete data path with random and scripted policies, then a minima
 
 ### 3.6 Optimize aggregate real experience
 
-The workstation's value is parallelism. Do not assume that a faster host accelerates one APK's notion of time. Increase the number of independent actors until aggregate valid experience stops improving.
+Measure both in-process game-time acceleration and actor parallelism on the
+instrumented-training profile. Admit only speed/actor combinations that preserve
+normal-speed scripted behavior and maximize aggregate valid experience. A faster
+renderer alone does not imply faster game time.
 
 ### 3.7 Keep evaluation independent
 
@@ -244,7 +257,71 @@ A profile contains normalized coordinates, region definitions, reference templat
 
 Calibration output is data, not scattered constants in code.
 
-### 6.3 Vision and structured state extraction
+### 6.3 Instrumented training bridge
+
+The training-only native bridge is a small ARM64 shared library loaded through a
+reversible bind-mounted `libunity.so` view on a private rooted actor clone. It
+contains no game assets or extracted proprietary code. Its responsibilities are:
+
+- perform a versioned handshake containing package/library hashes, Unity and
+  IL2CPP metadata versions, bridge/protocol version, actor id, and time scale;
+- resolve IL2CPP exports dynamically and locate allowlisted classes, fields, and
+  methods by semantic name;
+- emit monotonic observation snapshots and lifecycle events over a loopback socket
+  exposed to the host with ADB forwarding;
+- represent `WAIT` as a bounded host-owned interval ending in a fresh exact
+  observation, and dispatch purchase mutations only through an established
+  Unity-main-thread safe point;
+- return before/after state and an explicit applied, rejected, stale, or failed
+  action result; and
+- stop admitting transitions when compatibility, heartbeat, sequence, thread,
+  lifecycle, or pixel-watchdog checks fail.
+
+The bridge observes game-owned lifecycle, wave, cash, tower health, terminal
+state, and all supported upgrade costs/levels/availability. It invokes only the
+game's normal earned-cash in-run purchase methods. It does not calculate costs,
+combat, rewards, outcomes, or save mutations itself.
+
+For the version-locked 29.0.3 profile, private scene inspection confirms the
+target GameObject is named `Main`. The single attached bridge thread writes the
+aligned `IntSelect.upgradeSelect` integer only after validating the current
+inventory and admitting exactly one purchase command. It then calls exported
+`UnitySendMessage` for `Main.UpgradeButton`, `Main.UpgradeDefenseButton`, or
+`Main.UpgradeUtilityButton`; Unity owns delivery and executes the purchase method
+on its main thread. The selection write is command-mailbox coordination, not a
+purchase mutation, and no second command or UI actor may race it. Only the game's
+own level increment in a strictly newer exact observation can mark the command
+applied; timeout or contradictory change is ambiguous and quarantines the actor.
+In-run cash rises continuously from kills, so a cash delta is evidence recorded
+with the transition, never the confirmation signal itself.
+
+Live 29.0.3 evidence in `M1B-E001` constrains two further details. In-run
+availability is `unlocked`, not `maxed`, and a positive cost within current cash;
+`tier_unlocked` is reported state and is false for every offered upgrade, so it
+never gates a purchase. A family's cost array is only populated once that family
+has been displayed during the run, so the actor opens each family tab once at run
+start and any entry without a positive cost stays masked and is rejected by the
+bridge. Removing that per-run step requires identifying the game's own cost
+refresh path; until then it is an explicit documented actor step rather than a
+silent assumption.
+
+IL2CPP resolution happens on the first host connection and is then cached.
+`libil2cpp.so` is loadable long before its runtime is usable, and resolving at
+library-load time kills the game process; a connecting client is the evidence
+that the game has initialized.
+
+The host-side `InstrumentedTowerDevice` owns ADB forwarding, protocol framing,
+timeouts, compatibility policy, overlay lifecycle, and cleanup. The environment
+consumes the same semantic observation/action contracts regardless of whether the
+source is the bridge or visible controller. Replay manifests additionally bind
+instrumented transitions to bridge and speed profiles.
+
+Sparse visual captures independently check lifecycle state and provide failure
+artifacts. Normal-speed parity runs compare the bridge actor with the existing
+visible actor before training, and each higher time scale repeats deterministic,
+distributional, latency, and soak checks before allowlisting.
+
+### 6.4 Vision and structured state extraction
 
 Use a layered extractor:
 
@@ -298,7 +375,7 @@ Only one upgrade tab may be visible at a time, while the policy needs a coherent
 
 The bootstrap/refresh policy must be identical for training and evaluation. If scanning materially harms gameplay or throughput, change it only through a versioned environment experiment; do not silently allow indefinitely stale cross-tab values.
 
-### 6.4 Screen-state machine
+### 6.5 Screen-state machine
 
 All UI automation passes through an explicit state machine:
 
@@ -327,7 +404,7 @@ Do not implement a generic "tap until it works" loop. Each transition has:
 - retry budget;
 - failure classification.
 
-### 6.5 `TowerController`
+### 6.6 `TowerController`
 
 `TowerController` is the V1 run interactor. It converts semantic intent into state-machine transitions.
 
@@ -350,20 +427,20 @@ Keep action domains type-separated:
   learned action type accepted by `TowerEnv.step`;
 - navigation commands are private controller operations;
 - permanent `MetaAction` operations such as Workshop spending or Lab scheduling
-  are absent from V1 APIs.
+  are absent from V1 APIs and exist only in the M8–M11 progression context.
 
-A future meta-progression project may reuse the device, vision, and navigator
-layers through a separate `MetaEnv` and controller contract. That extension seam
-does not grant the V1 policy permanent-progression authority.
+The M8–M11 progression context reuses the device, vision, and navigator layers
+through a separate `MetaEnv` and `MetaController` contract. That reuse does not
+grant the V1 policy permanent-progression authority.
 
-### 6.6 `TowerEnv`
+### 6.7 `TowerEnv`
 
 Expose an environment independent of Android details:
 
 ```python
 class TowerEnv:
-    def reset(self) -> tuple[Observation, EpisodeInfo]: ...
-    def step(self, action: Action) -> StepResult: ...
+    def reset(self) -> tuple[RunObservation, EpisodeInfo]: ...
+    def step(self, action: RunAction) -> StepResult: ...
     def recover(self) -> RecoveryResult: ...
     def close(self) -> None: ...
 ```
@@ -382,7 +459,7 @@ class TowerEnv:
 
 The environment emits no transition until the next observation has passed validation. Invalid environment attempts are routed to diagnostics and episode classification, not silently represented as ordinary `WAIT` steps.
 
-### 6.7 Actor worker
+### 6.8 Actor worker
 
 One actor process owns one `TowerEnv` and one local inference model. This gives device failure isolation and avoids cross-actor recurrent-state mixing.
 
@@ -401,7 +478,7 @@ The actor:
 
 Actor messages always include `actor_id`, `device_profile_id`, `baseline_id`, `observation_schema_version`, `action_schema_version`, `model_version`, `episode_id`, and monotonically increasing local sequence numbers.
 
-### 6.8 Replay service
+### 6.9 Replay service
 
 Use a bounded central prioritized sequence replay store. Start with a single dedicated process on the workstation.
 
@@ -419,13 +496,13 @@ Requirements:
 
 Use an in-memory ring buffer with optional append-only disk chunks or memory-mapped backing after profiling. Do not build a distributed database for a single-workstation V1. Replay persistence may be configurable: checkpoint metadata must state whether replay was restored or training resumed with an empty buffer.
 
-### 6.9 Learner
+### 6.10 Learner
 
 One GPU learner samples replay sequences, reconstructs recurrent state, computes targets/loss, updates online weights, updates priorities, periodically updates the target network, and publishes versioned weights.
 
 Only the learner mutates model and optimizer state. Weight publication is atomic: actors see either the previous complete version or the next complete version, never a partial write.
 
-### 6.10 Evaluator and promoter
+### 6.11 Evaluator and promoter
 
 The evaluator owns a dedicated device and receives immutable candidate checkpoints. It runs complete episodes with `epsilon=0`, learning disabled, and replay disabled.
 
@@ -448,7 +525,7 @@ Promotion comparison:
 
 Do not repeatedly evaluate every learner update. Schedule evaluation by learner step and minimum wall-clock interval so one real evaluator cannot become an uncontrolled bottleneck.
 
-### 6.11 Supervisor
+### 6.12 Supervisor
 
 The supervisor owns process lifecycle and global run status:
 
@@ -526,10 +603,15 @@ Use a stable integer enum:
 10 BUY_THORNS
 11 BUY_CASH_BONUS
 12 BUY_CASH_PER_WAVE
-... only actions verified as available in the baseline
+... every safely reachable earned-currency in-run upgrade verified in the
+    supported baseline, including Utility actions
 ```
 
-The reconnaissance/calibration output determines the final V1 list. Never renumber an existing action inside a schema version; create a new version and refuse incompatible checkpoints/replay.
+M1 calibration maintains an evidence-backed inventory of every discovered
+earned-currency in-run upgrade as `supported`, `excluded`, `unavailable`, or
+`unsafe`; only `supported` entries appear in `RunAction`. Never renumber an
+existing action inside a schema version; create a new version and refuse
+incompatible checkpoints/replay.
 
 Mask an action when the upgrade is unavailable, maxed, its known cost exceeds current cash, the relevant reading is too stale/uncertain, or the UI profile does not support it. `WAIT` is always available during a valid active run.
 
@@ -650,6 +732,41 @@ Every recovery increments categorized metrics and captures a compact artifact bu
 ### 8.5 Randomness validation
 
 Before training, run repeated episodes with a deterministic scripted policy and compare spawn/timing/outcome traces available from visible observations. Test normal replay and baseline restoration separately. If baseline restoration repeats identical or nearly identical sequences, keep it out of the normal episode path and document the effect. If normal replay causes permanent drift, stop and resolve the baseline design rather than accepting a non-stationary V1.
+
+### 8.6 M8–M11 progression bounded context
+
+Progression is not an extension of `TowerEnv`. `MetaEnv` accepts only a
+versioned `MetaAction` and returns `MetaObservation` plus typed progression
+outcomes. `MetaController` owns deterministic navigation, capability checks, and
+only those reward/milestone claims proven non-strategic and deterministic.
+Strategic resource spending, research scheduling, and other irreversible choices
+remain explicit `MetaAction` requests. Run and meta enums, observations, replay,
+checkpoints, and evaluation records are separately versioned and never unioned.
+
+Before a progression capability is executable, calibration records its exact
+visible preconditions, ordinary earned resource, modal path, confirmation signal,
+risk class, and evidence. The capability is masked unless it is explicitly
+allowlisted. Unknown/new capabilities and any real-money/store purchase,
+advertisement, credential, cloud/save, tournament, competitive, event, bypass,
+or modal-ambiguous
+path remain masked. An allowlisted capability can operate autonomously without
+per-action human approval; calibration and the required evaluation gate, rather
+than a human prompt, are the authority boundary.
+
+A successful permanent change creates a new immutable verified progression
+profile with a parent-profile identity, visible-state fingerprint, capability
+inventory, timestamps, and configuration identity. Recovery verifies and resumes
+that profile; it must not silently restore an earlier profile. The fixed V1
+baseline remains a distinct immutable idle/frozen profile. Timed research is
+permitted only in progression mode. Fixed-baseline run training and evaluation
+require an idle/frozen profile and remain comparable to their V1 records.
+
+Every run episode records its exact progression-profile identity. Replay and
+evaluation reject profile-incompatible data; fixed-baseline V1 replay/evaluation
+is isolated from progression-mode runs. Progression evaluation measures Tier-1
+performance per real elapsed time from specified immutable profiles. An
+irreversible strategic action is not autonomously enabled, promoted, or repeated
+until a completed compatible progression evaluation passes the documented gate.
 
 ## 9. Learning design
 
@@ -992,6 +1109,17 @@ Sample stored frames and manually compare the episode summary for a statisticall
 - Real-game smoke training verifies finite loss, changing weights, checkpoint reload, and evaluation.
 - Final comparison evaluates random, heuristic, latest, and best under the same real-game protocol.
 
+### 14.6 Progression-contract tests (`M8–M11`)
+
+Cover meta/run type and schema separation, fail-closed capability masks,
+calibration evidence requirements, controller-owned deterministic claims,
+strategic-action evaluation gating, immutable progression-profile lineage,
+non-rewinding recovery, timed-research mode isolation, and replay/evaluation
+rejection across incompatible progression profiles. Opt-in real-device tests must
+exercise only the calibrated, allowlisted capability under its declared safety
+mode; prohibited and unknown paths are tested through contract fixtures, not live
+automation.
+
 ## 15. Delivery plan mapped to task milestones
 
 ### Phase 0 — Repository and reconnaissance (`M0`)
@@ -1017,13 +1145,33 @@ Deliverable: reproducible environment characterization and a go/no-go report.
 
 Deliverable: one autonomous, fully logged real-game actor.
 
+### Phase 1B — Instrumented actor parity (`M1B`)
+
+1. Implement the original ARM64 bridge source, reproducible private build, and
+   compatibility manifest without committing game bytes or bridge binaries.
+2. Implement the framed local protocol and host client with bounded heartbeat,
+   sequence, stale-state, and disconnect handling.
+3. Expose exact run lifecycle and complete attack/defense/utility observation
+   inventory.
+4. Establish a bounded semantic command path: verify `WAIT` with elapsed time
+   plus a fresh observation, and verify every purchase dispatched through
+   Unity's main thread with game-owned before/after state.
+5. Compare normal-speed deterministic episodes against the M1 visible actor and
+   add sparse pixel watchdog/quarantine behavior.
+6. Record the rooted-clone provisioning, reversible overlay, cleanup, and failure
+   recovery procedures.
+
+Deliverable: one exact-state instrumented real-game actor whose normal-speed
+behavior is equivalent to the official visible actor.
+
 ### Phase 2 — Environment hardening (`M2`)
 
 1. Implement observation/action/reward/termination contracts.
 2. Add confidence, temporal invariants, failure classifications, retries, recovery, quarantine, and bounded diagnostics.
 3. Validate baseline drift and randomness behavior.
-4. Run and analyze the 1,000-attempt soak.
-5. Fix every silent/unclassified failure and repeat the full gate after material changes.
+4. Sweep time scale and actor count; allowlist only parity-preserving profiles.
+5. Run and analyze the 1,000-attempt soak.
+6. Fix every silent/unclassified failure and repeat the full gate after material changes.
 
 Deliverable: trusted `TowerEnv` suitable for learning.
 
@@ -1075,6 +1223,47 @@ Deliverable: the requested training and watch workflow with trustworthy best-mod
 7. Perform a clean-environment setup rehearsal and handoff.
 
 Deliverable: completed V1, evidence package, and reproducible operating documentation.
+
+### Phase 7 — Meta contract and calibration (`M8`)
+
+1. Define and test versioned `MetaObservation`, `MetaAction`, `MetaEnv`, and
+   `MetaController` contracts independently of run types.
+2. Add capability calibration evidence, fail-closed masking, and the forbidden
+   capability boundary.
+3. Classify reachable progression operations as policy-controlled,
+   controller-owned, unavailable, unsafe, or unknown.
+
+Deliverable: a separately versioned, capability-safe progression boundary.
+
+### Phase 8 — Progression lifecycle (`M9`)
+
+1. Implement confirmation and classified recovery for allowlisted progression
+   capabilities.
+2. Create immutable verified profile lineage after successful permanent changes.
+3. Enforce non-rewinding recovery, idle/frozen V1 profiles, timed-research mode
+   isolation, and run-profile artifact tagging.
+
+Deliverable: verified progression operations without contaminating V1.
+
+### Phase 9 — Meta control and evaluation (`M10`)
+
+1. Enable only evaluation-gated strategic `MetaAction` choices.
+2. Measure long-horizon Tier-1 performance per real elapsed time from immutable
+   profiles.
+3. Keep controller-owned claims distinct from strategic policy decisions and
+   preserve fixed-baseline V1 comparability.
+
+Deliverable: evidence-backed progression control with independent evaluation.
+
+### Phase 10 — Progression proof and handoff (`M11`)
+
+1. Run progression contract and opt-in capability checks.
+2. Audit profile lineage, artifact isolation, allowlists, failures, and prohibited
+   paths.
+3. Report V1 and progression results separately with exact supported capabilities
+   and limitations.
+
+Deliverable: completed post-V1 progression program and combined handoff.
 ## 16. Requirement traceability
 
 Maintain a live matrix in the repository. Initial mapping:
@@ -1085,6 +1274,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Fixed Tier-1 baseline | Baseline manager | Fingerprint checks and restore test |
 | Structured valid observations | Vision + validator | Fixture accuracy and soak audit |
 | Semantic verified actions | Controller + state machine | Per-action integration tests |
+| Instrumented training parity | Native bridge + `InstrumentedTowerDevice` | M1B bridge/visible scripted parity gate |
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
 | Recurrent replay-based learner | Learner + replay | Math tests and resolved run config |
@@ -1092,8 +1282,14 @@ Maintain a live matrix in the repository. Initial mapping:
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |
 | Diagnostics and documentation | Telemetry + docs | failure injection and clean setup rehearsal |
+| Complete M1 action inventory | Calibration + `TowerController` | Evidence-backed supported/excluded/unavailable/unsafe inventory |
+| Meta capability safety | `MetaEnv` + `MetaController` | Contract tests and calibrated allowlist evidence |
+| Immutable progression profiles | Progression profile store | Lineage, recovery, and profile-isolation tests |
+| Long-horizon progression objective | Meta evaluator | Compatible profile evaluation per real elapsed time |
 
-Every task acceptance item must gain an implementation reference and test/report reference before M7 closes.
+Every fixed-baseline V1 acceptance item must gain an implementation and
+test/report reference before M7 closes; every project acceptance item, including
+M8–M11, must have the same traceability before M11 closes.
 
 ## 17. Risks and mitigations
 
@@ -1119,7 +1315,10 @@ Mitigation: normal in-game replay as hot path; randomness comparison tests; snap
 
 ### Training is too slow
 
-Mitigation: measure first; reduce capture/recognition overhead; batch learner work; add actors until aggregate throughput saturates; consider event-driven stepping and Cuttlefish only after correctness.
+Mitigation: remove OCR from the validated training hot path, emit exact events,
+batch learner work, benchmark parity-approved in-process time scales, and add
+actors until aggregate valid throughput saturates. Keep official evaluation at
+normal speed.
 
 ### More actors reduce throughput
 
@@ -1145,6 +1344,13 @@ Mitigation: bounded replay, rolling logs/checkpoints, compressed targeted screen
 
 Mitigation: doctor compatibility matrix, fail closed, retain old profile metadata, recalibrate/test as a new environment version, and avoid comparing incompatible evaluations.
 
+### Progression action changes the account unexpectedly
+
+Mitigation: visible-state capability calibration, fail-closed allowlists,
+controller-owned claims only when deterministic and non-strategic, immutable
+post-action profiles, no silent rewind, and a completed evaluation gate before
+strategic actions become autonomous.
+
 ## 18. Decisions intentionally deferred until evidence exists
 
 The orchestrator must resolve these during M0–M3 and record the outcome:
@@ -1161,7 +1367,8 @@ The orchestrator must resolve these during M0–M3 and record the outcome:
 - exact network dimensions and R2D2 hyperparameters;
 - default actor count;
 - whether Cuttlefish is worthwhile;
-- whether a CNN or event-driven timing adds measurable value.
+- highest parity-preserving instrumented time scale and selected actor count;
+- whether a CNN adds measurable value beyond the exact bridge plus pixel watchdog.
 
 Deferral is not permission to leave placeholders at completion. Each decision needs evidence, an owner, and a milestone deadline.
 

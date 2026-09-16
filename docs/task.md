@@ -53,17 +53,24 @@ V1 and does not satisfy the Definition of Done by itself.
 
 ### 3.2 Complete V1
 
-Complete V1 is the end state in this task and requires M4 through M7 in addition
+Complete V1 is the engineering V1 end state and requires M4 through M7 in addition
 to the engineering MVP. It includes distributed recurrent training, measured
 multi-actor scaling, trustworthy best-model promotion, complete operator modes,
 overnight reliability, and final acceptance evidence.
 
-### 3.3 Post-V1 progression
+### 3.3 Post-V1 progression program
 
-Autonomous Workshop spending, Lab scheduling, milestone claiming, and other
-permanent account progression require a separate objective, environment contract,
-safety model, and acceptance criteria. V1 may preserve clean architectural seams
-for that later work but must not expose those actions to the V1 run policy.
+M8 through M11 extend the completed engineering V1 with a separately bounded
+progression program. It uses `MetaAction`, `MetaObservation`, `MetaEnv`, and
+`MetaController`; permanent and in-run action spaces are never unioned.
+
+The progression objective is to maximize long-horizon Tier-1 performance per real
+elapsed time using only visible, ordinary, earned-resource progression. Strategic
+irreversible earned-resource decisions may be policy-controlled only after a
+fail-closed capability allowlist and the progression evaluation gate pass. Safe,
+deterministic reward or milestone claiming may be controller-owned only when its
+non-strategic nature and outcome are verified. This program does not change the
+fixed-baseline V1 objective, its action authority, or any M0–M7 gate.
 
 ## 4. Target environment
 
@@ -89,6 +96,8 @@ Do not assume a particular host operating system, CPU model, APK architecture, A
 V1 is intentionally narrow:
 
 - official APK only;
+- two explicit profiles: a rooted, locally instrumented training clone and an
+  unchanged, unrooted official evaluation/watch instance;
 - Tier 1 only;
 - one explicitly documented, fixed permanent account configuration;
 - no permanent progression decisions;
@@ -99,7 +108,11 @@ V1 is intentionally narrow:
 - training uses multiple genuine Android game instances when the host supports them;
 - evaluation and watch mode use genuine Android gameplay.
 
-The initial action set must cover every in-run upgrade that is both available in the fixed account state and safely reachable through the supported game UI. Unsupported or intentionally excluded actions must be enumerated and justified.
+The M1 action inventory must cover every safely reachable earned-currency in-run
+upgrade available in the supported fixed baseline, including the Utility tab.
+Each discovered action must be recorded as supported, excluded, unavailable, or
+unsafe, with evidence. The V1 policy may expose only supported actions; exclusions
+do not silently narrow the inventory.
 
 ### 5.2 Required operating modes
 
@@ -128,7 +141,8 @@ The finished project must include:
 - Android instance lifecycle management;
 - a canonical fixed account/game baseline and a documented way to verify it;
 - reliable Tier-1 episode start, death detection, normal restart, and baseline recovery;
-- screen capture and structured observation extraction;
+- exact bridge observations for instrumented training plus screen capture and
+  structured extraction for independent watchdog and official evaluation;
 - confidence/validity handling for extracted observations;
 - semantic actions mapped to verified UI interactions;
 - confirmation that attempted actions had the intended observable effect, where verification is possible;
@@ -146,15 +160,23 @@ The finished project must include:
 
 ## 6. Explicit non-goals and boundaries
 
-The following are outside V1:
+The following are outside V1 and remain absent from both execution profiles
+unless ADR 0006 explicitly defines the bounded training-only exception:
 
 - creating a clone, simulator, approximate physics model, or synthetic replacement for The Tower;
 - training the primary policy on fabricated game transitions;
-- modifying, patching, repackaging, or redistributing the APK;
-- reverse-engineering private game implementation details;
-- memory injection, anti-cheat circumvention, network interception, server emulation, or manipulation of online services;
-- external time manipulation or speed hacks;
-- automated advertisements, purchases, cloud-save manipulation, tournaments, leaderboards, competitive play, or use against other players;
+- modifying, patching, repackaging, or redistributing signed APK/XAPK bytes, or
+  modifying the official evaluation instance;
+- reverse-engineering beyond the local, version-locked state/action bridge needed
+  to expose the real game as an instrumented-training environment;
+- memory injection outside the private training clone, anti-cheat or integrity
+  circumvention, root hiding, network interception, server emulation, or
+  manipulation of online services;
+- host-clock manipulation or unvalidated speed changes; a higher in-process Unity
+  time scale is training-only and must pass ADR 0006's parity gate;
+- real-money/store purchases, advertisements, credential automation, cloud/save
+  manipulation, tournaments, leaderboards, competitive/event participation, or
+  use against other players;
 - Workshop, Lab, Card, Module, Perk, event, tournament, or other permanent/meta-progression optimization;
 - arbitrary free-form screen-coordinate actions learned by the agent;
 - support for tiers other than Tier 1;
@@ -162,6 +184,11 @@ The following are outside V1:
 - guaranteeing a specific maximum wave, because attainable performance depends on the supplied account state and game version.
 
 Use only the APK and account/save material the user is authorized to possess. Keep the experiment local and isolated from competitive or transactional features.
+
+Across V1 and M8–M11, no bypasses, unknown or modally ambiguous actions, or
+actions outside a verified capability may be automated. M8–M11 may use only
+visible, ordinary, earned-resource progression actions that have passed their
+explicit capability and evaluation gates.
 
 ## 7. Core behavioral contract
 
@@ -326,6 +353,22 @@ Exit criteria:
 - each supported purchase action has evidence that the intended control was activated;
 - a scripted controller completes at least 100 consecutive valid episodes without manual correction during development testing.
 
+### M1B — Instrumented real-game actor parity
+
+Exit criteria:
+
+- a private rooted clone runs the unchanged Play-installed package with the
+  versioned bridge overlay and fails closed on every compatibility mismatch;
+- exact bridge observations cover lifecycle, wave, cash, health, terminal state,
+  and all supported upgrade costs, levels, and availability;
+- `WAIT` and every supported attack, defense, and utility purchase execute on
+  Unity's main thread and have game-owned before/after confirmation;
+- deterministic normal-speed scripted episodes agree with the M1 visible actor,
+  including death, result, reset, invalid action, and failure taxonomy;
+- sparse pixel watchdog disagreement, protocol loss, stale observations, and
+  thread-affinity failures invalidate and quarantine the actor; and
+- no instrumented transition is admitted to replay before this gate passes.
+
 ### M2 — Environment reliability gate
 
 Exit criteria:
@@ -335,6 +378,8 @@ Exit criteria:
 - no silent baseline drift, unclassified navigation state, corrupt episode boundary, or undetected invalid observation is observed;
 - all invalid attempts are automatically classified and recovered or quarantined;
 - recorded episode summaries agree with sampled visual evidence;
+- the selected training time scale and actor count pass documented parity,
+  stability, and aggregate-throughput comparisons against normal-speed execution;
 - training is not allowed to proceed if this gate is failing.
 
 ### M3 — End-to-end learning pipeline
@@ -390,13 +435,75 @@ Exit criteria:
 
 Exit criteria:
 
-- all Definition of Done items below pass;
+- all fixed-baseline engineering V1 Definition of Done items below pass;
 - all automated checks pass from the documented command;
 - the end-to-end acceptance run is captured in a final report;
 - known limitations and unresolved risks are explicit;
 - no placeholder, mock, stub, or manual step remains on a required production path;
 - repository status contains only intentional project changes and excludes prohibited/generated assets;
 - the project can be handed to another orchestrator or engineer without relying on undocumented conversation context.
+
+M7 completes the fixed-baseline engineering V1. Its evidence remains separately
+reportable and comparable after progression work begins.
+
+### M8 — Meta contract and capability safety
+
+Exit criteria:
+
+- `MetaObservation`, `MetaAction`, `MetaEnv`, and `MetaController` are separate,
+  versioned contracts; run and meta action spaces are never unioned;
+- the progression objective, profile identity, capability states, safe controller
+  claims, forbidden actions, and fail-closed masking behavior are documented and
+  tested;
+- calibration inventories every reachable progression capability relevant to the
+  supported profile and records evidence for supported, controller-owned,
+  unavailable, unsafe, and unknown capabilities;
+- unknown, new, modal-ambiguous, real-money/store purchase, advertisement,
+  credential, cloud/save,
+  tournament, competitive, event, and bypass capabilities are masked;
+- a proposed strategic irreversible action cannot be executed until its exact
+  capability is allowlisted and the required progression evaluation gate passes.
+
+### M9 — Verified progression lifecycle
+
+Exit criteria:
+
+- progression mode can observe and execute only calibrated, allowlisted ordinary
+  earned-resource capabilities, with confirmed outcomes and classified failures;
+- safe deterministic reward/milestone claims are controller-owned only when their
+  non-strategic behavior is verified; strategic choices remain `MetaAction`;
+- each successful permanent change produces a new immutable, verified progression
+  profile linked to its parent; recovery cannot silently rewind that profile;
+- timed research runs only in progression mode; fixed-baseline run training and
+  evaluation use an idle/frozen profile;
+- all run episodes carry the exact progression profile identity, and replay and
+  evaluation reject incompatible profile data.
+
+### M10 — Long-horizon progression control and evaluation
+
+Exit criteria:
+
+- the meta controller and any enabled meta policy operate only through the
+  separate meta contract and capability allowlist;
+- progression evaluations measure Tier-1 performance per real elapsed time from
+  immutable verified profiles, with strategic decisions isolated from safe claims;
+- the documented evaluation gate prevents an irreversible strategic action from
+  being promoted or autonomously repeated on partial, invalid, or incomparable
+  evidence;
+- fixed-baseline V1 evaluations remain exploration-free, profile-frozen, and
+  comparable to their original V1 evidence.
+
+### M11 — Progression-program validation and handoff
+
+Exit criteria:
+
+- M8–M10 tests, calibrated evidence, profile lineage, progression evaluations,
+  and failures are recorded and reproducible;
+- no prohibited capability is present in an autonomous action path;
+- V1 and progression artifacts, replay, checkpoints, and evaluations are
+  separately identified and cannot be mixed;
+- final documentation reports fixed-baseline V1 evidence separately from
+  progression results, plus the supported capability allowlist and limitations.
 
 ## 11. Definition of Done
 
@@ -406,6 +513,8 @@ The project is done only when all of the following are true:
 - Tier 1 is played from a versioned fixed permanent account state.
 - The 1,000-attempt reliability gate passes with at least 99% valid episodes and no silent corruption.
 - All supported in-run actions and `WAIT` are observable, executable, and tested.
+- M1's complete earned-currency action inventory, including Utility, records
+  evidence and an explicit status for every discovered action.
 - Invalid observations, action failures, navigation errors, deaths, stalls, and baseline drift are separately classified.
 - Parallel training runs against multiple real APK instances.
 - The implemented learner is recurrent, off-policy, replay-based, and distributed across actors as defined by the accepted `solution.md`.
@@ -420,6 +529,11 @@ The project is done only when all of the following are true:
 - Setup, operation, recovery, evaluation, limitations, and the environment contract are complete and accurate.
 - The repository excludes the APK, user account/save data, secrets, Android runtime images, bulk replay data, and generated model artifacts unless explicitly stored in an appropriate private artifact system.
 - All required paths are real implementations; no acceptance criterion depends on a TODO, mock, or undocumented manual workaround.
+- M8–M11 pass: meta and run contracts remain type- and schema-separated;
+  capability allowlists fail closed; progression profiles are immutable and
+  recovery does not silently rewind them; timed research is progression-only;
+  profile-incompatible replay and evaluation are isolated; and long-horizon
+  progression evidence is reported separately from fixed-baseline V1.
 
 ## 12. Orchestrator mandate
 
@@ -453,6 +567,9 @@ The following may require user action and should be requested only when actually
 - establishing the desired dedicated fixed account state in the game;
 - completing any unavoidable first-run or authentication interaction;
 - confirming which visible upgrades/features are available in that baseline;
+- completing an unavoidable user-owned interaction needed to reveal a progression
+  capability, without granting automation access to credentials or account/cloud
+  controls;
 - providing substantial disk capacity or private artifact storage if local capacity is inadequate.
 
 When blocked, report:
@@ -471,8 +588,6 @@ These are potential later projects and must not delay V1:
 
 - optimize coins per hour or multi-objective performance;
 - introduce image/playfield features when structured visible state is insufficient;
-- optimize permanent Workshop progression with a separate meta-policy;
-- add Cards, Labs, Modules, Perks, and other progression systems;
 - support additional tiers or account baselines;
 - compare alternative RL families after the V1 benchmark exists;
 - investigate authorized acceleration methods beyond normal in-game speed;

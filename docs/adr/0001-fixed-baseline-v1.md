@@ -1,6 +1,6 @@
 # ADR 0001: Keep permanent progression outside V1
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0005
 - **Date:** 2026-09-14
 
 ## Context
@@ -32,5 +32,5 @@ objective, safety constraints, and acceptance protocol before implementation.
   ordinary environment variation.
 - Persistent balances may change only when shown to have no combat effect without
   a prohibited meta action; automation does not spend them.
-- Full account progression is deliberately deferred rather than accidentally
-  implemented through navigation code.
+- Under V1, full account progression is deliberately excluded rather than
+  accidentally implemented through navigation code.

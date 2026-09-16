@@ -1,12 +1,13 @@
-# Tower-RL — Environment Contract v1
+# Tower-RL — Run Environment Contract v1 and Meta Environment Contract v1
 
 This document defines the host-independent boundary between the real-game
 environment and a policy. `docs/task.md` defines the required outcomes;
-`docs/solution.md` defines the implementation approach. Android transport,
-screen coordinates, and permanent-progression operations are outside this
+`docs/solution.md` defines the implementation approach. The run and meta
+contracts are intentionally separate: Android transport and screen coordinates
+are outside both, and permanent-progression operations are never part of the run
 contract.
 
-## Versioning
+## Run-contract versioning
 
 - Observation schema: `observation-v1`
 - Run-action schema: `run-action-v1`
@@ -19,7 +20,8 @@ An `Observation` is evidence-bearing and fail-closed. It contains:
 
 | Field | Meaning |
 | --- | --- |
-| `frame_id`, `captured_at_monotonic` | Device-local provenance and ordering. |
+| `source_profile`, `source_sequence`, `captured_at_monotonic` | `official_visual` or `instrumented_bridge` provenance and strict ordering. |
+| `compatibility_id` | Exact game/device plus visual profile, or game/library plus bridge/protocol/speed profile. |
 | `screen` | `battle_home_tier_1`, `tier_select`, `tier_1_active_run`, `tier_1_result`, `supported_modal`, or `unknown`. |
 | `wave` | Visible wave number with confidence and source region. |
 | `cash_normalized` | Spendable in-run currency normalized for the policy; raw text remains diagnostic-only. |
@@ -31,19 +33,31 @@ An `Observation` is evidence-bearing and fail-closed. It contains:
 | `valid`, `invalid_reasons` | Admission decision for replay and environment stepping. |
 
 Each numeric field is a `FieldReading`: value (or `None`), confidence in
-`[0,1]`, source frame, region identifier, and an optional reason. Missing or
-low-confidence values remain missing; they are never converted to zero.
+`[0,1]`, source sequence, evidence identifier (visual region or allowlisted
+IL2CPP field), and an optional reason. Exact bridge readings use confidence 1
+only while their handshake, heartbeat, lifecycle, sequence, and pixel-watchdog
+checks are valid. Missing or low-confidence values remain missing; they are never
+converted to zero.
 
 An active-run observation is invalid unless wave, cash, and health are present.
 The validator rejects negative currency, impossible health fractions, stale or
-non-monotonic frame timestamps, backward wave movement within an active episode,
-unsupported masked actions, schema mismatches, and any explicit invalid reason.
+non-monotonic source timestamps/sequences, backward wave movement within an active
+episode, unsupported masked actions, schema/compatibility mismatches, bridge and
+pixel lifecycle disagreement, and any explicit invalid reason.
 Invalid observations are retried, recovered, quarantined, or terminated; they do
 not become an ordinary `WAIT` transition.
 
-## Learned actions
+## Run learned actions
 
-The V1 policy can emit only these semantic `RunAction` values:
+The V1 policy can emit only `WAIT` plus `BUY_<UPGRADE>` values from the
+versioned, evidence-backed M1 action inventory. The inventory includes every
+safely reachable earned-currency in-run upgrade in the supported fixed baseline,
+including Utility, and records each discovered action as `supported`, `excluded`,
+`unavailable`, or `unsafe`. Only `supported` entries are serialized in
+`run-action-v1`; an exclusion cannot silently remove an action from inventory.
+
+The current action IDs are profile data rather than an exhaustive contract list.
+For example:
 
 ```text
 WAIT
@@ -56,9 +70,9 @@ BUY_CRITICAL_FACTOR
 
 The action mask is authoritative for the current observation. Navigation (tab
 selection, scrolling, opening menus, starting Tier 1, closing supported modals)
-is controller-owned and never appears as a policy action. Workshop spending,
-Lab research, milestone claims, purchases, advertisements, and other
-permanent/meta actions are outside the V1 API.
+is controller-owned and never appears as a policy action. Workshop spending, Lab
+research, milestone claims, purchases, advertisements, and other permanent/meta
+actions are outside the V1 API and this run contract.
 
 ## Action outcomes
 
@@ -68,8 +82,11 @@ Every requested action produces exactly one typed outcome:
 `invalid_observation`.
 
 An action is `executed` only after a fresh post-action observation confirms the
-intended visible result. A failed or ambiguous action is not treated as a
-successful purchase or as `WAIT`.
+intended result. The official profile requires visible confirmation; the
+instrumented profile requires game-owned before/after field confirmation from a
+Unity-main-thread purchase plus a valid watchdog state. Instrumented `WAIT`
+requires its bounded interval and a strictly newer valid observation. A failed
+or ambiguous action is not treated as a successful purchase or as `WAIT`.
 
 ## Transition and reward
 
@@ -91,9 +108,46 @@ Termination reasons are distinct: `tower_died`, `user_stop`, `safety_timeout`,
 snapshot restore is recovery only and must re-verify the fixed baseline before
 the next episode.
 
+## Meta environment contract (`meta-observation-v1`, `meta-action-v1`)
+
+The M8–M11 progression bounded context has its own `MetaEnv` and
+`MetaController`. It does not reuse, union, cast, or dispatch through
+`RunAction`, `Observation`, run replay, or fixed-baseline evaluation records.
+Every meta record carries its meta schema versions, exact progression-profile ID,
+parent-profile ID where applicable, capability ID, calibration evidence ID, and
+resolved configuration identity.
+
+`MetaObservation` contains only visible progression state and controller-owned
+history needed to classify an allowlisted capability: verified profile
+fingerprint, visible earned-resource balances, available progression controls and
+their risk/capability states, relevant timer/research state, claim state, screen
+state, field confidence, and invalid reasons. Missing or ambiguous state is not a
+default; it masks the capability and produces a classified failure or recovery.
+
+`MetaAction` represents a strategic progression choice, such as a particular
+allowlisted earned-resource spend or research schedule. It is admissible only
+when its exact calibrated capability is allowlisted and its required progression
+evaluation gate has passed. Safe deterministic reward/milestone claiming is not
+a `MetaAction` only if `MetaController` has evidence that the claim is
+non-strategic, has no selectable alternative, and confirms its visible outcome.
+
+No meta capability may automate real-money/store purchase, advertisements,
+credentials, cloud/save controls, tournaments, leaderboards, competitive/event
+participation, bypasses, or unknown/new/modally ambiguous paths. An explicitly
+calibrated and allowlisted capability may operate autonomously without per-action
+human approval; all other capabilities remain masked.
+
+A confirmed permanent change creates a new immutable verified progression profile
+linked to the prior profile. Recovery must verify and continue that profile, not
+silently restore the parent. Timed research is permitted only in progression
+mode. Fixed-baseline run training and evaluation require an idle/frozen profile;
+all run episodes are tagged with their exact profile, and incompatible replay or
+evaluation is rejected. Progression evaluation measures Tier-1 performance per
+real elapsed time from compatible immutable profiles.
+
 ## Implementation anchors
 
-The canonical typed definitions live in
+The canonical run typed definitions live in
 [`src/tower_rl/domain/contracts.py`](../src/tower_rl/domain/contracts.py), with
 the Android port in [`src/tower_rl/ports/android.py`](../src/tower_rl/ports/android.py).
 The application probe is in [`src/tower_rl/application/probe.py`](../src/tower_rl/application/probe.py)
@@ -101,3 +155,6 @@ and the ADB adapter is in
 [`src/tower_rl/infrastructure/adb_probe.py`](../src/tower_rl/infrastructure/adb_probe.py).
 Compatibility exports remain at the package root. None of these modules contain
 a game clone, private API, or learned coordinate action.
+
+M8–M11 meta definitions must live in a separate progression contract module and
+must not be added as variants to the run types above.

@@ -1,6 +1,6 @@
 # ADR 0003: Scale throughput without manipulating game time
 
-- **Status:** Accepted
+- **Status:** Accepted for official evaluation; superseded by ADR 0006 for training
 - **Date:** 2026-09-14
 
 ## Context
@@ -11,8 +11,10 @@ manipulation would violate project boundaries and could invalidate game behavior
 
 ## Decision
 
-Use one verified normal in-game speed as part of the fixed environment profile.
-Do not use host clock manipulation, APK modification, or speed hacks.
+Use one verified normal in-game speed as part of the fixed official-evaluation
+profile. Do not use host clock manipulation, APK modification, or speed hacks in
+official evaluation or watch mode. ADR 0006 separately governs the private
+instrumented-training profile and its parity-gated in-process Unity time scale.
 
 Improve aggregate experience throughput through:
 

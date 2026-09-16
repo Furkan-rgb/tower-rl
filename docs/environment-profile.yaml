@@ -1,6 +1,6 @@
 schema_version: 1
-profile_id: m0-dev-macos-arm64-api36-v1
-status: partial
+profile_id: m0-dual-host-api36-v2
+status: m0_workstation_baseline_validated
 recorded_at: 2026-09-14
 
 development_host:
@@ -17,12 +17,37 @@ development_host:
 
 training_host:
   purpose: multi-actor training and final scale validation
-  memory_gib: 28
+  operating_system: Ubuntu 26.04.1 LTS
+  kernel: 7.0.0-31-generic
+  architecture: x86_64
+  cpu: Intel Core i9-14900
+  physical_cpu_count: 24
+  logical_cpu_count: 32
+  memory_gib: 125
   gpu: NVIDIA RTX 4090
-  operating_system: pending discovery
-  cpu: pending discovery
-  virtualization: pending discovery
-  storage: pending discovery
+  gpu_driver: 595.91.07
+  cuda_version: '13.2'
+  hardware_virtualization: Intel VT-x
+  kvm_device: accessible_via_acl
+  free_storage_gib: 1041
+  android_tooling:
+    sdk_root: /home/furkan/.local/share/android-sdk
+    command_line_tools: 15.0
+    platform_tools: 37.0.1
+    emulator: 37.1.11
+    api_level: 36
+    java: 17.0.20.1
+  android_device:
+    avd_name: tower_rl_api36_play_x86_64
+    serial: emulator-5554
+    abi: x86_64
+    system_image: google_apis_playstore
+    logical_resolution: 1080x1920
+    density_dpi: 420
+    renderer: lavapipe_vulkan_swangle_gles
+    boot_status: completed
+    game_provisioning: validated_user_play_install
+  status: host_and_avd_baseline_validated
 
 game_package:
   source_archive: local ignored XAPK
@@ -114,6 +139,31 @@ android_profiles:
       - tower_post_consent_play_29_0_3_offline_running_20260914
       - tower_golden_t1_v1_play_29_0_3_offline_running_20260914
       - tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
+  workstation_candidate:
+    avd_name: tower_rl_api36_play_x86_64
+    device_definition: pixel_2
+    api_level: 36
+    image: google_apis_playstore
+    abi: x86_64
+    emulator_version: 37.1.11
+    platform_tools_version: 37.0.1
+    renderer: lavapipe_vulkan_swangle_gles
+    logical_resolution: 1080x1920
+    density_dpi: 420
+    rotation: 0
+    locale: en-US
+    guest_ram_mib: 6144
+    avd_config: '${ANDROID_AVD_HOME:-$HOME/.android/avd}/tower_rl_api36_play_x86_64.avd/config.ini'
+    boot_result: success
+    game_runtime: play_installed_29.0.3_versionCode_1199
+    visual_profile_result: pass
+    airplane_mode: true
+    external_route: absent
+    baseline_screen: battle_home_tier_1_selected
+    reliability_result: m1_pending_full_gate_after_wave3_timeout_diagnosis
+    retained_local_snapshots:
+      - tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914_workstation
+      - tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_6gb_offline_home_20260914_workstation
 
 golden_baseline_candidate:
   baseline_id: tower-t1-initial-v1
@@ -170,11 +220,97 @@ golden_baseline_candidate:
     external_route_absent: true
     visual_capture: success_via_adb_exec_out
 
+workstation_golden_baseline:
+  baseline_id: tower-t1-initial-v1-workstation
+  status: validated
+  snapshot: tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914_workstation
+  snapshot_storage: local_avd_only_ignored
+  approximate_snapshot_size_on_disk: 2.9GiB
+  guest_ram_mib: 2048
+  renderer: lavapipe_vulkan_swangle_gles
+  start_screen: battle_home_tier_1_selected
+  network_state: airplane_mode_no_external_route
+  display:
+    logical_size: 1080x1920
+    density_dpi: 420
+    rotation: 0
+    locale: en-US
+  visible_account_state:
+    tier: 1
+    highest_wave: 2
+    coins_unspent: 55
+    gems: 0
+    total_coin_bonus: 1.0
+    labs: locked
+  representative_home_frame:
+    storage: temporary_local_only_not_committed
+    sha256: f00ab790b75c44862baa39f84f2ebf0767d600e8af9a6939def1266816f1f643
+  restore_check:
+    snapshot_load: success
+    game_process_alive: true
+    game_foreground: true
+    airplane_mode_preserved: true
+    external_route_absent: true
+    visual_capture: success_via_adb_exec_out
+    restored_frame_sha256_matches: true
+
+workstation_6gb_golden_candidate:
+  baseline_id: tower-t1-initial-v1-workstation-6gb
+  status: probe_validated_m1_reliability_failed
+  snapshot: tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_6gb_offline_home_20260914_workstation
+  snapshot_storage: local_avd_only_ignored
+  approximate_snapshot_size_on_disk: 6.0GiB
+  guest_ram_mib: 6144
+  renderer: lavapipe_vulkan_swangle_gles
+  start_screen: battle_home_tier_1_selected
+  network_state: airplane_mode_no_external_route
+  visible_account_state:
+    tier: 1
+    highest_wave: 2
+    coins_unspent: 55
+    gems: 0
+    total_coin_bonus: 1.0
+    labs: locked
+  restore_check:
+    snapshot_load: success
+    game_process_alive: true
+    game_foreground: true
+    airplane_mode_preserved: true
+    external_route_absent: true
+    profile_probe: pass
+    bounded_navigation_probe: pass
+  reliability_check:
+    four_episode_diagnostic: pass
+    four_episode_valid_count: 4
+    full_gate: fail
+    full_gate_valid_count: 7
+    full_gate_failure: device_failure_game_left_foreground
+    baseline_restored: true
+    follow_up_failure: active_run_froze_at_wave_3_with_healthy_memory
+    follow_up_diagnosis: >-
+      no runtime stall; an offline sparse-capture run progressed through waves
+      3 to 6 and reached natural death after the controller's old 120-second
+      deadline
+    result_layout_fix: >-
+      recognize both normal and new-highest-wave Game Stats HOME-button layouts
+    post_fix_natural_death_smoke: pass_1_of_1_in_351.3_seconds
+    post_fix_baseline_restored: true
+    ten_episode_long_gate: fail_after_3_valid_episodes
+    ten_episode_long_gate_failure: result_to_home_transition_deadline
+    ten_episode_long_gate_device_failure: false
+    result_to_home_wait_fix: 12_seconds_per_bounded_attempt
+    post_home_wait_fix_smoke: pass_2_of_2_in_687.0_seconds
+    post_home_wait_fix_baseline_restored: true
+    ten_episode_home_wait_retry: fail_after_3_valid_episodes
+    ten_episode_home_wait_retry_failure: delayed_modal_tap_opened_home_settings
+    modal_race_reproduction: >-
+      delayed generic close taps cascaded through Settings and Account to an
+      unlinked-cloud-save warning; no confirmation was selected
+    lifecycle_modal_policy: observe_or_fail_without_generic_taps
+    full_gate_after_retry: not_started
+
 pending_validation:
-  - fixed logical resolution, density, orientation, and locale
-  - supported home-to-Tier-1 navigation and manual start
   - baseline account state and available in-run actions
   - normal in-game speed range
   - offline snapshot aging and force-stop recovery behavior
   - two-actor identity and random-stream isolation
-  - production training host characterization

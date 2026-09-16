@@ -9,13 +9,28 @@ The target system has two primary modes:
 
 ## Project status
 
-**Phase M0 — environment reconnaissance in progress.**
+**M1 actor implementation — live control slice validated; 100-episode gate in progress.**
 
 The supplied XAPK has been characterized as The Tower 29.0.1, an ARM64 split-APK
 set requiring Android API 27 or newer. The validated runtime is the Play-installed
 29.0.3 build on an API 36 Google Play ARM64 AVD. A pinned-renderer golden Tier-1
 snapshot and bounded offline navigation probe are available; full gameplay
 automation and RL remain milestone work.
+
+The RTX workstation now has a validated x86_64 API 36 Google Play AVD using the
+pinned Lavapipe/Swangle renderer. Its Play-installed 29.0.3 game baseline is
+snapshot-restorable offline. The M1 actor starts Tier 1, extracts structured
+observations, recognizes and confirms all supported purchases, handles
+transient modals, reaches result, resets through result/home, and restores the
+golden baseline. The 100-consecutive-episode M1 gate remains open.
+
+In parallel, ADR 0006 separates a private `instrumented-training` profile from
+the unchanged official evaluation profile. Its versioned native bridge now reads
+exact game state and executes `WAIT` and earned-cash purchases on Unity's main
+thread with game-owned confirmation, verified live against the real package in
+`M1B-E001`. Evaluation and watch mode stay on the unchanged, unrooted, pixel-
+observed official profile, and no instrumented transition may enter replay until
+the remaining M1B parity and quarantine gates pass.
 
 ## Authoritative documentation
 
@@ -63,8 +78,19 @@ uv run tower-rl doctor \
   --serial emulator-5554
 ```
 
-`doctor` and `probe` are implemented at this stage; training, evaluation, and
-watch remain milestone deliverables.
+`doctor`, `probe`, and the M1 actor/reliability runner are implemented at this
+stage; training, evaluation, and watch remain later milestone deliverables.
+
+Run the M1 gate only against the provisioned local AVD and keep its report
+outside the repository:
+
+```text
+uv run python scripts/m1_reliability.py \
+  --serial emulator-5554 \
+  --snapshot tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914_workstation \
+  --episodes 100 \
+  --output /tmp/tower-rl-m1-100.json
+```
 
 For a new workstation, start with the repository preflight and AVD helpers in
 [`scripts/`](scripts/), then follow

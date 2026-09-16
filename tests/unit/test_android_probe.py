@@ -23,9 +23,27 @@ def test_classifies_pinned_home_profile() -> None:
 def test_classifies_active_run_and_result() -> None:
     active = _frame((8, 7, 17), (8, 11, 20))
     result = _frame((2, 2, 5), (20, 19, 53))
+    result_draw = ImageDraw.Draw(result)
+    for point in ((570, 1350), (990, 1350), (570, 1480), (990, 1480)):
+        result_draw.point(point, fill=(255, 255, 255))
 
     assert classify_frame(active) is ScreenKind.ACTIVE_RUN
     assert classify_frame(result) is ScreenKind.RESULT
+
+
+def test_classifies_new_highest_wave_result_layout() -> None:
+    result = _frame((2, 2, 5), (20, 19, 53))
+    draw = ImageDraw.Draw(result)
+    for point in ((570, 1400), (990, 1400), (570, 1530), (990, 1530)):
+        draw.point(point, fill=(255, 255, 255))
+
+    assert classify_frame(result) is ScreenKind.RESULT
+
+
+def test_attack_speed_modal_is_not_misclassified_as_result() -> None:
+    attack_speed_modal = _frame((2, 2, 5), (20, 19, 53))
+
+    assert classify_frame(attack_speed_modal) is ScreenKind.MODAL
 
 
 def test_classifies_wave_info_modal() -> None:

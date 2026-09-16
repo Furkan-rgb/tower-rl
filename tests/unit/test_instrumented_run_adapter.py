@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 import pytest
 from PIL import Image
 
-from tower_rl.infrastructure.adb_probe import ScreenKind
 from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
@@ -18,6 +17,7 @@ from tower_rl.infrastructure.instrumented_run_adapter import (
     PAUSE_STEPPING_SPEED,
     InstrumentedRunAdapter,
 )
+from tower_rl.infrastructure.visual_profile import Screen
 from tower_rl.ports.android import CapturedFrame, InputReceipt, ScreenPoint
 from tower_rl.ports.run_port import RunPortError
 
@@ -70,7 +70,7 @@ def _png(colour: tuple[int, int, int]) -> bytes:
 
 @dataclass
 class FakeDevice:
-    screen: ScreenKind = ScreenKind.HOME
+    screen: Screen = Screen.HOME
     taps: list[ScreenPoint] = field(default_factory=list)
 
     def screenshot(self) -> CapturedFrame:
@@ -110,7 +110,7 @@ def test_a_tap_is_refused_unless_the_screen_is_positively_classified(monkeypatch
 def test_a_classified_home_screen_permits_exactly_the_battle_tap(monkeypatch) -> None:
     import tower_rl.infrastructure.instrumented_run_adapter as module
 
-    monkeypatch.setattr(module, "classify_frame", lambda _image: ScreenKind.HOME)
+    monkeypatch.setattr(module, "classify", lambda _image: Screen.HOME)
     client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run"), _observation()])
     device = FakeDevice()
 
@@ -123,7 +123,7 @@ def test_a_classified_home_screen_permits_exactly_the_battle_tap(monkeypatch) ->
 def test_a_terminal_run_taps_retry_from_the_result_screen(monkeypatch) -> None:
     import tower_rl.infrastructure.instrumented_run_adapter as module
 
-    monkeypatch.setattr(module, "classify_frame", lambda _image: ScreenKind.RESULT)
+    monkeypatch.setattr(module, "classify", lambda _image: Screen.RESULT)
     client = FakeClient(states=[_observation(terminal=True), _observation()])
     device = FakeDevice()
 
@@ -169,7 +169,7 @@ def test_purchases_bind_the_state_they_were_decided_from() -> None:
 def test_a_refused_training_speed_is_an_explicit_failure(monkeypatch) -> None:
     import tower_rl.infrastructure.instrumented_run_adapter as module
 
-    monkeypatch.setattr(module, "classify_frame", lambda _image: ScreenKind.HOME)
+    monkeypatch.setattr(module, "classify", lambda _image: Screen.HOME)
     client = FakeClient(
         states=[BridgeRunUnavailable(1, "no_initialized_run"), _observation(speed=1.5)],
         outcome="rejected",

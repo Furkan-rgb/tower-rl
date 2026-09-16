@@ -7,6 +7,68 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E005 — Recalibrating the screen gate against the game's own lifecycle
+
+**Date:** 2026-09-17
+**Status:** Gate recalibrated and validated on live frames; stage B unblocked
+
+`M1B-E004` left the boundary tap ungateable. Recalibration used the bridge itself
+as ground truth rather than assumption: each captured frame was labelled by the
+game's own lifecycle, so the anchors were fitted to what the game says it is
+showing rather than to what the screen was assumed to be.
+
+Sixty-three frames were collected on the clone under `-gpu lavapipe`: nine at
+Battle home, thirty-seven during active runs, and seventeen at the result panel
+across three episodes. Home frames were obtained by restarting the app rather
+than by tapping, so no ungated tap was needed to break the deadlock.
+
+### What the search found, and why the first answers were rejected
+
+A grid search for pixels constant within a lifecycle state and never seen in the
+others produced 3,984 candidates for home. Nearly all were plain background, and
+a signature made of background would also match a full-screen modal covering
+home, which is precisely the case the gate exists to catch. Those were rejected
+in favour of distinctive values.
+
+Requiring a single pixel to separate all three states found exactly one. A single
+anchor is what failed in `M1B-E004`, so redundancy was required instead: every
+anchor of a screen must match, and one repainted region therefore fails closed
+into `unknown` rather than silently matching.
+
+The result panel initially yielded no stable anchor at all across seventeen
+frames, with the same pixel varying by up to 240 per channel. The cause is that
+the panel animates in and frames were being captured from the moment the bridge
+reported terminal. Restricted to frames at least six seconds after termination,
+every candidate anchor became exactly stable, spread zero. The adapter's settle
+delay is now six seconds for that reason, and classifying earlier correctly
+returns `unknown` rather than a screen.
+
+### The calibrated profile
+
+Anchors were then chosen in structurally meaningful places rather than wherever a
+pixel happened to be constant: for home the header bar, the title, both panels,
+the BATTLE button's border and interior, and the navigation bar; for the result
+panel its interior plus both of its buttons; for an active run the health bar,
+the upper HUD and the playfield.
+
+Anchoring the result gate on the RETRY button itself is deliberate. The gate then
+confirms that the control it is about to press is actually rendered where it is
+about to press, rather than inferring it from the surrounding panel.
+
+Validated against all sixty-three live frames, the profile classifies home 9 of 9,
+active 37 of 37, and the result panel 12 of 17, where the five it declines are
+exactly the mid-animation frames. Declining those is the desired behaviour: a
+frame captured during a transition is not a screen, and tapping across a
+transition is the `M1-E005` failure.
+
+The profile is versioned `tower-play-29.0.3-clone-wave11-v2` and is bound to the
+progression profile it was calibrated against, as ADR 0008 implies. Only the
+sampled anchor values are recorded; screenshots carry account state and are not
+committed.
+
+Cleanup verified the original `libunity.so` SHA-256, unchanged package identity,
+no mounts, no leftover artifacts, airplane mode enabled and no emulator running.
+
 ## M1B-E004 — Progression drift breaks the calibrated screen gate
 
 **Date:** 2026-09-17

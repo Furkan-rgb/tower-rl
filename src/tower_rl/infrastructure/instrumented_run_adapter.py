@@ -15,12 +15,17 @@ from dataclasses import dataclass, field
 
 from PIL import Image
 
-from tower_rl.infrastructure.adb_probe import ScreenKind, classify_frame
 from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
     BridgeRunUnavailable,
     InstrumentedBridgeClient,
+)
+from tower_rl.infrastructure.visual_profile import (
+    RESULT_SETTLE_SECONDS,
+    Screen,
+    classify,
+    describe_drift,
 )
 from tower_rl.ports.android import ScreenPoint
 from tower_rl.ports.run_port import RunPortError
@@ -39,13 +44,13 @@ RETRY_BUTTON = ScreenPoint(300 / 1080, 1417 / 1920)
 class TapTarget:
     """A tap is only permitted from the screen that owns that control."""
 
-    def __init__(self, point: ScreenPoint, permitted: ScreenKind) -> None:
+    def __init__(self, point: ScreenPoint, permitted: Screen) -> None:
         self.point = point
         self.permitted = permitted
 
 
-START_FROM_HOME = TapTarget(BATTLE_BUTTON, ScreenKind.HOME)
-RETRY_FROM_RESULT = TapTarget(RETRY_BUTTON, ScreenKind.RESULT)
+START_FROM_HOME = TapTarget(BATTLE_BUTTON, Screen.HOME)
+RETRY_FROM_RESULT = TapTarget(RETRY_BUTTON, Screen.RESULT)
 
 
 @dataclass
@@ -55,8 +60,10 @@ class InstrumentedRunAdapter:
     client: InstrumentedBridgeClient
     device: object  # AdbDevice-shaped: screenshot() and tap() only
     requested_speed: float = 64.0
-    episode_start_timeout: float = 90.0
-    settle_seconds: float = 3.0
+    episode_start_timeout: float = 120.0
+    #: The result panel animates in; classifying earlier sees a transition, not a
+    #: screen, and tapping across a transition is the M1-E005 failure.
+    settle_seconds: float = RESULT_SETTLE_SECONDS
     _last_speed: float = field(default=0.0, init=False)
 
     # -- reading -----------------------------------------------------------
@@ -102,10 +109,13 @@ class InstrumentedRunAdapter:
     def _gated_tap(self, target: TapTarget) -> None:
         """Refuse to tap unless the screen is positively the expected one."""
         frame = self.device.screenshot()  # type: ignore[attr-defined]
-        screen = classify_frame(Image.open(io.BytesIO(frame.png_bytes)).convert("RGB"))
+        image = Image.open(io.BytesIO(frame.png_bytes)).convert("RGB")
+        screen = classify(image)
         if screen is not target.permitted:
+            drift = describe_drift(image).get(target.permitted.value, ())
             raise RunPortError(
-                f"refusing to tap: expected {target.permitted.value}, saw {screen.value}"
+                f"refusing to tap: expected {target.permitted.value}, saw {screen.value}; "
+                f"anchors disagreeing: {'; '.join(drift) or 'none'}"
             )
         self.device.tap(target.point)  # type: ignore[attr-defined]
 

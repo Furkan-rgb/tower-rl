@@ -189,7 +189,7 @@ relevant ADRs, and current controller/vision tests. After any live run, restore
 the golden snapshot and verify with `uv run tower-rl probe --serial
 emulator-5554 --restore-snapshot <snapshot-name>`.
 
-## Open question — screen calibration after progression drift — 2026-09-17
+## Resolved — screen calibration after progression drift — 2026-09-17
 
 Stage B is blocked on one calibration question, recorded rather than guessed at.
 
@@ -199,13 +199,13 @@ now on the home screen. The Battle-home classifier samples pixel (10, 200), whic
 was background at the baseline and now falls inside the new widget, so the screen
 no longer classifies and the adapter correctly refuses the boundary tap.
 
-The question is which anchors are stable under progression. Candidates that look
-structurally durable are the Difficulty panel, the BATTLE button interior and the
-bottom navigation bar, but none of that is verified. Recalibration must be
-checked against a live frame rather than reasoned about, and the resulting visual
-profile should be versioned alongside the progression profile as ADR 0008
-implies. Screenshots carry account state and must not be committed; record the
-sampled anchor values instead.
+Resolved in `M1B-E005`. The gate now lives in
+`src/tower_rl/infrastructure/visual_profile.py`, calibrated against sixty-three
+live frames labelled by the game's own lifecycle, with seven anchors for home,
+four for the result panel and three for an active run. The result gate anchors on
+the RETRY button itself, and the adapter settles six seconds before classifying
+because the panel animates in. Only anchor values are recorded, never
+screenshots.
 
 Also open: `M1B-E003` measured throughput under `-gpu host`, which
 `M1B-E004` then rejected for rendering the frame incorrectly. Those numbers are

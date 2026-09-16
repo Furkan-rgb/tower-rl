@@ -28,12 +28,15 @@ include `lifecycle`, `wave`, `cash`, `health`, `max_health`, `terminal`,
 `round_active`, plus bounded `upgrades` entries:
 
 ```json
-{"family":"attack","index":0,"cost":5.0,"level":2,
+{"family":"attack","index":0,"cost":5.0,"level":2,"max_level":79,
  "unlocked":true,"tier_unlocked":true,"maxed":false}
 ```
 
 Families are `attack`, `defense`, and `utility`; each is capped at 64 entries.
-Each observation also carries the current `game_speed`. The bridge sends a
+Each observation also carries the current `game_speed` and `play_time`. The
+latter is the game's own account-lifetime clock: it advances at wall-clock rate
+at every game speed, so it is liveness evidence that the process is still
+running, not an in-run game clock and not a policy feature. The bridge sends a
 heartbeat with the latest observation sequence at least once a second, including
 while a slow lifecycle transition is in flight.
 
@@ -100,9 +103,9 @@ purchase. Entries without a positive cost are still rejected.
 
 `Main` exists only inside the battle scene, so no `Main` method starts a run from
 the home screen, and the known restart entry points are progression-gated at this
-baseline. The episode boundary therefore still needs one bridge-gated tap. The
-build also keeps no live in-run clock: `roundTime` and `gameplayTimeThisRound`
-both read 0.0 throughout a run, so the controller owns run time.
+baseline. The episode boundary therefore still needs one bridge-gated tap. The build keeps no live in-run clock: `roundTime`, `gameplayTimeThisRound`, and
+`realTimeThisRound` all read 0.0 throughout a run, so the controller owns run
+time.
 
 `tower_bridge.cpp` uses only exported IL2CPP APIs for fields and arrays:
 `il2cpp_field_get_value`, `il2cpp_field_static_get_value`,

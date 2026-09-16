@@ -52,13 +52,24 @@ screenshot or OCR is involved, and at roughly 50 ms against a 30-to-175-second
 episode it is not a throughput concern. Finding the correct receiver remains open
 work.
 
-### The game holds no live in-run clock
+### In-run clock: corrected by later evidence
 
-Both `roundTime` and `gameplayTimeThisRound` read 0.0 for the whole of a live run
-while cash and wave advance normally, so neither is a usable elapsed-time source.
-A field that never moves is worse than no field, so none is reported; the
-controller owns run time, and progress is measured by the game's own wave and
-cash.
+An earlier draft of this entry concluded that the game holds no live clock. That
+conclusion was drawn from two fields and was wrong. `roundTime`,
+`gameplayTimeThisRound`, and `realTimeThisRound` do all read 0.0 for the whole of
+a live run, and are presumably populated only for the end-of-run report. A search
+of the full 920-field inventory found `playTime`, which does advance
+continuously.
+
+`playTime` is not an in-run game clock. It is account-lifetime and unscaled:
+sampled over eight seconds it advanced 8.10, 7.68, and 8.07 at game speeds 1.5,
+4.0, and 8.0, a ratio of 1.00, 0.95, and 0.99 against wall time. It therefore
+measures real time regardless of how fast the simulation runs.
+
+It is reported as liveness evidence rather than as a policy feature or a game
+clock: a hung game process stops advancing it, which no other observed field
+proves. Elapsed in-run game time remains controller-owned, and in-run progress is
+measured by the game's own wave and cash.
 
 ### Speed applies, and cadence must scale with it
 
@@ -94,6 +105,18 @@ cost is elsewhere and must be profiled rather than guessed. Until then the
 free-running loop with speed-scaled cadence is the faster configuration. A step
 window is also floored in wall time, because at a high speed the requested slice
 can be shorter than one rendered frame and no world time would pass at all.
+
+### Upgrade inventory
+
+Each of the 60 entries reports family, index, current cost, current level, its
+own maximum level, and the `unlocked`, `tier_unlocked`, and `maxed` flags, so a
+policy sees exactly which upgrades exist, which are currently offered, what each
+costs now, and how much headroom each has. Live ceilings differ sharply per
+upgrade: attack 0 caps at 6000 while attack 1, 2, and 3 cap at 99, 79, and 150.
+Six of the 60 are offered at this fixed baseline: four attack and two defense,
+with utility unavailable. `max_level` had been read and validated but never
+serialized; it is now reported, and a level above its own maximum is rejected as
+contradictory state.
 
 ### Protocol
 

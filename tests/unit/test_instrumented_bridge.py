@@ -17,6 +17,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     InstrumentedBridgeClient,
     decode_command,
     decode_handshake,
+    decode_observation,
     encode_frame,
     read_frame,
 )
@@ -69,12 +70,14 @@ def _observation(sequence: int = 1) -> dict[str, object]:
         "terminal": False,
         "round_active": True,
         "game_speed": 1.5,
+        "play_time": 3546.9,
         "upgrades": [
             {
                 "family": "attack",
                 "index": 0,
                 "cost": 5.0,
                 "level": 2,
+                "max_level": 10,
                 "unlocked": True,
                 "tier_unlocked": True,
                 "maxed": False,
@@ -410,3 +413,15 @@ def test_step_command_bounds_the_advanced_game_time() -> None:
                     "game_ms": out_of_range,
                 }
             )
+
+
+def test_upgrade_level_above_its_own_maximum_is_rejected() -> None:
+    message = _observation(1)
+    message["upgrades"] = [
+        {
+            "family": "attack", "index": 0, "cost": 5.0, "level": 11, "max_level": 10,
+            "unlocked": True, "tier_unlocked": True, "maxed": False,
+        }
+    ]
+    with pytest.raises(BridgeProtocolError, match="exceeds its own maximum"):
+        decode_observation(message)

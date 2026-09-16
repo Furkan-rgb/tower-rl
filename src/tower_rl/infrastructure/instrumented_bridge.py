@@ -121,6 +121,7 @@ class UpgradeInventoryEntry:
     index: int
     cost: float
     level: int
+    max_level: int
     unlocked: bool
     tier_unlocked: bool
     maxed: bool
@@ -139,6 +140,7 @@ class BridgeObservation:
     terminal: bool
     round_active: bool
     game_speed: float
+    play_time: float
     upgrades: tuple[UpgradeInventoryEntry, ...]
 
 
@@ -272,10 +274,15 @@ def decode_observation(
             index=_int(value, "index", minimum=0),
             cost=_finite_number(value, "cost"),
             level=_int(value, "level", minimum=0),
+            max_level=_int(value, "max_level", minimum=0),
             unlocked=_bool(value, "unlocked"),
             tier_unlocked=_bool(value, "tier_unlocked"),
             maxed=_bool(value, "maxed"),
         )
+        if entry.max_level and entry.level > entry.max_level:
+            raise BridgeProtocolError(
+                f"upgrade level exceeds its own maximum: {entry.family}[{entry.index}]"
+            )
         identity = (entry.family, entry.index)
         if identity in identities:
             raise BridgeProtocolError(f"duplicate upgrade inventory entry: {identity!r}")
@@ -294,6 +301,7 @@ def decode_observation(
         terminal=_bool(message, "terminal"),
         round_active=_bool(message, "round_active"),
         game_speed=_finite_number(message, "game_speed"),
+        play_time=_finite_number(message, "play_time"),
         upgrades=tuple(entries),
     )
 

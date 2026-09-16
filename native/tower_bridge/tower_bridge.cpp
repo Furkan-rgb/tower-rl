@@ -221,6 +221,7 @@ struct MainFields {
   FieldInfo* instance;
   FieldInfo* game_speed;
   FieldInfo* game_max_speed;
+  FieldInfo* play_time;
   FieldInfo* cash;
   FieldInfo* current_wave;
   FieldInfo* tower_health;
@@ -305,6 +306,7 @@ bool LoadFields(const Il2CppApi& api, Il2CppClass* main, Il2CppClass* int_select
   fields->instance = Field(api, main, "<Instance>k__BackingField");
   fields->game_speed = Field(api, main, "gameSpeed");
   fields->game_max_speed = Field(api, main, "gameMaxSpeed");
+  fields->play_time = Field(api, main, "playTime");
   fields->cash = Field(api, main, "cash");
   fields->current_wave = Field(api, main, "currentWave");
   fields->tower_health = Field(api, main, "towerHealth");
@@ -443,10 +445,10 @@ bool AppendFamily(const Il2CppApi& api, Il2CppObject* main, const FamilyFields& 
     char entry[256];
     const int written = std::snprintf(entry, sizeof(entry),
                                       "%s{\"family\":\"%s\",\"index\":%zu,\"cost\":%.17g,"
-                                      "\"level\":%d,\"unlocked\":%s,\"tier_unlocked\":%s,"
-                                      "\"maxed\":%s}",
+                                      "\"level\":%d,\"max_level\":%d,\"unlocked\":%s,"
+                                      "\"tier_unlocked\":%s,\"maxed\":%s}",
                                       json->back() == '[' ? "" : ",", fields.name, index, cost, level,
-                                      is_unlocked ? "true" : "false",
+                                      max_level, is_unlocked ? "true" : "false",
                                       is_tier_unlocked ? "true" : "false",
                                       is_maxed ? "true" : "false");
     if (written < 0 || static_cast<size_t>(written) >= sizeof(entry)) return false;
@@ -488,16 +490,22 @@ ObservationResult BuildObservation(const Il2CppApi& api, const MainFields& field
   float game_speed = 0.0F;
   api.field_static_get_value(fields.game_speed, &game_speed);
   if (!std::isfinite(game_speed) || game_speed < 0.0F) return ObservationResult::kError;
+  double play_time = 0.0;
+  if (!ReadField(api, main, fields.play_time, &play_time) || !std::isfinite(play_time) ||
+      play_time < 0.0) {
+    return ObservationResult::kError;
+  }
   const char* lifecycle = game_over ? "terminal" : (round_active ? "active" : "idle");
   char prefix[512];
   const int written = std::snprintf(prefix, sizeof(prefix),
                                     "{\"type\":\"observation\",\"sequence\":%llu,"
                                     "\"lifecycle\":\"%s\",\"wave\":%d,\"cash\":%.17g,"
                                     "\"health\":%.17g,\"max_health\":%.17g,\"terminal\":%s,"
-                                    "\"round_active\":%s,\"game_speed\":%.9g,\"upgrades\":[",
+                                    "\"round_active\":%s,\"game_speed\":%.9g,\"play_time\":%.17g,"
+                                    "\"upgrades\":[",
                                     static_cast<unsigned long long>(sequence), lifecycle, wave, cash, health,
                                     max_health, game_over ? "true" : "false",
-                                    round_active ? "true" : "false", game_speed);
+                                    round_active ? "true" : "false", game_speed, play_time);
   if (written < 0 || static_cast<size_t>(written) >= sizeof(prefix)) return ObservationResult::kError;
   *json = prefix;
   const bool complete = AppendFamily(api, main, fields.attack, json) &&
@@ -683,11 +691,44 @@ int OpenLoopbackServer() {
 }
 
 // Every emitted state message advances one monotonic sequence, so a command can
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+Il2CppClass* g_diagnostic_main = nullptr;
+
+// Sample candidate in-run clock fields so the real one is identified by evidence
+// rather than by assuming the first name that looks right.
+void LogClockCandidates(const Il2CppApi& api, Il2CppClass* main) {
+  static const char* kCandidates[] = {"realTimeThisRound", "gameplayTimeThisRound", "roundTime",
+                                      "playTime"};
+  Il2CppObject* instance = nullptr;
+  FieldInfo* instance_field = api.class_get_field_from_name(main, "<Instance>k__BackingField");
+  if (instance_field == nullptr) return;
+  api.field_static_get_value(instance_field, &instance);
+  if (instance == nullptr) return;
+  for (const char* name : kCandidates) {
+    FieldInfo* field = api.class_get_field_from_name(main, name);
+    if (field == nullptr) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock %s absent", name);
+      continue;
+    }
+    double as_double = 0.0;
+    float as_float = 0.0F;
+    api.field_get_value(instance, field, &as_double);
+    api.field_get_value(instance, field, &as_float);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock %s double=%.4f float=%.4f", name,
+                        as_double, static_cast<double>(as_float));
+  }
+}
+
+#endif
+
 // always bind the state it was decided from, including between episodes.
 bool SendState(int client, const Il2CppApi& api, const MainFields& fields, uint64_t sequence) {
   std::string payload;
   switch (BuildObservation(api, fields, sequence, &payload)) {
     case ObservationResult::kOk:
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+      LogClockCandidates(api, g_diagnostic_main);
+#endif
       return SendFrame(client, payload);
     case ObservationResult::kNoRun:
       return SendFrame(client, "{\"type\":\"run_unavailable\",\"sequence\":" +
@@ -943,6 +984,7 @@ bool InitializeRuntime(Il2CppApi* api, MainFields* fields) {
   }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "IL2CPP runtime resolved");
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
+  g_diagnostic_main = main;
   LogClassMembers(main, "Main");
   LogClassMembers(int_select, "IntSelect");
   LogMatchingMethods(*api, domain);

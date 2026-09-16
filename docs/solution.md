@@ -678,14 +678,23 @@ decisions for a handful of reward events; triggering on change shortens the
 effective horizon by roughly an order of magnitude, which helps every candidate
 algorithm equally (see `docs/rl-candidates.md`).
 
-Above roughly 16x, host round-trip latency rather than cadence configuration
-becomes the binding constraint on decision density: about 50 ms per decision is
-3.2 seconds of game time at 64x. The environment therefore pauses between
-decisions at high speed, using the game's own `Pause` and `Unpause`, so
-deliberation costs no game time. This reverses the earlier reading in
-`M1B-E002`, which measured pause-stepping at normal speed where free running is
-cheap. High time scale advances the world and pause controls the cadence; neither
-alone is sufficient.
+Host round-trip latency does bind decision density at high speed: about 50 ms per
+decision is 3.2 seconds of game time at 64x. Pausing between decisions removes
+that, and the game's own `Pause` and `Unpause` make it possible, so `M1B-E003`
+concluded the environment should pause above roughly 16x.
+
+Measurement in `M1B-E006` withdrew that conclusion. The reasoning was right about
+density and wrong about cost: every slice pays a host round trip and a wall-clock
+floor, an episode needs hundreds of them, and the same scripted policy at 64x
+reached wave 10 in 14.6 seconds free-running against wave 3 in 273 seconds
+stepped. Free running is the default. Pausing stays implemented and configurable
+behind a speed threshold, for the case where decision density is shown to bind
+and the overhead is worth paying, but it is not on by default and a measurement
+rather than an argument should turn it on.
+
+A stepped session must release the pause when it ends. A paused game outlives the
+client that paused it, and the next session then advances nothing and times out
+every episode.
 
 Record actual elapsed game and wall time with every transition, because
 event-triggered transitions are semi-Markov by construction. Time-aware

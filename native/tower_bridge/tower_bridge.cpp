@@ -283,8 +283,12 @@ constexpr const char* kCostRefreshMethods[] = {
 
 constexpr uint32_t kMinStepGameMillis = 10;
 constexpr uint32_t kMaxStepGameMillis = 5000;
+// The protocol bound is deliberately wider than any endorsed speed. Unity clamps
+// how much game time one frame may advance, so the usable ceiling is set by the
+// achieved frame rate rather than by this number, and which speeds are actually
+// admissible is decided by the equivalence gate, not by the protocol.
 constexpr float kMinRequestedSpeed = 0.5F;
-constexpr float kMaxRequestedSpeed = 10.0F;
+constexpr float kMaxRequestedSpeed = 64.0F;
 
 struct Command {
   char request_id[65];

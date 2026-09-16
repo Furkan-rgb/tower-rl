@@ -7,6 +7,118 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E002 — Screen-free in-run control, speed, and pause-stepping
+
+**Date:** 2026-09-16
+**Status:** In-run control proven without pixels; episode boundary still needs one
+tap; speed applies but stepped mode is not yet faster
+
+After `M1B-E001` proved single commands, this entry takes the loop to a whole
+episode and probes the throughput levers. The product decision recorded here is
+that the private instrumented clone is the primary training and evaluation
+environment, with a small official-profile cross-check retained at promotion.
+
+### Discovering semantic members without a metadata dump
+
+A build-flag-gated diagnostic (`TOWER_BRIDGE_DIAGNOSTICS`) enumerates class
+members through exported IL2CPP APIs and logs them. It needs no `global-metadata.dat`
+extraction and no third-party dumper, and it is absent from an ordinary build.
+It reported 450 methods and 920 fields on `Main`, and a substring scan across
+every class located members that do not live on `Main`.
+
+### In-run control needs no screen
+
+One greedy scripted episode driven entirely through the bridge reached wave 7
+with 21 confirmed purchases in 136.8 seconds, and a second reached wave 8 with 24
+purchases in 160.9 seconds. Buying nothing dies at wave 2. Costs are refreshed by
+dispatching the game's own `UpgradeCostCalc`, `UpgradeDefenseCostCalc`, and
+`UpgradeUtilityCostCalc`, which removes the `M1B-E001` requirement to open each
+family tab by hand.
+
+### The episode boundary still needs one tap
+
+`Main` only exists inside the battle scene, so no `Main` method can start a run
+from the home screen. From a terminal run, `StartNewRoundFunction`,
+`AutoRetryBattle`, and `Button_ToggleAutoRestartBattle` were each dispatched and
+each expired its 30-second lifecycle wait without starting a round; the
+auto-restart feature appears progression-gated at this baseline. The class scan
+located `BattlePanelUI.StartNewRound`, which is the likely handler, but
+`UnitySendMessage` addresses a GameObject by name and that object's name is not
+yet known.
+
+The loop therefore uses one bridge-gated tap per episode: the bridge's own
+terminal state selects the control, and the bridge confirms the new run. No
+screenshot or OCR is involved, and at roughly 50 ms against a 30-to-175-second
+episode it is not a throughput concern. Finding the correct receiver remains open
+work.
+
+### The game holds no live in-run clock
+
+Both `roundTime` and `gameplayTimeThisRound` read 0.0 for the whole of a live run
+while cash and wave advance normally, so neither is a usable elapsed-time source.
+A field that never moves is worse than no field, so none is reported; the
+controller owns run time, and progress is measured by the game's own wave and
+cash.
+
+### Speed applies, and cadence must scale with it
+
+This baseline's own speed ceiling is 1.5, consistent with its Highest Wave 2
+progression, so `SpeedChangeMax` reports success while leaving `gameSpeed` at
+1.5. Writing `gameSpeed` and dispatching the game's own `GameSpeedModifier`
+applied 4.0 and 8.0, confirmed by the observed `game_speed`.
+
+A first 4.0 comparison looked worse than 1.5 — final waves 5, 6, 3 against 2, 8,
+8 — but the cause was the host loop, not the game. Decision cadence was fixed in
+wall-clock time, so a faster game received proportionally fewer decisions per
+game second: 112, 199, and 61 decisions per episode against 87, 356, and 355.
+After the stream and `WAIT` intervals were made proportional to game speed, 4.0
+produced waves 7, 4, and 10 with 572, 261, and 785 decisions. Wall-clock cost
+fell from roughly 129 seconds per episode at 1.5 to roughly 68 seconds at 4.0,
+an effective speed-up near 1.9 rather than the nominal 2.67. Three episodes per
+arm is not a parity result; it is a throughput observation and a demonstration
+that a speed-unaware loop silently starves the policy.
+
+### Pause makes the environment turn-based, but is not yet faster
+
+`Pause` and `Unpause` freeze and resume the world exactly: across six paused
+seconds cash, health, and wave were unchanged, and cash resumed advancing after
+`Unpause`. A `step` command brackets a bounded slice of game time between them,
+so policy latency costs no game time.
+
+Measured, stepped mode is currently slower than free running. At roughly 2.3
+steps per wall-clock second, each decision costs about 430 ms while only 80 to
+166 ms of that is unpaused, so the world is frozen for most of the wall clock
+and 25 seconds advanced at most one wave. Making the bridge's pacing wait
+interruptible by an inbound command did not change the rate, so the remaining
+cost is elsewhere and must be profiled rather than guessed. Until then the
+free-running loop with speed-scaled cadence is the faster configuration. A step
+window is also floored in wall time, because at a high speed the requested slice
+can be shorter than one rendered frame and no world time would pass at all.
+
+### Protocol
+
+The handshake now advertises `semantic-v2`. Policy actions remain `wait` and
+`buy_upgrade`; `lifecycle`, `set_speed`, and `step` are separate controller-owned
+kinds, so navigation and speed can never become learned actions. A run that is
+not initialized is reported as its own `run_unavailable` state carrying the same
+monotonic sequence, rather than as invented run values or a dropped connection,
+which is what lets a controller act between episodes.
+
+### Cleanup
+
+The overlay was unmounted, staged files were removed, `libunity.so` again matched
+its original SHA-256, Package Manager still reported 29.0.3, version code 1199,
+and `installerPackageName=com.android.vending`, airplane mode was re-enabled, and
+no emulator was left running.
+
+### Open before M1B
+
+Profile the per-decision cost and decide between stepped and free-running modes;
+find the `BattlePanelUI` receiver so the episode boundary needs no tap; run a
+real parity comparison with enough episodes to compare final-wave distributions
+at each speed; and establish the actor-count scaling curve. No instrumented
+transition may enter replay until parity and quarantine gates pass.
+
 ## M1B-E001 — Live semantic command path and family cost coverage
 
 **Date:** 2026-09-16

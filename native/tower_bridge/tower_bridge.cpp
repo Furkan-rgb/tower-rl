@@ -61,6 +61,10 @@ constexpr useconds_t kHeartbeatIntervalMicros = 1000000;
 constexpr useconds_t kIl2CppInitializationDelayMicros = 4000000;
 constexpr useconds_t kCommandTimeoutMicros = 3000000;
 constexpr useconds_t kCommandPollMicros = 50000;
+constexpr useconds_t kLifecycleTimeoutMicros = 30000000;
+constexpr useconds_t kLifecyclePollMicros = 250000;
+constexpr useconds_t kMinIntervalMicros = 20000;
+constexpr useconds_t kMinStepWallMicros = 80000;
 
 struct Il2CppDomain;
 struct Il2CppThread;
@@ -146,6 +150,49 @@ Il2CppClass* FindMainClass(const Il2CppApi& api, Il2CppDomain* domain) {
   return nullptr;
 }
 
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+// Private, build-flag-gated inventory used to locate semantic members on a new
+// game build. It reads names through exported IL2CPP APIs only, never a metadata
+// dump, and is absent from an ordinary build.
+struct MethodInfo;
+
+void LogClassMembers(Il2CppClass* klass, const char* label) {
+  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+  if (il2cpp == nullptr || klass == nullptr) return;
+  const MethodInfo* (*class_get_methods)(Il2CppClass*, void**) = nullptr;
+  const char* (*method_get_name)(const MethodInfo*) = nullptr;
+  uint32_t (*method_get_param_count)(const MethodInfo*) = nullptr;
+  FieldInfo* (*class_get_fields)(Il2CppClass*, void**) = nullptr;
+  const char* (*field_get_name)(FieldInfo*) = nullptr;
+  if (!Resolve(il2cpp, "il2cpp_class_get_methods", &class_get_methods) ||
+      !Resolve(il2cpp, "il2cpp_method_get_name", &method_get_name) ||
+      !Resolve(il2cpp, "il2cpp_method_get_param_count", &method_get_param_count)) {
+    return;
+  }
+  void* iterator = nullptr;
+  for (const MethodInfo* method = class_get_methods(klass, &iterator); method != nullptr;
+       method = class_get_methods(klass, &iterator)) {
+    const char* name = method_get_name(method);
+    if (name != nullptr) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s.method %s/%u", label, name,
+                          method_get_param_count(method));
+    }
+  }
+  if (!Resolve(il2cpp, "il2cpp_class_get_fields", &class_get_fields) ||
+      !Resolve(il2cpp, "il2cpp_field_get_name", &field_get_name)) {
+    return;
+  }
+  iterator = nullptr;
+  for (FieldInfo* field = class_get_fields(klass, &iterator); field != nullptr;
+       field = class_get_fields(klass, &iterator)) {
+    const char* name = field_get_name(field);
+    if (name != nullptr) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s.field %s", label, name);
+    }
+  }
+}
+#endif
+
 Il2CppClass* FindClass(const Il2CppApi& api, Il2CppDomain* domain, const char* wanted) {
   size_t assemblies_count = 0;
   const Il2CppAssembly** assemblies = api.domain_get_assemblies(domain, &assemblies_count);
@@ -173,6 +220,7 @@ struct FamilyFields {
 struct MainFields {
   FieldInfo* instance;
   FieldInfo* game_speed;
+  FieldInfo* game_max_speed;
   FieldInfo* cash;
   FieldInfo* current_wave;
   FieldInfo* tower_health;
@@ -200,12 +248,53 @@ struct UpgradeEvidence {
   uint8_t maxed;
 };
 
+// The game's own parameterless entry points. Navigation is controller-owned and
+// never a policy action, so lifecycle commands are a separate kind from the
+// semantic `wait` and `buy_upgrade` the policy emits.
+struct LifecycleAction {
+  const char* name;
+  const char* method;
+  bool expect_active;
+};
+
+constexpr LifecycleAction kLifecycleActions[] = {
+    {"start_round", "StartNewRoundFunction", true},
+    {"retry", "AutoRetryBattle", true},
+    {"go_home", "Button_GameEndPanelGoHome", false},
+    // The game's own auto-restart toggle. Dispatched from a terminal run it is
+    // self-confirming: either the game starts the next round by itself, or the
+    // wait expires and the actor is quarantined rather than assumed healthy.
+    {"enable_auto_restart", "Button_ToggleAutoRestartBattle", true},
+    // Speed is the game's own control. The observation reports `game_speed`, so
+    // the host verifies the effect instead of assuming it.
+    {"speed_max", "SpeedChangeMax", true},
+    {"speed_down", "SpeedChangeDown", true},
+    // Pause makes the environment turn-based: thinking then costs no game time.
+    {"pause", "Pause", true},
+    {"unpause", "Unpause", true},
+};
+
+// Each family recomputes its own costs. The game only refreshes a family while
+// its tab is displayed, so an actor that never touches the screen must ask for
+// the recalculation itself.
+constexpr const char* kCostRefreshMethods[] = {
+    "UpgradeCostCalc", "UpgradeDefenseCostCalc", "UpgradeUtilityCostCalc"};
+
+constexpr uint32_t kMinStepGameMillis = 10;
+constexpr uint32_t kMaxStepGameMillis = 5000;
+constexpr float kMinRequestedSpeed = 0.5F;
+constexpr float kMaxRequestedSpeed = 10.0F;
+
 struct Command {
   char request_id[65];
   uint64_t expected_sequence;
   const char* family;
   size_t index;
   bool wait;
+  const LifecycleAction* lifecycle;
+  bool set_speed;
+  float speed;
+  uint32_t step_game_millis;
 };
 
 FieldInfo* Field(const Il2CppApi& api, Il2CppClass* klass, const char* name) {
@@ -215,6 +304,7 @@ FieldInfo* Field(const Il2CppApi& api, Il2CppClass* klass, const char* name) {
 bool LoadFields(const Il2CppApi& api, Il2CppClass* main, Il2CppClass* int_select, MainFields* fields) {
   fields->instance = Field(api, main, "<Instance>k__BackingField");
   fields->game_speed = Field(api, main, "gameSpeed");
+  fields->game_max_speed = Field(api, main, "gameMaxSpeed");
   fields->cash = Field(api, main, "cash");
   fields->current_wave = Field(api, main, "currentWave");
   fields->tower_health = Field(api, main, "towerHealth");
@@ -365,13 +455,18 @@ bool AppendFamily(const Il2CppApi& api, Il2CppObject* main, const FamilyFields& 
   return true;
 }
 
-bool BuildObservation(const Il2CppApi& api, const MainFields& fields, uint64_t sequence,
-                      std::string* json) {
+// A run that has not been initialized is an ordinary state, not a failure: the
+// game sits at its home screen between episodes and the controller must still be
+// able to start one. It is reported as its own message rather than an
+// observation, so no plausible default is ever presented as run state.
+enum class ObservationResult { kOk, kNoRun, kError };
+
+ObservationResult BuildObservation(const Il2CppApi& api, const MainFields& fields,
+                                   uint64_t sequence, std::string* json) {
   Il2CppObject* main = nullptr;
   api.field_static_get_value(fields.instance, &main);
   if (main == nullptr) {
-    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Main.Instance is null");
-    return false;
+    return ObservationResult::kNoRun;
   }
   double cash = 0.0, health = 0.0, max_health = 0.0;
   int32_t wave = 0;
@@ -388,22 +483,28 @@ bool BuildObservation(const Il2CppApi& api, const MainFields& fields, uint64_t s
                         "Main scalar observation is invalid: wave=%d cash=%g health=%g max_health=%g game_over=%u round_active=%u",
                         wave, cash, health, max_health, static_cast<unsigned>(game_over),
                         static_cast<unsigned>(round_active));
-    return false;
+    return ObservationResult::kNoRun;
   }
+  float game_speed = 0.0F;
+  api.field_static_get_value(fields.game_speed, &game_speed);
+  if (!std::isfinite(game_speed) || game_speed < 0.0F) return ObservationResult::kError;
   const char* lifecycle = game_over ? "terminal" : (round_active ? "active" : "idle");
   char prefix[512];
   const int written = std::snprintf(prefix, sizeof(prefix),
                                     "{\"type\":\"observation\",\"sequence\":%llu,"
                                     "\"lifecycle\":\"%s\",\"wave\":%d,\"cash\":%.17g,"
                                     "\"health\":%.17g,\"max_health\":%.17g,\"terminal\":%s,"
-                                    "\"round_active\":%s,\"upgrades\":[",
+                                    "\"round_active\":%s,\"game_speed\":%.9g,\"upgrades\":[",
                                     static_cast<unsigned long long>(sequence), lifecycle, wave, cash, health,
                                     max_health, game_over ? "true" : "false",
-                                    round_active ? "true" : "false");
-  if (written < 0 || static_cast<size_t>(written) >= sizeof(prefix)) return false;
+                                    round_active ? "true" : "false", game_speed);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(prefix)) return ObservationResult::kError;
   *json = prefix;
-  return AppendFamily(api, main, fields.attack, json) && AppendFamily(api, main, fields.defense, json) &&
-         AppendFamily(api, main, fields.utility, json) && (json->append("]}"), json->size() <= kMaxFrameBytes);
+  const bool complete = AppendFamily(api, main, fields.attack, json) &&
+                        AppendFamily(api, main, fields.defense, json) &&
+                        AppendFamily(api, main, fields.utility, json) &&
+                        (json->append("]}"), json->size() <= kMaxFrameBytes);
+  return complete ? ObservationResult::kOk : ObservationResult::kError;
 }
 
 bool WriteAll(int client, const void* data, size_t size) {
@@ -459,8 +560,52 @@ bool ParseCommand(const std::string& payload, Command* command) {
   for (size_t i = sequence_start; i < kind; ++i) { if (payload[i] < '0' || payload[i] > '9') return false; command->expected_sequence = command->expected_sequence * 10 + (payload[i] - '0'); }
   if (command->expected_sequence == 0) return false;
   const std::string tail = payload.substr(kind + 9);
-  if (tail == "wait\"}") { command->wait = true; command->family = nullptr; command->index = 0; return true; }
+  if (tail == "wait\"}") {
+    command->wait = true; command->family = nullptr; command->index = 0;
+    command->lifecycle = nullptr; return true;
+  }
   command->wait = false;
+  command->lifecycle = nullptr;
+  command->set_speed = false;
+  command->step_game_millis = 0;
+  if (tail.rfind("step\",\"game_ms\":", 0) == 0) {
+    const std::string value = tail.substr(std::strlen("step\",\"game_ms\":"));
+    if (value.size() < 2 || value.back() != '}') return false;
+    uint32_t millis = 0;
+    for (size_t i = 0; i + 1 < value.size(); ++i) {
+      if (value[i] < '0' || value[i] > '9') return false;
+      millis = millis * 10 + static_cast<uint32_t>(value[i] - '0');
+      if (millis > kMaxStepGameMillis) return false;
+    }
+    if (millis < kMinStepGameMillis) return false;
+    command->step_game_millis = millis;
+    command->family = nullptr; command->index = 0; command->lifecycle = nullptr;
+    return true;
+  }
+  if (tail.rfind("set_speed\",\"value\":", 0) == 0) {
+    const std::string value = tail.substr(std::strlen("set_speed\",\"value\":"));
+    if (value.size() < 2 || value.back() != '}') return false;
+    char* end = nullptr;
+    const double parsed = std::strtod(value.substr(0, value.size() - 1).c_str(), &end);
+    if (end == nullptr || *end != '\0' || !std::isfinite(parsed) ||
+        parsed < kMinRequestedSpeed || parsed > kMaxRequestedSpeed) {
+      return false;
+    }
+    command->set_speed = true;
+    command->speed = static_cast<float>(parsed);
+    command->family = nullptr; command->index = 0; command->lifecycle = nullptr;
+    return true;
+  }
+  if (tail.rfind("lifecycle\",\"action\":\"", 0) == 0) {
+    const size_t action_start = std::strlen("lifecycle\",\"action\":\"");
+    if (tail.size() < action_start + 3 || tail.substr(tail.size() - 2) != "\"}") return false;
+    const std::string action = tail.substr(action_start, tail.size() - action_start - 2);
+    for (const LifecycleAction& candidate : kLifecycleActions) {
+      if (action == candidate.name) { command->lifecycle = &candidate; break; }
+    }
+    command->family = nullptr; command->index = 0;
+    return command->lifecycle != nullptr;
+  }
   const char* family = nullptr;
   if (tail.rfind("buy_upgrade\",\"family\":\"attack\",\"index\":", 0) == 0) family = "attack";
   else if (tail.rfind("buy_upgrade\",\"family\":\"defense\",\"index\":", 0) == 0) family = "defense";
@@ -505,7 +650,7 @@ std::string Handshake(const Il2CppApi& api, const MainFields& fields) {
   std::snprintf(message, sizeof(message),
                 "{\"type\":\"handshake\",\"protocol_version\":1,"
                 "\"bridge_version\":\"%s\",\"mode\":\"instrumented_training\","
-                "\"command_capability\":\"semantic-v1\",\"compatibility\":{"
+                "\"command_capability\":\"semantic-v2\",\"compatibility\":{"
                 "\"package_version\":\"%s\",\"package_version_code\":%d,"
                 "\"official_signer_sha256\":\"%s\","
                 "\"original_libunity_sha256\":\"%s\",\"libil2cpp_sha256\":\"%s\","
@@ -537,6 +682,97 @@ int OpenLoopbackServer() {
   return server;
 }
 
+// Every emitted state message advances one monotonic sequence, so a command can
+// always bind the state it was decided from, including between episodes.
+bool SendState(int client, const Il2CppApi& api, const MainFields& fields, uint64_t sequence) {
+  std::string payload;
+  switch (BuildObservation(api, fields, sequence, &payload)) {
+    case ObservationResult::kOk:
+      return SendFrame(client, payload);
+    case ObservationResult::kNoRun:
+      return SendFrame(client, "{\"type\":\"run_unavailable\",\"sequence\":" +
+                                   std::to_string(sequence) + ",\"reason\":\"no_initialized_run\"}");
+    case ObservationResult::kError:
+      break;
+  }
+  SendError(client, "observation_error", "exact snapshot could not be encoded");
+  return false;
+}
+
+void RefreshCosts() {
+  UnitySendMessage send = ResolveUnitySendMessage();
+  if (send == nullptr) return;
+  for (const char* method : kCostRefreshMethods) {
+    send(TOWER_BRIDGE_MAIN_GAME_OBJECT, method, "");
+  }
+}
+
+float CurrentGameSpeed(const Il2CppApi& api, const MainFields& fields) {
+  float speed = 0.0F;
+  api.field_static_get_value(fields.game_speed, &speed);
+  return (std::isfinite(speed) && speed > 1.0F) ? speed : 1.0F;
+}
+
+useconds_t GameTimeInterval(useconds_t interval, float speed) {
+  const auto scaled = static_cast<useconds_t>(static_cast<float>(interval) / speed);
+  return scaled < kMinIntervalMicros ? kMinIntervalMicros : scaled;
+}
+
+bool RunIsActive(const Il2CppApi& api, const MainFields& fields) {
+  Il2CppObject* main = nullptr;
+  api.field_static_get_value(fields.instance, &main);
+  if (main == nullptr) return false;
+  uint8_t game_over = 0, round_active = 0;
+  double health = 0.0;
+  if (!ReadField(api, main, fields.game_over, &game_over) ||
+      !ReadField(api, main, fields.round_active, &round_active) ||
+      !ReadField(api, main, fields.tower_health, &health) || !std::isfinite(health)) {
+    return false;
+  }
+  return round_active == 1 && game_over == 0;
+}
+
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+// Locate a semantic entry point that does not live on `Main`, by scanning every
+// class for method names containing an allowlisted fragment.
+void LogMatchingMethods(const Il2CppApi& api, Il2CppDomain* domain) {
+  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+  if (il2cpp == nullptr || domain == nullptr) return;
+  const MethodInfo* (*class_get_methods)(Il2CppClass*, void**) = nullptr;
+  const char* (*method_get_name)(const MethodInfo*) = nullptr;
+  uint32_t (*method_get_param_count)(const MethodInfo*) = nullptr;
+  if (!Resolve(il2cpp, "il2cpp_class_get_methods", &class_get_methods) ||
+      !Resolve(il2cpp, "il2cpp_method_get_name", &method_get_name) ||
+      !Resolve(il2cpp, "il2cpp_method_get_param_count", &method_get_param_count)) {
+    return;
+  }
+  static const char* kFragments[] = {"Retry", "Restart", "GameEnd", "NewRound", "Respawn"};
+  size_t assemblies_count = 0;
+  const Il2CppAssembly** assemblies = api.domain_get_assemblies(domain, &assemblies_count);
+  for (size_t a = 0; a < assemblies_count; ++a) {
+    const Il2CppImage* image = api.assembly_get_image(assemblies[a]);
+    for (size_t c = 0; c < api.image_get_class_count(image); ++c) {
+      Il2CppClass* klass = api.image_get_class(image, c);
+      const char* class_name = klass == nullptr ? nullptr : api.class_get_name(klass);
+      if (class_name == nullptr) continue;
+      void* iterator = nullptr;
+      for (const MethodInfo* method = class_get_methods(klass, &iterator); method != nullptr;
+           method = class_get_methods(klass, &iterator)) {
+        const char* name = method_get_name(method);
+        if (name == nullptr) continue;
+        for (const char* fragment : kFragments) {
+          if (std::strstr(name, fragment) != nullptr) {
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "scan %s.%s/%u", class_name, name,
+                                method_get_param_count(method));
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+#endif
+
 void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
   if (!HasValidBuildCompatibility()) {
     SendError(client, "compatibility_error", "bridge build compatibility is not configured");
@@ -554,8 +790,12 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
     fd_set readable;
     FD_ZERO(&readable);
     FD_SET(client, &readable);
-    timeval no_wait{};
-    if (select(client + 1, &readable, nullptr, nullptr, &no_wait) > 0) {
+    const useconds_t wait_micros =
+        GameTimeInterval(kObservationIntervalMicros, CurrentGameSpeed(api, fields));
+    timeval wait{};
+    wait.tv_sec = static_cast<time_t>(wait_micros / 1000000);
+    wait.tv_usec = static_cast<suseconds_t>(wait_micros % 1000000);
+    if (select(client + 1, &readable, nullptr, nullptr, &wait) > 0) {
       std::string payload;
       Command command{};
       if (!ReadInboundFrame(client, &payload) || !ParseCommand(payload, &command)) {
@@ -567,7 +807,60 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
       UpgradeEvidence before{}, after{};
       const char* outcome = "confirmed";
       const char* reason = command.wait ? "wait_elapsed" : "confirmed_state_change";
-      if (!command.wait) {
+      if (command.step_game_millis > 0) {
+        // Unpause for a bounded slice of game time, then pause again. The window
+        // is also floored in wall time: at a high speed the requested slice can
+        // be shorter than one rendered frame, in which case no world time would
+        // pass at all and the policy would step forever without progress.
+        UnitySendMessage send = ResolveUnitySendMessage();
+        const useconds_t requested =
+            GameTimeInterval(command.step_game_millis * 1000, CurrentGameSpeed(api, fields));
+        send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
+        usleep(requested < kMinStepWallMicros ? kMinStepWallMicros : requested);
+        send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
+        reason = "step_elapsed";
+      } else if (command.set_speed) {
+        float applied = 0.0F;
+        api.field_static_set_value(fields.game_speed, &command.speed);
+        ResolveUnitySendMessage()(TOWER_BRIDGE_MAIN_GAME_OBJECT, "GameSpeedModifier", "");
+        bool settled = false;
+        for (useconds_t elapsed = 0; elapsed < kCommandTimeoutMicros;
+             elapsed += kCommandPollMicros) {
+          usleep(kCommandPollMicros);
+          api.field_static_get_value(fields.game_speed, &applied);
+          if (std::isfinite(applied) && std::fabs(applied - command.speed) < 0.01F) {
+            settled = true;
+            break;
+          }
+        }
+        outcome = settled ? "confirmed" : "rejected";
+        reason = settled ? "speed_applied" : "speed_not_applied";
+      } else if (command.lifecycle != nullptr) {
+        // The game owns the transition; the bridge only presses its own control
+        // and then waits for the game's own state to agree.
+        ResolveUnitySendMessage()(TOWER_BRIDGE_MAIN_GAME_OBJECT, command.lifecycle->method, "");
+        reason = command.lifecycle->expect_active ? "run_active" : "run_closed";
+        bool settled = false;
+        // A scene transition takes seconds. The stream must keep proving it is
+        // alive, or the host cannot tell a slow transition from a dead bridge.
+        useconds_t since_heartbeat = 0;
+        for (useconds_t elapsed = 0; elapsed < kLifecycleTimeoutMicros;
+             elapsed += kLifecyclePollMicros) {
+          usleep(kLifecyclePollMicros);
+          if (RunIsActive(api, fields) == command.lifecycle->expect_active) { settled = true; break; }
+          since_heartbeat += kLifecyclePollMicros;
+          if (since_heartbeat >= kHeartbeatIntervalMicros) {
+            since_heartbeat = 0;
+            if (!SendFrame(client, "{\"type\":\"heartbeat\",\"last_observation_sequence\":" +
+                                       std::to_string(sequence) + "}")) return;
+          }
+        }
+        if (settled) {
+          if (command.lifecycle->expect_active) RefreshCosts();
+        } else {
+          outcome = "ambiguous"; reason = "lifecycle_timeout";
+        }
+      } else if (!command.wait) {
         // `unlocked` is the in-run availability the game itself offers. Live 29.0.3
         // evidence shows `tier_unlocked` is false for every offered upgrade, so it
         // is reported state, not a purchase precondition.
@@ -597,21 +890,16 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           if (!confirmed && std::strcmp(outcome, "ambiguous") != 0) { outcome = "ambiguous"; reason = "confirmation_timeout"; }
         }
       } else {
-        usleep(kObservationIntervalMicros);
+        usleep(GameTimeInterval(kObservationIntervalMicros, CurrentGameSpeed(api, fields)));
       }
       std::strncpy(last_request_id, command.request_id, sizeof(last_request_id) - 1);
-      std::string fresh;
-      if (!BuildObservation(api, fields, ++sequence, &fresh) || !SendFrame(client, fresh)) return;
+      if (std::strcmp(outcome, "confirmed") == 0 && command.family != nullptr) RefreshCosts();
+      if (!SendState(client, api, fields, ++sequence)) return;
       if (!SendCommandResult(client, command, outcome, reason, sequence)) return;
       continue;
     }
-    std::string observation;
-    if (!BuildObservation(api, fields, ++sequence, &observation) || !SendFrame(client, observation)) {
-      SendError(client, "observation_error", "read-only snapshot unavailable");
-      return;
-    }
-    usleep(kObservationIntervalMicros);
-    heartbeat_elapsed += kObservationIntervalMicros;
+    if (!SendState(client, api, fields, ++sequence)) return;
+    heartbeat_elapsed += wait_micros;
     if (heartbeat_elapsed >= kHeartbeatIntervalMicros) {
       heartbeat_elapsed = 0;
       if (!SendFrame(client, "{\"type\":\"heartbeat\",\"last_observation_sequence\":" +
@@ -654,6 +942,11 @@ bool InitializeRuntime(Il2CppApi* api, MainFields* fields) {
     return false;
   }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "IL2CPP runtime resolved");
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+  LogClassMembers(main, "Main");
+  LogClassMembers(int_select, "IntSelect");
+  LogMatchingMethods(*api, domain);
+#endif
   return true;
 }
 

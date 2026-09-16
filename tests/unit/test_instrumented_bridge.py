@@ -10,6 +10,8 @@ from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCompatibilityError,
     BridgeDisconnectedError,
     BridgeProtocolError,
+    BridgeRunUnavailable,
+    BridgeRunUnavailableError,
     BridgeStaleObservationError,
     BridgeTimeoutError,
     InstrumentedBridgeClient,
@@ -38,7 +40,7 @@ def _handshake(**overrides: object) -> dict[str, object]:
         "protocol_version": 1,
         "bridge_version": "tower-bridge-v1",
         "mode": "instrumented_training",
-        "command_capability": "semantic-v1",
+        "command_capability": "semantic-v2",
         "compatibility": {
             "package_version": "29.0.3",
             "package_version_code": 1199,
@@ -66,6 +68,7 @@ def _observation(sequence: int = 1) -> dict[str, object]:
         "max_health": 100.0,
         "terminal": False,
         "round_active": True,
+        "game_speed": 1.5,
         "upgrades": [
             {
                 "family": "attack",
@@ -280,3 +283,130 @@ def test_read_observation_returns_the_newest_buffered_snapshot() -> None:
     finally:
         client.close()
         peer.close()
+
+
+def test_no_initialized_run_is_state_not_an_observation() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(
+            encode_frame(
+                {"type": "run_unavailable", "sequence": 3, "reason": "no_initialized_run"}
+            )
+        )
+        state = client.read_state()
+
+        assert state == BridgeRunUnavailable(3, "no_initialized_run")
+
+        peer.sendall(
+            encode_frame(
+                {"type": "run_unavailable", "sequence": 4, "reason": "no_initialized_run"}
+            )
+        )
+        with pytest.raises(BridgeRunUnavailableError, match="no exact run state"):
+            client.read_observation()
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_state_sequence_must_advance_across_both_state_kinds() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(5)))
+        assert client.read_state().sequence == 5
+
+        peer.sendall(
+            encode_frame(
+                {"type": "run_unavailable", "sequence": 5, "reason": "no_initialized_run"}
+            )
+        )
+        with pytest.raises(BridgeStaleObservationError, match="not newer"):
+            client.read_state()
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
+    lifecycle = decode_command(
+        {
+            "type": "command", "protocol_version": 1, "request_id": "r",
+            "expected_observation_sequence": 2, "kind": "lifecycle", "action": "retry",
+        }
+    )
+
+    assert lifecycle.kind == "lifecycle"
+    assert lifecycle.action == "retry"
+    assert lifecycle.family is None and lifecycle.index is None
+
+    with pytest.raises(BridgeProtocolError, match="unsupported lifecycle action"):
+        decode_command(
+            {
+                "type": "command", "protocol_version": 1, "request_id": "r",
+                "expected_observation_sequence": 2, "kind": "lifecycle", "action": "buy_gems",
+            }
+        )
+    with pytest.raises(BridgeProtocolError, match="must not contain an upgrade target"):
+        decode_command(
+            {
+                "type": "command", "protocol_version": 1, "request_id": "r",
+                "expected_observation_sequence": 2, "kind": "lifecycle",
+                "action": "retry", "family": "attack", "index": 0,
+            }
+        )
+    with pytest.raises(BridgeProtocolError, match="only a lifecycle command"):
+        decode_command(
+            {
+                "type": "command", "protocol_version": 1, "request_id": "r",
+                "expected_observation_sequence": 2, "kind": "wait", "action": "retry",
+            }
+        )
+
+
+def test_lifecycle_wire_format_matches_the_native_parser_contract() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        client.read_state()
+        peer.sendall(
+            encode_frame(
+                {
+                    "type": "command_result", "protocol_version": 1, "request_id": "life-1",
+                    "outcome": "confirmed", "reason": "run_active", "observation_sequence": 1,
+                }
+            )
+        )
+        client.send_command(
+            {
+                "type": "command", "protocol_version": 1, "request_id": "life-1",
+                "expected_observation_sequence": 1, "kind": "lifecycle",
+                "action": "start_round",
+            }
+        )
+        raw = encode_frame(read_frame(peer, timeout=0.1))[4:].decode("utf-8")
+
+        assert raw.endswith('"kind":"lifecycle","action":"start_round"}')
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_step_command_bounds_the_advanced_game_time() -> None:
+    step = decode_command(
+        {
+            "type": "command", "protocol_version": 1, "request_id": "s",
+            "expected_observation_sequence": 1, "kind": "step", "game_ms": 250,
+        }
+    )
+
+    assert step.kind == "step" and step.game_ms == 250
+
+    for out_of_range in (0, 9, 5001):
+        with pytest.raises(BridgeProtocolError):
+            decode_command(
+                {
+                    "type": "command", "protocol_version": 1, "request_id": "s",
+                    "expected_observation_sequence": 1, "kind": "step",
+                    "game_ms": out_of_range,
+                }
+            )

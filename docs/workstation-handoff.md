@@ -234,6 +234,21 @@ important ones are that IL2CPP resolution must happen on the first client
 connection rather than at library load, `tier_unlocked` never gates a purchase,
 and cash is not a confirmation signal.
 
+`M1B-E002` then took the loop to whole episodes. In-run control needs no screen
+at all: a greedy scripted policy reaches wave 7 to 10 with 20 to 26 confirmed
+purchases per episode, driven only through the bridge. Costs are refreshed by the
+game's own `Upgrade*CostCalc` methods, so no tab interaction is needed. The
+episode boundary still needs one bridge-gated tap, because `Main` exists only in
+the battle scene and the known restart entry points are progression-gated here;
+`BattlePanelUI.StartNewRound` is the likely receiver but its GameObject name is
+unknown. Speed above the account's own 1.5 ceiling applies through the game's
+`GameSpeedModifier`, and decision cadence must scale with it or the policy is
+silently starved. Pause and unpause freeze the world exactly, but stepped mode
+currently costs about 430 ms per decision and is slower than free running; that
+overhead needs profiling. ADR 0007 records the decision that the instrumented
+clone is now the primary training and evaluation environment, with a bounded
+official cross-check at promotion.
+
 Continue from step 4. The open gates are family cost coverage without an
 undocumented manual step (a family's cost array only populates after its tab has
 been displayed), deterministic normal-speed scripted parity against the visible

@@ -21,7 +21,7 @@ protocol version `1`, bridge version, configured package version and version
 code, official signer SHA-256, original `libunity.so` SHA-256,
 `libil2cpp.so` SHA-256, Unity/metadata/profile compatibility values, and the
 current `game_speed`. All hashes must be lowercase 64-hex values. It advertises
-`mode: "instrumented_training"` and `command_capability: "semantic-v1"`.
+`mode: "instrumented_training"` and `command_capability: "semantic-v2"`.
 
 Subsequent `observation` messages have strictly increasing `sequence` values and
 include `lifecycle`, `wave`, `cash`, `health`, `max_health`, `terminal`,
@@ -33,10 +33,31 @@ include `lifecycle`, `wave`, `cash`, `health`, `max_health`, `terminal`,
 ```
 
 Families are `attack`, `defense`, and `utility`; each is capped at 64 entries.
-The bridge sends a heartbeat with the latest observation sequence at least once a
-second.
+Each observation also carries the current `game_speed`. The bridge sends a
+heartbeat with the latest observation sequence at least once a second, including
+while a slow lifecycle transition is in flight.
+
+Between episodes the game holds no initialized run. That is reported as a
+`run_unavailable` message carrying the same monotonic sequence, so a controller
+can still bind and send a command, and no invented run values are ever presented
+as observations.
 
 ## Command path
+
+Policy actions are `wait` and `buy_upgrade`. Navigation and speed are separate
+controller-owned kinds and can never become learned actions:
+
+- `lifecycle` with an allowlisted `action` dispatches one of the game's own
+  parameterless entry points and waits for the game's own state to agree;
+- `set_speed` writes the game's `gameSpeed` and dispatches its own
+  `GameSpeedModifier`, confirmed against the observed `game_speed`;
+- `step` unpauses for a bounded slice of game time and pauses again, so policy
+  latency costs no game time. The window is floored in wall time, because at a
+  high speed the requested slice can be shorter than one rendered frame.
+
+Stream cadence and `WAIT` are game-time quantities and shorten proportionally as
+speed rises; a fixed wall-clock cadence silently starves the policy of decisions
+per game second (see `M1B-E002`).
 
 One command may be in flight. A command binds the latest observation sequence and
 carries a bounded ASCII `request_id`; a repeated id or a superseded sequence is
@@ -72,10 +93,16 @@ Resolving at library-load time crashes the game process, because `libil2cpp.so`
 is loadable well before its runtime is usable; a connecting host client is the
 evidence that the game has had time to initialize.
 
-A family's cost array is only populated after that family's tab has been opened
-during the run (see `M1B-E001`). Entries without a positive cost are rejected,
-and an actor must open each family tab once per run until the game's own refresh
-path is identified.
+A family's cost array is only populated after that family has been displayed, so
+the bridge dispatches the game's own `UpgradeCostCalc`, `UpgradeDefenseCostCalc`,
+and `UpgradeUtilityCostCalc` when a run becomes active and after each confirmed
+purchase. Entries without a positive cost are still rejected.
+
+`Main` exists only inside the battle scene, so no `Main` method starts a run from
+the home screen, and the known restart entry points are progression-gated at this
+baseline. The episode boundary therefore still needs one bridge-gated tap. The
+build also keeps no live in-run clock: `roundTime` and `gameplayTimeThisRound`
+both read 0.0 throughout a run, so the controller owns run time.
 
 `tower_bridge.cpp` uses only exported IL2CPP APIs for fields and arrays:
 `il2cpp_field_get_value`, `il2cpp_field_static_get_value`,

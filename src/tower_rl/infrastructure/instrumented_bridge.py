@@ -20,6 +20,23 @@ from enum import StrEnum
 from typing import Any
 
 PROTOCOL_VERSION = 1
+MIN_STEP_GAME_MS = 10
+MAX_STEP_GAME_MS = 5000
+MIN_REQUESTED_SPEED = 0.5
+MAX_REQUESTED_SPEED = 10.0
+COMMAND_CAPABILITY = "semantic-v2"
+LIFECYCLE_ACTIONS = frozenset(
+    {
+        "start_round",
+        "retry",
+        "go_home",
+        "enable_auto_restart",
+        "speed_max",
+        "speed_down",
+        "pause",
+        "unpause",
+    }
+)
 DEFAULT_MAX_FRAME_SIZE = 65_536
 DEFAULT_MAX_UPGRADE_ENTRIES = 192
 MAX_DRAINED_OBSERVATIONS = 64
@@ -47,6 +64,10 @@ class BridgeTimeoutError(InstrumentedBridgeError):
 
 class BridgeStaleObservationError(InstrumentedBridgeError):
     """An observation or heartbeat moved backwards or repeated a sequence."""
+
+
+class BridgeRunUnavailableError(InstrumentedBridgeError):
+    """No run is initialized, so exact run state does not exist yet."""
 
 
 class CommandOutcome(StrEnum):
@@ -117,7 +138,16 @@ class BridgeObservation:
     max_health: float
     terminal: bool
     round_active: bool
+    game_speed: float
     upgrades: tuple[UpgradeInventoryEntry, ...]
+
+
+@dataclass(frozen=True)
+class BridgeRunUnavailable:
+    """The game holds no initialized run; only a lifecycle command applies."""
+
+    sequence: int
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -127,6 +157,9 @@ class BridgeCommand:
     kind: str
     family: str | None = None
     index: int | None = None
+    action: str | None = None
+    value: float | None = None
+    game_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -185,10 +218,10 @@ def decode_handshake(
     bridge_version = _string(message, "bridge_version")
     if (
         message.get("mode") != "instrumented_training"
-        or message.get("command_capability") != "semantic-v1"
+        or message.get("command_capability") != COMMAND_CAPABILITY
     ):
         raise BridgeCompatibilityError(
-            "bridge must advertise instrumented training and semantic-v1 commands"
+            f"bridge must advertise instrumented training and {COMMAND_CAPABILITY} commands"
         )
     compatibility_value = message.get("compatibility")
     if not isinstance(compatibility_value, Mapping):
@@ -260,6 +293,7 @@ def decode_observation(
         max_health=_finite_number(message, "max_health"),
         terminal=_bool(message, "terminal"),
         round_active=_bool(message, "round_active"),
+        game_speed=_finite_number(message, "game_speed"),
         upgrades=tuple(entries),
     )
 
@@ -275,11 +309,45 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
     kind = _string(message, "kind")
     family = message.get("family")
     index = message.get("index")
+    action = message.get("action")
+    if kind in {"wait", "lifecycle", "set_speed", "step"} and (
+        family is not None or index is not None
+    ):
+        raise BridgeProtocolError(f"{kind} command must not contain an upgrade target")
+    if kind != "lifecycle" and action is not None:
+        raise BridgeProtocolError("only a lifecycle command carries an action")
     if kind == "wait":
-        if family is not None or index is not None:
-            raise BridgeProtocolError("wait command must not contain an upgrade target")
         return BridgeCommand(
             request_id, _int(message, "expected_observation_sequence", minimum=1), kind
+        )
+    if kind == "step":
+        game_ms = _int(message, "game_ms", minimum=MIN_STEP_GAME_MS)
+        if game_ms > MAX_STEP_GAME_MS:
+            raise BridgeProtocolError("step game time is outside the allowed range")
+        return BridgeCommand(
+            request_id,
+            _int(message, "expected_observation_sequence", minimum=1),
+            kind,
+            game_ms=game_ms,
+        )
+    if kind == "set_speed":
+        value = _finite_number(message, "value")
+        if not MIN_REQUESTED_SPEED <= value <= MAX_REQUESTED_SPEED:
+            raise BridgeProtocolError("requested speed is outside the allowed training range")
+        return BridgeCommand(
+            request_id,
+            _int(message, "expected_observation_sequence", minimum=1),
+            kind,
+            value=value,
+        )
+    if kind == "lifecycle":
+        if not isinstance(action, str) or action not in LIFECYCLE_ACTIONS:
+            raise BridgeProtocolError("unsupported lifecycle action")
+        return BridgeCommand(
+            request_id,
+            _int(message, "expected_observation_sequence", minimum=1),
+            kind,
+            action=action,
         )
     if kind != "buy_upgrade" or not isinstance(family, str):
         raise BridgeProtocolError("unsupported command kind")
@@ -371,22 +439,31 @@ class InstrumentedBridgeClient:
             raise
 
     def read_observation(self) -> BridgeObservation:
-        """Return the freshest observation the bridge has already sent.
+        """Return the freshest exact run state, or fail when no run exists."""
+        state = self.read_state()
+        if isinstance(state, BridgeRunUnavailable):
+            raise BridgeRunUnavailableError(f"no exact run state: {state.reason}")
+        return state
 
-        The bridge streams snapshots at a fixed cadence. A caller that consumed
-        one queued frame per decision would fall progressively behind and bind
-        its commands to an already-superseded sequence, so buffered frames are
-        drained and only the newest observation is returned.
+    def read_state(self) -> BridgeObservation | BridgeRunUnavailable:
+        """Return the freshest state the bridge has already sent.
+
+        The bridge streams state at a fixed cadence. A caller that consumed one
+        queued frame per decision would fall progressively behind and bind its
+        commands to an already-superseded sequence, so buffered frames are
+        drained and only the newest state is returned. Between episodes the game
+        holds no initialized run, which is reported as its own state rather than
+        as invented run values.
         """
         try:
-            observation = self._read_observation()
+            state = self._read_state()
             for _ in range(MAX_DRAINED_OBSERVATIONS):
                 if not self._has_buffered_frame():
                     break
                 buffered = self._consume_message(self._read_message(self.read_timeout))
                 if buffered is not None:
-                    observation = buffered
-            return observation
+                    state = buffered
+            return state
         except InstrumentedBridgeError:
             self.close()
             raise
@@ -397,7 +474,7 @@ class InstrumentedBridgeClient:
         readable, _, _ = select.select([self._socket], [], [], 0)
         return bool(readable)
 
-    def _read_observation(self) -> BridgeObservation:
+    def _read_state(self) -> BridgeObservation | BridgeRunUnavailable:
         if self._socket is None or self._handshake is None:
             raise BridgeDisconnectedError("bridge is not connected")
         self._check_heartbeat()
@@ -405,23 +482,28 @@ class InstrumentedBridgeClient:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise BridgeTimeoutError("timed out waiting for an observation")
-            observation = self._consume_message(self._read_message(remaining))
-            if observation is not None:
-                return observation
+                raise BridgeTimeoutError("timed out waiting for bridge state")
+            state = self._consume_message(self._read_message(remaining))
+            if state is not None:
+                return state
 
-    def _consume_message(self, message: Mapping[str, Any]) -> BridgeObservation | None:
-        """Apply one inbound stream message, returning an observation when it is one."""
+    def _consume_message(
+        self, message: Mapping[str, Any]
+    ) -> BridgeObservation | BridgeRunUnavailable | None:
+        """Apply one inbound stream message, returning bridge state when it is one."""
         message_type = message.get("type")
         if message_type == "observation":
             observation = decode_observation(message, max_upgrade_entries=self.max_upgrade_entries)
-            if observation.sequence <= self._last_observation_sequence:
-                raise BridgeStaleObservationError(
-                    "observation sequence is not newer than the previous observation"
-                )
-            self._last_observation_sequence = observation.sequence
+            self._advance_sequence(observation.sequence)
             self._check_heartbeat()
             return observation
+        if message_type == "run_unavailable":
+            unavailable = BridgeRunUnavailable(
+                _int(message, "sequence", minimum=1), _string(message, "reason")
+            )
+            self._advance_sequence(unavailable.sequence)
+            self._check_heartbeat()
+            return unavailable
         if message_type == "heartbeat":
             sequence = _int(message, "last_observation_sequence", minimum=0)
             if sequence != self._last_observation_sequence:
@@ -456,6 +538,12 @@ class InstrumentedBridgeClient:
             if command.kind == "buy_upgrade":
                 canonical["family"] = command.family
                 canonical["index"] = command.index
+            elif command.kind == "lifecycle":
+                canonical["action"] = command.action
+            elif command.kind == "set_speed":
+                canonical["value"] = command.value
+            elif command.kind == "step":
+                canonical["game_ms"] = command.game_ms
             self._write_message(canonical)
             deadline = time.monotonic() + self.read_timeout
             while True:
@@ -499,6 +587,13 @@ class InstrumentedBridgeClient:
             raise BridgeTimeoutError("timed out writing command") from error
         except OSError as error:
             raise BridgeDisconnectedError(f"bridge socket write failed: {error}") from error
+
+    def _advance_sequence(self, sequence: int) -> None:
+        if sequence <= self._last_observation_sequence:
+            raise BridgeStaleObservationError(
+                "state sequence is not newer than the previous state"
+            )
+        self._last_observation_sequence = sequence
 
     def _check_heartbeat(self) -> None:
         if (

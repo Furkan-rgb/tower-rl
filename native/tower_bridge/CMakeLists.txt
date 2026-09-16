@@ -11,6 +11,8 @@ set(TOWER_BRIDGE_METADATA_VERSION "39" CACHE STRING "IL2CPP metadata version")
 set(TOWER_BRIDGE_VERSION "tower-bridge-v1" CACHE STRING "Bridge version")
 set(TOWER_BRIDGE_PROFILE_ID "unconfigured" CACHE STRING "Private training profile id")
 
+option(TOWER_BRIDGE_DIAGNOSTICS "Log the semantic member inventory for a new game build" OFF)
+
 add_library(tower_bridge SHARED tower_bridge.cpp)
 target_compile_features(tower_bridge PRIVATE cxx_std_17)
 target_compile_options(tower_bridge PRIVATE -Wall -Wextra -Werror -fvisibility=hidden)
@@ -27,3 +29,7 @@ target_compile_definitions(tower_bridge PRIVATE
     TOWER_BRIDGE_VERSION="${TOWER_BRIDGE_VERSION}"
     TOWER_BRIDGE_PROFILE_ID="${TOWER_BRIDGE_PROFILE_ID}"
 )
+
+if(TOWER_BRIDGE_DIAGNOSTICS)
+  target_compile_definitions(tower_bridge PRIVATE TOWER_BRIDGE_DIAGNOSTICS=1)
+endif()

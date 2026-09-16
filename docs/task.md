@@ -17,6 +17,11 @@ For a fixed permanent account state, train an agent to maximize its expected fin
 
 All experience used for the primary agent must originate from actual gameplay in the official APK. The APK remains authoritative for combat, enemies, timing, upgrades, prices, randomness, and all other game mechanics.
 
+Per ADR 0007, that gameplay runs on the private instrumented clone of the
+official package, which the game itself still governs. The unchanged, unrooted
+official instance is retained as a bounded cross-check at model promotion, not as
+the source of routine experience.
+
 ## 3. Required end state
 
 At completion, a user on the target workstation must be able to:
@@ -509,7 +514,9 @@ Exit criteria:
 
 The project is done only when all of the following are true:
 
-- The official APK is the sole source of primary gameplay experience.
+- The official APK is the sole source of primary gameplay experience, running on
+  the instrumented clone defined by ADR 0006 and ADR 0007, with the unrooted
+  official instance retained as the promotion cross-check.
 - Tier 1 is played from a versioned fixed permanent account state.
 - The 1,000-attempt reliability gate passes with at least 99% valid episodes and no silent corruption.
 - All supported in-run actions and `WAIT` are observable, executable, and tested.

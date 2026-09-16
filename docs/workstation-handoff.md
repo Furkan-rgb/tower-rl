@@ -189,6 +189,28 @@ relevant ADRs, and current controller/vision tests. After any live run, restore
 the golden snapshot and verify with `uv run tower-rl probe --serial
 emulator-5554 --restore-snapshot <snapshot-name>`.
 
+## Open question — screen calibration after progression drift — 2026-09-17
+
+Stage B is blocked on one calibration question, recorded rather than guessed at.
+
+The clone's account has drifted from the documented baseline by playing: Highest
+Wave 2 to 11, 53 coins to 909, with a `MILESTONES` button and a gem/video widget
+now on the home screen. The Battle-home classifier samples pixel (10, 200), which
+was background at the baseline and now falls inside the new widget, so the screen
+no longer classifies and the adapter correctly refuses the boundary tap.
+
+The question is which anchors are stable under progression. Candidates that look
+structurally durable are the Difficulty panel, the BATTLE button interior and the
+bottom navigation bar, but none of that is verified. Recalibration must be
+checked against a live frame rather than reasoned about, and the resulting visual
+profile should be versioned alongside the progression profile as ADR 0008
+implies. Screenshots carry account state and must not be committed; record the
+sampled anchor values instead.
+
+Also open: `M1B-E003` measured throughput under `-gpu host`, which
+`M1B-E004` then rejected for rendering the frame incorrectly. Those numbers are
+an upper bound until re-measured under `-gpu lavapipe`.
+
 ## Experimental no-OCR continuation — 2026-09-15
 
 The scalability investigation in `M1-E007` established a viable behind-the-GUI

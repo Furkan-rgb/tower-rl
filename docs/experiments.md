@@ -7,6 +7,73 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E004 — Progression drift breaks the calibrated screen gate
+
+**Date:** 2026-09-17
+**Status:** Stage B blocked at the boundary tap; two findings, one of which
+reverses the previous entry's renderer recommendation
+
+Wiring the completed pipeline to the real clone stopped before a single episode
+ran, for a reason worth more than the episodes would have been.
+
+### Host GPU rendering corrupts the frame
+
+`M1B-E003` recommended `-gpu host` on the strength of boot time and an unbroken
+speed ceiling. Under sustained use it renders the game incorrectly: persistent
+smearing across large triangular regions, magenta and cyan banding over icons,
+and ghosted text. Game logic is unaffected, because the bridge reads exact state
+rather than pixels, but the frame is not trustworthy. Screen classification
+returned `unknown` and `supported_modal` on a screen that was plainly Battle
+home.
+
+That recommendation is withdrawn for any configuration that must classify the
+screen. The clone was returned to `-gpu lavapipe`, which renders correctly. The
+throughput measurements in `M1B-E003` were taken under host rendering and are
+therefore an upper bound that still needs confirming under lavapipe; the earlier
+lavapipe sweep did reach 32x with no saturation, so the loss is expected to be
+small but is not yet measured.
+
+The safety gate behaved correctly throughout: with the screen unclassifiable, the
+adapter refuses to tap rather than tapping anyway.
+
+### The account has drifted out of its documented baseline
+
+Under lavapipe the frame is clean and classification still fails. The cause is
+not the renderer.
+
+The documented fixed baseline is Highest Wave 2 with 53 coins. The clone now
+reports Highest Wave 11 with 909 coins, and its home screen carries UI that the
+baseline did not: a `MILESTONES` button with an unread badge, and a gem and
+video-reward widget in the top-left corner. Those appeared because episodes were
+played, not because anything was spent.
+
+The calibrated classifier samples three anchors for Battle home. Two still match
+exactly. The third, at pixel (10, 200), sampled the dark background at the
+baseline and now falls inside the new top-left widget, reading pure white
+(255, 255, 255) against an expected (28, 24, 53). One anchor landing on
+progression-unlocked UI is enough to make the screen unclassifiable, which
+refuses the boundary tap, which prevents any unattended episode from starting.
+
+### What this means
+
+Playing the game necessarily changes visible permanent state. Coins accumulate
+and the highest-wave record advances even though nothing combat-affecting was
+purchased and no progression was spent, so this is not a violation of the frozen
+baseline in the sense ADR 0008 governs. It is nonetheless real drift: the visual
+profile is bound to the progression profile, exactly as ADR 0008's profile
+identity implies, and the two must be versioned together.
+
+Two consequences follow. Calibration anchors must be chosen in regions that
+progression does not repaint, and verified against a live frame rather than
+assumed to hold. And the baseline fingerprint must separate combat-affecting
+permanent state, which must not change, from earned-record state such as coins
+and the highest-wave record, which necessarily accumulates during training; a
+fingerprint that fails on the second would fail on every training run.
+
+No episodes were run, nothing was spent, the overlay was unmounted, `libunity.so`
+again matched its original SHA-256, package identity was unchanged, airplane mode
+was re-enabled and no emulator was left running.
+
 ## M1B-E003 — Throughput ceiling, renderer, and decision cadence
 
 **Date:** 2026-09-17

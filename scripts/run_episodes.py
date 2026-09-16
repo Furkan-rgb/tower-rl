@@ -77,6 +77,12 @@ def main() -> int:
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     parser.add_argument("--slice-ms", type=int, default=250)
+    parser.add_argument(
+        "--pause-above",
+        type=float,
+        default=float("inf"),
+        help="pause between decisions above this speed; use a huge value to free-run",
+    )
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-episodes.json"))
     arguments = parser.parse_args()
 
@@ -108,6 +114,7 @@ def main() -> int:
         client=client,
         device=AdbDevice(arguments.serial),
         requested_speed=arguments.speed,
+        pause_stepping_speed=arguments.pause_above,
     )
     environment = InstrumentedRunEnvironment(
         port=adapter,
@@ -129,11 +136,13 @@ def main() -> int:
             actor_config=ActorConfig(actor_id=f"{arguments.serial}:{arguments.policy}"),
         )
     finally:
+        adapter.release()
         client.close()
 
     record = to_record(report)
     record["requested_speed"] = arguments.speed
     record["slice_game_ms"] = arguments.slice_ms
+    record["pause_above_speed"] = arguments.pause_above
     record["wall_seconds"] = round(time.monotonic() - started, 1)
     record["episodes_per_hour"] = (
         round(report.valid_episodes / (time.monotonic() - started) * 3600, 1)

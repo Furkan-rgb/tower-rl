@@ -30,10 +30,13 @@ from tower_rl.infrastructure.visual_profile import (
 from tower_rl.ports.android import ScreenPoint
 from tower_rl.ports.run_port import RunPortError
 
-#: Above this speed the world moves faster than a host round trip, so the game is
-#: paused between decisions and advanced in bounded slices instead. Below it,
-#: free running is cheaper. Measured in `M1B-E003`.
-PAUSE_STEPPING_SPEED = 16.0
+#: Pausing between decisions is disabled by default. The reasoning that it should
+#: switch on above 16x was sound about decision density and wrong about cost:
+#: every slice pays a host round trip and a wall-clock floor, and `M1B-E006`
+#: measured the same policy at 64x reaching wave 10 in 14.6 s free-running against
+#: wave 3 in 273 s stepped - roughly nineteen times the throughput, and better
+#: play. Set a finite threshold only if decision density is shown to bind.
+PAUSE_STEPPING_SPEED = float("inf")
 
 #: The only two coordinates this loop may ever touch, each gated on a positive
 #: screen classification immediately before use.
@@ -60,6 +63,10 @@ class InstrumentedRunAdapter:
     client: InstrumentedBridgeClient
     device: object  # AdbDevice-shaped: screenshot() and tap() only
     requested_speed: float = 64.0
+    #: Pause between decisions above this speed. Configurable because the right
+    #: value is an empirical question: pausing protects decision density, but
+    #: each slice costs a round trip, and M1B-E006 measures which dominates.
+    pause_stepping_speed: float = PAUSE_STEPPING_SPEED
     episode_start_timeout: float = 120.0
     #: The result panel animates in; classifying earlier sees a transition, not a
     #: screen, and tapping across a transition is the M1-E005 failure.
@@ -138,7 +145,7 @@ class InstrumentedRunAdapter:
 
     def advance(self, *, expected_sequence: int, game_ms: int) -> BridgeCommandResult:
         """Advance game time, pausing between decisions when the world is fast."""
-        if self._last_speed >= PAUSE_STEPPING_SPEED:
+        if self._last_speed >= self.pause_stepping_speed:
             # Above the threshold a host round trip costs more game time than the
             # slice itself, so deliberation must not happen while the world runs.
             return self.client.send_command(
@@ -183,6 +190,26 @@ class InstrumentedRunAdapter:
         applied = self.client.read_state()
         if isinstance(applied, BridgeObservation):
             self._last_speed = applied.game_speed
+
+    def release(self) -> None:
+        """Leave the game running, whatever mode this adapter used.
+
+        A paused game outlives the client that paused it: the next session then
+        advances nothing and every episode times out. `M1B-E006` saw exactly that
+        cascade, so releasing is part of shutting down rather than an optimisation.
+        """
+        state = self.client.read_state()
+        if isinstance(state, BridgeObservation):
+            self.client.send_command(
+                {
+                    "type": "command",
+                    "protocol_version": 1,
+                    "request_id": self._request_id("unpause"),
+                    "expected_observation_sequence": state.sequence,
+                    "kind": "lifecycle",
+                    "action": "unpause",
+                }
+            )
 
     def _request_id(self, kind: str) -> str:
         return f"{kind}-{time.monotonic_ns() % 1_000_000_000}"

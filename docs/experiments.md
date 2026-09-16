@@ -7,6 +7,95 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E006 — Stage B: pause-stepping reversed, and the variance that sets the protocol
+
+**Date:** 2026-09-17
+**Status:** Pipeline runs end to end on the device; scripted variance measured;
+a 24 percent invalid-episode rate is the next blocker
+
+The completed pipeline ran against the real clone for the first time. Three
+findings, one of which reverses a decision made two entries ago.
+
+### Pause-stepping is withdrawn
+
+`M1B-E003` concluded that above roughly 16x the environment should pause between
+decisions, because a 50 ms host round trip is 3.2 seconds of game time at 64x and
+the world otherwise runs away from the policy. That reasoning was about decision
+density and it was correct about density. It was wrong about cost.
+
+The same scripted policy, same device, same speed:
+
+| Mode | Final wave | Wall seconds per episode | Episodes per hour |
+| --- | --- | --- | --- |
+| Pause-stepping | 3 | 273 | 13 |
+| Free running | 10 | 14.6 | about 245 |
+
+Every slice pays a host round trip and a wall-clock floor, and at a 250 ms slice
+an episode needs hundreds of them, so the overhead dominates completely. Pausing
+is roughly nineteen times slower and plays worse, because a decision advancing up
+to two seconds of game time also buys less often. The default is now free
+running; a finite pause threshold remains configurable if decision density is
+ever shown to bind.
+
+A related failure was found by accident. A free-running run immediately after a
+stepped one produced no valid episode at all, because the stepped session left
+the game paused and a paused game outlives the client that paused it. Releasing
+the pause is now part of shutting the adapter down.
+
+### The variance that every protocol number depends on
+
+Fifty episodes of the scripted policy at 64x:
+
+| Quantity | Value |
+| --- | --- |
+| Valid episodes | 38 of 50 |
+| Mean final wave | 9.74 |
+| Median final wave | 10 |
+| Standard deviation | 1.22 |
+| Lower quartile | 9 |
+| Range | 6 to 11 |
+| Episodes per hour | 185 |
+
+The standard deviation is 1.22 waves, not the roughly 3 estimated from three
+episodes in `M1B-E003`. That estimate was quoted in `docs/rl-candidates.md` to
+argue that about 140 evaluation episodes per arm would be needed; on the measured
+variance the requirement is far smaller:
+
+| Difference to detect | Episodes per arm | Wall time at 185 per hour |
+| --- | --- | --- |
+| 0.5 wave | 94 | 30 minutes |
+| 1.0 wave | 23 | 8 minutes |
+| 1.5 wave | 10 | 3 minutes |
+| 2.0 wave | 6 | 2 minutes |
+
+Two-sample, eighty percent power, five percent significance. Detecting a one-wave
+difference costs about eight minutes per arm, which makes seeding and
+interleaving arms cheap rather than aspirational. It also sets an honest floor on
+what may be claimed: a half-wave difference needs ninety-four episodes per arm
+and must not be asserted from fewer.
+
+### The next blocker: a 24 percent invalid-episode rate
+
+Twelve of fifty episodes ended `observation_invalid` rather than `game_over`.
+That is the whole reason for a validity taxonomy: those episodes are excluded
+from the distribution above rather than quietly averaged into it, so the wave
+figures are drawn from genuine episodes only.
+
+It is nonetheless far from the 99 percent validity the M2 gate requires, and it
+must be diagnosed before any soak or baseline measurement is trusted. The
+classification is recorded but its cause is not yet known; the candidates are the
+transition validators in `domain/run_state.py`, a stale observation crossing an
+episode boundary, and the free-running stream advancing its sequence between a
+read and the command bound to it.
+
+Throughput here was 185 episodes per hour against the 502 measured in
+`M1B-E003`, which was taken under host GPU rendering, on a simpler loop, and
+without the boundary tap and its six-second settle. Re-measuring throughput under
+lavapipe with the real loop remains open.
+
+Cleanup verified the original `libunity.so` SHA-256, unchanged package identity,
+no mounts, no leftover artifacts, airplane mode enabled and no emulator running.
+
 ## M1B-E005 — Recalibrating the screen gate against the game's own lifecycle
 
 **Date:** 2026-09-17

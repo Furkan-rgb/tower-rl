@@ -132,15 +132,36 @@ def test_a_terminal_run_taps_retry_from_the_result_screen(monkeypatch) -> None:
     assert device.taps == [module.RETRY_BUTTON]
 
 
-def test_a_fast_world_is_advanced_while_paused() -> None:
+def test_pause_stepping_is_off_by_default_because_it_cost_throughput() -> None:
+    """M1B-E006: stepping at 64x gave wave 3 in 273s against wave 10 in 14.6s."""
     client = FakeClient(states=[_observation(speed=64.0)])
     adapter = _adapter(client, FakeDevice())
     adapter.read_state()
 
     adapter.advance(expected_sequence=1, game_ms=250)
 
+    assert client.sent[-1]["kind"] == "wait"
+
+
+def test_pause_stepping_can_still_be_requested_explicitly() -> None:
+    client = FakeClient(states=[_observation(speed=64.0)])
+    adapter = _adapter(client, FakeDevice(), pause_stepping_speed=16.0)
+    adapter.read_state()
+
+    adapter.advance(expected_sequence=1, game_ms=250)
+
     assert client.sent[-1]["kind"] == "step"
     assert client.sent[-1]["game_ms"] == 250
+
+
+def test_release_leaves_the_game_running_for_the_next_session() -> None:
+    client = FakeClient(states=[_observation(speed=64.0)])
+    adapter = _adapter(client, FakeDevice())
+
+    adapter.release()
+
+    assert client.sent[-1]["kind"] == "lifecycle"
+    assert client.sent[-1]["action"] == "unpause"
 
 
 def test_a_slow_world_free_runs_instead_of_pausing() -> None:

@@ -40,6 +40,10 @@ def _sdk_roots() -> tuple[Path, ...]:
     conventional = [
         Path.home() / "Library/Android/sdk",
         Path.home() / "Android/Sdk",
+        # Where the Linux workstation bootstrap installs it. Without this an
+        # unattended run cannot find adb unless a shell happens to export the
+        # SDK on PATH, which a background process does not inherit.
+        Path.home() / ".local/share/android-sdk",
         Path("/opt/homebrew/share/android-commandlinetools"),
     ]
     roots: list[Path] = []

@@ -561,11 +561,14 @@ survivability
   hp_fraction
   hp_reading_available
 
-upgrade state for every supported action
+one row per supported action, consumed by the shared per-entry encoder
   known level
+  its own maximum level and remaining headroom
   current cost
   affordable
   maxed
+  family
+  upgrade identity
   reading age
 
 ui/context
@@ -583,7 +586,25 @@ mask and quality
 
 Use log scaling for unbounded positive quantities such as cash, cost, and wave while retaining normalized/clipped raw-derived features where useful. Represent missing optional readings with an explicit availability bit; never encode missing as an ordinary numeric value.
 
-Controller-owned history can include a short vector of recent wave, health, and cash deltas. The LSTM remains responsible for longer temporal context.
+The observation is deliberately what an attentive player can perceive, expressed
+in a learnable encoding. Log scaling, affordability ratios, and the action mask
+add no information the interface does not already show — the game itself greys
+out what cannot be bought — and engine internals a player cannot obtain, such as
+spawn schedules or the round seed, stay out of the policy input entirely.
+
+Rates of change are left to the LSTM rather than hand-computed. A short vector of
+recent wave, health, and cash deltas is a documented ablation, added only if it
+demonstrably helps, not a default. `play_time` is provenance and liveness
+evidence and is never a policy feature.
+
+Two deliberate deviations from strict player parity are recorded here. All three
+upgrade families are supplied at once, although a player sees one tab at a time,
+because tab switching is free and controller-owned and memorizing hidden tabs
+carries no strategic content. Against that, the observation is currently poorer
+than a player's view: it carries no enemy, threat, or boss-wave information, so
+the agent must infer pressure from how health moves. Closing that gap with the
+game's own visible boss and wave flags is the first observation extension to
+evaluate.
 
 ### 7.2 Action schema
 
@@ -796,25 +817,64 @@ If real-game learning time is prohibitive for debugging, unit-test the learner w
 
 ### 9.3 Final network
 
-Initial R2D2-style architecture:
+The observation has two parts with different shapes: a small set of run scalars,
+and one row per in-run upgrade. The network is built around that split so the
+number of upgrades is data rather than architecture.
 
 ```text
-normalized numeric observation
-        +
-previous action one-hot
-        +
-previous reward / action outcome
-        ↓
-MLP encoder (2 layers, LayerNorm, ReLU/SiLU)
-        ↓
-single-layer LSTM
-        ↓
-dueling value and advantage heads
-        ↓
-masked Q-values for semantic actions
+run scalars                     upgrade rows (60 today)
+(wave, cash, health fraction,   (cost, level, max_level, headroom,
+ max health, last action,        affordability, family, upgrade-id embedding)
+ last outcome)                          ↓
+        ↓                        shared per-entry encoder
+   scalar encoder                (same weights for every row)
+        ↓                               ↓
+        └────────► concat ◄──── pooled entry summary
+                      ↓
+              single-layer LSTM
+                      ↓
+        dueling value and advantage heads
+                      ↓
+   WAIT advantage from the recurrent state; each BUY advantage from the
+   shared scorer applied to (entry embedding ⊕ recurrent state)
+                      ↓
+        masked Q-values for semantic actions
 ```
 
-Start with a compact model: 128–256 hidden units in the encoder and LSTM. The 4090 is not the reason to enlarge it; environment sample quality and throughput dominate. Add a CNN playfield branch only after an ablation shows structured observations are insufficient.
+The per-entry encoder and the action scorer share one set of weights across every
+upgrade. Parameter count therefore does not depend on how many upgrades exist,
+and the policy scores an upgrade from what it is — price relative to current
+cash, level against its own ceiling, family — rather than from a weight vector
+bound to its index.
+
+Each upgrade also carries a learned identity embedding, because two upgrades with
+identical price and level do not behave identically. The embedding table is
+deliberately larger than the current roster, so an upgrade that becomes available
+later occupies an unused row instead of forcing a reshape.
+
+This is what makes a roster change survivable. In the supported baseline the
+game already reports every entry and flips `unlocked`, so newly available
+upgrades do not change the action space at all: 54 of 60 entries are masked at
+the fixed baseline and unmasking one is not a schema change. If a game update
+genuinely adds an upgrade, the shared scorer still produces a sensible value for
+it from its features, and only its identity embedding starts untrained. The
+response is to fine-tune with fresh exploration over the newly available actions,
+not to retrain from scratch.
+
+What does change on a roster change is the dynamics, not the network: a strong
+new upgrade rewrites the spending economy. Old experience remains valid evidence
+about a different regime, so replay stays tagged with its profile and schema
+version, mixed deliberately rather than silently, and results are compared within
+a profile as section 8.6 requires.
+
+Masking is applied to advantages before both the acting argmax and the
+bootstrapped target maximum, so an invalid purchase can never be selected or
+back up value through the target.
+
+Start with a compact model: 128–256 hidden units in the scalar encoder, entry
+encoder, and LSTM. The 4090 is not the reason to enlarge it; environment sample
+quality and throughput dominate. Add a CNN playfield branch only after an
+ablation shows structured observations are insufficient.
 
 ### 9.4 Initial recurrent replay configuration
 

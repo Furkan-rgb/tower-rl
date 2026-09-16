@@ -153,7 +153,7 @@ def test_impossible_readings_invalidate_rather_than_normalize() -> None:
     state = BUILDER.build(_reading(health=9.0, max_health=5.0), captured_at_monotonic=1.0)
 
     assert not state.valid
-    assert "health fraction outside [0, 1]" in state.invalid_reasons
+    assert "health exceeds maximum" in state.invalid_reasons
     # The value is still clamped for downstream safety, never silently trusted.
     assert state.health_fraction == pytest.approx(1.0)
 
@@ -205,3 +205,34 @@ def test_an_upgrade_level_cannot_move_backwards_inside_an_episode() -> None:
     after = BUILDER.build(_reading(sequence=2), captured_at_monotonic=2.0)
 
     assert "attack:0 level moved backwards" in validate_transition(before, after)
+
+
+def test_overkill_on_the_killing_blow_is_a_valid_terminal_reading() -> None:
+    """M1B-E007: the game stores negative health after the fatal hit."""
+    state = BUILDER.build(
+        _reading(lifecycle="terminal", health=-37.5, max_health=5.0),
+        captured_at_monotonic=1.0,
+    )
+
+    assert state.valid, state.invalid_reasons
+    assert state.terminal
+    assert state.health_fraction == 0.0
+
+
+def test_negative_health_during_an_active_run_is_contradictory() -> None:
+    state = BUILDER.build(
+        _reading(lifecycle="active", health=-1.0, max_health=5.0), captured_at_monotonic=1.0
+    )
+
+    assert not state.valid
+    assert "negative health in an active run" in state.invalid_reasons
+
+
+def test_health_above_maximum_is_invalid_in_any_lifecycle() -> None:
+    for lifecycle in ("active", "terminal"):
+        state = BUILDER.build(
+            _reading(lifecycle=lifecycle, health=9.0, max_health=5.0),
+            captured_at_monotonic=1.0,
+        )
+        assert not state.valid
+        assert "health exceeds maximum" in state.invalid_reasons

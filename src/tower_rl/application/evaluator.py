@@ -1,9 +1,9 @@
 """Exploration-free evaluation that reports a distribution, never a best run.
 
 `best` must mean the strongest checkpoint under a repeatable multi-episode
-protocol.  A single high wave is noise: the scripted policy's own final wave
-varies by roughly three waves, so this module deliberately makes it hard to
-report a headline number without the spread beside it.
+protocol.  A single high wave is noise: the scripted policy's own final wave has
+a measured standard deviation of 1.22 waves (`M1B-E006`), so this module
+deliberately makes it hard to report a headline number without the spread.
 """
 
 from __future__ import annotations
@@ -61,6 +61,9 @@ class EvaluationReport:
     invalid_episodes: int
     distribution: WaveDistribution
     invalid_by_reason: dict[str, int] = field(default_factory=dict)
+    #: The validator text behind each invalid episode. An outcome without its
+    #: reason cannot be diagnosed later (M1B-E007).
+    invalid_detail: dict[str, int] = field(default_factory=dict)
     total_decisions: int = 0
     total_wall_seconds: float = 0.0
 
@@ -122,9 +125,12 @@ def evaluate(
         raise ValueError("no valid episode was produced; the arm cannot be scored")
 
     reasons: dict[str, int] = {}
+    detail: dict[str, int] = {}
     for summary in invalid:
         key = summary.termination.value
         reasons[key] = reasons.get(key, 0) + 1
+        for text in summary.termination_detail or ("no detail recorded",):
+            detail[text] = detail.get(text, 0) + 1
 
     return EvaluationReport(
         policy=describe(policy),
@@ -135,6 +141,7 @@ def evaluate(
         invalid_episodes=len(invalid),
         distribution=WaveDistribution.of([summary.final_wave for summary in valid]),
         invalid_by_reason=reasons,
+        invalid_detail=detail,
         total_decisions=decisions,
         total_wall_seconds=round(wall, 2),
     )
@@ -152,6 +159,7 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "invalid_episodes": report.invalid_episodes,
         "invalid_rate": round(report.invalid_rate, 4),
         "invalid_by_reason": report.invalid_by_reason,
+        "invalid_detail": report.invalid_detail,
         "mean_final_wave": round(spread.mean, 3),
         "median_final_wave": spread.median,
         "stdev_final_wave": round(spread.stdev, 3) if spread.stdev == spread.stdev else None,

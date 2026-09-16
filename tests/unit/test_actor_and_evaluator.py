@@ -159,3 +159,25 @@ def test_records_carry_everything_needed_to_compare_arms_later() -> None:
     assert record["valid_episodes"] == 3
     assert "mean_final_wave" in record and "stdev_final_wave" in record
     assert "total_decisions" in record and "game_speed" in record
+
+
+def test_invalid_episodes_carry_their_validator_reason() -> None:
+    """A rate without reasons cannot be fixed; M1B-E007 needed the text."""
+    from tower_rl.application.evaluator import EvaluationReport, WaveDistribution, to_record
+
+    report = EvaluationReport(
+        policy="CheapestFirstPolicy",
+        profile_id=PROFILE,
+        model_version=0,
+        game_speed=64.0,
+        valid_episodes=39,
+        invalid_episodes=1,
+        distribution=WaveDistribution.of([9, 10, 11]),
+        invalid_by_reason={"observation_invalid": 1},
+        invalid_detail={"state: health exceeds maximum": 1},
+    )
+
+    record = to_record(report)
+
+    assert record["invalid_detail"] == {"state: health exceeds maximum": 1}
+    assert record["invalid_rate"] == 0.025

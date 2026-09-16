@@ -131,9 +131,17 @@ class RunStateBuilder:
             reasons.append("maximum health is not positive")
             health_fraction = 0.0
         else:
-            health_fraction = min(max(reading.health / max_health, 0.0), 1.0)
-            if not 0.0 <= reading.health / max_health <= 1.0:
-                reasons.append("health fraction outside [0, 1]")
+            ratio = reading.health / max_health
+            health_fraction = min(max(ratio, 0.0), 1.0)
+            # The killing blow overkills: the game stores negative tower health
+            # after the fatal hit, so a terminal state legitimately reads below
+            # zero (M1B-E007). That is a correct reading of a dead tower, not a
+            # corrupt one. Negative health while the run is still active would be
+            # contradictory, and health above maximum is impossible either way.
+            if ratio > 1.0:
+                reasons.append("health exceeds maximum")
+            elif ratio < 0.0 and active:
+                reasons.append("negative health in an active run")
         if cash < 0.0:
             reasons.append("cash is negative")
         if wave < 0:

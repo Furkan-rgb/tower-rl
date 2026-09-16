@@ -7,6 +7,76 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E007 — The invalid-episode rate was the validator, not the game
+
+**Date:** 2026-09-17
+**Status:** Invalid rate reduced from 24 percent to 2.5 percent; the residual is
+not yet diagnosed
+
+`M1B-E006` left a 24 percent invalid-episode rate, all classified
+`observation_invalid`, with no recorded reason. The first fix was to record the
+reason: an outcome without its cause cannot be diagnosed later, and a rate
+without reasons cannot be fixed at all. `EpisodeSummary` now carries the
+validator text that ended the episode, and evaluation reports aggregate it.
+
+Fifteen instrumented episodes then gave an unambiguous answer. Every invalid
+episode failed on exactly one validator, on exactly one observation:
+
+```text
+state: health fraction outside [0, 1]
+```
+
+always on the final reading of the episode, never in the middle.
+
+### The reading was right and the validator was wrong
+
+The killing blow overkills. The game stores the resulting negative tower health,
+so the last observation of a run legitimately reports health below zero, and the
+builder was treating that as an impossible reading. A genuine game over was being
+classified as a corrupt observation and excluded from the distribution.
+
+This was a modelling error about the game, not noise and not corruption. The fix
+encodes the semantics the evidence revealed, rather than widening the bound until
+the number improved:
+
+- health above maximum is impossible in any lifecycle and stays invalid;
+- health below zero while the run is still `active` is contradictory, because a
+  dead tower is not an active run, and stays invalid;
+- health below zero on a terminal state is overkill damage, is expected, and is
+  clamped to zero without a complaint.
+
+### Effect
+
+Forty episodes after the fix, against fifty before it:
+
+| Quantity | Before | After |
+| --- | --- | --- |
+| Invalid rate | 24 percent | 2.5 percent |
+| Valid episodes | 38 of 50 | 39 of 40 |
+| Mean final wave | 9.74 | 9.72 |
+| Standard deviation | 1.22 | 1.26 |
+| Episodes per hour | 185 | 228 |
+
+The wave distribution is unchanged, which is the expected result: the excluded
+episodes were ordinary games all along, so admitting them correctly moves the
+validity rate without moving the performance figures. That agreement is itself
+evidence the diagnosis was right rather than merely convenient.
+
+One episode in forty still ends invalid. Its reason was not captured because
+reason aggregation reached the evaluation report only after that run; it will be
+attributable on the next measurement. At 2.5 percent this remains above the M2
+gate's 1 percent allowance, so it is the next thing to diagnose rather than a
+result to build on.
+
+`docs/rl-candidates.md` has been corrected: its evaluation-power section was
+built on the superseded variance estimate and asked for about 140 episodes per
+arm where the measured variance asks for about 23. The original estimate is
+described rather than deleted, because the lesson that a variance guessed from
+three samples can be off by a large factor is exactly why the measurement exists.
+
+Cleanup verified the original `libunity.so` SHA-256, unchanged package identity,
+no mounts, no leftover artifacts, airplane mode enabled and no emulator running.
+
 ## M1B-E006 — Stage B: pause-stepping reversed, and the variance that sets the protocol
 
 **Date:** 2026-09-17

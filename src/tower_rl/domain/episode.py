@@ -111,6 +111,9 @@ class EpisodeSummary:
     elapsed_wall_seconds: float
     game_speed: float
     invalid_transitions: int
+    #: Why the episode ended the way it did. An outcome without its reason cannot
+    #: be diagnosed later, and a rate without reasons cannot be fixed at all.
+    termination_detail: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:

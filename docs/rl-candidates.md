@@ -828,15 +828,20 @@ overlaps the floor is not promoted to five seeds. Record the seed count with
 every reported number, and never compare a five-seed candidate's best run
 against a three-seed candidate's mean.
 
-Power for the evaluation stage can be computed once step 0 has measured the
-final-wave standard deviation. Using the only estimate available today — a
-standard deviation of roughly 3 waves around a mean near 7, from three episodes
-— detecting a one-wave difference at 80 percent power and alpha 0.05 needs on the
-order of 140 evaluation episodes per arm, about 2.7 hours of four-actor time per
-arm; detecting a two-wave difference needs about 36 episodes per arm, about 40
-minutes. That estimate is built on three samples and its own uncertainty is
-enormous; it is quoted to show the shape of the problem, not as a number to plan
-against. Recompute it from step 0.
+Power for the evaluation stage has since been measured, and the estimate this
+section originally carried was wrong by roughly a factor of six. Step 0 was run
+in `M1B-E006`: fifty episodes of the scripted policy give a final-wave standard
+deviation of 1.22 around a mean of 9.74, not the roughly 3 around 7 guessed from
+three episodes.
+
+At 80 percent power and alpha 0.05, detecting a one-wave difference needs about
+23 evaluation episodes per arm rather than 140, roughly eight minutes at the
+observed throughput; two waves needs about six episodes. Half a wave needs about
+94 per arm, and is the point below which a difference should not be claimed
+cheaply. The original estimate is left described here rather than deleted,
+because the lesson it carries — that a variance guessed from three samples can be
+off by a large factor and should never be planned against — is the reason step 0
+exists.
 
 ### 7.3 What to report
 

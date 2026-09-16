@@ -59,6 +59,7 @@ class InstrumentedRunEnvironment:
     _state: RunState | None = field(default=None, init=False)
     _episode_id: str = field(default="", init=False)
     _tally: _EpisodeTally = field(default_factory=_EpisodeTally, init=False)
+    _last_reasons: tuple[str, ...] = field(default=(), init=False)
 
     # -- episode lifecycle -------------------------------------------------
 
@@ -71,6 +72,7 @@ class InstrumentedRunEnvironment:
         self._state = state
         self._episode_id = uuid.uuid4().hex
         self._tally = _EpisodeTally(started_at=time.monotonic(), peak_wave=state.wave)
+        self._last_reasons = ()
         return state
 
     @property
@@ -92,6 +94,7 @@ class InstrumentedRunEnvironment:
             elapsed_wall_seconds=round(time.monotonic() - self._tally.started_at, 3),
             game_speed=state.game_speed,
             invalid_transitions=self._tally.invalid_transitions,
+            termination_detail=self._last_reasons,
         )
 
     # -- stepping ----------------------------------------------------------
@@ -216,6 +219,11 @@ class InstrumentedRunEnvironment:
         reasons: tuple[str, ...],
     ) -> RunTransition:
         termination = _classify(next_state, outcome, reasons)
+        if termination is not None:
+            detail = list(reasons)
+            if next_state is not None and not next_state.valid:
+                detail.extend(f"state: {reason}" for reason in next_state.invalid_reasons)
+            self._last_reasons = tuple(detail)
         if next_state is not None:
             self._state = next_state
             self._tally.peak_wave = max(self._tally.peak_wave, next_state.wave)

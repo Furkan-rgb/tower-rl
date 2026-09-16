@@ -1,0 +1,125 @@
+"""The interface every candidate algorithm implements.
+
+Several backbones are compared under one protocol, so they must share the same
+environment, observation, action space and evaluation path.  Anything a backbone
+is free to vary lives behind this interface; anything that must be identical
+across the comparison lives outside it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import torch
+from torch import Tensor
+
+from tower_rl.application.replay import ReplaySequence
+from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, StateFeatures
+
+
+@dataclass(frozen=True)
+class LearnMetrics:
+    """What one optimisation step reports, for tracking and for priorities."""
+
+    loss: float
+    mean_absolute_td_error: float
+    gradient_norm: float
+    #: Per-sequence absolute TD errors, in the order the batch was sampled.
+    td_errors: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True)
+class SequenceBatch:
+    """One collated batch of equal-length sequences."""
+
+    scalars: Tensor  # [batch, time, scalars]
+    rows: Tensor  # [batch, time, rows, width]
+    mask: Tensor  # [batch, time, actions]
+    actions: Tensor  # [batch, time]
+    rewards: Tensor  # [batch, time]
+    dones: Tensor  # [batch, time]
+    weights: Tensor  # [batch]
+    burn_in: int
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.scalars.shape[0])
+
+
+class Backbone(Protocol):
+    """One learning algorithm, addressed identically to every other."""
+
+    @property
+    def model_version(self) -> int:
+        """Increments on every applied optimisation step."""
+        ...
+
+    def act(
+        self, features: StateFeatures, state: Any, *, epsilon: float
+    ) -> tuple[int, Any]:
+        """Choose one valid action index and return the carried recurrent state."""
+        ...
+
+    def initial_state(self) -> Any:
+        """The recurrent state an episode starts from."""
+        ...
+
+    def learn(self, batch: SequenceBatch) -> LearnMetrics:
+        """Apply one optimisation step and report what it found."""
+        ...
+
+    def state_dict(self) -> dict[str, Any]:
+        """Everything needed to resume this backbone exactly."""
+        ...
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        ...
+
+
+def collate(
+    sequences: tuple[ReplaySequence, ...],
+    weights: tuple[float, ...],
+    *,
+    device: torch.device | None = None,
+) -> SequenceBatch:
+    """Stack equal-length sequences into tensors.
+
+    Equal length is required rather than padded, because a padded tail would need
+    masking in the loss as well as in the action space, and two kinds of mask in
+    one loss is exactly how a subtle training bug hides. The actor emits fixed
+    length sequences instead.
+    """
+    if not sequences:
+        raise ValueError("a batch needs at least one sequence")
+    length = len(sequences[0].steps)
+    burn_in = sequences[0].burn_in
+    if any(len(sequence.steps) != length for sequence in sequences):
+        raise ValueError("all sequences in a batch must have the same length")
+    if any(sequence.burn_in != burn_in for sequence in sequences):
+        raise ValueError("all sequences in a batch must share one burn-in length")
+
+    def _features(step_features: StateFeatures) -> tuple[list[float], list[float], list[bool]]:
+        return list(step_features.scalars), list(step_features.rows), list(step_features.mask)
+
+    scalars, rows, masks, actions, rewards, dones = [], [], [], [], [], []
+    for sequence in sequences:
+        collected = [_features(step.features) for step in sequence.steps]
+        scalars.append([item[0] for item in collected])
+        rows.append([item[1] for item in collected])
+        masks.append([item[2] for item in collected])
+        actions.append([step.action_index for step in sequence.steps])
+        rewards.append([step.reward for step in sequence.steps])
+        dones.append([step.done for step in sequence.steps])
+
+    row_tensor = torch.tensor(rows, dtype=torch.float32, device=device)
+    return SequenceBatch(
+        scalars=torch.tensor(scalars, dtype=torch.float32, device=device),
+        rows=row_tensor.view(len(sequences), length, ROW_COUNT, ROW_WIDTH),
+        mask=torch.tensor(masks, dtype=torch.bool, device=device),
+        actions=torch.tensor(actions, dtype=torch.int64, device=device),
+        rewards=torch.tensor(rewards, dtype=torch.float32, device=device),
+        dones=torch.tensor(dones, dtype=torch.bool, device=device),
+        weights=torch.tensor(weights, dtype=torch.float32, device=device),
+        burn_in=burn_in,
+    )

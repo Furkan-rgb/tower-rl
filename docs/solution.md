@@ -316,6 +316,18 @@ consumes the same semantic observation/action contracts regardless of whether th
 source is the bridge or visible controller. Replay manifests additionally bind
 instrumented transitions to bridge and speed profiles.
 
+Throughput comes from two separate mechanisms that are often confused. The
+renderer is an enabler: Unity clamps how much game time one frame may advance, so
+a low frame rate caps the usable time scale. Host GPU rendering on the clone
+removes that ceiling, and it is safe there because the clone needs pixels only
+for two boundary classifications per episode, not for reading state. The time
+scale is the actual mechanism, applied through the game's own speed modifier.
+`M1B-E003` measured no saturation through 64x at roughly two thirds of nominal,
+about twenty-four times the episode throughput of the normal-speed reference.
+
+A renderer or resolution change must be re-validated against the screen
+classifier before any unattended run, because the boundary taps depend on it.
+
 Sparse visual captures independently check lifecycle state and provide failure
 artifacts. Normal-speed parity runs compare the bridge actor with the existing
 visible actor before training, and each higher time scale repeats deterministic,
@@ -636,13 +648,49 @@ incompatible checkpoints/replay.
 
 Mask an action when the upgrade is unavailable, maxed, its known cost exceeds current cash, the relevant reading is too stale/uncertain, or the UI profile does not support it. `WAIT` is always available during a valid active run.
 
-### 7.3 Timing
+### 7.3 Timing and decision cadence
 
-Begin with a fixed decision interval of 1.0 real seconds, configurable between safe tested limits. A purchase includes navigation/execution/confirmation; the next decision occurs only after a valid post-action observation and the minimum interval.
+Cadence is a game-time quantity, never a wall-clock one. `M1B-E002` showed that a
+fixed wall-clock interval silently starves the policy as speed rises: at a fixed
+cadence, a four-times-faster game gave the agent four times fewer decisions per
+game second and its scripted final waves fell accordingly. Stream and wait
+intervals therefore scale with the reported game speed.
 
-Record actual elapsed time because UI operations make transitions semi-Markov. V1 may use a fixed per-decision discount after verifying timing variance is small. If variance is material, use time-aware discounting documented in the experiment record. Do not move to an event-driven scheduler until fixed-timestep learning and logging are trustworthy.
+Decisions are event-triggered rather than periodic. The policy is asked to act
+when something actionable has changed:
 
-An optional later event-driven mode may trigger on wave change, newly affordable action, meaningful health change, or a maximum wait deadline. It requires a new timing profile and direct A/B validation.
+- a new wave begins;
+- an upgrade becomes newly affordable;
+- immediately after a confirmed purchase, because cash fell and that slot's price
+  rose, so the decision problem genuinely changed;
+- tower health changes materially;
+- a maximum game-time slice elapses, as a backstop so a quiet run still steps.
+
+Per-wave decisions were considered and rejected: with ample cash a player buys
+several upgrades inside one wave, and a per-wave cadence would cap the agent at
+one purchase per wave or force an unnatural bundle action. Triggering after each
+purchase produces exactly the burst of decisions a cash-rich moment deserves,
+and leaves quiet stretches cheap.
+
+Event triggering is also the largest available sample-efficiency win, and it
+costs no real experience. At a one-second cadence an episode is several hundred
+decisions for a handful of reward events; triggering on change shortens the
+effective horizon by roughly an order of magnitude, which helps every candidate
+algorithm equally (see `docs/rl-candidates.md`).
+
+Above roughly 16x, host round-trip latency rather than cadence configuration
+becomes the binding constraint on decision density: about 50 ms per decision is
+3.2 seconds of game time at 64x. The environment therefore pauses between
+decisions at high speed, using the game's own `Pause` and `Unpause`, so
+deliberation costs no game time. This reverses the earlier reading in
+`M1B-E002`, which measured pause-stepping at normal speed where free running is
+cheap. High time scale advances the world and pause controls the cadence; neither
+alone is sufficient.
+
+Record actual elapsed game and wall time with every transition, because
+event-triggered transitions are semi-Markov by construction. Time-aware
+discounting is the default once interval variance is measured; a fixed
+per-decision discount is only valid if that variance proves small.
 
 ### 7.4 Reward
 
@@ -755,6 +803,15 @@ Every recovery increments categorized metrics and captures a compact artifact bu
 Before training, run repeated episodes with a deterministic scripted policy and compare spawn/timing/outcome traces available from visible observations. Test normal replay and baseline restoration separately. If baseline restoration repeats identical or nearly identical sequences, keep it out of the normal episode path and document the effect. If normal replay causes permanent drift, stop and resolve the baseline design rather than accepting a non-stationary V1.
 
 ### 8.6 M8–M11 progression bounded context
+
+Per ADR 0008, V1 progression is a deterministic versioned spend ladder owned by
+the controller, not a learned policy. It runs only between benchmark phases and
+never inside a training or evaluation episode, because coins are earned by
+playing: progression during training would make the environment both
+non-stationary and agent-dependent, and a stronger backbone would appear stronger
+for two unrelated reasons. Each ladder step mints a new immutable profile, and a
+benchmark is always run wholly within one profile. The machinery below still
+governs any future learned meta policy.
 
 Progression is not an extension of `TowerEnv`. `MetaEnv` accepts only a
 versioned `MetaAction` and returns `MetaObservation` plus typed progression

@@ -7,6 +7,90 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E003 — Throughput ceiling, renderer, and decision cadence
+
+**Date:** 2026-09-17
+**Status:** Throughput measured to 64x with no saturation; equivalence gate not
+yet attempted
+
+Wall-clock environment time is the binding constraint on the whole benchmark, so
+this entry establishes what the host can actually deliver. All runs use the same
+scripted greedy policy on the private rooted clone, three episodes per
+configuration.
+
+### The renderer is an enabler, not a speed-up
+
+Unity clamps how much game time a single frame may advance, so the usable time
+scale is bounded by the achieved frame rate. The clone had been running under
+software `lavapipe`, chosen when pixel stability mattered for OCR. It needs
+pixels only for two boundary classifications per episode, so it was moved to
+`-gpu host` on the RTX 4090.
+
+Boot fell from over a minute to 10.3 seconds and the game reached Battle home in
+about 30 seconds rather than about 75. More importantly the frame-rate clamp
+never became the binding constraint at any speed tested below. The renderer does
+not make the simulation faster; it removes the ceiling that would otherwise cap
+it. Screen classification still returns `battle_home_tier_1` under host
+rendering, so the boundary-tap safety gate survives the change.
+
+`dumpsys SurfaceFlinger --latency` returned no frame rows for the Unity
+`SurfaceView` layer, so frame rate was not measured directly. The saturation
+point of effective speed-up would imply it, and no saturation was found.
+
+### Measured throughput
+
+| Requested speed | Wall seconds per episode | Episodes per hour | Decisions per episode | Decisions per wave | Final waves |
+| --- | --- | --- | --- | --- | --- |
+| 1.5 (reference) | 175 | 21 | 528 | 63 | 7, 8, 10 |
+| 4 | 57 | 63 | 447 | 79 | 6, 7, 4 |
+| 8 | 34 | 105 | 435 | 69 | 6, 6, 7 |
+| 16 | 19 | 190 | 273 | 39 | 5, 8, 8 |
+| 32 | 11 | 321 | 162 | 20 | 10, 7, 7 |
+| 32 (after cadence fix) | 13 | 273 | 230 | 25 | 10, 8, 10 |
+| 48 | 9.9 | 365 | 177 | 18 | 10, 10, 10 |
+| 64 | 7.2 | 502 | 154 | 16 | 8, 10, 11 |
+
+Effective speed-up held at roughly 66 to 70 percent of nominal at every level and
+did not saturate through 64x, which is about 24 times the episode throughput of
+the normal-speed reference.
+
+### Decision density, not speed, is what degrades
+
+Decisions per wave fell from 63 at the reference to 16 at 64x. Two separate
+causes were found.
+
+The first was the bridge's own cadence floor. Stream and `WAIT` intervals scale
+with game speed, but were floored at 20 ms, which binds above 12.5x and cut
+decisions per episode at 32x to 162. Lowering the floor to 4 ms raised that to
+230 and raised mean final wave from 8.0 to 9.3 in the same configuration.
+
+The second is host round-trip latency and it is now the binding constraint:
+roughly 50 ms per decision. At 64x, 50 ms of wall clock is 3.2 seconds of game
+time, so the world runs away from the policy while it decides. No cadence
+setting can fix this, because the cost is not in the bridge.
+
+This inverts the earlier conclusion in `M1B-E002` that pause-stepping is not
+worth its overhead. That was measured at 1.5x, where free-running is cheap. At
+32x and above, pausing between decisions is what makes decision density a choice
+rather than a consequence of latency, because deliberation then costs no game
+time at all. High time scale advances the world; pause controls the cadence;
+neither alone is sufficient.
+
+### Equivalence is not established
+
+Mean final wave was 8.33 at the reference and 9.67 at 64x, and every intermediate
+configuration fell between. It would be wrong to read that as evidence of
+equivalence, or of improvement. The scripted policy's final-wave standard
+deviation is roughly three waves and each configuration here has three episodes,
+so these distributions are statistically indistinguishable in both directions.
+What the data supports is the narrower claim that no gross divergence appeared up
+to 64x.
+
+The equivalence gate therefore remains unpassed, and passing it requires first
+measuring the scripted policy's own variance over a much larger sample. Until
+then no speed above the validated normal-speed reference is admissible for a
+result that is reported as a behavioral claim.
+
 ## M1B-E002 — Screen-free in-run control, speed, and pause-stepping
 
 **Date:** 2026-09-16

@@ -63,7 +63,11 @@ constexpr useconds_t kCommandTimeoutMicros = 3000000;
 constexpr useconds_t kCommandPollMicros = 50000;
 constexpr useconds_t kLifecycleTimeoutMicros = 30000000;
 constexpr useconds_t kLifecyclePollMicros = 250000;
-constexpr useconds_t kMinIntervalMicros = 20000;
+// Floors the cadence so a very high speed cannot spin the loop, but it must stay
+// well below the game-time interval or it becomes the binding constraint and
+// starves the policy of decisions per game second: at 20 ms it bound above 12.5x
+// and cut decisions per episode from 528 to 162 between 1.5x and 32x.
+constexpr useconds_t kMinIntervalMicros = 4000;
 constexpr useconds_t kMinStepWallMicros = 80000;
 
 struct Il2CppDomain;

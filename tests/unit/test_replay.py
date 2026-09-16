@@ -88,7 +88,7 @@ def test_encoding_layout_matches_the_action_space() -> None:
     assert len(features.rows) == ROW_COUNT * ROW_WIDTH
     assert len(features.mask) == len(RUN_ACTIONS)
     # Row i describes action index i + 1, because index 0 is always WAIT.
-    assert ROW_COUNT == len(RUN_ACTIONS) - 1
+    assert len(RUN_ACTIONS) - 1 == ROW_COUNT
     assert features.mask[action_index(upgrade_action("attack", 0))] is True
     assert features.mask[action_index(upgrade_action("utility", 5))] is False
 

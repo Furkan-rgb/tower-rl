@@ -5,7 +5,9 @@ description = "Real-game reinforcement learning for Tier 1 of The Tower"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "numpy>=2.5.3",
     "pillow>=11,<13",
+    "torch>=2.14.0",
     "typer>=0.17,<1",
 ]
 

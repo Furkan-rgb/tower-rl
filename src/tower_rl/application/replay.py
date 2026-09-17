@@ -56,6 +56,11 @@ class ReplayStep:
     reward: float
     done: bool
     admissible: bool
+    #: Filler that carries no experience. An episode shorter than one window is
+    #: padded up to a full window rather than dropped, which is the only way its
+    #: terminal step can reach replay at all. A padded step is never a training
+    #: target and never contributes a TD error; see `Actor._emit`.
+    padding: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.action_index < len(RUN_ACTIONS):
@@ -75,6 +80,8 @@ class ReplaySequence:
             raise ReplayRejected("a sequence must contain at least one step")
         if not 0 <= self.burn_in < len(self.steps):
             raise ReplayRejected("burn-in must leave at least one learning step")
+        if all(step.padding for step in self.steps[self.burn_in :]):
+            raise ReplayRejected("padding alone is not a learning window")
 
     @property
     def learn_length(self) -> int:
@@ -113,7 +120,9 @@ class PrioritizedSequenceReplay:
     _items: deque[ReplaySequence] = field(default_factory=deque, init=False)
     _priorities: deque[float] = field(default_factory=deque, init=False)
     _compatibility: tuple[str, str, str, str] | None = field(default=None, init=False)
-    _max_priority: float = field(default=1.0, init=False)
+    #: Evictions seen when the last batch was sampled, so a stale index cannot be
+    #: mistaken for a live one.
+    _evictions_at_sample: int = field(default=0, init=False)
     _random: random.Random = field(init=False)
     stats: ReplayStats = field(default_factory=ReplayStats, init=False)
 
@@ -148,9 +157,14 @@ class PrioritizedSequenceReplay:
             self._priorities.popleft()
             self.stats.evicted += 1
         self._items.append(sequence)
-        # A new sequence enters at the highest priority seen, so it is sampled at
-        # least once before its real TD error is known.
-        self._priorities.append(self._max_priority)
+        # A new sequence enters at the highest priority the buffer currently
+        # holds, so it is sampled at least once before its real TD error is
+        # known. Schaul 2016 says *current* maximum, not highest ever seen: one
+        # large early error would otherwise pin insertion priority forever and
+        # sampling would degenerate towards recency. The scan is over live
+        # sequences only and happens once per stored sequence, which is far
+        # rarer than the identical scan `sample` already does every batch.
+        self._priorities.append(max(self._priorities, default=1.0))
         self.stats.added += 1
         return True
 
@@ -178,20 +192,35 @@ class PrioritizedSequenceReplay:
             probability = weights[index] / total
             corrections.append((smallest / probability) ** beta)
         self.stats.sampled += batch_size
+        self._evictions_at_sample = self.stats.evicted
         return indices, tuple(self._items[index] for index in indices), tuple(corrections)
 
     def update_priorities(
         self, indices: tuple[int, ...], td_errors: tuple[tuple[float, ...], ...]
     ) -> None:
-        """Fold learner feedback back into sampling priorities."""
+        """Fold learner feedback back into sampling priorities.
+
+        An index is a position in the buffer, and eviction shifts every position
+        down by one. So an update must reach the buffer before anything is added
+        to a full buffer; otherwise it would land on a different sequence, which
+        is worse than not landing at all. The training loop samples, learns and
+        updates without collecting in between, and this states that rather than
+        assuming it.
+        """
         if len(indices) != len(td_errors):
             raise ValueError("each index needs its own sequence of TD errors")
+        if self.stats.evicted != self._evictions_at_sample:
+            raise ReplayRejected(
+                "eviction has shifted every index since these were sampled; "
+                "priorities must be updated before more sequences are added"
+            )
         for index, errors in zip(indices, td_errors, strict=True):
             if not errors:
                 raise ValueError("a priority update needs at least one TD error")
             if not 0 <= index < len(self._priorities):
-                # The sequence was evicted while the learner held it. Dropping the
-                # update is correct; resurrecting it would corrupt the buffer.
+                # An index the buffer never held. Dropping it is correct; the
+                # dangerous case, an index that still lands but on the wrong
+                # sequence, is refused above rather than tolerated here.
                 continue
             magnitudes = [abs(error) for error in errors]
             priority = (
@@ -200,7 +229,6 @@ class PrioritizedSequenceReplay:
             )
             priority = max(priority, 1e-6)
             self._priorities[index] = priority
-            self._max_priority = max(self._max_priority, priority)
 
     def snapshot(self) -> dict[str, object]:
         """Metadata a checkpoint needs to state what replay it resumed with."""

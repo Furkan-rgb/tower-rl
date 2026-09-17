@@ -5,7 +5,8 @@ import torch
 
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
 from tower_rl.domain.run_actions import RUN_ACTIONS
-from tower_rl.learning.network import NetworkConfig, RecurrentPolicyNetwork, masked_max
+from tower_rl.learning.network import NetworkConfig, RecurrentPolicyNetwork
+from tower_rl.learning.value_learning import evaluated_next_values
 
 ACTIONS = len(RUN_ACTIONS)
 
@@ -54,7 +55,9 @@ def test_a_terminal_state_bootstraps_zero_rather_than_negative_infinity() -> Non
     q, _ = network(scalars, rows, mask)
 
     assert torch.isinf(q).all()
-    assert torch.equal(masked_max(q), torch.zeros(2, 3))
+    # The bootstrap the learner actually takes is the double-Q one, and it must
+    # contribute nothing rather than the negative infinity the mask carries.
+    assert torch.equal(evaluated_next_values(q, q, mask), torch.zeros(2, 3))
 
 
 def test_dueling_centre_uses_valid_actions_only() -> None:

@@ -257,9 +257,9 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--replay-capacity", type=int, default=4096)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--gradient-steps-per-decision", type=float, default=0.5)
-    parser.add_argument("--sequence-length", type=int, default=40)
-    parser.add_argument("--burn-in", type=int, default=20)
+    parser.add_argument("--gradient-steps-per-decision", type=float, default=2.0)
+    parser.add_argument("--sequence-length", type=int, default=80)
+    parser.add_argument("--burn-in", type=int, default=40)
     # Read by stacked-dqn only; the recurrent backbone carries time in its state.
     parser.add_argument("--history-length", type=int, default=8)
     # Evaluation costs device time at the same rate as training, so its period

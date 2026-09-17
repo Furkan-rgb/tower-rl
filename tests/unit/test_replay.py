@@ -178,13 +178,46 @@ def test_priority_mixes_maximum_and_mean_error() -> None:
     assert replay._priorities[0] == pytest.approx(expected)
 
 
-def test_updates_for_evicted_sequences_are_dropped_not_misapplied() -> None:
+def test_updates_for_indices_the_buffer_never_held_are_dropped() -> None:
     replay = PrioritizedSequenceReplay(capacity=1, seed=1)
     replay.add(_sequence())
 
     replay.update_priorities((5,), ((1.0,),))  # index beyond the buffer
 
     assert len(replay._priorities) == 1
+
+
+def test_priorities_cannot_be_updated_once_eviction_has_shifted_every_index() -> None:
+    """A stale index still lands - on the wrong sequence. That is refused."""
+    replay = PrioritizedSequenceReplay(capacity=2, seed=1)
+    replay.add(_sequence(episode_id="episode-0"))
+    replay.add(_sequence(episode_id="episode-1"))
+    indices, _, _ = replay.sample(1)
+
+    replay.add(_sequence(episode_id="episode-2"))  # evicts, shifting indices down
+
+    with pytest.raises(ReplayRejected, match="eviction"):
+        replay.update_priorities(indices, ((1.0,),))
+
+
+def test_a_new_sequence_enters_at_the_current_maximum_not_a_historical_one() -> None:
+    """Schaul 2016 inserts at the current maximum.
+
+    A monotone one would let a single large early TD error pin insertion
+    priority forever, so late in training every new sequence would enter far
+    above the steady state and sampling would degenerate towards recency.
+    """
+    replay = PrioritizedSequenceReplay(capacity=8, seed=1)
+    replay.add(_sequence(episode_id="episode-0"))
+    replay.update_priorities((0,), ((50.0,),))  # one early surprise
+
+    replay.add(_sequence(episode_id="episode-1"))
+    assert replay._priorities[1] == pytest.approx(replay._priorities[0])
+
+    replay.update_priorities((0, 1), ((0.1,), (0.1,)))  # the surprise settles
+    replay.add(_sequence(episode_id="episode-2"))
+
+    assert replay._priorities[2] == pytest.approx(0.1), "the spike must not persist"
 
 
 def test_an_empty_replay_refuses_to_sample() -> None:

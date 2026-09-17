@@ -23,7 +23,11 @@ from tower_rl.learning.network import (
     RecurrentPolicyNetwork,
     RecurrentState,
 )
-from tower_rl.learning.value_learning import n_step_targets, weighted_sequence_loss
+from tower_rl.learning.value_learning import (
+    n_step_targets,
+    real_step_td_errors,
+    weighted_sequence_loss,
+)
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,7 @@ class RecurrentQBackbone:
         actions = batch.actions[:, burn_in:]
         rewards = batch.rewards[:, burn_in:]
         dones = batch.dones[:, burn_in:]
+        real = (~batch.padding[:, burn_in:]).to(rewards.dtype)
 
         online_q, _ = self.online(scalars, rows, mask, state)
         chosen = online_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
@@ -148,6 +153,9 @@ class RecurrentQBackbone:
                 discount=self.config.discount,
                 n_step=self.config.n_step,
             )
+            # Padding is filler that fills a window for a short episode. It is
+            # never a target, so it leaves the loss and the priorities alone.
+            learnable = learnable * real
 
         errors = (targets - chosen) * learnable
         loss = weighted_sequence_loss(
@@ -167,9 +175,11 @@ class RecurrentQBackbone:
         absolute = errors.abs().detach()
         return LearnMetrics(
             loss=float(loss.detach().item()),
-            mean_absolute_td_error=float(absolute.mean().item()),
+            mean_absolute_td_error=float(
+                (absolute.sum() / real.sum().clamp(min=1.0)).item()
+            ),
             gradient_norm=float(gradient_norm.item()),
-            td_errors=tuple(tuple(row.tolist()) for row in absolute.cpu()),
+            td_errors=real_step_td_errors(absolute, real),
         )
 
     # -- persistence -------------------------------------------------------

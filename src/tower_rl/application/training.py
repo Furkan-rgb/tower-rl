@@ -28,10 +28,11 @@ class TrainingConfig:
     #: Sequences required before the first optimisation step.
     warmup_sequences: int = 16
     batch_size: int = 8
-    #: Gradient steps per environment decision. Above one this is the replay ratio
-    #: that the data-efficient literature raises; it costs GPU rather than device
-    #: time, which is the resource we are not short of.
-    gradient_steps_per_decision: float = 0.5
+    #: Gradient steps per environment decision: the replay ratio, and the knob
+    #: the data-efficient recipe of `docs/rl-candidates.md` 3.1 turns, which
+    #: specifies 2 to 8. The default is its conservative end. Raising it costs
+    #: GPU rather than device time, which is the resource we are not short of.
+    gradient_steps_per_decision: float = 2.0
     #: Exploration anneals from start to end across the budget.
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05

@@ -24,7 +24,11 @@ import torch
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, StateFeatures
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork, StackedState
-from tower_rl.learning.value_learning import n_step_targets, weighted_sequence_loss
+from tower_rl.learning.value_learning import (
+    n_step_targets,
+    real_step_td_errors,
+    weighted_sequence_loss,
+)
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,7 @@ class StackedDqnBackbone:
         actions = batch.actions[:, burn_in:]
         rewards = batch.rewards[:, burn_in:]
         dones = batch.dones[:, burn_in:]
+        real = (~batch.padding[:, burn_in:]).to(rewards.dtype)
 
         online_q, _ = self.online(scalars, rows, mask, history)
         chosen = online_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
@@ -161,6 +166,9 @@ class StackedDqnBackbone:
                 discount=self.config.discount,
                 n_step=self.config.n_step,
             )
+            # Padding is filler that fills a window for a short episode. It is
+            # never a target, so it leaves the loss and the priorities alone.
+            learnable = learnable * real
 
         errors = (targets - chosen) * learnable
         loss = weighted_sequence_loss(
@@ -179,9 +187,11 @@ class StackedDqnBackbone:
         absolute = errors.abs().detach()
         return LearnMetrics(
             loss=float(loss.detach().item()),
-            mean_absolute_td_error=float(absolute.mean().item()),
+            mean_absolute_td_error=float(
+                (absolute.sum() / real.sum().clamp(min=1.0)).item()
+            ),
             gradient_norm=float(gradient_norm.item()),
-            td_errors=tuple(tuple(row.tolist()) for row in absolute.cpu()),
+            td_errors=real_step_td_errors(absolute, real),
         )
 
     def _update_target(self) -> None:
@@ -192,9 +202,12 @@ class StackedDqnBackbone:
                 self.target.parameters(), self.online.parameters(), strict=True
             ):
                 target.mul_(decay).add_(online, alpha=1.0 - decay)
-            # Buffers - the LayerNorm statistics here - are copied rather than
-            # averaged; they are not learned parameters and averaging them would
-            # mix two normalisations.
+            # This network registers no buffers: `LayerNorm` here is affine with
+            # learned weight and bias, and neither it nor the trunk keeps running
+            # statistics. The copy is therefore over an empty list and exists to
+            # stay correct if a module that does keep state is ever added - such
+            # state must be copied rather than averaged, since averaging two
+            # normalisations is not a normalisation.
             for target_buffer, online_buffer in zip(
                 self.target.buffers(), self.online.buffers(), strict=True
             ):

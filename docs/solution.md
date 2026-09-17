@@ -1216,6 +1216,18 @@ Use configurable defaults close to established R2D2 practice:
 
 Exact values are starting hypotheses, not acceptance requirements. Record every experiment's resolved values.
 
+Overlapping windows are cut so that every episode contributes the step that ended
+it. Striding from the start of an episode alone emits whole windows only, which
+stores a terminal step just when the episode length happens to be a multiple of
+the stride and stores nothing at all for an episode shorter than one window.
+Under `reward-v1` the reward is a wave delta, so termination is the whole of the
+negative signal and a short episode is an early death: both are exactly what the
+learner must see. So the last window of an episode is aligned to its end,
+overlapping its predecessor where it must, and an episode too short for one
+window is padded at the front up to a full window. Padding is flagged, and a
+flagged step is never a training target and never contributes a TD error to a
+priority.
+
 For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Configure and record prioritization alpha, importance-sampling beta schedule, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
 
 Both backbones draw from this one replay under this one configuration; that is

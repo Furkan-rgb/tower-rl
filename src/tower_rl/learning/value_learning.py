@@ -83,11 +83,27 @@ def weighted_sequence_loss(
     """Huber loss over the learnable steps only, weighted per sequence.
 
     Steps whose n-step window runs past the end of the sequence have no
-    well-defined target. They are excluded rather than trained on a truncated
-    return, which would bias their value downwards.
+    well-defined target, and padded steps are not experience at all. Both are
+    excluded from the sum and from the count it is divided by, so neither can
+    contribute a zero that dilutes the loss of the steps that are real.
     """
     loss_per_step = torch.nn.functional.huber_loss(
         chosen, targets, reduction="none", delta=huber_delta
     )
     counted = learnable.sum(dim=1).clamp(min=1.0)
     return ((loss_per_step * learnable).sum(dim=1) / counted * weights).mean()
+
+
+def real_step_td_errors(absolute: Tensor, real: Tensor) -> tuple[tuple[float, ...], ...]:
+    """Per-sequence absolute TD errors over real steps only.
+
+    Padding is filler, not a step the learner was wrong about. Reporting a zero
+    for it would drag the mean term of a sequence's priority down and make a
+    padded sequence look duller than it is, which is exactly the sequence - a
+    short episode, an early death - that prioritization should be surfacing.
+    """
+    kept = real.detach().cpu().bool()
+    return tuple(
+        tuple(row[flags].tolist())
+        for row, flags in zip(absolute.detach().cpu(), kept, strict=True)
+    )

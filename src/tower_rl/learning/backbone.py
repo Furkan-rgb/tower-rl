@@ -39,6 +39,8 @@ class SequenceBatch:
     actions: Tensor  # [batch, time]
     rewards: Tensor  # [batch, time]
     dones: Tensor  # [batch, time]
+    #: True where a step is filler rather than experience. [batch, time]
+    padding: Tensor
     weights: Tensor  # [batch]
     burn_in: int
 
@@ -90,10 +92,11 @@ def collate(
 ) -> SequenceBatch:
     """Stack equal-length sequences into tensors.
 
-    Equal length is required rather than padded, because a padded tail would need
-    masking in the loss as well as in the action space, and two kinds of mask in
-    one loss is exactly how a subtle training bug hides. The actor emits fixed
-    length sequences instead.
+    Equal length is required: the actor emits fixed length windows, padding the
+    front of an episode too short to fill one rather than dropping it. Padding is
+    carried as its own mask, separate from the action mask, and the only thing it
+    ever does is remove a step from the learning window - a padded step is never a
+    target and never contributes a TD error.
     """
     if not sequences:
         raise ValueError("a batch needs at least one sequence")
@@ -107,7 +110,7 @@ def collate(
     def _features(step_features: StateFeatures) -> tuple[list[float], list[float], list[bool]]:
         return list(step_features.scalars), list(step_features.rows), list(step_features.mask)
 
-    scalars, rows, masks, actions, rewards, dones = [], [], [], [], [], []
+    scalars, rows, masks, actions, rewards, dones, padding = [], [], [], [], [], [], []
     for sequence in sequences:
         collected = [_features(step.features) for step in sequence.steps]
         scalars.append([item[0] for item in collected])
@@ -116,6 +119,7 @@ def collate(
         actions.append([step.action_index for step in sequence.steps])
         rewards.append([step.reward for step in sequence.steps])
         dones.append([step.done for step in sequence.steps])
+        padding.append([step.padding for step in sequence.steps])
 
     row_tensor = torch.tensor(rows, dtype=torch.float32, device=device)
     return SequenceBatch(
@@ -125,6 +129,7 @@ def collate(
         actions=torch.tensor(actions, dtype=torch.int64, device=device),
         rewards=torch.tensor(rewards, dtype=torch.float32, device=device),
         dones=torch.tensor(dones, dtype=torch.bool, device=device),
+        padding=torch.tensor(padding, dtype=torch.bool, device=device),
         weights=torch.tensor(weights, dtype=torch.float32, device=device),
         burn_in=burn_in,
     )

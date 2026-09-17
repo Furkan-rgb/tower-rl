@@ -50,14 +50,17 @@ def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> State
     )
 
 
-def _sequence(*, length: int = 8) -> ReplaySequence:
+def _sequence(
+    *, length: int = 8, padding: int = 0, padded_reward: float = 0.0
+) -> ReplaySequence:
     steps = tuple(
         ReplayStep(
             features=_features(seed=0.1 * index),
             action_index=index % 3,
-            reward=1.0,
+            reward=padded_reward if index < padding else 1.0,
             done=index == length - 1,
             admissible=True,
+            padding=index < padding,
         )
         for index in range(length)
     )
@@ -109,6 +112,25 @@ def test_learning_advances_the_model_version_and_reports_its_errors(
     # One TD error per sequence per learnable step: replay prioritises on these.
     assert len(metrics.td_errors) == 2
     assert all(len(row) == 8 - BURN_IN for row in metrics.td_errors)
+
+
+def test_padding_is_neither_trained_on_nor_prioritised(
+    backbone: Backbone, request: pytest.FixtureRequest
+) -> None:
+    """A short episode is padded to fill a window; the filler must do nothing.
+
+    Padded steps carry no experience, so they may not enter the loss and may not
+    contribute a TD error - a zero there would drag the mean term of the
+    sequence's priority down and make an early death look duller than it is.
+    """
+    other = BACKBONES[request.node.callspec.params["backbone"]]()
+
+    quiet = backbone.learn(collate((_sequence(padding=3),), (1.0,)))
+    loud = other.learn(collate((_sequence(padding=3, padded_reward=999.0),), (1.0,)))
+
+    assert quiet.loss == loud.loss, "padding cannot move the loss"
+    real_learning_steps = 8 - max(BURN_IN, 3)
+    assert len(quiet.td_errors[0]) == real_learning_steps
 
 
 def test_burn_in_never_contributes_to_the_loss(backbone: Backbone) -> None:

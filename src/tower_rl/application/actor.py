@@ -1,9 +1,11 @@
 """The actor: drives one environment with one policy and emits replay sequences.
 
 Sequences are fixed length with a burn-in prefix and a configurable stride, so a
-recurrent learner always receives contiguous history.  The actor never decides
-whether a transition is admissible; the environment classifies it and replay
-refuses what is not.
+recurrent learner always receives contiguous history.  Every episode contributes
+the step that ended it: the last window is aligned to the end of the episode, and
+an episode shorter than one window is padded rather than dropped.  The actor never
+decides whether a transition is admissible; the environment classifies it and
+replay refuses what is not.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from tower_rl.application.replay import (
 )
 from tower_rl.application.run_environment import InstrumentedRunEnvironment
 from tower_rl.domain.episode import REWARD_SCHEMA_VERSION, EpisodeSummary, TerminationOutcome
-from tower_rl.domain.features import encode_state
+from tower_rl.domain.features import StateFeatures, encode_state
 from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION, action_at
 from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION
 
@@ -29,11 +31,15 @@ class ActorConfig:
     """Sequence shape and exploration for one actor."""
 
     actor_id: str = "actor-0"
-    sequence_length: int = 40
-    burn_in: int = 20
+    #: `docs/solution.md` 9.4: 80 stored decisions, 40 of burn-in, a 40 step
+    #: learning unroll. Halving these doubles the fraction of steps that the
+    #: n-step tail leaves without a target, which is why the documented geometry
+    #: is the default rather than a cheaper one.
+    sequence_length: int = 80
+    burn_in: int = 40
     #: Distance between the starts of consecutive sequences. A stride shorter than
     #: the learning window overlaps them, which is what R2D2 does.
-    stride: int = 20
+    stride: int = 40
     epsilon: float = 0.0
     #: Refuses to spin forever if the environment never terminates an episode.
     max_decisions_per_episode: int = 20_000
@@ -122,12 +128,66 @@ class Actor:
             game_speed=summary.game_speed,
         )
         offered = accepted = 0
-        length, stride = self.config.sequence_length, self.config.stride
-        for start in range(0, max(len(steps) - length + 1, 0), stride):
-            window = tuple(steps[start : start + length])
+        for window in self._windows(steps):
             offered += 1
             # Replay is the authority on admissibility; a window containing a
             # classified failure is refused there and counted, not dropped here.
             if self.replay.add(ReplaySequence(metadata, window, self.config.burn_in)):
                 accepted += 1
         return offered, accepted
+
+    def _windows(self, steps: list[ReplayStep]) -> list[tuple[ReplayStep, ...]]:
+        """Cut one episode into learning windows, terminal step included.
+
+        Striding from the start alone emits whole windows only, so the step that
+        ends the episode reaches replay only when the episode length happens to
+        be a multiple of the stride, and an episode shorter than one window is
+        discarded entirely. Termination is the whole of the negative signal under
+        `reward-v1`, and short episodes are early deaths - the most informative
+        failures there are - so both losses are silent and severe.
+
+        Two rules fix that. The last window is aligned to the end of the episode,
+        overlapping its predecessor where it must; overlap only duplicates
+        experience, whereas a missing terminal step is never learned at all. An
+        episode too short for even one window is left-padded up to a full window,
+        so its real steps land at the end, inside the learning unroll, and the
+        padding fills the burn-in prefix the way an episode start is filled
+        anyway.
+        """
+        length, stride = self.config.sequence_length, self.config.stride
+        if not steps:
+            # The run was already over when the episode opened; there is no
+            # decision to learn from, padding included.
+            return []
+        if len(steps) < length:
+            return [self._left_padded(steps, length)]
+        starts = list(range(0, len(steps) - length + 1, stride))
+        if starts[-1] + length < len(steps):
+            starts.append(len(steps) - length)
+        return [tuple(steps[start : start + length]) for start in starts]
+
+    @staticmethod
+    def _left_padded(steps: list[ReplayStep], length: int) -> tuple[ReplayStep, ...]:
+        """Fill a window in front of a short episode with steps that never train.
+
+        The filler carries zeroed features, so the history window a stacked
+        backbone builds from the prefix is the zero state it already starts an
+        episode from, and it borrows the first real step's action mask so the
+        masked Q-values stay finite. It is flagged as padding, and the learner
+        excludes flagged steps from both the loss and the TD errors that set
+        priorities.
+        """
+        first = steps[0]
+        filler = ReplayStep(
+            features=StateFeatures(
+                scalars=(0.0,) * len(first.features.scalars),
+                rows=(0.0,) * len(first.features.rows),
+                mask=first.features.mask,
+            ),
+            action_index=first.action_index,
+            reward=0.0,
+            done=False,
+            admissible=True,
+            padding=True,
+        )
+        return (filler,) * (length - len(steps)) + tuple(steps)

@@ -240,12 +240,3 @@ def _dueling_masked_q(value: Tensor, advantages: Tensor, mask: Tensor) -> Tensor
     q = value + advantages - centre
     return q.masked_fill(~mask, float("-inf"))
 
-
-def masked_max(q_values: Tensor) -> Tensor:
-    """The bootstrapped maximum over valid actions, or zero when none exist.
-
-    A terminal state has no valid action at all; its bootstrap must contribute
-    nothing rather than negative infinity, which would poison the target.
-    """
-    best = q_values.max(dim=-1).values
-    return torch.where(torch.isfinite(best), best, torch.zeros_like(best))

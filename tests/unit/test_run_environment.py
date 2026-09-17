@@ -440,3 +440,28 @@ def test_the_summary_reports_the_speed_the_run_actually_executed_at() -> None:
     summary = environment.summarize(transition.termination)
     assert summary.game_speed == running_speed
     assert summary.game_speed > 0.0, "a speed of zero says nothing about the run"
+
+
+def test_waiting_all_the_way_to_death_stays_valid_at_the_default_damage_rate() -> None:
+    """The fake's stopping predicate must read the health it actually transmits.
+
+    A wait-only episode at the default damage rate lands the health-change
+    threshold squarely on the rounding boundary: the double once decided on its
+    internal float and reported `event:health_changed` for a delta the
+    transmitted reading put just under the threshold, so every such episode ended
+    with zero valid transitions and the divergence check - correctly - fired.
+    """
+    environment, _ = _environment()
+    environment.reset()
+
+    for _ in range(200):
+        transition = environment.step(WAIT)
+        assert transition.invalid_reasons == ()
+        assert transition.admissible
+        if transition.terminated:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    summary = environment.summarize(transition.termination)
+    assert summary.valid and summary.invalid_transitions == 0

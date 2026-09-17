@@ -179,7 +179,7 @@ class FakeRunPort:
         if not self.active:
             return FakeCommandResult("confirmed", "event:run_ended", state=self._observe())
         wave = self.wave
-        health_fraction = self.health / self.max_health
+        health_fraction = self._transmitted_health_fraction()
         affordable = self._affordable()
         round_time_before = self.elapsed_ms
 
@@ -199,7 +199,10 @@ class FakeRunPort:
             if self._affordable() - affordable:
                 reason = "event:newly_affordable"
                 break
-            if abs(self.health / self.max_health - health_fraction) >= health_change_fraction:
+            if (
+                abs(self._transmitted_health_fraction() - health_fraction)
+                >= health_change_fraction
+            ):
                 reason = "event:health_changed"
                 break
         return FakeCommandResult(
@@ -221,6 +224,16 @@ class FakeRunPort:
         if self.health <= 0.0:
             self.health = 0.0
             self.active = False
+
+    def _transmitted_health_fraction(self) -> float:
+        """Exactly what the environment will see as health, rounding included.
+
+        The stopping predicate has to read the value that `_observe` transmits,
+        not the internal float: a delta that rounds to just under the threshold
+        would otherwise be reported as `event:health_changed`, and the
+        environment would correctly call that a bridge-event divergence.
+        """
+        return max(0.0, round(self.health, 3)) / self.max_health
 
     def _affordable(self) -> set[tuple[str, int]]:
         """Exactly what the environment will see as available, rounding included."""

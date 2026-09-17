@@ -100,21 +100,28 @@ considered.
 
 ### The immediate next slice
 
-**The `stale_or_duplicate` sequence race**, which blocks training. `M1B-E019`
-found the bridge's roughly 250 ms idle observation stream races any
-sequence-bound command once host latency approaches it (15 of 35 advances
-rejected in a deliberate-latency test) — a trained network's forward pass plus
-learning step routinely exceeds 250 ms, so this must be fixed before training
-can run unattended. It surfaces as `ACTION_PIPELINE_FAILED` (lost episodes, not
-silent corruption). A fix may be landing concurrently with this note; check
-`M1B-E019` and recent commits for its status before starting new work here.
+**The `stale_or_duplicate` sequence race is verified fixed on device**
+(`M1B-E020`). Zero rejections across 35 advances at 1000 ms injected host
+latency and 20 advances at 3000 ms (was 15/35 at 1000 ms, `M1B-E019`), with
+zero stale or mismatched reads across 49 paused reads and fidelity/throughput
+indistinguishable from the pre-race `M1B-E019` figures. An independent review
+run over the same commit found further defects in the surrounding lifecycle
+code, recorded in `M1B-E020` — a fix commit for some of these may be landing
+concurrently with this note, so check `M1B-E020` and recent commits for
+status before starting new work here. The most consequential finding: the
+death-boundary transient retry became a guaranteed no-op against a paused
+frozen world, misclassifying a real `GAME_OVER` as `OBSERVATION_INVALID` and
+corrupting the M1 gate's validity rate if left unaddressed. The review also
+confirmed stale data cannot reach training replay regardless.
 
-**Episode-boundary overhead** stays queued after the sequence race. Advance
-share — the fraction of wall clock spent on genuine advances rather than
-boundary — is 0.834 at 100 ms and falls further at coarser frames, so the
-fixed per-episode boundary already dominates throughput above 100 ms. The
-6-second result-panel settle and the gated boundary tap (item 2 below) are the
-two known contributors and are the next thing to cut once the race is closed.
+**Episode-boundary overhead** is now the next slice. `M1B-E020` measured
+`begin_episode` directly at 7.277 s and 7.254 s on the RESULT→RETRY path (vs.
+0.256 s when the run was already active), and advance share — the fraction of
+wall clock spent on genuine advances rather than boundary — at 0.839,
+confirming the fixed per-episode boundary is now the largest remaining
+wall-clock cost now that the sequence race is closed. The 6-second
+result-panel settle and the gated boundary tap (item 2 below) are the two
+known contributors.
 
 ### After that, in order
 

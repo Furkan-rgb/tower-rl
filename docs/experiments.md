@@ -7,6 +7,106 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E020 — The sequence-race fix verified on device: zero rejections, zero stale reads, and the next largest cost identified
+
+**Date:** 2026-09-17
+**Status:** The blocking defect left open in `M1B-E019` — the bridge's idle
+observation stream racing a sequence-bound command under host latency — is
+verified fixed at the commit that carries the fix. An independent review ran
+over the same commit and found further defects in the surrounding lifecycle
+code; those are recorded as open findings here regardless of whether a
+concurrent fix commit has since landed. `begin_episode` timing is recorded as
+the next largest wall-clock cost.
+
+Setup: commit `484c7e6` on the disposable clone `emulator-5556`, offline
+verified by interface, `frame_game_ms=100`, diagnostics-ON build — like-for-like
+with the `M1B-E019` arms; neither is a diagnostics-off figure. The deployed
+binary was verified bit-for-bit: a forced rebuild from the clean `484c7e6` tree
+reproduced `libtower_bridge.so` with sha256 `f80696a4…`.
+
+**The defect being verified.** Before the fix, the bridge's idle stream bumped
+the observation sequence every ~250 ms, so any command carrying an older
+`expected_observation_sequence` was rejected `stale_or_duplicate` — 15 of 35
+advances under 1 s of injected host latency (`M1B-E019`). This blocked RL
+training, since a trained network's forward pass plus learning step routinely
+exceeds 250 ms. The fix: while the bridge has paused a still-active run, it
+holds the sequence and emits a heartbeat instead of a fresh observation; the
+client answers `read_state()` from its cached last state on a heartbeat.
+
+**V1** (1000 ms host sleep between decisions, 35 advances, 2 episodes): **0 of
+35** `stale_or_duplicate` (was 15/35). All 35 confirmed — 30 `budget_exhausted`,
+3 health, 1 wave, 1 run_ended. Round-clock delta median 2033 ms (p25=p75=2033,
+max 2140, min 214 on a short event-terminated advance); the full-budget median
+is unchanged from the no-sleep case, so the fix did not alter simulated time
+per decision.
+
+**V2** (3000 ms sleep, ~12 idle intervals per decision, 20 advances): **0 of
+20** rejections, no read timeout, no heartbeat/liveness failure, no disconnect,
+no exception. Full-budget median round delta again 2033 ms.
+
+**V3** (scripted, 4 episodes): 4/4 valid, `invalid_detail` empty,
+`BRIDGE_EVENT_DIVERGENCE` 0, `advances_cut_short` 0, `decisions_per_wave`
+21.059, mean final wave 8.5 (median 9, range 6–10), `speedup` 4.627,
+`total_round_seconds / total_budgeted_game_seconds` = 1133.683/1120.8 = 1.0115,
+per-advance wall 287 ms (205.599 s / 716). Against `M1B-E019` f=100 (1.011,
+4.600, 283 ms, 3/4 valid where the single invalid episode was this very race):
+indistinguishable on fidelity and throughput, with the race-caused invalid
+episode gone. Every episode began cleanly; zero lifecycle failures and zero
+bridge-side errors across 3,965 logcat lines.
+
+**V4** (staleness check): across 49 paused reads (31 in V1, 18 in V2),
+**zero** returned a state whose sequence differed from the one the bridge was
+holding, and zero differed in content from the last settled observation; the
+held sequence never drifted during a sleep; after each unpause/advance the
+sequence strictly advanced and content changed in all 49 cases. Two reads did
+not match the pre-read held sequence — both the first decision of an episode,
+where the world is genuinely unpaused and streaming; expected and harmless
+since the read precedes the command. The client's `BridgeStaleObservationError`
+never fired.
+
+**Boundary cost, recorded for the next slice.** Aggregate boundary 39.4 s over
+4 episodes (~9.9 s each) at an advance share of 0.839; directly measured
+`begin_episode` took 7.277 s and 7.254 s on the RESULT→RETRY path and 0.256 s
+when the run was already active. Note `run_episodes.py` does not time
+`begin_episode`, which is why these come from a driver.
+
+**Independent review findings, recorded as open.** A fix commit for some of
+these may be landing concurrently with this entry; this reads correctly
+whether or not it has — the findings are recorded as review output, not as a
+current-state claim:
+
+1. The death-boundary transient retry became a guaranteed no-op, because that
+   transient implies the run is active, so the world is paused and the re-read
+   returns the identical cached state — the episode is then classified
+   `OBSERVATION_INVALID` rather than `GAME_OVER`, which would corrupt the
+   validity rate the M1 gate uses. The domain correction is that a frozen
+   world resolves a death boundary by processing another frame, not by being
+   observed again.
+2. `world_paused` was re-derived by a second `RunIsActive()` call rather than
+   reported by the advance that decided to pause, leaving a window in which an
+   auto-restart could mark a running world as paused.
+3. The lifecycle pause flag was set from the action name regardless of
+   outcome.
+4. The test fake diverged from the bridge rule on `buy_upgrade` and on
+   run-ended-under-advance.
+5. Pre-existing and now cache-fed: an episode ending host-side while the run
+   is still active leaves the world frozen, and `begin_episode` then returns
+   on the cached active state, silently continuing the old run.
+
+**Verdict recorded.** The review established that stale data CANNOT reach
+training replay — mid-episode observations come only from command-bound
+readings, never from `read_state`, and the two failure paths that do read
+produce inadmissible transitions that replay rejects wholesale.
+
+**Caveats.** V1/V2 are single runs of 35 and 20 advances, demonstrating
+absence of the race at these latencies rather than bounding a rare residual;
+untested are a host delay approaching the 120 s read timeout and latency
+injected at the episode boundary (which is deliberately unpaused and still
+streams).
+
+Source data: this session's scratchpad `verify/DETAIL.md`, `v1-sleep1000.json`,
+`v2-sleep3000.json`, `v3-f100.json`, `logcat-v3.txt`.
+
 ## M1B-E019 — The round-time law, and a falsified prediction: `round_delta ≈ 1.07 · frame_game_ms · (loop_frames − 1)`, the pause is a genuine freeze, and a sequence race blocks training
 
 **Date:** 2026-09-17

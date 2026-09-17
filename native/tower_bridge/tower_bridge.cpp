@@ -69,6 +69,9 @@ constexpr useconds_t kLifecyclePollMicros = 250000;
 // and cut decisions per episode from 528 to 162 between 1.5x and 32x.
 constexpr useconds_t kMinIntervalMicros = 4000;
 constexpr useconds_t kMinStepWallMicros = 80000;
+// How often to look for the next rendered frame. Well under one frame at any
+// plausible rate, so the step ends promptly rather than overshooting.
+constexpr useconds_t kFramePollMicros = 2000;
 
 struct Il2CppDomain;
 struct Il2CppThread;
@@ -750,6 +753,81 @@ void LogClockCandidates(const Il2CppApi& api, Il2CppClass* main) {
 // is the decisive test of whether the lifecycle receiver exists outside the
 // battle scene: a zeroed native handle means the GameObject is gone, which is
 // why `UnitySendMessage` has nothing to deliver to.
+// Engine accessors resolved once and validated by provenance: a pointer we
+// cannot attribute to libunity.so is not called at all. These are leaf bindings -
+// they read or write one field of a manager singleton and allocate nothing -
+// which is what makes them safe from this thread, unlike managed game code.
+struct EngineClock {
+  int32_t (*get_frame_count)() = nullptr;
+  float (*get_capture_delta)() = nullptr;
+  void (*set_capture_delta)(float) = nullptr;
+  bool resolved = false;
+};
+
+void* ResolveEngineIcall(const char* signature) {
+  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+  void* (*resolve_icall)(const char*) = nullptr;
+  if (il2cpp == nullptr || !Resolve(il2cpp, "il2cpp_resolve_icall", &resolve_icall)) return nullptr;
+  void* pointer = resolve_icall(signature);
+  Dl_info info{};
+  if (pointer == nullptr || dladdr(pointer, &info) == 0 || info.dli_fname == nullptr ||
+      std::strstr(info.dli_fname, "libunity.so") == nullptr) {
+    return nullptr;
+  }
+  return pointer;
+}
+
+const EngineClock& Clock() {
+  static EngineClock clock;
+  if (!clock.resolved) {
+    clock.resolved = true;
+    clock.get_frame_count =
+        reinterpret_cast<int32_t (*)()>(ResolveEngineIcall("UnityEngine.Time::get_frameCount()"));
+    clock.get_capture_delta = reinterpret_cast<float (*)()>(
+        ResolveEngineIcall("UnityEngine.Time::get_captureDeltaTime()"));
+    clock.set_capture_delta = reinterpret_cast<void (*)(float)>(
+        ResolveEngineIcall("UnityEngine.Time::set_captureDeltaTime(System.Single)"));
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock frames=%p get_capture=%p set_capture=%p",
+                        reinterpret_cast<void*>(clock.get_frame_count),
+                        reinterpret_cast<void*>(clock.get_capture_delta),
+                        reinterpret_cast<void*>(clock.set_capture_delta));
+  }
+  return clock;
+}
+
+// Advance exactly one rendered frame worth `game_millis` of game time.
+//
+// `captureDeltaTime` makes a frame worth a fixed amount of game time however
+// long it took to render, so the slice no longer depends on the speed setting or
+// on how fast the host is. That is the whole point: a wall-clock sleep asks for
+// game time indirectly and gets a different answer at every speed.
+//
+// Returns the game milliseconds actually advanced, or -1 if the engine clock is
+// unavailable and the caller should fall back.
+int FrameExactStep(int game_millis, useconds_t timeout_micros) {
+  const EngineClock& clock = Clock();
+  if (clock.get_frame_count == nullptr || clock.set_capture_delta == nullptr) return -1;
+  UnitySendMessage send = ResolveUnitySendMessage();
+  if (send == nullptr) return -1;
+
+  const float slice = static_cast<float>(game_millis) / 1000.0F;
+  const int32_t before = clock.get_frame_count();
+  clock.set_capture_delta(slice);
+  send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
+
+  int32_t advanced = 0;
+  for (useconds_t waited = 0; waited < timeout_micros; waited += kFramePollMicros) {
+    usleep(kFramePollMicros);
+    advanced = clock.get_frame_count() - before;
+    if (advanced >= 1) break;
+  }
+
+  send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
+  // Restore real-time pacing so nothing outside a step observes a frozen clock.
+  clock.set_capture_delta(0.0F);
+  return advanced >= 1 ? advanced * game_millis : 0;
+}
+
 // The first direct engine icall from the socket thread. `get_frameCount` is a
 // leaf getter that reads one counter and allocates nothing, which makes it the
 // cheapest possible test of whether the call is safe at all - and its rate of
@@ -967,17 +1045,28 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
       const char* outcome = "confirmed";
       const char* reason = command.wait ? "wait_elapsed" : "confirmed_state_change";
       if (command.step_game_millis > 0) {
-        // Unpause for a bounded slice of game time, then pause again. The window
-        // is also floored in wall time: at a high speed the requested slice can
-        // be shorter than one rendered frame, in which case no world time would
-        // pass at all and the policy would step forever without progress.
-        UnitySendMessage send = ResolveUnitySendMessage();
-        const useconds_t requested =
-            GameTimeInterval(command.step_game_millis * 1000, CurrentGameSpeed(api, fields));
-        send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
-        usleep(requested < kMinStepWallMicros ? kMinStepWallMicros : requested);
-        send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
-        reason = "step_elapsed";
+        // Preferred: make one rendered frame worth exactly the requested slice,
+        // so the game time between decisions does not depend on the speed setting
+        // or on how fast this host happens to be.
+        const int advanced = FrameExactStep(command.step_game_millis, kCommandTimeoutMicros);
+        if (advanced > 0) {
+          reason = "frame_step";
+        } else if (advanced == 0) {
+          outcome = "ambiguous";
+          reason = "no_frame_rendered";
+        } else {
+          // Fallback: the engine clock could not be resolved, so ask for the
+          // slice the only other way available - a wall-clock sleep scaled by
+          // speed, floored at one frame's worth. This is the old behaviour and
+          // it is speed-dependent, which is why it is not the first choice.
+          UnitySendMessage send = ResolveUnitySendMessage();
+          const useconds_t requested =
+              GameTimeInterval(command.step_game_millis * 1000, CurrentGameSpeed(api, fields));
+          send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
+          usleep(requested < kMinStepWallMicros ? kMinStepWallMicros : requested);
+          send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
+          reason = "step_elapsed";
+        }
       } else if (command.set_speed) {
         float applied = 0.0F;
         api.field_static_set_value(fields.game_speed, &command.speed);

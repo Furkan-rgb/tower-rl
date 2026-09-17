@@ -7,6 +7,71 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E016 — The frame-exact step works, and the bottleneck moves to the round trip
+
+**Date:** 2026-09-17
+**Status:** The mechanism works and the game's speed multiplier is now irrelevant
+to it, which is what the requirement asked for. Throughput is lower than the
+current arrangement, for a reason the measurement identifies precisely.
+
+`Time.captureDeltaTime` makes one rendered frame worth a fixed amount of game
+time however long it took to render. The bridge's step now sets the slice, reads
+`Time.frameCount`, unpauses, polls until the counter advances by one, pauses, and
+restores real-time pacing. The wall-clock sleep remains only as a fallback for
+when the engine clock cannot be resolved.
+
+Measured in a live run, 250 ms slices:
+
+| Game speed multiplier | Wall milliseconds per step |
+| --- | --- |
+| 1 | 59, 66, 74 |
+| 16 | 54, 54, 59 |
+
+Every step returned `confirmed/frame_step`.
+
+### What this establishes
+
+**The speed multiplier no longer affects the step.** A sixteen-fold change in the
+game's own clock setting moves the cost of a 250 ms step by nothing
+distinguishable from noise. Under the old wall-clock sleep the same change moved
+game time per step by a factor of sixteen. Decision moments are now exact by
+construction rather than by measurement, which is the requirement.
+
+That also means the multiplier stops being a tuning knob. Under frame stepping it
+should sit at 1x permanently, and speed comes from elsewhere.
+
+### And where speed now comes from — not the frame
+
+250 ms of game time for about 57 ms of wall clock is **4.4x**. That is lower than
+the 8x currently in use, and the reason is visible in the arithmetic: at 58.9 fps
+(`M1B-E015`) a frame takes about 17 ms, so roughly 40 ms of each step is host
+round trip plus pause and unpause. **The step is round-trip-bound, not
+frame-bound.**
+
+This corrects the ceiling estimate in `M1B-E015`. `speed = slice x fps` assumed
+frames were the only cost and gave 14.7x. With one host round trip per frame the
+real figure is `slice / (frame_time + round_trip)`, which is 4.4x. Raising the
+frame rate by uncapping vSync would move 17 ms toward zero and leave the 40 ms
+untouched, so it cannot by itself get past roughly 6x.
+
+### The consequence for the design
+
+The remaining cost is one round trip per *slice*, while the agent only needs one
+decision per *event*. The environment currently loops, advancing slice after
+slice until something actionable changes — roughly eight slices per decision at
+the configured backstop — and every one of those slices is a separate command.
+
+Pushing that loop into the bridge is the fix: one command that advances frames
+until an event or until a game-time budget expires, then returns the observation.
+That is one round trip per decision rather than per slice, and it would put the
+frame back in charge of the cost, where the rendering rate and therefore the
+renderer choice start to matter again.
+
+Until that exists, 8x with the old free-running path remains the faster option at
+56.7 episodes per hour, and `M1B-E014` establishes that its decision moments match
+normal-speed play. Frame stepping is correct and slower; free running at 8x is
+fast and correct only because 8x happens to sit below the frame limit.
+
 ## M1B-E015 — Main exists at the home screen, engine icalls are safe, and the frame rate is 59
 
 **Date:** 2026-09-17

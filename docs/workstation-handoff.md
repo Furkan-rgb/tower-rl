@@ -98,7 +98,47 @@ advance goes uncredited. Two mechanism questions are open and unchased — the
 1.07 factor, and the uncredited frame — see `M1B-E019` for the candidates
 considered.
 
-### The immediate next slice
+### Done: the comparison floor is measured, under-powered on one question
+
+`M1B-E021`. Scripted, random and wait arms, 23 valid episodes each (the
+stated minimum) at commit `86fcf3c`. Spending beats not spending by a wide,
+unambiguous margin (scripted 5.57 waves, random 5.35, wait 1.87). The
+scripted heuristic is **not** shown to measurably outperform random choice
+at this sample size (+0.22 waves, inside the 1.1–1.7 wave MDE at n=23) —
+this is under-powered, not a finding of equivalence, and no conclusion is
+drawn about scripted-versus-random. The Lead's reading: this shows our
+scripted heuristic is not a strong bar, not that upgrade choice doesn't
+matter; the ceiling above these baselines remains unknown. The run also
+surfaced the boundary deadlock recorded below, which cut it from a single
+78-episode interleaved run to 23 pooled one-episode-per-arm segments.
+
+### The current priority order
+
+The Lead has set this order for what follows the comparison floor:
+
+1. **The boundary deadlock fix** (below) — blocks any further
+   single-process multi-episode run.
+2. **The `-gpu host` renderer verdict and multi-actor scaling.** A device
+   stage for this is in progress; `scripts/run_actors.py` is new in
+   `86fcf3c` and unverified on device.
+3. **Re-run the comparison floor properly powered** (≈97 episodes/arm for a
+   1-wave difference) once multi-actor scaling lands and makes that
+   affordable.
+4. **Then equal-budget backbone training.**
+
+### The boundary deadlock
+
+`M1B-E021` also surfaced a blocking defect: `AdvanceUntilEvent` sets the
+paused flag and dispatches `Pause` before reading the settled snapshot, so a
+tower death inside the pause-settle window emits a terminal observation
+while the bridge believes the world is paused. The bridge then emits only
+heartbeats, the client's `read_state` returns the stale terminal reading
+indefinitely, and `_resume_a_frozen_run` declines to unpause because the
+reading is (wrongly, in this case) terminal. Observed at about 1 failure per
+7 episode boundaries. A fix is in flight in a concurrent commit; check
+`M1B-E021` and recent commits for status before starting new work here.
+
+### The immediate next slice, before this run
 
 **The `stale_or_duplicate` sequence race is verified fixed on device**
 (`M1B-E020`). Zero rejections across 35 advances at 1000 ms injected host
@@ -146,8 +186,9 @@ known contributors.
    classification; game logic was never affected. Under frame stepping with the
    loop moved into the bridge, frame rate governs throughput, so this matters
    again — for fps, not for pixels.
-5. Longer training runs, the comparison floor (scripted, random, wait arms), and
-   the speed equivalence gate.
+5. Longer training runs and the speed equivalence gate. The comparison floor
+   itself is measured (`M1B-E021`); see "The current priority order" above for
+   what follows it.
 
 ### A small gap worth closing: `run_episodes.py` writes no per-episode data
 

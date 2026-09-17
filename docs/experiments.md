@@ -7,6 +7,97 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E021 — The comparison floor: spending beats not spending by a wide margin, the scripted heuristic is not shown to beat random at this sample size, and a boundary deadlock cut the run short
+
+**Date:** 2026-09-17
+**Status:** The comparison floor (scripted, random, wait arms) named as the
+last item of the `M1B-E020` next-slice list is measured, but the run was
+stopped early by the Lead on a priority change; 23 valid episodes per arm —
+the stated minimum — were collected first. A blocking defect changed the
+run's shape mid-flight and is recorded here in full, since a fix is in
+flight in a concurrent commit and this entry should read correctly whether
+or not it has landed.
+
+Setup: commit `86fcf3c` on the disposable clone `emulator-5556`, offline
+verified by interface, `--frame-game-ms 100`, scripted/random/wait arms.
+Because of the defect below, the intended single-process interleaved run was
+replaced by 23 interleaved segments of one episode per arm (a randomised
+complete block design, `--block 1`), each writing its own report, with
+per-episode records pooled using `comparison.py`. 4 segments were lost to the
+defect.
+
+### Per-arm results
+
+| Arm | Valid | Mean final wave | sd | dec/ep | dec/wave | purchases/ep | Speed-up | Advance share | ep/h |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| scripted | 23/23 | 5.565 | 2.171 | 121.0 | 21.74 | 19.30 | 5.48 | 0.830 | 89.7 |
+| random | 23/23 | 5.348 | 1.824 | 117.7 | 22.00 | 18.70 | 5.33 | 0.829 | 92.7 |
+| wait | 23/23 | 1.870 | 0.344 | 27.8 | 14.88 | 0.00 | 5.11 | 0.878 | 325.5 |
+
+Final-wave distributions: scripted `[1, 3, 3, 3, 4, 4, 4, 4, 4, 6, 6, 6, 6, 6,
+6, 6, 7, 7, 7, 8, 8, 9, 10]`; random `[2, 3, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 6,
+6, 6, 6, 6, 6, 6, 7, 7, 8, 10]`; wait `[1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+2, 2, 2, 2, 2, 2, 2]`.
+
+**Health.** `BRIDGE_EVENT_DIVERGENCE` 0, `stale_or_duplicate` 0,
+`advances_cut_short` 0, `recovered_transients` 0, `episodes_not_started_fresh`
+0, `invalid_detail` empty, 69/69 episodes valid across all three arms.
+End-to-end 57.5 valid episodes/hour over 72 minutes on one actor.
+
+### Power: scripted-versus-random is under-powered, and no conclusion is drawn about it
+
+At n=23/arm the minimum detectable difference (pooled sd, 80% power, alpha
+.05) is 1.1–1.7 waves. Intervals are in this session's scratchpad
+`POOLED-FLOOR.txt`. Stated plainly: this sample cannot resolve a
+scripted-versus-random difference smaller than about 1.1 waves, and none is
+claimed.
+
+### Finding
+
+Spending beats not spending by a wide and unambiguous margin: scripted 5.57
+and random 5.35 waves versus wait 1.87 waves. The scripted heuristic does
+**not** measurably outperform random choice at this sample size (+0.22
+waves, well inside the MDE).
+
+**The Lead's reading, recorded explicitly.** This does not establish that
+there is no headroom above the baselines — it establishes that our scripted
+heuristic is not a strong bar, and the ceiling remains unknown. This is not
+recorded as "choice does not matter"; that would be a stronger claim than
+the evidence supports.
+
+**Open question.** Whether runs at this account baseline are simply too
+short (≈5.5 waves, ≈19 purchases) for upgrade choice to compound is
+unresolved. Powering scripted-versus-random properly for a 1-wave difference
+needs ≈97 episodes per arm, which becomes affordable once multi-actor
+scaling lands.
+
+### Blocking defect: the episode boundary deadlocks when the run dies inside the pause-settle window
+
+Recorded in full because it is the reason the run's shape changed. Two
+78-episode single-process runs died at an episode boundary with
+`RunPortError: the instance did not reach an active run in time`, at a rate
+of about 1 per 7 boundaries.
+
+Cause, confirmed from code, logcat and a live probe: `AdvanceUntilEvent`
+sets the paused flag and dispatches `Pause` **before** reading the settled
+snapshot, so a tower death inside the pause-settle window emits a terminal
+observation while the bridge believes the world is paused; the bridge then
+emits only heartbeats (the sequence-hold behaviour of `484c7e6`), the
+client's `read_state` returns that stale terminal reading indefinitely, and
+`_resume_a_frozen_run` declines to unpause precisely because the reading is
+terminal. A fix is in flight in a concurrent commit.
+
+### Cleanup
+
+Verified: `libunity.so` SHA-256 `ffc1f3ef…dd0040`, `versionCode 1199`,
+`29.0.3`, installer `com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`; emulator killed, no qemu process, no adb
+device, repo tree clean.
+
+Source data: this session's scratchpad `floor/POOLED-FLOOR.txt`,
+`floor/seg-0NN.json`, `floor/BOUNDARY-DEADLOCK.md`, `floor/segments.log`,
+`floor/cleanup.log`, `floor/run1-logcat.txt`.
+
 ## M1B-E020 — The sequence-race fix verified on device: zero rejections, zero stale reads, and the next largest cost identified
 
 **Date:** 2026-09-17

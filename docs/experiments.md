@@ -7,6 +7,56 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E013 — Auto-restart is not progression-gated, and the tap still needs a receiver
+
+**Date:** 2026-09-17
+**Status:** Negative. Both cheap escapes from the boundary tap are ruled out. The
+receiver hunt is required, and it needs a bridge rebuild.
+
+`M1B-E004` found that `StartNewRoundFunction`, `AutoRetryBattle` and
+`Button_ToggleAutoRestartBattle` each expired their lifecycle wait when
+dispatched from a terminal run, and judged auto-restart "progression-gated at
+this baseline". The clone has since drifted from Highest Wave 2 to 11 and from 53
+coins to 909 (`M1B-E005`), so the gate was worth re-testing.
+
+Dispatched from a genuine terminal run at wave 11:
+
+```text
+enable_auto_restart -> ambiguous / lifecycle_timeout
+retry               -> ambiguous / lifecycle_timeout
+```
+
+Both still fail. Progression is not the explanation, and the `M1B-E004`
+suggestion that auto-restart is gated should be treated as unsupported rather
+than merely untested. The likelier explanation remains the one that entry also
+offered: `UnitySendMessage` addresses a GameObject by name, the bridge addresses
+`Main`, and `Main` does not exist outside the battle scene.
+
+### The free diagnostic is not available
+
+Unity logs `SendMessage: object <name> not found!` when the target is missing,
+which would have settled whether `Main` exists at the terminal state and would
+have made probing candidate object names free. This build does not emit it: the
+`Unity` log tag carries startup output and nothing after, as expected from a
+release build with logging stripped. Object existence therefore cannot be probed
+from the host, and the enumeration has to happen inside the bridge.
+
+### Consequence
+
+Finding a main-thread receiver is now on the critical path for two separate
+things at once — the boundary tap, and setting `Time.captureDeltaTime` for the
+frame-exact step (`solution.md` 9.2c). Both need the same thing: a GameObject
+that exists outside the battle scene and can be addressed by name. That makes the
+next slice a bridge change rather than a host change, and the build environment
+is present (NDK 29.0.14206865, build directory retained).
+
+### Incidental: the offline cut is doing real work
+
+While the device sat idle and offline, `PlayCommon` attempted a log upload to
+`play.googleapis.com` and failed to connect. Google Play services actively tries
+to reach the network on this image, so cutting the radios is not a formality —
+it is blocking traffic that would otherwise leave the device.
+
 ## M1B-E012 — Decision density measured fresh, and the 8x claim withdrawn
 
 **Date:** 2026-09-17

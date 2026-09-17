@@ -475,6 +475,13 @@ def launch_emulator(
         process = subprocess.Popen(
             command, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True
         )
+    # Left at 300s rather than raised: the one timeout a fleet has hit on device
+    # was caused by four simultaneous cold boots contending for the host (host
+    # load 10.71, total CPU 1,835%), not by a boot that is slow on its own — the
+    # other three reached home alone in 60-90s. `run_actors.stagger_bring_up`
+    # removes that contention by sequencing bring-ups, so 300s stays a bound on
+    # a single uncontended boot, where a slow boot is a genuine signal worth
+    # surfacing rather than a limit to raise away.
     wait_for_boot(instance, timeout=300.0, process=process, log_path=log_path)
 
 

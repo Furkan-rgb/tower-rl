@@ -22,10 +22,17 @@ window at all and every actor starts from identical account state. The snapshot
 is prepared once, before the fleet, because a `-read-only` instance cannot save
 one. `--cold` skips it and cold-starts every actor.
 
-UNVERIFIED: that several `-read-only` instances can restore the one snapshot
-concurrently. Each gets its own overlay over the untouched base image, and the
-snapshot is read from that base, so nothing here writes shared state — but no
-device has run it yet, and the next device stage has to check it.
+Measured on device: scaling is linear to at least 4 actors (fidelity intact at
+every N; several `-read-only` instances do restore the one snapshot
+concurrently with no corruption). The one defect the same run found is in
+bring-up, not collection: four emulators cold-booting at the same instant
+pushed host load to 10.71 and total CPU to 1,835%, and the last of the four
+never left `main_unavailable` inside its cold-launch timeout while its peers
+each reached home alone in 60-90s. Steady state uses only 563% of 3,200%
+available CPU, so the contention is entirely in the simultaneous boot.
+`stagger_bring_up` is the fix: each instance's bring-up begins only once the
+previous instance has signalled ready, so boots do not pile up, while episode
+collection afterwards is exactly as concurrent as before.
 
     TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/run_actors.py \\
         --actors 2 --episodes 20
@@ -37,6 +44,7 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -247,7 +255,12 @@ def deploy_bridge(instance: CloneInstance) -> None:
     run_bridge("deploy", instance)
 
 
-def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> dict[str, Any]:
+def collect_episodes(
+    instance: CloneInstance,
+    arguments: argparse.Namespace,
+    *,
+    signal_ready: Callable[[], None] = lambda: None,
+) -> dict[str, Any]:
     """Bring one instance up ready and offline, and run its episodes.
 
     Bring-up is the same decision every instance makes: restore the snapshot for
@@ -255,17 +268,26 @@ def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> 
     deploy and relaunch through the one online window. Each actor's instance is
     `-read-only`, so it writes to its own overlay and saves no snapshot; the
     pinned one is prepared once, before the fleet, by `prepare_pinned_snapshot`.
+
+    `signal_ready` is called once bring-up concludes, success or failure alike
+    (see `stagger_bring_up`): a fleet run uses it to let the next actor's
+    bring-up begin, and a failed bring-up must release that next actor just as
+    surely as a successful one, or one dead actor would stall the rest of the
+    fleet from ever starting.
     """
-    bring_up(
-        instance,
-        arguments.renderer,
-        deploy=deploy_bridge,
-        read_only=True,
-        cores=arguments.cores,
-        force_cold=arguments.cold,
-    )
-    # By interface, per instance, immediately before anything is measured.
-    require_offline(instance)
+    try:
+        bring_up(
+            instance,
+            arguments.renderer,
+            deploy=deploy_bridge,
+            read_only=True,
+            cores=arguments.cores,
+            force_cold=arguments.cold,
+        )
+        # By interface, per instance, immediately before anything is measured.
+        require_offline(instance)
+    finally:
+        signal_ready()
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
     result = subprocess.run(
@@ -291,6 +313,50 @@ def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> 
         )
     record: dict[str, Any] = json.loads(output.read_text())
     return record
+
+
+#: A backstop against a readiness signal that never arrives, not the
+#: sequencing mechanism itself. `collect_episodes` always signals in a
+#: `finally`, and bring_up's own internal waits (`wait_for_boot`,
+#: `wait_until_ready`) are already bounded at 300s, so in the ordinary case —
+#: including a failed bring-up — this is never reached; it exists only so a
+#: bug that skipped the signal could not stall the rest of the fleet forever.
+BRING_UP_STAGGER_BACKSTOP = 360.0
+
+
+def stagger_bring_up(
+    instances: list[CloneInstance], arguments: argparse.Namespace
+) -> Callable[[CloneInstance], dict[str, Any]]:
+    """Sequence each instance's bring-up after the previous instance's readiness.
+
+    This is the fix for the one failure a fleet of 4 hit on device: booting all
+    four emulators at the same instant peaked host load at 10.71 and total CPU
+    at 1,835%, and the last of the four never left `main_unavailable` within its
+    cold-launch timeout while its peers each reached home alone in 60-90s.
+    Steady-state collection uses only 563% of 3,200% available CPU, so the
+    contention is entirely in the simultaneous boot, not in running — which is
+    why only bring-up is gated here. Once an instance is up, its episode
+    collection runs exactly as concurrently as it always has.
+
+    Sequencing on readiness rather than a fixed sleep means instance i+1 starts
+    its bring-up the moment instance i's bring-up actually concludes, not after
+    a guessed duration — whether instance i succeeded or failed, since one dead
+    actor must not block the rest of the fleet from starting.
+    """
+    gates = [threading.Event() for _ in instances]
+
+    def collect(instance: CloneInstance) -> dict[str, Any]:
+        if instance.index > 0:
+            previous = gates[instance.index - 1]
+            if not previous.wait(BRING_UP_STAGGER_BACKSTOP):
+                print(
+                    f"{instance.serial}: instance {instance.index - 1} never signalled "
+                    f"ready within {BRING_UP_STAGGER_BACKSTOP:.0f}s; starting anyway",
+                    flush=True,
+                )
+        return collect_episodes(instance, arguments, signal_ready=gates[instance.index].set)
+
+    return collect
 
 
 def tear_down_instance(instance: CloneInstance) -> None:
@@ -364,7 +430,7 @@ def main() -> int:
     started = time.monotonic()
     outcomes = run_fleet(
         instances,
-        lambda instance: collect_episodes(instance, arguments),
+        stagger_bring_up(instances, arguments),
         tear_down_instance,
     )
     report = aggregate(outcomes, time.monotonic() - started)

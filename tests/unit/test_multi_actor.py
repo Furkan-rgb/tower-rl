@@ -11,6 +11,8 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +36,7 @@ from run_actors import (  # noqa: E402
     run_actor,
     run_bridge,
     run_fleet,
+    stagger_bring_up,
 )
 
 from tower_rl.application.evaluator import (  # noqa: E402
@@ -336,6 +339,114 @@ def test_nothing_is_prepared_when_the_snapshot_for_this_bridge_is_already_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert prepare(monkeypatch, held=True) == ([], [])
+
+
+class ConcurrencyRecorder:
+    """The highest number of overlapping `enter`/`exit` pairs seen at once."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.current = 0
+        self.peak = 0
+
+    def enter(self) -> None:
+        with self.lock:
+            self.current += 1
+            self.peak = max(self.peak, self.current)
+
+    def exit(self) -> None:
+        with self.lock:
+            self.current -= 1
+
+
+def stagger_arguments(tmp_path: Path) -> argparse.Namespace:
+    return argparse.Namespace(
+        cold=False,
+        renderer="lavapipe",
+        cores=4,
+        episodes=2,
+        policy="scripted",
+        frame_game_ms=100.0,
+        max_quiet_game_ms=2000,
+        max_episode_wall_seconds=600.0,
+        output_directory=tmp_path,
+    )
+
+
+def test_bring_ups_are_sequenced_but_collection_still_runs_concurrently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The device defect this fixes: 4 simultaneous cold boots, one never ready.
+
+    Bring-up must never overlap (peak concurrency 1); the run_episodes.py
+    subprocess calls that follow bring-up must still run at once, exactly as
+    they did before staggering.
+    """
+    instances = [CloneInstance(index=index) for index in range(3)]
+    bring_up_tracker = ConcurrencyRecorder()
+    collect_tracker = ConcurrencyRecorder()
+
+    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
+        bring_up_tracker.enter()
+        time.sleep(0.02)
+        bring_up_tracker.exit()
+        return "restored"
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        collect_tracker.enter()
+        time.sleep(0.2)
+        collect_tracker.exit()
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
+
+    outcomes = run_fleet(
+        instances, stagger_bring_up(instances, stagger_arguments(tmp_path)), lambda _: None
+    )
+
+    assert bring_up_tracker.peak == 1
+    assert collect_tracker.peak == len(instances)
+    assert all(outcome.failure is None for outcome in outcomes)
+
+
+def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    instances = [CloneInstance(index=index) for index in range(3)]
+    started: list[str] = []
+    torn_down: list[str] = []
+
+    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
+        started.append(target.serial)
+        if target.index == 1:
+            raise RuntimeError("cold boot refused")
+        return "restored"
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
+
+    outcomes = run_fleet(
+        instances,
+        stagger_bring_up(instances, stagger_arguments(tmp_path)),
+        lambda instance: torn_down.append(instance.serial),
+    )
+
+    assert sorted(started) == ["emulator-5556", "emulator-5558", "emulator-5560"]
+    assert sorted(torn_down) == ["emulator-5556", "emulator-5558", "emulator-5560"]
+    failed = [outcome for outcome in outcomes if outcome.failure is not None]
+    assert len(failed) == 1
+    assert failed[0].index == 1
+    assert "cold boot refused" in (failed[0].failure or "")
 
 
 def bridge_output(

@@ -7,6 +7,230 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E024 — Verification of the non-visual bring-up, field types, and the pin: three of five stages pass, the fourth fails on the post-advance re-pin, and the diagnostic isolates the cure
+
+**Date:** 2026-09-17
+**Status:** A five-stage device chain against commit `28d691f`. Stages 1 and 2
+pass outright. Stage 3 fails, but not on the defect it was sent to check — the
+`GAME_TIME_INFLATED` guard was never touched, and the failure is a second,
+independent bug the same commit introduced. A scratchpad diagnostic isolates
+the cure and it is the one the following commit ships. Stages 4 and 5 did not
+run, per fail-fast ordering. Host was not quiet: two foreign `pytest`
+processes held ~1250% CPU each and load sat near 60 on 32 cores for the whole
+session, so every throughput figure recorded here is a lower bound and no
+throughput comparison was attempted.
+
+### Stage 1 — non-visual bring-up: PASS
+
+The OFFLINE modal returns `main_unavailable` on every one of six probes over
+about 50 s, reconfirmed on the production build after its own cold launch.
+`s1-offline-screen.png` confirms the screen is the modal itself — "Checking
+Firebase Online Status… 7%" — not a splash. `launch` progressed "the game is
+not running" → `main_unavailable` → ready in 46.0 s (diagnostics build) and
+45.4 s (production build), offline reverified by interface at every
+checkpoint. One transient right after deploy's cold launch: "bridge closed
+the stream" for a few seconds while the bridge loaded. The oracle this stage
+exists to confirm holds: the splash/OFFLINE modal reports `main_unavailable`,
+never `no_initialized_run`.
+
+### Stage 2 — declared field types: PASS
+
+`gameSpeed`, `gameMaxSpeed` and `gameplayTimeThisRound` are all declared
+`System.Single`; `playTime` is `System.Double`. No width bug: the bridge
+already writes `gameSpeed` from a C++ `float`, so the write width matched the
+declared type all along. 940 distinct `Main` fields logged in full
+(`s2-main-field-types.txt`).
+
+### Stage 3 — FAIL, on the post-advance re-pin, not on inflation
+
+The run dies deterministically on the second decision of episode 1 with
+`BridgeStaleObservationError: command does not bind the latest observation`,
+reproduced twice. The traced sequence (`s3-trace.log`):
+
+```text
+advance    expected=11 -> result obs seq 12
+set_speed  expected=12 -> result obs seq 13   (post-advance re-pin)
+advance    expected=12 -> RAISED BridgeStaleObservationError
+```
+
+`set_speed` consumes an observation sequence like any other command. The
+environment's cached state still names the advance's settled observation
+while the bridge — and the client — have moved on to the one the re-pin
+produced, so the next advance is refused as stale. The exception escaped
+`evaluate` and killed the process rather than being classified as one lost
+episode. `GAME_TIME_INFLATED` did **not** appear; the 1.25 threshold was
+never exercised.
+
+### Stage 3 diagnostic — the boundary pin alone cures the inflation
+
+A scratchpad monkeypatch (`probe_nopostpin.py`) suppressed only the
+post-advance re-pin, leaving the episode-boundary pin and the threshold
+untouched; no repository edit. 5 episodes, lavapipe, 100 ms/frame:
+
+| Quantity | Value |
+| --- | --- |
+| `total_round_seconds / total_budgeted_game_seconds` | 754.35 / 747.80 = **1.0088** |
+| `decisions_per_wave` | **22.5** (21 expected at 1x; 15.0 was the inflated reading) |
+| Mean final wave | **4.6** (waves 1, 7, 8, 3, 4; sd 2.88) |
+| Valid episodes | 5/5 |
+| `invalid_detail` | `{}` |
+| `BRIDGE_EVENT_DIVERGENCE` | 0 |
+| `advances_cut_short` | 0 |
+| `episodes_not_started_fresh` | 0 |
+| Boundary per episode | 2.3–6.5 s |
+| Speedup | 1.282 (host contended) |
+
+The boundary pin alone — with the post-advance re-pin removed — cures the
+inflation. Caveats: n=5, the probe deliberately disabled the exact code under
+test rather than fixing it, and the host was heavily loaded, so every
+throughput figure here is a lower bound, not a measurement of the fix at
+rest.
+
+One earlier attempt of this probe failed at reset with "the instance did not
+reach an active run", explained by mid-round state the crashed stage-3 run
+left behind (`health=-nan game_over=1` in logcat); the retry from a clean
+idle home ran to completion.
+
+**Corroborating evidence, taken live.** A handshake taken while the crashed
+run's round was still active read `game_speed` **1.5** — direct evidence
+that the game holds its account-level 1.5 ceiling during a round unless
+pinned, and that the field does witness the running world's rate when read
+live; it reads 0.0 only in the paused observations the host normally takes
+(idle-home handshakes read 0.0 twice in the same session).
+
+### Stages 4 and 5 — NOT RUN
+
+The `-gpu host` renderer equivalence (stage 4) and multi-actor scaling
+(stage 5) were not attempted, per fail-fast ordering on the stage 3 failure.
+
+### Snapshot restore
+
+`nonvisual_baseline_home_offline` restores in 10.4 s: game running, offline,
+never connected. Its embedded bridge does not answer the current client
+("bridge closed the stream"), so a restored snapshot still needs a redeploy
+of the current build, which cold-launches the game and reopens the online
+window.
+
+### The fix that followed, commit `cf504b8`
+
+The post-advance re-pin is removed. The episode-boundary pin and the
+`GAME_TIME_INFLATED` ratio guard (threshold 1.25) are retained. Stale-sequence
+errors are now translated to `RunPortError` so they cost one episode rather
+than the run. The adapter now issues no command of its own initiative during
+a round, enforced by construction (`_command_between_rounds` raises if a
+round is in progress).
+
+### Cleanup
+
+`instrumented_bridge.sh cleanup` run on both the worked instance and the
+restored one: libunity SHA-256 `ffc1f3ef…dd0040`, `versionCode 1199`,
+`29.0.3`, installer `com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`; emulators killed, `adb devices` empty, no qemu
+process. No taps issued, no coins spent, no progression change.
+
+Source data: this session's scratchpad `DEVICE-VERIFY-CHAIN-DETAIL.md`,
+`s3-trace.log`, `s3-probe2.json`, `s2-main-field-types.txt`,
+`s1-offline-screen.png`.
+
+## M1B-E023 — The 1.5x game-time inflation, diagnosed: it lands within advances, not between them, and traces to the account's own speed ceiling
+
+**Date:** 2026-09-17
+**Status:** Analysis of the records `M1B-E022` produced, on the same device
+session — no new device run. Explains the `round/budget` ratio of 1.512
+flagged there and states its consequence for that run's numbers.
+
+`total_round_seconds / total_budgeted_game_seconds` read **1.512** in
+`M1B-E022`'s `-gpu host` arm, against clean prior runs at 1.011. Per-frame
+credit was 1.625 against the known-good 1.069 — an inflation of 1.520x,
+identical across all six episodes and **both** renderers, spread ±0.002,
+even though wall-time per frame differed 3.8x between the two renderers.
+
+**The extra time arrives within advances, not between them.** An inert pause
+between advances would scale with wall time and diverge roughly 8 ms/frame
+between the two renderers; the observed divergence was 0.1 ms, excluding the
+pause hypothesis at about 27x margin. The `round/budget` metric is also
+structurally blind to any leakage that happened between advances rather than
+inside them, since it only sums per-advance deltas — a second, independent
+reason not to read the metric as ruling out an inter-advance cause on its
+own, though the divergence measurement already does.
+
+**Cause.** This account's speed ceiling is 1.5, and `gameSpeed` defaults to
+1.5. Starting a round through `BattlePanelUI.StartNewRound` (`M1B-E022`) does
+not leave the world at 1x the way the old tap path did. `_pin_game_speed`
+could not catch this: `game_speed` reads 0.0 in the paused observations the
+host normally takes, so the guard the pin used to have — skip if already at
+1x — could never see the true rate, and the bridge's `set_speed` confirmation
+only reads back the slot it just wrote, not the world's running rate.
+
+**Corroboration.** `decisions_per_wave` fell from 21.1 to 15.0 and mean final
+wave rose to 8.0 in the inflated run — the profile of a coarser effective
+step, matching the previously-rejected 250 ms arm (`M1B-E018`) rather than
+anything about policy quality.
+
+**Consequence, stated plainly.** Any comparison of the `M1B-E022` run against
+the 1x-measured floor (`M1B-E021`) would have been invalid, and the higher
+waves reported there would have flattered the result rather than reflecting
+it. See `M1B-E024` for the device chain that verified the fix, and commit
+`28d691f` for the ratio guard this analysis led to.
+
+Source data: `M1B-E022`'s own records — this session's scratchpad
+`NONVISUAL-BOUNDARY-DETAIL.md`, `nvb-host.json`, `nvb-lavapipe.json`.
+
+## M1B-E022 — The non-visual episode boundary is found by dumping IL2CPP metadata, not by guessing names, and `-gpu host` clears its throughput arm
+
+**Date:** 2026-09-17
+**Status:** Closes the receiver hunt left open since `M1B-E013`: the round-start
+control is found, confirmed on device, and the screen tap is retired
+entirely. The `-gpu host` renderer arm this entry also ran is later shown
+(`M1B-E023`) to have been measured under a 1.52x game-time inflation, so its
+wave figure does not survive as reported.
+
+Commit `0a2366f`. Sources: this session's scratchpad
+`NONVISUAL-BOUNDARY-DETAIL.md`, `nvb-host.json`, `nvb-lavapipe.json`,
+`nvb-logcat-1.txt`.
+
+### The receiver hunt, closed by dumping IL2CPP metadata
+
+The round-start control was found by enumerating the game's own IL2CPP
+method inventory (450 `Main` methods, plus a cross-class scan) rather than
+by guessing object or method names. It is `BattlePanelUI.StartNewRound`, on
+the GameObject named `BattlePanel` — the BATTLE button's own component — and
+**not** on `Main`. `Button_GameEndPanelGoHome`, delivered to `Main`, works
+(wave 2→0, screen goes home), which proves delivery to `Main` was never the
+problem: `Main.StartNewRoundFunction` and `Main.AutoRetryBattle` are
+delivered and do nothing. Both are deleted from the adapter rather than kept
+as fallbacks. This retires the open question left standing since `M1B-E013`.
+
+`BattlePanel` is unreachable — an inactive object — while the result panel is
+up, so the episode boundary is `go_home` then `start_round`, and no retry
+control is needed at all.
+
+### The gated screen tap is gone
+
+Nothing in the RL loop reads a pixel any more. Boundary cost fell from 7.25 s
+(the tap path) to **1.716 s** measured from a terminal run (0.750 s when the
+run was already active). Snapshot `nonvisual_baseline_home_offline` was saved
+**and** restored — at home, offline, never connected — closing that
+follow-up from the handoff's next-slice list.
+
+### `-gpu host` arm
+
+3/3 valid, `invalid_detail {}`, 0 `advances_cut_short`, 0
+`BRIDGE_EVENT_DIVERGENCE`, mean wave 8.0, 15.04 dec/wave, 298 ms/advance,
+speedup 5.936, 64.6 episodes/hour, qemu 118–127% CPU. Same-session lavapipe
+reference: speedup 1.907, 24.1 episodes/hour, qemu 284–308% CPU — starvation
+capped, since other processes on the host held roughly 1500% CPU each during
+this arm, against the quiet-host lavapipe reference of 1000–1422% CPU.
+
+**Flagged prominently: this run's `total_round_seconds /
+total_budgeted_game_seconds` was 1.512**, and the mean wave of 8.0 is later
+shown (`M1B-E023`) to be an artifact of a faster world, not a better policy
+or a faithful throughput comparison. Read the `-gpu host` figures above as an
+uncorrected measurement pending that diagnosis, not as the renderer verdict.
+
+Source data: this session's scratchpad `NONVISUAL-BOUNDARY-DETAIL.md`,
+`nvb-host.json`, `nvb-lavapipe.json`, `nvb-logcat-1.txt`.
+
 ## M1B-E021 — The comparison floor: spending beats not spending by a wide margin, the scripted heuristic is not shown to beat random at this sample size, and a boundary deadlock cut the run short
 
 **Date:** 2026-09-17

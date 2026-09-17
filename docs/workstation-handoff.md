@@ -31,6 +31,17 @@ evidence in `docs/experiments.md`.
   Cohen's d, and `required_episodes` for power.
 - **Frame-exact stepping** (`M1B-E016`) and **the advance loop inside the
   bridge** (`M1B-E017`), described below.
+- **The episode boundary and bring-up are screen-free.** The round-start
+  control is `BattlePanelUI.StartNewRound` on the `BattlePanel` GameObject,
+  found by dumping IL2CPP metadata rather than guessing names; boundary cost
+  fell from 7.25 s to 1.716 s and nothing in the RL loop reads a pixel
+  (`M1B-E022`). Bring-up readiness is likewise read from the bridge's own
+  `main_unavailable`/`no_initialized_run` reasons, verified again on device
+  (`M1B-E024`). `visual_profile` is retained deliberately, for the
+  review/spectate path only, where a human watches and the picture is the
+  point.
+- **MLflow experiment tracking** is wired behind a port and on by default;
+  run with `uv run --extra tracking` to have it record.
 
 ### Standing decisions a new agent must not re-litigate
 
@@ -41,7 +52,19 @@ evidence in `docs/experiments.md`.
    `instrumented_run_adapter.py` as `GAME_SPEED = 1.0` with `_pin_game_speed`
    restoring it at every episode start, and asserted by test. Speed is not a
    parameter anywhere: not in the adapter, the cadence, or any runner's
-   arguments.
+   arguments. The pin is applied once, at the episode boundary, and nowhere
+   else: a post-advance re-pin was tried and found to strand the observation
+   sequence a round in progress depends on, killing the process on the very
+   next advance (`M1B-E024`). The adapter now refuses to issue a command of
+   its own initiative while a round is in progress, enforced by construction.
+   Because nothing readable reports the unpaused world's true rate (the field
+   reads 0.0 in every paused observation the host takes), the pin is not
+   verified by reading it back — it is verified by the effective game time
+   per frame, a declared parameter checked against the game's own round clock
+   every episode: an episode whose ratio exceeds 1.25 is failed by name and
+   excluded, catching exactly the failure mode where starting a round left
+   the world at this account's 1.5x ceiling instead of 1x (`M1B-E023`,
+   `M1B-E024`).
 2. **Speed comes from stepping frames faster.** `Time.captureDeltaTime` makes one
    rendered frame worth a fixed amount of game time however long it took to
    render, so decision moments are identical at any speed *by construction*. The
@@ -120,19 +143,54 @@ matter; the ceiling above these baselines remains unknown. The run also
 surfaced the boundary deadlock recorded below, which cut it from a single
 78-episode interleaved run to 23 pooled one-episode-per-arm segments.
 
+### Done: the boundary tap is retired, and a 1.52x game-time inflation was found and fixed
+
+`M1B-E022`. The round-start control was found by dumping IL2CPP metadata
+rather than guessing names — `BattlePanelUI.StartNewRound` on the
+`BattlePanel` GameObject, not on `Main` — closing the receiver hunt left open
+since `M1B-E013`. Boundary cost fell from 7.25 s to 1.716 s and nothing in
+the RL loop reads a pixel. The same device session's `-gpu host` arm cleared
+its own health checks (3/3 valid, zero divergence) but was later shown
+(`M1B-E023`) to have run under a 1.52x game-time inflation identical across
+both renderers, traced to this account's 1.5x speed ceiling surviving the
+new round-start path; its wave figure does not stand as a throughput or
+fidelity comparison. `M1B-E024` verified the bring-up and field types clean
+on device, reproduced the inflation's proximate cause (a post-advance re-pin
+that strands the observation sequence and kills the process), and isolated
+the cure — the episode-boundary pin alone, with no re-pin, restores the
+ratio to 1.0088. Commit `cf504b8` ships that fix: the re-pin is removed, the
+`GAME_TIME_INFLATED` ratio guard (threshold 1.25) is retained, stale-sequence
+errors now cost one episode instead of the run, and the adapter refuses to
+issue any command of its own initiative while a round is in progress.
+
 ### The current priority order
 
-The Lead has set this order for what follows the comparison floor:
+The Lead has set this order for what follows:
 
-1. **The boundary deadlock fix** (below) — blocks any further
-   single-process multi-episode run.
-2. **The `-gpu host` renderer verdict and multi-actor scaling.** A device
-   stage for this is in progress; `scripts/run_actors.py` is new in
-   `86fcf3c` and unverified on device.
-3. **Re-run the comparison floor properly powered** (≈97 episodes/arm for a
+1. **Re-run the device chain stages 3–5 on a quiet host, at `cf504b8`.**
+   `M1B-E024`'s stage 3 failure and its diagnostic were both taken under a
+   host with two foreign processes holding ~1250% CPU each; the fix has not
+   yet been verified at rest, and stages 4 (`-gpu host` equivalence) and 5
+   (multi-actor scaling) have not run at all.
+2. **Then equal-budget backbone training, with the learning curve tracked**
+   (MLflow, on by default under `uv run --extra tracking`).
+3. **The boundary deadlock fix** (below) — blocks any further
+   single-process multi-episode run; still open, check recent commits for
+   status.
+4. **Re-run the comparison floor properly powered** (≈97 episodes/arm for a
    1-wave difference) once multi-actor scaling lands and makes that
    affordable.
-4. **Then equal-budget backbone training.**
+
+**Open items surfaced by this device chain, not yet addressed:**
+
+- The deploy cold-launch online window is still required even when starting
+  from a snapshot — a restored snapshot's embedded bridge does not answer
+  the current client, so a redeploy (and the online window that brings) is
+  needed regardless (`M1B-E024`).
+- A stream-level stale error closes the client socket with no reconnect, so
+  on an unattended run it would burn the failure budget rather than being
+  absorbed as a single lost episode.
+- `run_actors` multi-actor scaling remains unmeasured on device.
 
 ### The boundary deadlock
 
@@ -178,22 +236,22 @@ known contributors.
    the `M1B-E017` run had to bring the radios back up, force-stop, relaunch, wait
    for home, and cut the radios again before it could deploy. Every device run
    pays this until it is fixed.
-2. The boundary tap. `Main.Instance` *is* alive at the home screen with a
-   non-zero native handle (`M1B-E015`), so the long-held premise that `Main`
-   exists only in the battle scene is wrong and the receiver hunt was aimed at a
-   problem that does not exist. Why `UnitySendMessage` does not take is the open
-   question: the method may not be on the component attached to that object, the
-   object may be inactive and so invisible to `GameObject.Find` semantics,
-   preconditions may be unmet, or the transition may exceed the 30-second wait.
-   Removing the tap also removes the 6-second result-panel settle — 6 of the 7.3
-   seconds of per-episode boundary that is 48 percent of wall clock.
+2. **Done.** The boundary tap is retired (`M1B-E022`): the receiver was
+   `BattlePanelUI.StartNewRound` on `BattlePanel`, not anything on `Main`,
+   found by dumping IL2CPP metadata. The 6-second result-panel settle is gone
+   with it; boundary cost fell from 7.25 s to 1.716 s.
 3. Save an already-started offline snapshot with `clone_session.py snapshot` and
-   verify `restore` does not re-run the Firebase check.
-4. Revisit the renderer only once nothing in the loop reads a pixel. `-gpu host`
-   was withdrawn for corrupting the frame (`M1B-E004`), which broke screen
-   classification; game logic was never affected. Under frame stepping with the
-   loop moved into the bridge, frame rate governs throughput, so this matters
-   again — for fps, not for pixels.
+   verify `restore` does not re-run the Firebase check. Partially done:
+   `M1B-E022`/`M1B-E024` saved and restored `nonvisual_baseline_home_offline`,
+   but its embedded bridge does not answer the current client, so a restore
+   still needs a redeploy and the online window that brings — see "Open
+   items" under "The current priority order" above.
+4. **Done, with the verdict pending a quiet-host rerun.** `-gpu host` cleared
+   its health checks in `M1B-E022` (3/3 valid, zero divergence), but that
+   arm's throughput and wave figures were measured under the 1.52x game-time
+   inflation `M1B-E023` diagnosed, so they are not a usable renderer verdict.
+   Re-run at `cf504b8` on a quiet host — see "The current priority order"
+   above.
 5. Longer training runs and the speed equivalence gate. The comparison floor
    itself is measured (`M1B-E021`); see "The current priority order" above for
    what follows it.

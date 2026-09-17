@@ -7,6 +7,59 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E014 — 8x does preserve decision moments; the reference was the thing missing
+
+**Date:** 2026-09-17
+**Status:** The requirement is met at 8x and broken at 64x, measured against a
+real 1x reference for the first time. This reinstates, on different evidence, the
+claim `M1B-E012` withdrew.
+
+`M1B-E012` compared 8x against `M1B-E006`'s table and found 13.4 decisions per
+wave where that table said 69, and I withdrew the claim that 8x preserves
+decision moments. That withdrawal compared 8x against a number that does not
+reproduce, rather than against normal-speed play. Three scripted episodes at 1x
+supply the comparator that was missing.
+
+| Speed | Decisions per episode | Decisions per wave | Mean final wave | Wall seconds per episode | Episodes per hour |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 89.3 | 12.2 | 7.33 | 235 | 15.3 |
+| 8 | 88.5 | 13.4 | 6.62 | 63.5 | 56.7 |
+| 64 | 42.5 | 4.8 | 8.88 | 17.6 | 205.1 |
+
+Decisions per episode is the cleaner statistic, because decisions per wave
+divides by an outcome that varies. On that measure 1x and 8x are
+indistinguishable — 89.3 against 88.5 — and 64x delivers less than half.
+
+### What is and is not now established
+
+Established: **the requirement holds at 8x.** The agent gets the same number of
+decisions per episode at 8x as at normal speed, which is what "the same decision
+moments, only sooner" asks for. It breaks somewhere between 8x and 64x, exactly
+where a frame becomes worth more game time than the 250 ms slice.
+
+Not established: the absolute density. Neither 1x nor 8x reaches `M1B-E006`'s 63
+to 79 decisions per wave; both sit near 12 to 13. That table remains
+unreproducible and must not be quoted. What matters for the requirement is the
+*ratio between speeds*, not the absolute value, and the ratio is now measured
+against a comparator taken with the same code on the same day.
+
+Sample sizes are three episodes at 1x and eight at each of the others. That is
+thin for final wave and adequate for decisions per episode, which is close to a
+deterministic property of the cadence rather than an outcome: the 1x-to-8x gap is
+under one percent and the 8x-to-64x gap is more than twofold.
+
+### Consequence: training can proceed at 8x now
+
+The interim position in `solution.md` 9.2c assumed satisfying the requirement
+meant 1x and roughly seven episodes per hour, which is not a training rate. The
+real figure is 8x at 56.7 episodes per hour with decision moments preserved. That
+is 3.6 times slower than 64x and entirely usable, so training runs no longer have
+to wait for the frame-exact step — they have to run at 8x.
+
+The frame-exact step is still worth building, because it would remove the trade
+altogether rather than settling at a point on it, and because `speed = slice x
+achieved fps` may reach well beyond 8x. But it is no longer blocking.
+
 ## M1B-E013 — Auto-restart is not progression-gated, and the tap still needs a receiver
 
 **Date:** 2026-09-17

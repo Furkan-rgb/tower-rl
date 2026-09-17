@@ -969,18 +969,22 @@ stops being a game setting and becomes *how fast frames render*, which is a host
 concern — and that is what makes the renderer matter again, for frame rate rather
 than for pixels.
 
-**Until this exists, what speed should runs use?** The end state is the game's
-own multiplier pinned at 1x permanently, with speed coming from frame rate. But
-only half the mechanism is implemented: pinning 1x today gives correct decision
-density at roughly seven episodes per hour, which is not a usable training rate.
-The interim rule is therefore:
+**Until this exists, what speed should runs use? 8x.** Measured against a real
+1x reference (`M1B-E014`), 8x delivers 88.5 decisions per episode against 1x's
+89.3 — indistinguishable — while 64x delivers 42.5. The requirement is therefore
+already satisfied at 8x, at 56.7 episodes per hour against 205 at 64x. The
+interim rule is:
 
-- plumbing, smoke tests and pipeline work may run at 64x, where throughput
+- **training runs at 8x**, which costs 3.6 times the wall clock and buys decision
+  moments that match normal-speed play;
+- plumbing, smoke tests and pipeline work may still run at 64x, where throughput
   matters and decision quality does not;
-- any *training result* produced before the frame-exact step exists is
-  provisional, because it was collected on a coarser control problem than the
-  final one and would have to be recollected;
-- so long training runs wait for the mechanism rather than racing it.
+- a training result collected at 64x is provisional, because it was gathered on a
+  control problem less than half as fine as normal play.
+
+This changes the priority of the mechanism below rather than removing it. It is
+no longer blocking training; it is how the 3.6x is recovered, and `speed = slice
+x achieved fps` may reach well beyond 8x.
 
 Two settings go with it, or the engine will still wait for real time between
 frames: `QualitySettings.vSyncCount = 0` and `Application.targetFrameRate = -1`.

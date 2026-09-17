@@ -407,12 +407,23 @@ Two consequences:
    the violation; it does not remove it, because speed and density are traded
    against each other by construction.
 2. **Getting both requires decoupling game time per frame from wall time per
-   frame**, which is what `Time.captureDeltaTime` does. The obstacle is not
-   finding the API, it is calling it: the bridge's only main-thread entry point
-   is `UnitySendMessage` to a named GameObject, and a Unity property setter
-   invoked from the socket thread is the pattern that crashed the game twice
-   already. Writing a plain static field from the socket thread is established
-   practice here (`game_speed` is set that way), but `captureDeltaTime` is a
-   native-backed property, not a field. Establishing a main-thread trampoline is
-   therefore a prerequisite for this — the same prerequisite the boundary-tap
-   work needs.
+   frame**, which is what `Time.captureDeltaTime` does. `captureDeltaTime` is a
+   native-backed property rather than a field, so `field_static_set_value` cannot
+   reach it — but it does not need a main-thread receiver either. It is a leaf
+   engine binding reachable through `il2cpp_resolve_icall`, as are
+   `Time.frameCount`, `QualitySettings.vSyncCount` and
+   `Application.targetFrameRate`.
+
+   **A correction to what this section previously claimed.** It said a Unity
+   property setter from the socket thread "is the pattern that crashed the game
+   twice already". That misattributed the crash. The recorded double crash
+   (`M1B-E001`) was `il2cpp_domain_get` called at library-load time, four seconds
+   after `libil2cpp.so` appears and *before any client ever connected* — premature
+   runtime resolution, not a threading violation and not a property setter. No
+   entry in this repository records a `runtime_invoke` crash at all. The rule is
+   still right, but its scope is narrower than stated: **never execute managed
+   game code or Unity scene-graph code from the socket thread.** Engine leaf
+   accessors on `Time` and `QualitySettings` are a different category.
+
+   So the two problems decouple. Only the boundary tap needs an out-of-battle
+   receiver.

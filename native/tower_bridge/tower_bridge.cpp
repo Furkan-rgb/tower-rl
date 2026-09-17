@@ -358,6 +358,24 @@ bool ReadField(const Il2CppApi& api, Il2CppObject* object, FieldInfo* field, T* 
   return true;
 }
 
+// Unity keeps a destroyed object's managed wrapper alive with a null native
+// handle - the "fake null" that makes `obj == null` true in C# while the pointer
+// is not null at all. Testing the managed pointer alone therefore cannot tell a
+// live component from a destroyed one, and a finished run whose `Main` has been
+// torn down would be read field by field and reported as a live observation.
+bool NativeHandleIsAlive(const Il2CppApi& api, Il2CppObject* object) {
+  if (object == nullptr) return false;
+  Il2CppClass* klass = api.object_get_class(object);
+  FieldInfo* cached =
+      klass == nullptr ? nullptr : api.class_get_field_from_name(klass, "m_CachedPtr");
+  // Not a UnityEngine.Object: the managed null test is the only one available and
+  // is also sufficient, so absence of the field is not a failure.
+  if (cached == nullptr) return true;
+  void* handle = nullptr;
+  api.field_get_value(object, cached, &handle);
+  return handle != nullptr;
+}
+
 template <typename T>
 bool ReadPrimitiveArray(const Il2CppApi& api, Il2CppArray* array, size_t index, T* value) {
   if (array == nullptr || index >= api.array_length(array)) return false;
@@ -386,7 +404,8 @@ bool ReadUpgradeEvidence(const Il2CppApi& api, const MainFields& fields, const c
                          size_t index, UpgradeEvidence* evidence) {
   const FamilyFields* selected = Family(fields, family);
   Il2CppObject* main = nullptr;
-  if (selected == nullptr || (api.field_static_get_value(fields.instance, &main), main == nullptr)) return false;
+  api.field_static_get_value(fields.instance, &main);
+  if (selected == nullptr || !NativeHandleIsAlive(api, main)) return false;
   Il2CppArray *costs = nullptr, *levels = nullptr, *unlocked = nullptr, *tier = nullptr, *maxed = nullptr;
   if (!ReadField(api, main, fields.cash, &evidence->cash) ||
       !ReadField(api, main, selected->cost, &costs) || !ReadField(api, main, selected->level, &levels) ||
@@ -475,7 +494,7 @@ ObservationResult BuildObservation(const Il2CppApi& api, const MainFields& field
                                    uint64_t sequence, std::string* json) {
   Il2CppObject* main = nullptr;
   api.field_static_get_value(fields.instance, &main);
-  if (main == nullptr) {
+  if (!NativeHandleIsAlive(api, main)) {
     return ObservationResult::kNoRun;
   }
   double cash = 0.0, health = 0.0, max_health = 0.0;
@@ -727,6 +746,26 @@ void LogClockCandidates(const Il2CppApi& api, Il2CppClass* main) {
   }
 }
 
+// Report whether `Main.Instance` is a live component or Unity's fake null. This
+// is the decisive test of whether the lifecycle receiver exists outside the
+// battle scene: a zeroed native handle means the GameObject is gone, which is
+// why `UnitySendMessage` has nothing to deliver to.
+void LogMainLiveness(const Il2CppApi& api, const MainFields& fields, const char* when) {
+  Il2CppObject* main = nullptr;
+  api.field_static_get_value(fields.instance, &main);
+  void* handle = nullptr;
+  if (main != nullptr) {
+    Il2CppClass* klass = api.object_get_class(main);
+    FieldInfo* cached =
+        klass == nullptr ? nullptr : api.class_get_field_from_name(klass, "m_CachedPtr");
+    if (cached != nullptr) api.field_get_value(main, cached, &handle);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "liveness %s managed=%p cached_ptr=%p field=%s", when,
+                        static_cast<void*>(main), handle, cached ? "found" : "missing");
+    return;
+  }
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "liveness %s managed=null", when);
+}
 #endif
 
 // always bind the state it was decided from, including between episodes.
@@ -739,6 +778,11 @@ bool SendState(int client, const Il2CppApi& api, const MainFields& fields, uint6
 #endif
       return SendFrame(client, payload);
     case ObservationResult::kNoRun:
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+      // Logged exactly where the receiver question is decided: if the handle is
+      // zero here, `Main` is destroyed and UnitySendMessage has no target.
+      LogMainLiveness(api, fields, "no_run");
+#endif
       return SendFrame(client, "{\"type\":\"run_unavailable\",\"sequence\":" +
                                    std::to_string(sequence) + ",\"reason\":\"no_initialized_run\"}");
     case ObservationResult::kError:
@@ -770,7 +814,7 @@ useconds_t GameTimeInterval(useconds_t interval, float speed) {
 bool RunIsActive(const Il2CppApi& api, const MainFields& fields) {
   Il2CppObject* main = nullptr;
   api.field_static_get_value(fields.instance, &main);
-  if (main == nullptr) return false;
+  if (!NativeHandleIsAlive(api, main)) return false;
   uint8_t game_over = 0, round_active = 0;
   double health = 0.0;
   if (!ReadField(api, main, fields.game_over, &game_over) ||
@@ -782,6 +826,45 @@ bool RunIsActive(const Il2CppApi& api, const MainFields& fields) {
 }
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
+// Resolve the engine accessors the frame-exact step would need, and report which
+// of them exist and which library they come from. Nothing is called: this
+// separates "the binding is unreachable" from "the call is unsafe", which are
+// different problems with different answers.
+void LogEngineIcalls() {
+  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+  if (il2cpp == nullptr) return;
+  void* (*resolve_icall)(const char*) = nullptr;
+  if (!Resolve(il2cpp, "il2cpp_resolve_icall", &resolve_icall)) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "icall il2cpp_resolve_icall missing");
+    return;
+  }
+  static const char* kNames[] = {
+      "UnityEngine.Time::get_frameCount()",
+      "UnityEngine.Time::get_frameCount",
+      "UnityEngine.Time::get_captureDeltaTime()",
+      "UnityEngine.Time::set_captureDeltaTime(System.Single)",
+      "UnityEngine.Time::set_captureDeltaTime",
+      "UnityEngine.Time::get_timeScale()",
+      "UnityEngine.Time::get_fixedDeltaTime()",
+      "UnityEngine.Application::set_targetFrameRate(System.Int32)",
+      "UnityEngine.QualitySettings::set_vSyncCount(System.Int32)",
+      "UnityEngine.Object::GetName(UnityEngine.Object)",
+  };
+  for (const char* name : kNames) {
+    void* pointer = resolve_icall(name);
+    Dl_info info{};
+    const bool located = pointer != nullptr && dladdr(pointer, &info) != 0;
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "icall %s -> %p (%s)", name, pointer,
+                        located && info.dli_fname ? info.dli_fname : "unattributed");
+  }
+  // Presence only: a stop-the-world heap walk is the fallback if no receiver is
+  // found, and knowing now whether the exports exist costs nothing.
+  void* stop_world = dlsym(il2cpp, "il2cpp_stop_gc_world");
+  void* foreach_heap = dlsym(il2cpp, "il2cpp_gc_foreach_heap");
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "gc_world stop=%p foreach=%p", stop_world,
+                      foreach_heap);
+}
+
 // Locate a semantic entry point that does not live on `Main`, by scanning every
 // class for method names containing an allowlisted fragment.
 void LogMatchingMethods(const Il2CppApi& api, Il2CppDomain* domain) {
@@ -996,6 +1079,7 @@ bool InitializeRuntime(Il2CppApi* api, MainFields* fields) {
   LogClassMembers(main, "Main");
   LogClassMembers(int_select, "IntSelect");
   LogMatchingMethods(*api, domain);
+  LogEngineIcalls();
 #endif
   return true;
 }

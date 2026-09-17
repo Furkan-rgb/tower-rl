@@ -66,17 +66,35 @@ report_identity() {
   su_device "mount | grep -c libunity.so || true" | tr -d '\r' | sed 's/^/libunity_mounts: /'
 }
 
+# Airplane mode alone does not take this emulator offline: the setting can read 1
+# while the wifi radio is still up with a route to the host NAT, which is how the
+# clone ran online through M1B-E009. The interface is what decides, so that is
+# what is checked, and deploy refuses rather than warns.
+require_offline() {
+  local addresses
+  addresses="$(device shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | grep -v ' lo ' || true)"
+  if [ -n "$addresses" ]; then
+    echo "refusing to deploy: $serial still has a routable interface" >&2
+    echo "$addresses" >&2
+    echo "disable the radios first: adb -s $serial shell svc wifi disable && adb -s $serial shell svc data disable" >&2
+    exit 1
+  fi
+}
+
 target="$(lib_path)"
 [ -n "$target" ] || { echo "package $package is not installed on $serial" >&2; exit 1; }
 
 case "$command" in
   verify)
     report_identity "$target"
+    device shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | grep -v ' lo ' |
+      sed 's/^/routable_interface: /' || echo "routable_interfaces: none"
     su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: none"
     ;;
 
   deploy)
     [ -n "$build_dir" ] || { echo "TOWER_BRIDGE_BUILD_DIR is required" >&2; exit 1; }
+    require_offline
     bridge="$build_dir/libtower_bridge.so"
     overlay="$build_dir/libunity-bridge.so"
     for file in "$bridge" "$overlay"; do

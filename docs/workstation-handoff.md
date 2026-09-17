@@ -87,8 +87,12 @@ from an ARM64 AVD and is also tied to the pinned Lavapipe/Swangle renderer.
    sign-in. Do not automate credentials, purchases, advertisements, or legal
    consent. The local XAPK remains metadata/reference input only.
 6. Recreate the semantic baseline manually (Tier 1 selected, no permanent
-   Workshop spending, Labs locked), enable airplane mode only after the game is
-   running, and create a new workstation-local snapshot with a unique name.
+   Workshop spending, Labs locked), take the device offline only after the game
+   is running, and create a new workstation-local snapshot with a unique name.
+   Airplane mode is **not** sufficient and never was: the setting reads 1 while
+   the wifi radio stays up with a route (`M1B-E010`). Use `adb shell svc wifi
+   disable` and `adb shell svc data disable`, then confirm that `ip -o -4 addr
+   show` lists nothing but `lo`.
 7. Verify that new snapshot with `tower-rl probe --navigate
    --restore-snapshot <workstation-snapshot>` before any actor or learner work.
 

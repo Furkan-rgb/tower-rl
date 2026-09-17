@@ -774,6 +774,10 @@ the game process, Battle-home/Tier-1 state, airplane mode, and a successful
 post-restore visual fingerprint. The earlier 1.5-GiB snapshot remains retained as
 a superseded artifact. Offline cold launch after a force-stop is still
 unsupported; recovery uses the running snapshot or a controlled online restart.
+The game blocks at a "Checking Firebase Online Status" splash and an OFFLINE
+modal when it cannot reach the network, so the online window is at launch only —
+it plays fine once the network is cut (`M1B-E010`). Verify offline by interface,
+not by `airplane_mode_on`, which reads 1 while the radio is still up.
 
 ### 8.2 Normal episode start
 

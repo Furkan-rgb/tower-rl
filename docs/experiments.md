@@ -7,6 +7,96 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E010 — The clone was never offline, and the game will not start without a network
+
+**Date:** 2026-09-17
+**Status:** Contrary evidence. Every instrumented run to date, `M1B-E009`
+included, executed with a working network connection. A start-online-then-cut
+procedure now satisfies the constraint and is verified.
+
+### What was assumed
+
+The operating constraint is that the disposable clone is offline before any
+automation. The check used for it was `settings get global airplane_mode_on`
+returning `1`, and it did return `1` throughout.
+
+### What is actually true
+
+Airplane mode reads `1` while the wifi radio stays up. On this emulator, before
+any change:
+
+```text
+airplane_mode_on=1
+airplane_mode_radios=cell,bluetooth,uwb,wifi,wimax
+wifi_on=2
+wlan0    inet 10.0.2.16/24
+ping 8.8.8.8 -> 1 packets transmitted, 1 received, rtt 953 ms
+```
+
+The setting was written without the broadcast the wifi service acts on, so the
+radio never went down. The interface had an address, a route and reachability.
+`airplane_mode_on` was therefore never evidence of anything, and the clone has
+been online for every instrumented run recorded in this document.
+
+`svc wifi disable` and `svc data disable` do take it down: `wlan0` loses its
+address and `ping` returns `Network is unreachable`.
+
+### And then the game would not start
+
+With the device genuinely offline the game stops at its splash screen on a modal
+reading *"OFFLINE — You are offline, please check your internet connection and
+try again"*, over a progress bar labelled *"Checking Firebase Online Status…"*.
+It never reaches the battle home screen, and the adapter correctly refused to
+tap: every one of the seven `battle_home_tier_1` anchors disagreed, the screen
+classified as `unknown`, and the gate failed closed exactly as designed.
+
+`solution.md` 8.1 already recorded that "offline cold launch after a force-stop
+is still unsupported", and the handoff already said to enable airplane mode only
+after the game is running. Both were right about the game. What neither caught is
+that the mechanism they relied on does not work: airplane mode does not take this
+emulator offline, so "enable airplane mode after the game is running" left the
+device connected for the whole run rather than for its first twenty seconds.
+
+That is also why the contradiction survived unnoticed. The clone cannot produce a
+single valid episode while genuinely offline, so the runs that produced thousands
+of them were necessarily online throughout. There was no configuration in which
+both the assumption and the results could hold.
+
+### The procedure that satisfies the constraint
+
+The network is needed to *start* the game, not to play it. Verified on this
+device:
+
+1. Enable the radio, launch the app, wait for `battle_home_tier_1` — 21 seconds.
+2. `svc wifi disable` and `svc data disable`; confirm no IPv4 address on any
+   interface but `lo`, and that `ping` is unreachable.
+3. The game holds at `battle_home_tier_1` for at least two minutes offline with
+   no re-check and no modal.
+4. Two scripted episodes then ran to completion offline, reaching waves 10 and
+   11, both valid.
+
+So automation can run genuinely offline. What cannot be avoided is a short
+online window at application startup, during which the game contacts Firebase
+and may do whatever else it does at launch.
+
+### What this does not establish
+
+- Whether the game synced save data, progression or telemetry during the
+  startup windows of previous runs. The clone's account has drifted through
+  play (`M1B-E005`), and nothing here distinguishes local drift from synced
+  drift.
+- Whether a longer offline session eventually triggers a re-check. Two minutes
+  at home and two full episodes showed none; a four-hour run has not yet been
+  observed under a verified-offline device.
+
+### What changed
+
+`scripts/instrumented_bridge.sh deploy` now refuses to run while any interface
+other than `lo` holds an IPv4 address, printing the offending interface and the
+commands that take it down. `verify` reports routable interfaces alongside the
+package identity. A check that can pass while the premise is false is worse than
+no check, so the interface is what is tested, not the setting.
+
 ## M1B-E009 — The 1,000-episode M2 reliability gate passes
 
 **Date:** 2026-09-17

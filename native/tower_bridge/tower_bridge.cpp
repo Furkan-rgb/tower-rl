@@ -286,16 +286,22 @@ struct LifecycleAction {
   const char* name;
   const char* method;
   bool expect_active;
+  // The GameObject the message is delivered to. `nullptr` means the game's own
+  // `Main` object, which carries the run itself; a control that lives on a
+  // panel names that panel instead.
+  const char* object = nullptr;
 };
 
 constexpr LifecycleAction kLifecycleActions[] = {
-    {"start_round", "StartNewRoundFunction", true},
-    {"retry", "AutoRetryBattle", true},
-    {"go_home", "Button_GameEndPanelGoHome", false},
-    // The game's own auto-restart toggle. Dispatched from a terminal run it is
-    // self-confirming: either the game starts the next round by itself, or the
-    // wait expires and the actor is quarantined rather than assumed healthy.
-    {"enable_auto_restart", "Button_ToggleAutoRestartBattle", true},
+    // The home screen's own BATTLE control, `BattlePanelUI.StartNewRound` on the
+    // GameObject named `BattlePanel`. `Main.StartNewRoundFunction` is delivered
+    // and does nothing - measured at home and at a terminal run - so the round
+    // is started through the panel that owns the control, exactly as a press
+    // would. `BattlePanel` is only reachable from the home screen: a terminal
+    // run must be closed with `go_home` first, which is what the run adapter
+    // does, and which is why no retry control is needed.
+    {"start_round", "StartNewRound", true, "BattlePanel"},
+    {"go_home", "Button_GameEndPanelGoHome", false, nullptr},
     // Speed is the game's own control. The observation reports `game_speed`, so
     // the host verifies the effect instead of assuming it.
     {"speed_max", "SpeedChangeMax", true},
@@ -304,6 +310,42 @@ constexpr LifecycleAction kLifecycleActions[] = {
     {"pause", "Pause", true},
     {"unpause", "Unpause", true},
 };
+
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+// A diagnostics-only lifecycle action, `send:<GameObject>:<Method>`, so a
+// candidate receiver found in the metadata inventory can be tried without a
+// rebuild per candidate. It goes through exactly the dispatch the allowlisted
+// lifecycle actions use, so what it proves about a method is what production
+// would get. Absent from an ordinary build.
+char g_probe_object[64] = TOWER_BRIDGE_MAIN_GAME_OBJECT;
+char g_probe_method[64] = "";
+const LifecycleAction g_probe_action{"probe", g_probe_method, true};
+// A miss costs the whole wait, and a probe run tries many. The game's own
+// transitions land in a second or two, so this is long enough to see one.
+constexpr useconds_t kProbeTimeoutMicros = 6000000;
+
+bool ParseProbeAction(const std::string& action) {
+  if (action.rfind("send:", 0) != 0) return false;
+  const size_t separator = action.find(':', 5);
+  if (separator == std::string::npos) return false;
+  const std::string object = action.substr(5, separator - 5);
+  const std::string method = action.substr(separator + 1);
+  if (object.empty() || method.empty() || object.size() >= sizeof(g_probe_object) ||
+      method.size() >= sizeof(g_probe_method)) {
+    return false;
+  }
+  static const char kAllowed[] =
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+  for (const std::string* part : {&object, &method}) {
+    for (const char letter : *part) {
+      if (std::strchr(kAllowed, letter) == nullptr || letter == '\0') return false;
+    }
+  }
+  std::snprintf(g_probe_object, sizeof(g_probe_object), "%s", object.c_str());
+  std::snprintf(g_probe_method, sizeof(g_probe_method), "%s", method.c_str());
+  return true;
+}
+#endif
 
 // Each family recomputes its own costs. The game only refreshes a family while
 // its tab is displayed, so an actor that never touches the screen must ask for
@@ -696,6 +738,11 @@ bool ParseCommand(const std::string& payload, Command* command) {
     for (const LifecycleAction& candidate : kLifecycleActions) {
       if (action == candidate.name) { command->lifecycle = &candidate; break; }
     }
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+    if (command->lifecycle == nullptr && ParseProbeAction(action)) {
+      command->lifecycle = &g_probe_action;
+    }
+#endif
     command->family = nullptr; command->index = 0;
     return command->lifecycle != nullptr;
   }
@@ -1279,7 +1326,16 @@ void LogMatchingMethods(const Il2CppApi& api, Il2CppDomain* domain) {
       !Resolve(il2cpp, "il2cpp_method_get_param_count", &method_get_param_count)) {
     return;
   }
-  static const char* kFragments[] = {"Retry", "Restart", "GameEnd", "NewRound", "Respawn"};
+  // Only `UnitySendMessage` can reach a method without executing managed code
+  // from this thread, and it delivers to components on a GameObject, so whether
+  // a declaring class is a MonoBehaviour decides whether a candidate is
+  // reachable at all.
+  Il2CppClass* (*class_get_parent)(Il2CppClass*) = nullptr;
+  Resolve(il2cpp, "il2cpp_class_get_parent", &class_get_parent);
+  static const char* kFragments[] = {"Retry",     "Restart",  "GameEnd",  "NewRound",
+                                     "Respawn",   "StartRound", "StartBattle", "BeginRound",
+                                     "NewGame",   "Revive",   "Continue", "PlayAgain",
+                                     "StartNew",  "RoundStart"};
   size_t assemblies_count = 0;
   const Il2CppAssembly** assemblies = api.domain_get_assemblies(domain, &assemblies_count);
   for (size_t a = 0; a < assemblies_count; ++a) {
@@ -1295,8 +1351,17 @@ void LogMatchingMethods(const Il2CppApi& api, Il2CppDomain* domain) {
         if (name == nullptr) continue;
         for (const char* fragment : kFragments) {
           if (std::strstr(name, fragment) != nullptr) {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag, "scan %s.%s/%u", class_name, name,
-                                method_get_param_count(method));
+            bool behaviour = false;
+            for (Il2CppClass* base = class_get_parent == nullptr ? nullptr : class_get_parent(klass);
+                 base != nullptr; base = class_get_parent(base)) {
+              const char* base_name = api.class_get_name(base);
+              if (base_name != nullptr && std::strcmp(base_name, "MonoBehaviour") == 0) {
+                behaviour = true;
+                break;
+              }
+            }
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "scan %s.%s/%u %s", class_name, name,
+                                method_get_param_count(method), behaviour ? "mono" : "plain");
             break;
           }
         }
@@ -1381,13 +1446,25 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
       } else if (command.lifecycle != nullptr) {
         // The game owns the transition; the bridge only presses its own control
         // and then waits for the game's own state to agree.
-        ResolveUnitySendMessage()(TOWER_BRIDGE_MAIN_GAME_OBJECT, command.lifecycle->method, "");
+        const char* lifecycle_object = command.lifecycle->object == nullptr
+                                           ? TOWER_BRIDGE_MAIN_GAME_OBJECT
+                                           : command.lifecycle->object;
+        useconds_t lifecycle_timeout = kLifecycleTimeoutMicros;
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+        if (command.lifecycle == &g_probe_action) {
+          lifecycle_object = g_probe_object;
+          lifecycle_timeout = kProbeTimeoutMicros;
+          __android_log_print(ANDROID_LOG_INFO, kLogTag, "probe send %s.%s", lifecycle_object,
+                              command.lifecycle->method);
+        }
+#endif
+        ResolveUnitySendMessage()(lifecycle_object, command.lifecycle->method, "");
         reason = command.lifecycle->expect_active ? "run_active" : "run_closed";
         bool settled = false;
         // A scene transition takes seconds. The stream must keep proving it is
         // alive, or the host cannot tell a slow transition from a dead bridge.
         useconds_t since_heartbeat = 0;
-        for (useconds_t elapsed = 0; elapsed < kLifecycleTimeoutMicros;
+        for (useconds_t elapsed = 0; elapsed < lifecycle_timeout;
              elapsed += kLifecyclePollMicros) {
           usleep(kLifecyclePollMicros);
           if (RunIsActive(api, fields) == command.lifecycle->expect_active) { settled = true; break; }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import select
 import socket
 import struct
@@ -9,7 +8,6 @@ import time
 from contextlib import suppress
 
 import pytest
-from PIL import Image
 
 from tower_rl.infrastructure.instrumented_bridge import (
     ADVANCE_WALL_CEILING_SECONDS,
@@ -31,12 +29,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     encode_frame,
     read_frame,
 )
-from tower_rl.infrastructure.instrumented_run_adapter import (
-    RETRY_BUTTON,
-    InstrumentedRunAdapter,
-)
-from tower_rl.infrastructure.visual_profile import Screen
-from tower_rl.ports.android import CapturedFrame, InputReceipt, ScreenPoint
+from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter
 
 EXPECTED = BridgeCompatibility(
     package_version="29.0.3",
@@ -353,12 +346,12 @@ def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
     lifecycle = decode_command(
         {
             "type": "command", "protocol_version": 1, "request_id": "r",
-            "expected_observation_sequence": 2, "kind": "lifecycle", "action": "retry",
+            "expected_observation_sequence": 2, "kind": "lifecycle", "action": "start_round",
         }
     )
 
     assert lifecycle.kind == "lifecycle"
-    assert lifecycle.action == "retry"
+    assert lifecycle.action == "start_round"
     assert lifecycle.family is None and lifecycle.index is None
 
     with pytest.raises(BridgeProtocolError, match="unsupported lifecycle action"):
@@ -373,14 +366,14 @@ def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
             {
                 "type": "command", "protocol_version": 1, "request_id": "r",
                 "expected_observation_sequence": 2, "kind": "lifecycle",
-                "action": "retry", "family": "attack", "index": 0,
+                "action": "start_round", "family": "attack", "index": 0,
             }
         )
     with pytest.raises(BridgeProtocolError, match="only a lifecycle command"):
         decode_command(
             {
                 "type": "command", "protocol_version": 1, "request_id": "r",
-                "expected_observation_sequence": 2, "kind": "advance", "action": "retry",
+                "expected_observation_sequence": 2, "kind": "advance", "action": "start_round",
                 "budget_game_ms": 2000, "frame_game_ms": 16.0,
                 "health_change_fraction": 0.05,
             }
@@ -686,10 +679,11 @@ class _IdleStreamBridge:
     def restart_run(self) -> None:
         """The game starts another round, which the bridge only ever observes.
 
-        On the device this is what the RETRY tap causes. The bridge presses no
-        control for it, so nothing about the pause changes: its stream simply
-        starts reporting an active run again, which it can only do if the ended
-        run left the sequence free to move.
+        On the device this is what `start_round` - the home screen's own BATTLE
+        control - causes. The bridge dispatches that control and then waits for
+        the game's own state, so its stream simply starts reporting an active
+        run again, which it can only do if the ended run left the sequence free
+        to move.
         """
         self._run_active = True
 
@@ -759,32 +753,9 @@ class _IdleStreamBridge:
                 self._run_active = False
             self._paused = pressed_pause and self._run_active
         elif kind == "lifecycle":
+            if command.get("action") == "start_round":
+                self.restart_run()
             self._paused = command.get("action") == "pause" and self._run_active
-
-
-class _ResultScreenDevice:
-    """The device at an episode boundary: the result screen, and one RETRY tap.
-
-    The tap is what restarts the run; the bridge only observes that happening,
-    exactly as on the device.
-    """
-
-    def __init__(self, bridge: _IdleStreamBridge) -> None:
-        self._bridge = bridge
-        self.taps: list[ScreenPoint] = []
-
-    def screenshot(self) -> CapturedFrame:
-        buffer = io.BytesIO()
-        Image.new("RGB", (1080, 1920), (0, 0, 0)).save(buffer, format="PNG")
-        return CapturedFrame(
-            frame_id="frame", captured_at_monotonic=0.0, width=1080, height=1920,
-            png_bytes=buffer.getvalue(),
-        )
-
-    def tap(self, point: ScreenPoint) -> InputReceipt:
-        self.taps.append(point)
-        self._bridge.restart_run()
-        return InputReceipt(event_id="tap", accepted_at_monotonic=0.0)
 
 
 def _slow_bridge_client() -> tuple[InstrumentedBridgeClient, socket.socket]:
@@ -943,27 +914,22 @@ def test_a_run_that_died_inside_the_pause_settle_window_keeps_streaming() -> Non
         peer.close()
 
 
-def test_the_episode_boundary_completes_after_a_death_under_an_advance(monkeypatch) -> None:
+def test_the_episode_boundary_completes_after_a_death_under_an_advance() -> None:
     """The whole boundary, over the stream rule that deadlocked it.
 
     The previous episode ended terminally while its advance was pausing. The
-    adapter must then see a fresh terminal reading, tap RETRY from the result
-    screen, and see the new run - which is only possible if the bridge kept
-    streaming. With the sequence held, `begin_episode` polled a cached terminal
-    reading until `RunPortError` killed the run.
+    adapter must then see a fresh terminal reading, close the finished run and
+    press the game's own start control, and see the new run - which is only
+    possible if the bridge kept streaming. With the sequence held,
+    `begin_episode` polled a cached terminal reading until `RunPortError` killed
+    the run.
     """
-    import tower_rl.infrastructure.instrumented_run_adapter as adapter_module
-
-    monkeypatch.setattr(adapter_module, "classify", lambda _image: Screen.RESULT)
     client, peer = _slow_bridge_client()
     try:
         with _IdleStreamBridge(
             peer, holds_the_sequence_while_paused=True, run_ends_in_pause_settle=True
-        ) as bridge:
-            device = _ResultScreenDevice(bridge)
-            adapter = InstrumentedRunAdapter(
-                client=client, device=device, episode_start_timeout=10.0, settle_seconds=0.0
-            )
+        ):
+            adapter = InstrumentedRunAdapter(client=client, episode_start_timeout=10.0)
             state = client.read_state()
             adapter.advance_until_event(
                 expected_sequence=state.sequence,
@@ -974,7 +940,6 @@ def test_the_episode_boundary_completes_after_a_death_under_an_advance(monkeypat
 
             adapter.begin_episode()
 
-            assert device.taps == [RETRY_BUTTON]
             assert not client.read_state().terminal
     finally:
         client.close()

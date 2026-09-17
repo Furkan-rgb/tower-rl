@@ -32,7 +32,6 @@ from tower_rl.application.run_environment import (  # noqa: E402
     InstrumentedRunEnvironment,
 )
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.infrastructure.adb_device import AdbDevice  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
     BridgeCompatibility,
     InstrumentedBridgeClient,
@@ -138,7 +137,7 @@ def main() -> int:
         flush=True,
     )
 
-    adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
+    adapter = InstrumentedRunAdapter(client=client)
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),

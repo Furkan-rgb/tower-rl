@@ -40,7 +40,6 @@ from tower_rl.application.evaluator import WaveDistribution, episode_record  # n
 from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.domain.episode import EpisodeSummary  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.infrastructure.adb_device import AdbDevice  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
@@ -91,7 +90,7 @@ def main() -> int:
         heartbeat_timeout=60.0,
     )
     client.connect()
-    adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
+    adapter = InstrumentedRunAdapter(client=client)
     # One cadence for every arm: the arms differ in policy, and a comparison in
     # which they also differed in decision granularity would measure the cadence.
     environment = InstrumentedRunEnvironment(

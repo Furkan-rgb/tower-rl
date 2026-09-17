@@ -1,19 +1,16 @@
 """The adapter that drives one real instrumented instance through `RunPort`.
 
-It owns the two things the environment must not know about: the wire protocol,
-and the fact that starting an episode still requires one tap.  That tap is the
-only screen interaction in the training loop and it is gated on a positive
-classification, because `M1-E005` showed what an ungated coordinate tap can
-reach.
+It owns the one thing the environment must not know about: the wire protocol.
+Nothing in this loop reads a pixel. An episode boundary presses the game's own
+controls - `go_home` to close a finished run, then `start_round`, which is the
+home screen's own BATTLE control - and reads the game's own `round_active` and
+`game_over` to see whether the round really started.
 """
 
 from __future__ import annotations
 
-import io
 import time
 from dataclasses import dataclass
-
-from PIL import Image
 
 from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
@@ -21,13 +18,6 @@ from tower_rl.infrastructure.instrumented_bridge import (
     BridgeRunUnavailable,
     InstrumentedBridgeClient,
 )
-from tower_rl.infrastructure.visual_profile import (
-    RESULT_SETTLE_SECONDS,
-    Screen,
-    classify,
-    describe_drift,
-)
-from tower_rl.ports.android import ScreenPoint
 from tower_rl.ports.run_port import RunPortError
 
 #: The game's own speed multiplier, pinned at 1x. It is not a speed-up mechanism
@@ -38,34 +28,13 @@ from tower_rl.ports.run_port import RunPortError
 #: anything and is held at 1 so that nothing else silently depends on it.
 GAME_SPEED = 1.0
 
-#: The only two coordinates this loop may ever touch, each gated on a positive
-#: screen classification immediately before use.
-BATTLE_BUTTON = ScreenPoint(540 / 1080, 1553 / 1920)
-RETRY_BUTTON = ScreenPoint(300 / 1080, 1417 / 1920)
-
-
-class TapTarget:
-    """A tap is only permitted from the screen that owns that control."""
-
-    def __init__(self, point: ScreenPoint, permitted: Screen) -> None:
-        self.point = point
-        self.permitted = permitted
-
-
-START_FROM_HOME = TapTarget(BATTLE_BUTTON, Screen.HOME)
-RETRY_FROM_RESULT = TapTarget(RETRY_BUTTON, Screen.RESULT)
-
 
 @dataclass
 class InstrumentedRunAdapter:
     """One rooted clone, presented to the environment as a semantic run port."""
 
     client: InstrumentedBridgeClient
-    device: object  # AdbDevice-shaped: screenshot() and tap() only
     episode_start_timeout: float = 120.0
-    #: The result panel animates in; classifying earlier sees a transition, not a
-    #: screen, and tapping across a transition is the M1-E005 failure.
-    settle_seconds: float = RESULT_SETTLE_SECONDS
 
     # -- reading -----------------------------------------------------------
 
@@ -78,7 +47,14 @@ class InstrumentedRunAdapter:
     # -- lifecycle ---------------------------------------------------------
 
     def begin_episode(self) -> None:
-        """Bring the instance into an active run, tapping only when classified."""
+        """Bring the instance into an active run through the game's own controls.
+
+        A finished run is closed first: the round is started by the home
+        screen's BATTLE control, which only exists while the home screen is up,
+        so a terminal run has to be sent home before it can be asked to start
+        one. Each press is confirmed by the game's own run state, and a press
+        the game does not honour raises rather than being assumed.
+        """
         self._resume_a_frozen_run()
         deadline = time.monotonic() + self.episode_start_timeout
         while time.monotonic() < deadline:
@@ -86,19 +62,31 @@ class InstrumentedRunAdapter:
             if isinstance(state, BridgeObservation) and not state.terminal:
                 self._pin_game_speed(state)
                 return
-            # The result panel appears a moment after the bridge reports terminal,
-            # so settle before looking, or the classification races the animation.
-            time.sleep(self.settle_seconds)
-            target = START_FROM_HOME if state is None or isinstance(
-                state, BridgeRunUnavailable
-            ) else RETRY_FROM_RESULT
-            self._gated_tap(target)
+            if isinstance(state, BridgeObservation):
+                self._press("go_home", state.sequence)
+                state = self.client.read_state()
+            self._press("start_round", state.sequence)
             self._await_active(deadline)
             state = self.client.read_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
                 self._pin_game_speed(state)
                 return
         raise RunPortError("the instance did not reach an active run in time")
+
+    def _press(self, action: str, expected_sequence: int) -> None:
+        """Press one of the game's own controls and require its own confirmation."""
+        result = self.client.send_command(
+            {
+                "type": "command",
+                "protocol_version": 1,
+                "request_id": self._request_id(action),
+                "expected_observation_sequence": expected_sequence,
+                "kind": "lifecycle",
+                "action": action,
+            }
+        )
+        if result.outcome != "confirmed":
+            raise RunPortError(f"the game did not honour {action}: {result.reason}")
 
     def _resume_a_frozen_run(self) -> None:
         """Never start an episode on a reading of a world that is standing still.
@@ -114,7 +102,8 @@ class InstrumentedRunAdapter:
         never the standing-still case - the bridge holds the sequence only for a
         pause its settled state confirms, so a terminal reading is always a
         reading it is still refreshing - and its own `unpause` waits for an
-        active run. So a finished run is left alone for the tap flow to restart:
+        active run. So a finished run is left alone for `begin_episode` to close
+        and restart through the game's own controls:
         asking it to resume would only stall the boundary on a lifecycle timeout.
         """
         state = self.client.read_state()
@@ -141,19 +130,6 @@ class InstrumentedRunAdapter:
             if isinstance(state, BridgeObservation) and not state.terminal:
                 return
             time.sleep(0.5)
-
-    def _gated_tap(self, target: TapTarget) -> None:
-        """Refuse to tap unless the screen is positively the expected one."""
-        frame = self.device.screenshot()  # type: ignore[attr-defined]
-        image = Image.open(io.BytesIO(frame.png_bytes)).convert("RGB")
-        screen = classify(image)
-        if screen is not target.permitted:
-            drift = describe_drift(image).get(target.permitted.value, ())
-            raise RunPortError(
-                f"refusing to tap: expected {target.permitted.value}, saw {screen.value}; "
-                f"anchors disagreeing: {'; '.join(drift) or 'none'}"
-            )
-        self.device.tap(target.point)  # type: ignore[attr-defined]
 
     # -- commands ----------------------------------------------------------
 

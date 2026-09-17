@@ -45,9 +45,7 @@ COMMAND_CAPABILITY = "semantic-v2"
 LIFECYCLE_ACTIONS = frozenset(
     {
         "start_round",
-        "retry",
         "go_home",
-        "enable_auto_restart",
         "speed_max",
         "speed_down",
         "pause",

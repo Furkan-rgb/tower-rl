@@ -180,9 +180,15 @@ the bridge dispatches the game's own `UpgradeCostCalc`, `UpgradeDefenseCostCalc`
 and `UpgradeUtilityCostCalc` when a run becomes active and after each confirmed
 purchase. Entries without a positive cost are still rejected.
 
-`Main` exists only inside the battle scene, so no `Main` method starts a run from
-the home screen, and the known restart entry points are progression-gated at this
-baseline. The episode boundary therefore still needs one bridge-gated tap.
+The episode boundary touches no screen. `start_round` is the home screen's own
+BATTLE control, `BattlePanelUI.StartNewRound` on the GameObject named
+`BattlePanel`, and it is the only lifecycle action delivered anywhere but
+`Main`. `Main.StartNewRoundFunction` and `Main.AutoRetryBattle` are both
+delivered - `Button_GameEndPanelGoHome` proves delivery to `Main` from the same
+state - and both do nothing, which is why they are gone (`M1B-E022`).
+`BattlePanel` only exists while the home screen is up, so a finished run is
+closed with `go_home` first; that sequence is what `begin_episode` performs, and
+it needs no retry control.
 
 The build does keep live in-run clocks: `roundTime`, `gameplayTimeThisRound`, and
 `realTimeThisRound` are `float` fields, and the earlier reading that they "all

@@ -275,3 +275,202 @@ def test_restore_refuses_a_snapshot_whose_game_is_not_running(
 def test_the_canonical_evaluation_avd_is_still_refused() -> None:
     with pytest.raises(CloneError, match="canonical evaluation AVD"):
         CloneInstance(avd=clone_session.CANONICAL_AVD)
+
+
+def bridge_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: bytes = b"bridge-one"
+) -> str:
+    """Point the key at a private build directory holding this exact bridge."""
+    build = tmp_path / "build"
+    build.mkdir(exist_ok=True)
+    (build / "libtower_bridge.so").write_bytes(contents)
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(build))
+    monkeypatch.setenv("ANDROID_AVD_HOME", str(tmp_path / "avd"))
+    return clone_session.bridge_key()
+
+
+def hold_snapshot(tmp_path: Path, name: str) -> None:
+    """Put a snapshot of that name into the clone AVD, as the emulator would."""
+    directory = tmp_path / "avd" / f"{clone_session.CLONE_AVD}.avd" / "snapshots" / name
+    directory.mkdir(parents=True)
+
+
+def record_launches(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    launches: list[list[str]] = []
+    monkeypatch.setattr(
+        clone_session.subprocess, "Popen", lambda command, **_: launches.append(command)
+    )
+    return launches
+
+
+def test_the_snapshot_key_is_the_bridge_binary_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bridge changes on most commits without its version string moving."""
+    first = bridge_build(tmp_path, monkeypatch)
+    again = bridge_build(tmp_path, monkeypatch)
+    other = bridge_build(tmp_path, monkeypatch, contents=b"bridge-two")
+
+    assert first == again
+    assert first != other
+    assert clone_session.keyed_snapshot_name(first).endswith(first)
+    assert clone_session.keyed_snapshot_name(first).startswith(clone_session.SNAPSHOT_PREFIX)
+
+
+def test_a_snapshot_taken_for_another_bridge_does_not_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = bridge_build(tmp_path, monkeypatch, contents=b"bridge-two")
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(stale))
+    current = bridge_build(tmp_path, monkeypatch)
+
+    assert not clone_session.snapshot_exists(
+        CloneInstance(), clone_session.keyed_snapshot_name(current)
+    )
+    assert clone_session.snapshot_exists(
+        CloneInstance(), clone_session.keyed_snapshot_name(stale)
+    )
+
+
+def test_a_matching_snapshot_is_restored_without_a_deploy_or_a_network_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This is the whole point: no radios, no cold launch, ten seconds."""
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    launches = record_launches(monkeypatch)
+    deployed: list[str] = []
+
+    path = clone_session.bring_up(
+        CloneInstance(), "lavapipe", deploy=lambda instance: deployed.append(instance.serial)
+    )
+
+    assert path == "restored"
+    assert deployed == []
+    assert not [command for command in clone.commands if "svc wifi enable" in command]
+    assert not [command for command in clone.commands if "monkey" in command]
+    assert not [command for command in clone.commands if "snapshot save" in command]
+    assert launches[0][launches[0].index("-snapshot") + 1] == (
+        clone_session.keyed_snapshot_name(key)
+    )
+
+
+@pytest.mark.parametrize("stale_key_present", [False, True])
+def test_a_missing_or_mismatched_snapshot_takes_the_cold_path_and_saves_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_key_present: bool
+) -> None:
+    if stale_key_present:
+        stale = bridge_build(tmp_path, monkeypatch, contents=b"bridge-two")
+        hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(stale))
+    key = bridge_build(tmp_path, monkeypatch)
+    clone = FakeClone()
+    install(monkeypatch, clone, [IDLE])
+    launches = record_launches(monkeypatch)
+    deployed: list[str] = []
+
+    path = clone_session.bring_up(
+        CloneInstance(), "lavapipe", deploy=lambda instance: deployed.append(instance.serial)
+    )
+
+    assert path == "cold"
+    assert deployed == ["emulator-5556"]
+    assert "-no-snapshot-load" in launches[0]
+    # The online window is opened for the cold launch and closed again after it.
+    enabled = clone.index_of("shell svc wifi enable")
+    assert enabled < clone.index_of("shell monkey")
+    assert any("svc wifi disable" in command for command in clone.commands[enabled:])
+    assert not clone.online
+    saved = f"emu avd snapshot save {clone_session.keyed_snapshot_name(key)}"
+    assert clone.index_of(saved) > clone.index_of("shell monkey")
+
+
+def test_the_cold_path_can_be_forced_over_a_matching_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    clone = FakeClone()
+    install(monkeypatch, clone, [IDLE])
+    launches = record_launches(monkeypatch)
+
+    path = clone_session.bring_up(
+        CloneInstance(), "lavapipe", deploy=lambda _: None, force_cold=True
+    )
+
+    assert path == "cold"
+    assert "-no-snapshot-load" in launches[0]
+
+
+class RestoredWithoutItsGame(FakeClone):
+    """A snapshot that comes back with no game process; a cold launch starts one."""
+
+    def adb(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
+        answer = super().adb(instance, *args, timeout=timeout)
+        if " ".join(args).startswith("shell monkey"):
+            self.pid = "4242"
+        return answer
+
+
+def test_a_restored_instance_whose_game_is_gone_falls_back_to_the_cold_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot that does not verify is not used, and is not left running."""
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    clone = RestoredWithoutItsGame(online=False, pid="")
+    install(monkeypatch, clone, [IDLE])
+    record_launches(monkeypatch)
+
+    path = clone_session.bring_up(CloneInstance(), "lavapipe", deploy=lambda _: None)
+
+    assert path == "cold"
+    killed = clone.index_of("emu kill")
+    assert killed < clone.index_of("shell monkey")
+    saved = f"emu avd snapshot save {clone_session.keyed_snapshot_name(key)}"
+    assert clone.index_of(saved) > killed
+
+
+def test_a_restored_instance_that_never_reads_ready_falls_back_to_the_cold_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process can be alive while the game is still starting: `main_unavailable`.
+
+    The restore window is `RESTORED_READY_TIMEOUT` at a five-second poll, so the
+    readings below keep the restored instance starting for all of it and only
+    then let the cold path reach home.
+    """
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    clone = FakeClone(online=False)
+    starting = int(clone_session.RESTORED_READY_TIMEOUT // 5.0)
+    install(monkeypatch, clone, [STARTING] * starting + [IDLE])
+    record_launches(monkeypatch)
+    deployed: list[str] = []
+
+    path = clone_session.bring_up(
+        CloneInstance(), "lavapipe", deploy=lambda instance: deployed.append(instance.serial)
+    )
+
+    assert path == "cold"
+    assert deployed == ["emulator-5556"]
+    assert clone.index_of("emu kill") < clone.index_of("shell svc wifi enable")
+
+
+def test_a_read_only_instance_takes_the_cold_path_without_saving_a_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-read-only` writes to a throwaway overlay, so it has no snapshot to save."""
+    bridge_build(tmp_path, monkeypatch)
+    clone = FakeClone()
+    install(monkeypatch, clone, [IDLE])
+    launches = record_launches(monkeypatch)
+
+    path = clone_session.bring_up(
+        CloneInstance(index=1), "lavapipe", deploy=lambda _: None, read_only=True
+    )
+
+    assert path == "cold"
+    assert "-read-only" in launches[0]
+    assert not [command for command in clone.commands if "snapshot save" in command]

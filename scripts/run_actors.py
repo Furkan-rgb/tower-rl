@@ -16,6 +16,17 @@ runner and the evaluator.
 Instances share the one clone AVD through `-read-only` (see `clone_session.py`),
 so N actors cost N overlays rather than N copies of a multi-gigabyte image.
 
+Every actor comes up the same way `clone_session.py up` does: it restores the
+snapshot pinned to the bridge this fleet deploys, so the fleet opens no network
+window at all and every actor starts from identical account state. The snapshot
+is prepared once, before the fleet, because a `-read-only` instance cannot save
+one. `--cold` skips it and cold-starts every actor.
+
+UNVERIFIED: that several `-read-only` instances can restore the one snapshot
+concurrently. Each gets its own overlay over the untouched base image, and the
+snapshot is read from that base, so nothing here writes shared state — but no
+device has run it yet, and the next device stage has to check it.
+
     TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/run_actors.py \\
         --actors 2 --episodes 20
 """
@@ -38,11 +49,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from clone_session import (  # noqa: E402
     CloneInstance,
+    bridge_key,
+    bring_up,
+    keyed_snapshot_name,
     kill_emulator,
-    launch_game_at_home,
     require_offline,
-    restore,
-    start,
+    snapshot_exists,
 )
 from run_episodes import POLICIES, add_cadence_arguments  # noqa: E402
 
@@ -230,22 +242,29 @@ def run_bridge(command: str, instance: CloneInstance) -> None:
         )
 
 
-def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> dict[str, Any]:
-    """Bring one instance up offline, deploy the bridge, and run its episodes."""
-    if arguments.snapshot:
-        restore(instance, arguments.snapshot, read_only=True, cores=arguments.cores)
-    else:
-        start(instance, arguments.renderer, read_only=True, cores=arguments.cores)
-    # By interface, per instance, immediately before anything is measured, and
-    # because `deploy` refuses an online instance.
-    require_offline(instance)
+def deploy_bridge(instance: CloneInstance) -> None:
+    """The bridge deployment step of the cold path, tagged into the fleet's log."""
     run_bridge("deploy", instance)
-    # deploy cold-launches the game, and an offline cold launch stays on the
-    # OFFLINE modal, so the launch has to come back through the
-    # online-then-offline sequence before any episode can start. It comes after
-    # deploy for a second reason now: home is established by asking the bridge,
-    # which only answers once its overlay is mounted and loaded.
-    launch_game_at_home(instance)
+
+
+def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> dict[str, Any]:
+    """Bring one instance up ready and offline, and run its episodes.
+
+    Bring-up is the same decision every instance makes: restore the snapshot for
+    the bridge this fleet deploys if the AVD holds one, and otherwise cold-start,
+    deploy and relaunch through the one online window. Each actor's instance is
+    `-read-only`, so it writes to its own overlay and saves no snapshot; the
+    pinned one is prepared once, before the fleet, by `prepare_pinned_snapshot`.
+    """
+    bring_up(
+        instance,
+        arguments.renderer,
+        deploy=deploy_bridge,
+        read_only=True,
+        cores=arguments.cores,
+        force_cold=arguments.cold,
+    )
+    # By interface, per instance, immediately before anything is measured.
     require_offline(instance)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
@@ -292,6 +311,27 @@ def tear_down_instance(instance: CloneInstance) -> None:
         raise bridge_error
 
 
+def prepare_pinned_snapshot(renderer: str, cores: int) -> str:
+    """Make sure the fleet has a snapshot to restore, by taking the cold path once.
+
+    A `-read-only` actor cannot save a snapshot, so without this every actor
+    would cold-start and the fleet would open N network windows instead of none.
+    The preparation runs alone on index 0, writable, before any actor starts —
+    two instances must not write the one AVD at the same time — and its instance
+    is torn down again whether it succeeded or not.
+    """
+    instance = CloneInstance()
+    name = keyed_snapshot_name(bridge_key())
+    if snapshot_exists(instance, name):
+        return name
+    print(f"no snapshot for the current bridge; preparing {name} once", flush=True)
+    try:
+        bring_up(instance, renderer, deploy=deploy_bridge, cores=cores)
+    finally:
+        tear_down_instance(instance)
+    return name
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--actors", type=int, default=2, help="concurrent instances to run")
@@ -300,7 +340,9 @@ def main() -> int:
     parser.add_argument("--renderer", default="lavapipe")
     parser.add_argument("--cores", type=int, default=4, help="emulator cores per instance")
     parser.add_argument(
-        "--snapshot", default=None, help="restore this snapshot instead of a cold start"
+        "--cold",
+        action="store_true",
+        help="ignore the pinned snapshot and cold-start every actor",
     )
     add_cadence_arguments(parser)
     parser.add_argument(
@@ -316,6 +358,8 @@ def main() -> int:
         raise SystemExit("a fleet needs at least one actor")
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
     instances = [CloneInstance(index=index) for index in range(arguments.actors)]
+    if not arguments.cold:
+        prepare_pinned_snapshot(arguments.renderer, arguments.cores)
 
     started = time.monotonic()
     outcomes = run_fleet(

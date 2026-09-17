@@ -231,10 +231,11 @@ def test_a_teardown_failure_is_reported_without_losing_the_episodes() -> None:
 
 
 def bring_up_steps(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, snapshot: str | None = None
-) -> list[str]:
-    """Record the order of one actor's bring-up, with every device step injected."""
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, cold: bool = False
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Record one actor's bring-up and how it asked for it, with the device injected."""
     steps: list[str] = []
+    asked: list[dict[str, object]] = []
     instance = CloneInstance()
     output = tmp_path / f"{instance.serial}.json"
 
@@ -243,17 +244,18 @@ def bring_up_steps(
         output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(run_actors, "start", lambda *_, **__: steps.append("start"))
-    monkeypatch.setattr(run_actors, "restore", lambda *_, **__: steps.append("restore"))
+    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
+        steps.append("bring_up")
+        asked.append({"serial": target.serial, "renderer": renderer, **keywords})
+        return "restored"
+
+    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: steps.append("require_offline"))
-    monkeypatch.setattr(
-        run_actors, "launch_game_at_home", lambda *_: steps.append("launch_game_at_home")
-    )
     monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
     monkeypatch.setattr(run_actors.subprocess, "run", episode_process)
 
     arguments = argparse.Namespace(
-        snapshot=snapshot,
+        cold=cold,
         renderer="lavapipe",
         cores=4,
         episodes=2,
@@ -264,38 +266,76 @@ def bring_up_steps(
         output_directory=tmp_path,
     )
     assert collect_episodes(instance, arguments)["valid_episodes"] == 1
-    return steps
+    return steps, asked
 
 
-def test_the_game_is_brought_back_to_home_after_deploy_and_before_any_episode(
+def test_an_actor_is_ready_and_verified_offline_before_any_episode_runs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`deploy` cold-launches the game, which offline lands on the OFFLINE modal.
+    """Bring-up is one decision now: restore the pinned snapshot, or cold-start.
 
-    So the launch-online-reach-home-cut-radios sequence has to come *after* the
-    deploy, and the driver only afterwards; a driver started between the two would
-    meet the modal, where nothing may be tapped.
+    Whichever path it takes, it ends ready and offline, and offline is re-checked
+    by interface immediately before the driver starts.
     """
-    assert bring_up_steps(monkeypatch, tmp_path) == [
-        "start",
-        "require_offline",
-        "deploy",
-        "launch_game_at_home",
-        "require_offline",
-        "run_episodes.py",
+    steps, asked = bring_up_steps(monkeypatch, tmp_path)
+
+    assert steps == ["bring_up", "require_offline", "run_episodes.py"]
+    assert asked == [
+        {
+            "serial": "emulator-5556",
+            "renderer": "lavapipe",
+            "deploy": run_actors.deploy_bridge,
+            "read_only": True,
+            "cores": 4,
+            "force_cold": False,
+        }
     ]
 
 
-def test_a_restored_snapshot_is_brought_up_the_same_way(
+def test_an_actor_can_be_made_to_cold_start(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    steps = bring_up_steps(monkeypatch, tmp_path, snapshot="home_offline")
-    assert steps[0] == "restore"
-    assert (
-        steps.index("deploy")
-        < steps.index("launch_game_at_home")
-        < steps.index("run_episodes.py")
+    _, asked = bring_up_steps(monkeypatch, tmp_path, cold=True)
+    assert asked[0]["force_cold"] is True
+
+
+def prepare(
+    monkeypatch: pytest.MonkeyPatch, *, held: bool
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Run the pre-fleet preparation against an injected snapshot registry."""
+    steps: list[str] = []
+    asked: list[dict[str, object]] = []
+
+    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
+        steps.append("bring_up")
+        asked.append({"serial": target.serial, **keywords})
+        return "cold"
+
+    monkeypatch.setattr(run_actors, "bridge_key", lambda: "abc123")
+    monkeypatch.setattr(run_actors, "snapshot_exists", lambda *_: held)
+    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
+    monkeypatch.setattr(
+        run_actors, "tear_down_instance", lambda instance: steps.append("tear_down")
     )
+    name = run_actors.prepare_pinned_snapshot("lavapipe", 4)
+    assert name.endswith("abc123")
+    return steps, asked
+
+
+def test_the_pinned_snapshot_is_prepared_once_on_a_writable_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only actor cannot save one, so the fleet would otherwise stay cold."""
+    steps, asked = prepare(monkeypatch, held=False)
+
+    assert steps == ["bring_up", "tear_down"]
+    assert asked == [{"serial": "emulator-5556", "deploy": run_actors.deploy_bridge, "cores": 4}]
+
+
+def test_nothing_is_prepared_when_the_snapshot_for_this_bridge_is_already_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert prepare(monkeypatch, held=True) == ([], [])
 
 
 def bridge_output(

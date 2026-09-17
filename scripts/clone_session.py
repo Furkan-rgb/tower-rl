@@ -9,7 +9,31 @@ verified, and identical every time rather than a sequence typed by hand.
 
 `snapshot` removes the window entirely: an emulator snapshot taken while the game
 is up and idle with the radios already down restores into an already-started,
-already-offline game.
+already-offline game. A restore also skips whatever intro a cold boot walks
+through, and — the reason that matters most for the benchmark — it starts from
+byte-identical account state, so the progression this account accumulates
+between runs cannot drift between two arms of a comparison the way it did in the
+frame-size sweep (`M1B-E018`).
+
+A snapshot carries the bridge that was deployed when it was taken, and a stale
+bridge does not answer the current client, so each snapshot is named for the
+bridge inside it: `tower_clone_home_offline_<key>`, where the key is a hash of
+`libtower_bridge.so` in the private build directory. `up` is therefore the normal
+way an instance comes up:
+
+    uv run python scripts/clone_session.py up
+
+It restores that snapshot when the AVD holds one for the bridge we are about to
+deploy, verifies it (offline by interface, game process alive, the bridge's own
+readiness reading) and connects. Otherwise — no snapshot, a snapshot for another
+bridge, or a restore that does not verify — it takes the cold path once, with its
+one online window, and saves the snapshot the next `up` restores. `up --cold`
+forces the cold path.
+
+Between arms of a comparison, restore the pinned state deliberately so each arm
+starts from the same account:
+
+    uv run python scripts/clone_session.py restore     # the current bridge's snapshot
 
 Several instances can run at once from the one clone AVD. `--read-only` gives
 each instance its own writable overlay over the untouched base image, so N
@@ -32,7 +56,8 @@ intermittently wrong; `visual_profile` stays for the review path, where a human
 watches a checkpoint play and the picture is the point.
 
 Readiness therefore needs the bridge deployed first, and `instrumented_bridge.sh
-deploy` refuses to run against an online instance, so the order is `start` (the
+deploy` refuses to run against an online instance, so the cold path's order is
+`start` (the
 instance up and offline, the game not launched), then `deploy`, then `launch` —
 the one short online window, which also covers deploy's own cold launch.
 
@@ -40,17 +65,19 @@ the one short online window, which also covers deploy's own cold launch.
     uv run python scripts/clone_session.py --index 1 --read-only start
     ./scripts/instrumented_bridge.sh deploy emulator-5556
     uv run python scripts/clone_session.py launch
-    uv run python scripts/clone_session.py snapshot tower_clone_home_offline
-    uv run python scripts/clone_session.py restore tower_clone_home_offline
+    uv run python scripts/clone_session.py snapshot
+    uv run python scripts/clone_session.py restore
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +112,15 @@ FIRST_BRIDGE_HOST_PORT = 47652
 #: Firebase OFFLINE modal — it reports `main_unavailable` instead. See
 #: `native/tower_bridge/README.md`.
 GAME_IS_IDLE = "no_initialized_run"
+#: Snapshots are named for the bridge build inside them: a snapshot carries the
+#: bridge that was deployed when it was taken, and a bridge that is not the one
+#: the client expects fails the handshake. The key lives in the name so the
+#: emulator's own snapshot directory is the registry, with no sidecar file to
+#: fall out of step with it, and stale keys are visible to the operator by name.
+SNAPSHOT_PREFIX = "tower_clone_home_offline"
+#: A restored instance has an already-started game, so readiness is a short
+#: confirmation rather than the minutes a cold launch takes.
+RESTORED_READY_TIMEOUT = 60.0
 
 
 class CloneError(RuntimeError):
@@ -169,18 +205,59 @@ def game_pid(instance: CloneInstance) -> str:
     return adb(instance, "shell", "pidof", PACKAGE)
 
 
+def bridge_build_directory() -> Path:
+    """Where the private bridge was built; never committed, never guessed."""
+    configured = os.environ.get("TOWER_BRIDGE_BUILD_DIR")
+    if configured:
+        return Path(configured)
+    live = Path("/tmp/tower-bridge-live.latest")
+    if live.is_file():
+        return Path(live.read_text().strip())
+    raise CloneError("the private bridge build directory is unknown: set TOWER_BRIDGE_BUILD_DIR")
+
+
 def expected_compatibility() -> BridgeCompatibility:
     """The private build's identity, which every bridge handshake is checked against."""
-    configured = os.environ.get("TOWER_BRIDGE_BUILD_DIR")
-    live = Path("/tmp/tower-bridge-live.latest")
-    if not configured and not live.is_file():
-        raise CloneError(
-            "the private bridge build directory is unknown: set TOWER_BRIDGE_BUILD_DIR"
-        )
     try:
-        return compatibility(Path(configured or live.read_text().strip()))
+        return compatibility(bridge_build_directory())
     except (OSError, KeyError, ValueError) as error:
         raise CloneError(f"cannot read the private bridge build identity: {error}") from error
+
+
+def bridge_key() -> str:
+    """A stable identity for the bridge that is about to be deployed.
+
+    The artifact itself is hashed rather than the version string in the build
+    cache: the bridge changes on most commits without that string moving, and it
+    is the binary that either answers the current client or does not.
+    """
+    binary = bridge_build_directory() / "libtower_bridge.so"
+    try:
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    except OSError as error:
+        raise CloneError(f"cannot read the bridge to key a snapshot: {error}") from error
+    return digest[:12]
+
+
+def keyed_snapshot_name(key: str) -> str:
+    """The snapshot that holds this exact bridge, already started and offline."""
+    return f"{SNAPSHOT_PREFIX}_{key}"
+
+
+def snapshot_directory(instance: CloneInstance) -> Path:
+    """Where this AVD keeps its snapshots: machine-local, always outside the repository."""
+    home = os.environ.get("ANDROID_AVD_HOME") or str(Path.home() / ".android" / "avd")
+    return Path(home) / f"{instance.avd}.avd" / "snapshots"
+
+
+def snapshot_exists(instance: CloneInstance, name: str) -> bool:
+    """Whether the AVD already holds that snapshot, with nothing running.
+
+    The choice between restoring and cold-starting has to be made before any
+    emulator is launched, so it is read from the AVD on disk rather than from
+    `adb emu avd snapshot list`, which needs the very instance it would decide.
+    """
+    return (snapshot_directory(instance) / name).is_dir()
 
 
 def read_bridge_state(instance: CloneInstance) -> BridgeObservation | BridgeRunUnavailable:
@@ -364,10 +441,19 @@ def launch_game_at_home(instance: CloneInstance) -> None:
 
 
 def restore(
-    instance: CloneInstance, snapshot: str, *, read_only: bool = False, cores: int = 8
+    instance: CloneInstance,
+    snapshot: str,
+    *,
+    renderer: str = "lavapipe",
+    read_only: bool = False,
+    cores: int = 8,
 ) -> None:
-    """The point of the snapshot: never connect at all."""
-    launch_emulator(instance, "lavapipe", snapshot=snapshot, read_only=read_only, cores=cores)
+    """The point of the snapshot: never connect at all.
+
+    The renderer is the one the snapshot was taken with: a snapshot holds
+    renderer state, so restoring it under a different one is not the same state.
+    """
+    launch_emulator(instance, renderer, snapshot=snapshot, read_only=read_only, cores=cores)
     require_offline(instance)
     # The claim a snapshot makes is that the game is already started, so that is
     # what is checked. The bridge is deliberately not required here: a snapshot
@@ -392,6 +478,101 @@ def save_snapshot(instance: CloneInstance, name: str) -> None:
     print(f"snapshot {name}: game running, idle at home, offline", flush=True)
 
 
+def discard_instance(instance: CloneInstance) -> None:
+    """Stop an instance that cannot be used, so the next path starts from nothing.
+
+    A restore that does not verify must leave no emulator behind: the cold path
+    relaunches on the same console port, and a failure to stop is reported rather
+    than hidden, because a stray instance is a device-safety problem by itself.
+    """
+    try:
+        kill_emulator(instance)
+    except Exception as error:
+        print(f"warning: could not stop {instance.serial}: {error}", file=sys.stderr, flush=True)
+        return
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if not adb(instance, "get-state", timeout=10.0):
+            return
+        time.sleep(2.0)
+
+
+def deploy_bridge(instance: CloneInstance) -> None:
+    """Install the current bridge, through the one script that owns device safety."""
+    script = Path(__file__).resolve().parent / "instrumented_bridge.sh"
+    result = subprocess.run(
+        [str(script), "deploy", instance.serial, str(instance.bridge_host_port)], text=True
+    )
+    if result.returncode != 0:
+        raise CloneError(f"instrumented_bridge.sh deploy failed on {instance.serial}")
+
+
+def cold_bring_up(
+    instance: CloneInstance,
+    renderer: str,
+    *,
+    deploy: Callable[[CloneInstance], None],
+    read_only: bool = False,
+    cores: int = 8,
+) -> None:
+    """The full path, and the only one that opens a network window.
+
+    `deploy` force-stops and cold-launches the game, and an offline cold launch
+    stops on the OFFLINE modal (`M1B-E010`), so the one online window has to cover
+    both that launch and the one `launch_game_at_home` performs afterwards.
+    """
+    start(instance, renderer, read_only=read_only, cores=cores)
+    require_offline(instance)
+    deploy(instance)
+    launch_game_at_home(instance)
+    require_offline(instance)
+
+
+def bring_up(
+    instance: CloneInstance,
+    renderer: str,
+    *,
+    deploy: Callable[[CloneInstance], None],
+    read_only: bool = False,
+    cores: int = 8,
+    force_cold: bool = False,
+) -> str:
+    """Bring one instance up ready and offline, and say which path it took.
+
+    Restoring is the normal path, for three reasons. It costs about ten seconds
+    rather than minutes; it needs no network window at all, since the game in the
+    snapshot has already been past its Firebase check; and every restore starts
+    from byte-identical account state, so two arms of a comparison are not
+    confounded by the progression the previous hours of play left behind
+    (`M1B-E018`).
+
+    It is only usable when the snapshot carries the bridge we are about to speak
+    to, which is what the key in its name records. Anything else — no snapshot,
+    a snapshot for another bridge, a restore that does not verify — falls through
+    to the cold path, which pays for itself by saving the snapshot the next
+    bring-up restores.
+    """
+    name = keyed_snapshot_name(bridge_key())
+    if not force_cold and snapshot_exists(instance, name):
+        try:
+            restore(instance, name, renderer=renderer, read_only=read_only, cores=cores)
+            wait_until_ready(instance, timeout=RESTORED_READY_TIMEOUT)
+            require_offline(instance)
+            print(f"{instance.serial}: restored {name}, ready, never connected", flush=True)
+            return "restored"
+        except CloneError as error:
+            print(f"{instance.serial}: {name} did not verify ({error}); cold path", flush=True)
+            discard_instance(instance)
+    cold_bring_up(instance, renderer, deploy=deploy, read_only=read_only, cores=cores)
+    if read_only:
+        # A `-read-only` instance writes to a throwaway overlay and cannot save a
+        # snapshot; the pinned one is prepared on a writable instance instead.
+        print(f"{instance.serial}: read-only, so {name} was not saved", flush=True)
+    else:
+        save_snapshot(instance, name)
+    return "cold"
+
+
 def report(instance: CloneInstance) -> None:
     routable = routable_interfaces(instance)
     reason = why_not_ready(instance)
@@ -399,6 +580,13 @@ def report(instance: CloneInstance) -> None:
     print(f"game pid:  {game_pid(instance) or 'not running'}")
     print(f"ready:     {reason or 'yes: up and idle, the bridge can drive it'}")
     print(f"network:   {'; '.join(routable) if routable else 'offline'}")
+    try:
+        name = keyed_snapshot_name(bridge_key())
+    except CloneError as error:
+        print(f"snapshot:  unknown: {error}")
+        return
+    held = "saved" if snapshot_exists(instance, name) else "not saved: the next bring-up is cold"
+    print(f"snapshot:  {name} ({held})")
 
 
 def main() -> int:
@@ -409,8 +597,14 @@ def main() -> int:
     started = sub.add_parser("start", help="cold start: the instance up and offline")
     started.add_argument("--renderer", default="lavapipe")
     restored = sub.add_parser("restore", help="launch from a snapshot without connecting")
-    restored.add_argument("name")
-    for launching in (started, restored):
+    restored.add_argument("name", nargs="?", help="default: the snapshot for the current bridge")
+    restored.add_argument("--renderer", default="lavapipe")
+    up = sub.add_parser(
+        "up", help="restore the snapshot for the current bridge, or cold-start and save one"
+    )
+    up.add_argument("--renderer", default="lavapipe")
+    up.add_argument("--cold", action="store_true", help="skip any snapshot and take the cold path")
+    for launching in (started, restored, up):
         launching.add_argument(
             "--read-only",
             action="store_true",
@@ -422,7 +616,7 @@ def main() -> int:
     )
     sub.add_parser("verify", help="report game process, readiness and network state")
     saved = sub.add_parser("snapshot", help="save a snapshot of the running, offline game")
-    saved.add_argument("name")
+    saved.add_argument("name", nargs="?", help="default: the snapshot for the current bridge")
     arguments = parser.parse_args()
 
     try:
@@ -436,12 +630,22 @@ def main() -> int:
             )
         elif arguments.command == "launch":
             launch_game_at_home(instance)
+        elif arguments.command == "up":
+            bring_up(
+                instance,
+                arguments.renderer,
+                deploy=deploy_bridge,
+                read_only=arguments.read_only,
+                cores=arguments.cores,
+                force_cold=arguments.cold,
+            )
         elif arguments.command == "snapshot":
-            save_snapshot(instance, arguments.name)
+            save_snapshot(instance, arguments.name or keyed_snapshot_name(bridge_key()))
         elif arguments.command == "restore":
             restore(
                 instance,
-                arguments.name,
+                arguments.name or keyed_snapshot_name(bridge_key()),
+                renderer=arguments.renderer,
                 read_only=arguments.read_only,
                 cores=arguments.cores,
             )

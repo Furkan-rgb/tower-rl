@@ -298,6 +298,29 @@ def test_an_episode_the_port_refuses_is_counted_and_the_run_continues() -> None:
     assert report.episodes == len(report.episode_summaries) + report.failed_episodes
 
 
+def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:
+    """M1B-E024: the failure that used to kill an unattended overnight run.
+
+    A command refused because it no longer binds the bridge's latest
+    observation reaches the run as a port failure, so the episode is classified,
+    counted and left behind while collection carries on. It is never retried:
+    a retry would hide a stranded sequence rather than report it.
+    """
+    training = _run(budget_decisions=150)
+    training.actor.environment = InstrumentedRunEnvironment(
+        port=FakeRunPort(damage_per_second=2.0, stale_advance_episodes=frozenset({2, 3})),
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+
+    report = training.run()
+
+    assert report.failed_episodes == 2
+    assert all("stale" in failure for failure in report.episode_failures)
+    assert report.decisions >= 150, "the run was not abandoned"
+    assert report.valid_episodes > 0, "collection did not continue"
+
+
 def test_an_instance_that_fails_every_episode_stops_the_run() -> None:
     """Continuing against a broken instance would spin without collecting."""
     training = _run(budget_decisions=150, max_consecutive_episode_failures=3)

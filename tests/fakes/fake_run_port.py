@@ -67,6 +67,11 @@ class FakeRunPort:
     #: action pipeline that cannot say what the world did, which the environment
     #: classifies as `ACTION_PIPELINE_FAILED`.
     ambiguous_advance_episodes: frozenset[int] = frozenset()
+    #: Episode ordinals whose first advance is refused because the command no
+    #: longer binds the bridge's latest observation. The adapter reports that
+    #: refusal as a port failure, which is what lets one lost episode cost an
+    #: episode rather than the whole run (M1B-E024).
+    stale_advance_episodes: frozenset[int] = frozenset()
     #: How much game time this world really simulates per millisecond of game
     #: time an advance budgets for. 1.0 is the world the bridge asks for. Setting
     #: it above 1.0 simulates the defect a speed multiplier left applied
@@ -83,6 +88,7 @@ class FakeRunPort:
     #: Episodes begun, the ordinal the two failure sets are matched against.
     episodes: int = field(default=0, init=False)
     _ambiguous_seen: set[int] = field(default_factory=set, init=False)
+    _stale_seen: set[int] = field(default_factory=set, init=False)
     wave: int = field(default=0, init=False)
     cash: float = field(default=0.0, init=False)
     health: float = field(default=0.0, init=False)
@@ -194,6 +200,14 @@ class FakeRunPort:
         """
         if expected_sequence != self.sequence:
             return FakeCommandResult("rejected", "stale_or_duplicate")
+        if (
+            self.episodes in self.stale_advance_episodes
+            and self.episodes not in self._stale_seen
+        ):
+            # Once per named episode: the sequence the environment was holding
+            # no longer exists, so the port can only refuse.
+            self._stale_seen.add(self.episodes)
+            raise RunPortError("the bridge refused a stale command: does not bind the latest")
         if (
             self.episodes in self.ambiguous_advance_episodes
             and self.episodes not in self._ambiguous_seen

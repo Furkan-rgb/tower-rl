@@ -10,12 +10,14 @@ home screen's own BATTLE control - and reads the game's own `round_active` and
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
     BridgeRunUnavailable,
+    BridgeStaleObservationError,
     InstrumentedBridgeClient,
 )
 from tower_rl.ports.run_port import RunPortError
@@ -35,17 +37,30 @@ class InstrumentedRunAdapter:
 
     client: InstrumentedBridgeClient
     episode_start_timeout: float = 120.0
-    #: Whether this episode still owes the pin it can only apply once the world
-    #: has moved. Set when an episode begins, cleared by the first advance.
-    _pin_after_first_advance: bool = field(default=False, init=False)
+    #: Whether a round is being played. While it is, the environment holds the
+    #: observation sequence the next command must bind, so the adapter issues
+    #: nothing of its own initiative: see `_command_between_rounds`.
+    _round_in_progress: bool = field(default=False, init=False)
 
     # -- reading -----------------------------------------------------------
 
     def read_state(self) -> BridgeObservation | None:
-        state = self.client.read_state()
+        state = self._latest_state()
         if isinstance(state, BridgeRunUnavailable):
             return None
         return state
+
+    def _latest_state(self) -> BridgeObservation | BridgeRunUnavailable:
+        """The bridge's freshest state, with a lost sequence reported as a failure.
+
+        A stream whose sequence moved backwards is the same kind of event a
+        refused command is: this episode cannot be trusted, and saying so as a
+        port failure costs the episode rather than the process.
+        """
+        try:
+            return self.client.read_state()
+        except BridgeStaleObservationError as stale:
+            raise RunPortError(f"the bridge stream lost its sequence: {stale}") from stale
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -58,27 +73,40 @@ class InstrumentedRunAdapter:
         one. Each press is confirmed by the game's own run state, and a press
         the game does not honour raises rather than being assumed.
         """
+        self._round_in_progress = False
         self._resume_a_frozen_run()
         deadline = time.monotonic() + self.episode_start_timeout
         while time.monotonic() < deadline:
-            state = self.client.read_state()
+            state = self._latest_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
-                self._begin_pinned(state.sequence)
+                self._start_round(state.sequence)
                 return
             if isinstance(state, BridgeObservation):
                 self._press("go_home", state.sequence)
-                state = self.client.read_state()
+                state = self._latest_state()
             self._press("start_round", state.sequence)
             self._await_active(deadline)
-            state = self.client.read_state()
+            state = self._latest_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
-                self._begin_pinned(state.sequence)
+                self._start_round(state.sequence)
                 return
         raise RunPortError("the instance did not reach an active run in time")
 
+    def _start_round(self, sequence: int) -> None:
+        """Pin the speed for the episode about to begin, then hand the round over.
+
+        Once this returns the environment owns the observation sequence every
+        further command must bind, which is why the pin happens here and nowhere
+        later. Its effect is not taken on trust: `application/run_environment.py`
+        fails any episode whose round clock outruns the game time its advances
+        budgeted, which is what actually verifies the multiplier (M1B-E023).
+        """
+        self._pin_game_speed(sequence)
+        self._round_in_progress = True
+
     def _press(self, action: str, expected_sequence: int) -> None:
         """Press one of the game's own controls and require its own confirmation."""
-        result = self.client.send_command(
+        result = self._command_between_rounds(
             {
                 "type": "command",
                 "protocol_version": 1,
@@ -109,10 +137,10 @@ class InstrumentedRunAdapter:
         and restart through the game's own controls:
         asking it to resume would only stall the boundary on a lifecycle timeout.
         """
-        state = self.client.read_state()
+        state = self.read_state()
         if not isinstance(state, BridgeObservation) or state.terminal:
             return
-        result = self.client.send_command(
+        result = self._command_between_rounds(
             {
                 "type": "command",
                 "protocol_version": 1,
@@ -129,7 +157,7 @@ class InstrumentedRunAdapter:
 
     def _await_active(self, deadline: float) -> None:
         while time.monotonic() < deadline:
-            state = self.client.read_state()
+            state = self._latest_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
                 return
             time.sleep(0.5)
@@ -139,7 +167,7 @@ class InstrumentedRunAdapter:
     def buy_upgrade(
         self, family: str, slot: int, *, expected_sequence: int
     ) -> BridgeCommandResult:
-        return self.client.send_command(
+        return self._send(
             {
                 "type": "command",
                 "protocol_version": 1,
@@ -170,7 +198,7 @@ class InstrumentedRunAdapter:
         pause had landed, so the caller needs no further read to see where the
         world stopped.
         """
-        result = self.client.send_command(
+        return self._send(
             {
                 "type": "command",
                 "protocol_version": 1,
@@ -182,40 +210,57 @@ class InstrumentedRunAdapter:
                 "health_change_fraction": health_change_fraction,
             }
         )
-        # An advance is the first thing in an episode that unpauses the world,
-        # and that is the moment a speed the boundary pin never saw takes hold.
-        # The result carries the settled observation the bridge paused on, so
-        # the pin is bound to a sequence that still stands; an advance that
-        # carries no state leaves the debt for the next one.
-        if self._pin_after_first_advance and result.state is not None:
-            self._pin_after_first_advance = False
-            self._pin_game_speed(result.state.sequence)
-        return result
+
+    # -- issuing commands --------------------------------------------------
+
+    def _send(self, command: Mapping[str, object]) -> BridgeCommandResult:
+        """Send one command and report a refused sequence as a port failure.
+
+        The bridge refuses a command that does not bind the observation it last
+        sent. That is an ordinary port failure - this episode cannot say what
+        the world did - and it is reported as one, so the episode is classified
+        and counted like any other and the next one starts from a fresh
+        observation. Left as an `InstrumentedBridgeError` it escaped the
+        environment entirely and killed the process, which on an unattended run
+        is the difference between losing an episode and losing the night.
+        """
+        try:
+            return self.client.send_command(command)
+        except BridgeStaleObservationError as stale:
+            raise RunPortError(f"the bridge refused a stale command: {stale}") from stale
+
+    def _command_between_rounds(self, command: Mapping[str, object]) -> BridgeCommandResult:
+        """Send a command of the adapter's own initiative, only between rounds.
+
+        Every command consumes an observation sequence. While a round is being
+        played the environment holds the sequence the next command must bind and
+        learns the new one from the result it gets back, so a command it never
+        asked for strands that expectation and the next advance is refused as
+        stale. A post-advance speed pin did exactly that (M1B-E024). The
+        adapter's own commands therefore belong to the episode boundary, and
+        this refuses to issue one anywhere else rather than leaving the next
+        such command to rediscover the hazard.
+        """
+        if self._round_in_progress:
+            raise RunPortError(
+                f"{command.get('kind')} may not be issued while a round is in progress"
+            )
+        return self._send(command)
 
     # -- speed -------------------------------------------------------------
-
-    def _begin_pinned(self, sequence: int) -> None:
-        """Pin the speed for a starting episode, and owe the pin one more time.
-
-        Starting a round is not the last moment the multiplier can change: the
-        world is standing still when an episode begins, and whatever the game
-        holds while it is still takes effect when it next moves. So the pin is
-        applied here and again after the episode's first advance.
-        """
-        self._pin_game_speed(sequence)
-        self._pin_after_first_advance = True
 
     def _pin_game_speed(self, sequence: int) -> None:
         """Hold the game's own multiplier at 1x; it is a pin, not a setting.
 
         Applied unconditionally. It used to be skipped when the observed
-        `game_speed` already read 1x, which made the pin depend on a field that
-        cannot witness it: every observation the host sees is taken from a world
-        the bridge has paused, and the field reads 0.0 there whatever the
-        unpaused world runs at (M1B-E009). A precondition read from a field that
-        cannot report the truth is a pin that silently never fires.
+        `game_speed` already read 1x, which made the pin depend on a field this
+        host cannot rely on: every observation taken between decisions is taken
+        from a world the bridge has paused, and the field reads 0.0 there
+        whatever the unpaused world runs at (M1B-E009). Read during a live round
+        it does report the running rate, but the host never reads it there, so
+        as a precondition it is a pin that silently never fires.
         """
-        result = self.client.send_command(
+        result = self._command_between_rounds(
             {
                 "type": "command",
                 "protocol_version": 1,
@@ -235,9 +280,12 @@ class InstrumentedRunAdapter:
         advances nothing and every episode times out. `M1B-E006` saw exactly that
         cascade, so releasing is part of shutting down rather than an optimisation.
         """
-        state = self.client.read_state()
+        # Releasing ends whatever round the host was playing, so the unpause it
+        # sends is a boundary command like any other.
+        self._round_in_progress = False
+        state = self.read_state()
         if isinstance(state, BridgeObservation):
-            self.client.send_command(
+            self._command_between_rounds(
                 {
                     "type": "command",
                     "protocol_version": 1,

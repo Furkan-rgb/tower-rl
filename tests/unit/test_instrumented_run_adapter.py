@@ -8,6 +8,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
     BridgeRunUnavailable,
+    BridgeStaleObservationError,
     CommandOutcome,
     UpgradeInventoryEntry,
 )
@@ -42,6 +43,9 @@ class FakeClient:
     sent: list[dict[str, object]] = field(default_factory=list)
     outcome: str = "confirmed"
     default_speed: float = 64.0
+    #: Command kinds the bridge refuses because they do not bind the latest
+    #: observation, which is what a stranded expectation looks like on the wire.
+    stale_kinds: frozenset[str] = frozenset()
 
     def read_state(self) -> object:
         if self.states:
@@ -49,9 +53,12 @@ class FakeClient:
         return _observation(speed=self.default_speed)
 
     def send_command(self, message: dict[str, object]) -> BridgeCommandResult:
+        if message["kind"] in self.stale_kinds:
+            raise BridgeStaleObservationError("command does not bind the latest observation")
         self.sent.append(message)
         # The real bridge binds the settled observation it paused on to every
-        # advance result, and the adapter pins the speed against that sequence.
+        # advance result, which is where the environment learns the sequence its
+        # next command must bind.
         settled = _observation(sequence=7) if message["kind"] == "advance" else None
         return BridgeCommandResult(
             request_id=str(message["request_id"]),
@@ -238,46 +245,64 @@ def _advance(adapter: InstrumentedRunAdapter, sequence: int = 1) -> None:
     )
 
 
-def test_the_speed_is_pinned_again_once_the_world_has_started_moving() -> None:
-    """M1B-E023: the boundary pin is applied to a world standing still.
+def test_the_speed_is_pinned_once_at_the_episode_boundary() -> None:
+    """M1B-E024: the pin belongs to the boundary and nowhere else.
 
-    Whatever the game holds while it is paused takes effect when it next moves,
-    so the multiplier is pinned again after the episode's first advance - the
-    first thing in an episode that unpauses the world - and bound to the settled
-    observation that advance came back with.
+    A second pin was briefly applied after the episode's first advance, on the
+    theory that a multiplier held by a standing world only takes effect once it
+    moves. It consumed an observation sequence the environment was still
+    expecting to bind, so the next advance was refused as stale and the episode
+    died on the second decision. The boundary pin alone holds the world at 1x,
+    and the round-clock ratio in `run_environment` is what verifies it.
     """
     client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run")])
     adapter = _adapter(client)
 
     adapter.begin_episode()
     pinned_at_the_boundary = len(_speed_commands(client))
-    _advance(adapter)
-
-    commands = _speed_commands(client)
-    assert pinned_at_the_boundary == 1
-    assert len(commands) == 2, "the world moved without the pin being re-applied"
-    assert commands[-1]["value"] == GAME_SPEED
-    assert commands[-1]["expected_observation_sequence"] == 7
-
-
-def test_only_the_first_advance_of_an_episode_re_applies_the_pin() -> None:
-    """It is a boundary pin, not a per-decision command: one extra round trip."""
-    client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run")])
-    adapter = _adapter(client)
-
-    adapter.begin_episode()
     for _ in range(3):
         _advance(adapter)
 
-    assert len(_speed_commands(client)) == 2
+    assert pinned_at_the_boundary == 1
+    assert len(_speed_commands(client)) == 1, "an advance pinned the speed again"
+    assert len(client.sent) == 4, "an advance cost more than the one command asked for"
+
+
+def test_a_command_the_environment_did_not_ask_for_cannot_be_sent_during_a_round() -> None:
+    """The general hazard, not just the pin that found it.
+
+    Every command consumes an observation sequence, so one the environment never
+    asked for strands the sequence it is still holding. The adapter's own
+    commands are refused while a round is in progress, which is what a future
+    command introduced with the same flaw runs into.
+    """
+    client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run")])
+    adapter = _adapter(client)
+    adapter.begin_episode()
+    sent_during_the_boundary = len(client.sent)
+
+    with pytest.raises(RunPortError, match="while a round is in progress"):
+        adapter._command_between_rounds(
+            {
+                "type": "command",
+                "protocol_version": 1,
+                "request_id": "some-new-command",
+                "expected_observation_sequence": 7,
+                "kind": "set_speed",
+                "value": GAME_SPEED,
+            }
+        )
+
+    assert len(client.sent) == sent_during_the_boundary, "the command reached the bridge"
 
 
 def test_the_pin_is_applied_even_when_the_observed_speed_already_reads_one() -> None:
-    """The observed field is read from a paused world and witnesses nothing.
+    """The observed field is not a precondition this host can read.
 
-    Every observation the host sees is taken while the bridge holds the world
-    still, where `game_speed` reads 0.0 whatever the running world would do, so
-    skipping the pin on the strength of that reading is a pin that never fires.
+    Every observation taken between decisions comes from a world the bridge is
+    holding still, where `game_speed` reads 0.0 whatever the running world would
+    do, so skipping the pin on the strength of that reading is a pin that never
+    fires.
     """
     client = FakeClient(
         states=[BridgeRunUnavailable(1, "no_initialized_run")], default_speed=GAME_SPEED
@@ -286,3 +311,19 @@ def test_the_pin_is_applied_even_when_the_observed_speed_already_reads_one() -> 
     _adapter(client).begin_episode()
 
     assert _speed_commands(client), "the pin was skipped on a reading that proves nothing"
+
+
+def test_a_stale_command_fails_the_episode_instead_of_the_process() -> None:
+    """A refused sequence is a port failure, which the run already survives.
+
+    As an `InstrumentedBridgeError` it escaped the environment entirely and took
+    the whole training run with it; as a `RunPortError` it costs one episode.
+    """
+    client = FakeClient(
+        states=[BridgeRunUnavailable(1, "no_initialized_run")], stale_kinds=frozenset({"advance"})
+    )
+    adapter = _adapter(client)
+    adapter.begin_episode()
+
+    with pytest.raises(RunPortError, match="stale"):
+        _advance(adapter)

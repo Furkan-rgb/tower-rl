@@ -1088,18 +1088,36 @@ the thing the agent is actually learning from.
 refuses. Speed is no longer a parameter anywhere — not in the adapter, not in the
 cadence, not on any runner's command line — so there is nothing left to set it to.
 
-The pin is applied twice per episode: when the episode begins and again after
-its first `advance`. An episode begins on a world the bridge is holding still,
-and whatever the game holds while it is still takes effect when it next moves,
-so a multiplier that survives the boundary would otherwise apply to every frame
-of the episode unnoticed. It is applied unconditionally: it used to be skipped
-when the observed `game_speed` already read 1x, but that field is read from the
-paused world too, where it reads `0.0` whatever the running world would do, so
-the precondition made the pin silently dead.
+The pin is applied once per episode, at the boundary, before the round is handed
+to the environment. A second pin was briefly applied after the episode's first
+`advance`, on the theory that a multiplier held by a standing world only takes
+effect once it moves; it consumed an observation sequence the environment was
+still expecting to bind, so the next advance was refused as stale and the episode
+died on its second decision. With the boundary pin alone, five lavapipe episodes
+at `frame_game_ms=100` measured a round-clock ratio of 1.009 against the 1.512 of
+the defect, and 22.5 decisions per wave against 15.0, so the boundary pin is what
+holds the world at 1x (`M1B-E024`).
 
-**And the pin is checked rather than trusted.** Nothing readable in the game
-reports the rate the unpaused world runs at, so `set_speed` can only confirm
-that the request was accepted. What verifies it is the pair of clocks each
+The pin is applied unconditionally: it used to be skipped when the observed
+`game_speed` already read 1x. Read during a live round that field does report the
+rate the world is running at — a handshake taken mid-round read `1.5` — but the
+host never reads it there. Every observation it sees is taken between decisions,
+from a world the bridge is holding still, where the field reads `0.0` whatever
+the running world would do, so as a precondition it made the pin silently dead.
+
+More generally, any command the adapter issues of its own initiative during a
+round strands the sequence the environment is holding, because every command
+consumes one and only the commands the environment asked for hand the new one
+back. `_command_between_rounds` refuses to issue one while a round is in
+progress, so the hazard is closed by construction rather than for the pin alone.
+A sequence the bridge does refuse arrives at the run as a `RunPortError` and
+costs one classified, counted episode, the way an unconfirmed advance does;
+before that it escaped the environment as an `InstrumentedBridgeError` and ended
+the whole training run.
+
+**And the pin is checked rather than trusted.** Nothing the host reads reports
+the rate the unpaused world runs at — its observations are all taken paused — so
+`set_speed` can only confirm that the request was accepted. What verifies it is the pair of clocks each
 advance already reports: `round_ms`, the game's own round clock, against
 `game_ms`, the game time the advance budgeted. `application/run_environment.py`
 fails an episode whose episode-to-date ratio exceeds `MAX_ROUND_CLOCK_RATIO`

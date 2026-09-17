@@ -155,7 +155,12 @@ class TrainingRun:
         indices, sequences, weights = self.replay.sample(
             self.config.batch_size, beta=self.config.beta(decisions)
         )
-        metrics = self.backbone.learn(collate(sequences, weights))
+        # Built where the parameters are: a CPU batch handed to a CUDA model
+        # fails on the first optimisation step, which is the worst place to
+        # discover it after an hour of collection.
+        metrics = self.backbone.learn(
+            collate(sequences, weights, device=self.backbone.device)
+        )
         self.replay.update_priorities(indices, metrics.td_errors)
         return metrics
 

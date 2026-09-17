@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -205,3 +206,19 @@ def test_evaluation_does_not_consume_the_decision_budget() -> None:
 
     # The budget counts collected decisions only; evaluation episodes are not in it.
     assert report.decisions == sum(s.decisions for s in report.episode_summaries)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_a_run_on_an_accelerator_builds_its_batches_there() -> None:
+    """A CPU batch handed to a CUDA model fails on the first optimisation step."""
+    training = _run()
+    training.backbone = RecurrentQBackbone(
+        config=RecurrentQConfig(seed=0),
+        network_config=SMALL,
+        device=torch.device("cuda"),
+    )
+    training.actor.policy = training.backbone
+
+    report = training.run()
+
+    assert report.optimisation_steps > 0

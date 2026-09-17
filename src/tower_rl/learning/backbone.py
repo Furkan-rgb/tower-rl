@@ -55,6 +55,11 @@ class Backbone(Protocol):
         """Increments on every applied optimisation step."""
         ...
 
+    @property
+    def device(self) -> torch.device:
+        """Where this backbone's parameters live, so a batch can be built there."""
+        ...
+
     def act(
         self, features: StateFeatures, state: Any, *, epsilon: float
     ) -> tuple[int, Any]:

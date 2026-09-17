@@ -969,6 +969,19 @@ stops being a game setting and becomes *how fast frames render*, which is a host
 concern — and that is what makes the renderer matter again, for frame rate rather
 than for pixels.
 
+**Until this exists, what speed should runs use?** The end state is the game's
+own multiplier pinned at 1x permanently, with speed coming from frame rate. But
+only half the mechanism is implemented: pinning 1x today gives correct decision
+density at roughly seven episodes per hour, which is not a usable training rate.
+The interim rule is therefore:
+
+- plumbing, smoke tests and pipeline work may run at 64x, where throughput
+  matters and decision quality does not;
+- any *training result* produced before the frame-exact step exists is
+  provisional, because it was collected on a coarser control problem than the
+  final one and would have to be recollected;
+- so long training runs wait for the mechanism rather than racing it.
+
 Two settings go with it, or the engine will still wait for real time between
 frames: `QualitySettings.vSyncCount = 0` and `Application.targetFrameRate = -1`.
 And the game's own speed multiplier must be left at 1x. Running both at once

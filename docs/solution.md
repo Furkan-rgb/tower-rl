@@ -971,8 +971,10 @@ the same advance. They are reported side by side because the whole design rests
 on their being the same number: if the world does not actually pass the game time
 each frame was told to be worth, the decision moments are not what the cadence
 asked for, and no other number would show it. The evaluator sums them as
-`total_round_seconds` against `total_game_seconds`, and the ratio must be about
-one.
+`total_round_seconds` against `total_budgeted_game_seconds` — budgeted, because
+frames times `frame_game_ms` is what the advances asked for, not what was
+delivered — and the ratio must be about one. `speedup` is measured on
+`total_round_seconds`, the game's own clock, for the same reason.
 
 **`playTime` is not that witness, and using it was a mistake.** `Main.playTime`
 is the account-lifetime clock: it advances at wall rate whatever
@@ -1076,12 +1078,13 @@ game-seconds per wall-second against a measured speed-up of 5.013, and Unity's
 admissible: whether 100 ms per frame preserves fidelity is what the pending sweep
 decides. The numbers that settle it are the ones
 `EvaluationReport` now reports: `decisions_per_episode`, `decisions_per_wave`,
-`total_frames`, `total_game_seconds`, `total_round_seconds` and `speedup`, with
+`total_frames`, `total_budgeted_game_seconds`, `total_round_seconds` and
+`speedup`, with
 `advances_cut_short` and `total_advance_wall_seconds` beside them. The first two
 are means over the valid episodes alone — an invalid episode is an environment
 failure, and counting its decisions against the episodes that survived would
-flatter exactly the arms that failed most. `total_game_seconds` against
-`total_round_seconds` is the 1:1 check; `total_wall_seconds` minus
+flatter exactly the arms that failed most. `total_budgeted_game_seconds`
+against `total_round_seconds` is the 1:1 check; `total_wall_seconds` minus
 `total_advance_wall_seconds` is what the decision boundaries themselves cost.
 
 ### 9.3 Final network

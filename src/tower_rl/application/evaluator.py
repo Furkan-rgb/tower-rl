@@ -70,13 +70,16 @@ class EvaluationReport:
     #: be divided by a count that excludes the episode itself.
     decisions_in_valid_episodes: int = 0
     total_wall_seconds: float = 0.0
-    #: Frames the bridge stepped and the game time they were worth, summed over
-    #: every attempted episode.
+    #: Frames the bridge stepped, summed over every attempted episode.
     total_frames: int = 0
-    total_game_seconds: float = 0.0
-    #: The game's own per-round clock over the same advances. Against
-    #: `total_game_seconds` it shows whether the budgeted game time was really
-    #: delivered; the two should agree to within rounding.
+    #: Frames times `frame_game_ms`: the game time the advances *instructed* the
+    #: world to be worth, not a measurement of what it delivered. Kept for
+    #: diagnosis, as the denominator of the acceptance ratio below.
+    total_budgeted_game_seconds: float = 0.0
+    #: The game's own per-round clock over the same advances, and the only
+    #: measurement of game time here. Against `total_budgeted_game_seconds` it
+    #: shows whether the budgeted game time was really delivered; the two should
+    #: agree to within rounding.
     total_round_seconds: float = 0.0
     #: Wall seconds spent inside advances. `total_wall_seconds` minus this is
     #: what the decision boundaries themselves cost.
@@ -113,10 +116,15 @@ class EvaluationReport:
 
     @property
     def speedup(self) -> float:
-        """Game seconds bought per wall second; the point of stepping frames."""
+        """Measured game seconds bought per wall second; the point of stepping frames.
+
+        Measured on the game's own round clock, not on frames times
+        `frame_game_ms`: the latter is what the advances asked for, and asking is
+        not evidence that the world simulated it.
+        """
         if self.total_wall_seconds <= 0:
             return 0.0
-        return self.total_game_seconds / self.total_wall_seconds
+        return self.total_round_seconds / self.total_wall_seconds
 
     def summary_line(self) -> str:
         """Deliberately puts the spread next to the mean."""
@@ -202,7 +210,7 @@ def evaluate(
         decisions_in_valid_episodes=sum(summary.decisions for summary in valid),
         total_wall_seconds=round(wall, 2),
         total_frames=frames,
-        total_game_seconds=round(game_ms / 1000.0, 3),
+        total_budgeted_game_seconds=round(game_ms / 1000.0, 3),
         total_round_seconds=round(round_ms / 1000.0, 3),
         total_advance_wall_seconds=round(advance_wall, 3),
         advances_cut_short=cut_short,
@@ -235,7 +243,7 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "decisions_per_episode": round(report.decisions_per_episode, 3),
         "decisions_per_wave": round(report.decisions_per_wave, 3),
         "total_frames": report.total_frames,
-        "total_game_seconds": report.total_game_seconds,
+        "total_budgeted_game_seconds": report.total_budgeted_game_seconds,
         "total_round_seconds": report.total_round_seconds,
         "advances_cut_short": report.advances_cut_short,
         "speedup": round(report.speedup, 3),

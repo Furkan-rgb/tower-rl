@@ -165,8 +165,8 @@ def test_the_report_carries_decision_density_and_the_speed_up() -> None:
     """These are the numbers the stepping design is accepted or rejected on.
 
     Decisions per episode is compared against the 1x reference of 89.3
-    (`M1B-E014`); game seconds over wall seconds is what moving the advance loop
-    into the bridge was for.
+    (`M1B-E014`); measured game seconds — the round clock — over wall seconds is
+    what moving the advance loop into the bridge was for.
     """
     report = evaluate(
         _environment(damage_per_second=1.0),
@@ -176,10 +176,10 @@ def test_the_report_carries_decision_density_and_the_speed_up() -> None:
     )
 
     assert report.total_frames > 0
-    assert report.total_game_seconds > 0.0
+    assert report.total_budgeted_game_seconds > 0.0
     # The game's own clock beside the budgeted game time: the design assumes they
     # are the same number, so the report has to show both.
-    assert report.total_round_seconds == pytest.approx(report.total_game_seconds)
+    assert report.total_round_seconds == pytest.approx(report.total_budgeted_game_seconds)
     assert report.total_advance_wall_seconds > 0.0
     assert report.decisions_per_episode == (
         report.decisions_in_valid_episodes / report.valid_episodes
@@ -190,7 +190,7 @@ def test_the_report_carries_decision_density_and_the_speed_up() -> None:
     # Wall time is rounded to a hundredth, so a fast fake run can report zero;
     # the guard, not the ratio, is what matters then.
     expected = (
-        report.total_game_seconds / report.total_wall_seconds
+        report.total_round_seconds / report.total_wall_seconds
         if report.total_wall_seconds > 0
         else 0.0
     )
@@ -201,7 +201,7 @@ def test_the_report_carries_decision_density_and_the_speed_up() -> None:
         "decisions_per_episode",
         "decisions_per_wave",
         "total_frames",
-        "total_game_seconds",
+        "total_budgeted_game_seconds",
         "total_round_seconds",
         "total_advance_wall_seconds",
         "advances_cut_short",

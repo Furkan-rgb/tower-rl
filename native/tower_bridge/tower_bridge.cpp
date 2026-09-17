@@ -714,8 +714,10 @@ bool ParseCommand(const std::string& payload, Command* command) {
 // commands that advance no frames.
 struct AdvanceDetail {
   int32_t frames = 0;
-  // Budget accounting: frames times `frame_game_ms`, which is what the advance
-  // asked the world to be worth.
+  // Budget accounting: the frames stepped under the advance loop times
+  // `frame_game_ms`, which is what the advance asked the world to be worth. The
+  // tail frames the pause takes to land are counted in `frames` but not here:
+  // they run at real-time pacing and were never asked to be worth that much.
   uint32_t game_millis = 0;
   // The game's own per-round clock, measured across the same advance. Reported
   // beside `game_millis` so the 1:1 mapping between them can be checked rather
@@ -1040,9 +1042,9 @@ bool BecameAvailable(const DecisionSnapshot& before, const DecisionSnapshot& aft
 // Advance the world frame by frame until something worth deciding about happens,
 // or until the game-time budget is spent, then pause again.
 //
-// `captureDeltaTime` makes every rendered frame worth exactly `frame_game_ms` of
-// game time however long it took to render, so the game time between decisions
-// depends on neither the game's speed multiplier nor on how fast this host is.
+// `captureDeltaTime` makes every frame rendered under the loop worth exactly
+// `frame_game_ms` of game time however long it took to render, so the game time
+// between decisions depends on neither the game's speed multiplier nor on how fast this host is.
 // Because the loop lives here rather than in the host, the policy's own latency
 // costs no game time at all and one decision costs one round trip.
 //
@@ -1072,6 +1074,13 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   uint64_t last_heartbeat = started;
   double game_millis = 0.0;
   bool connected = true;
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+  // The round clock at three moments of the advance, so the difference between
+  // the game's clock and this loop's frame arithmetic can be located rather
+  // than inferred. No extra reads: these reuse snapshots taken anyway.
+  const float probe_t0 = before.round_time;
+  float probe_t1 = before.round_time;
+#endif
   while (true) {
     usleep(kFramePollMicros);
     const uint64_t now = MonotonicMicros();
@@ -1084,7 +1093,11 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
       game_millis += rendered * static_cast<double>(command.frame_game_millis);
       // These mid-frame readings decide only when to stop. What the advance
       // reports is decided further down, from the settled state.
-      if (!ReadDecisionSnapshot(api, fields, &after) || !after.active) break;
+      const bool read = ReadDecisionSnapshot(api, fields, &after);
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+      if (read) probe_t1 = after.round_time;
+#endif
+      if (!read || !after.active) break;
       if (after.wave != before.wave) break;
       if (BecameAvailable(before, after)) break;
       if (std::fabs(after.health_fraction - before.health_fraction) >= health_threshold) break;
@@ -1103,14 +1116,20 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
     }
   }
 
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+  const int32_t probe_loop_frames = detail->frames;
+#endif
   // Pausing a run that has already ended would press a control the game no
   // longer owns a receiver for; RunIsActive is false then anyway.
   if (RunIsActive(api, fields)) {
-    send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
     // `Pause` is dispatched to the main thread and lands a frame or two later.
-    // Until it has, `captureDeltaTime` stays where it was, so the tail frames
-    // are worth the same game time as every other frame instead of silently
-    // reverting to real-time pacing mid-pause.
+    // Those tail frames advance no meaningful world state, so pacing them at
+    // `frame_game_ms` each credited the budget with game time the world never
+    // simulated. They run at real-time pacing instead, and are counted as
+    // frames but not as game time; what they are really worth is small, and the
+    // round clock does measure it.
+    clock.set_capture_delta(0.0F);
+    send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
     const uint64_t settle_started = MonotonicMicros();
     const int32_t settle_from = last_count;
     while (last_count - settle_from < kPauseSettleFrames) {
@@ -1120,7 +1139,6 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
         const int32_t rendered = count - last_count;
         last_count = count;
         detail->frames += rendered;
-        game_millis += rendered * static_cast<double>(command.frame_game_millis);
       }
       if (MonotonicMicros() - settle_started >= kPauseSettleMicros) break;
     }
@@ -1144,7 +1162,9 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   } else {
     *reason = "budget_exhausted";
   }
-  // Restore real-time pacing so nothing outside an advance observes a stopped clock.
+  // Restore real-time pacing so nothing outside an advance observes a stopped
+  // clock. Already done above when the run was still active and was paused;
+  // this covers the path where it had ended.
   clock.set_capture_delta(0.0F);
   detail->game_millis = static_cast<uint32_t>(game_millis + 0.5);
   // An unreadable settled state means the run ended under the advance, which
@@ -1158,6 +1178,19 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
     *outcome = "ambiguous";
     *reason = "no_frame_rendered";
   }
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+  // One line per advance, fixed field order, so a device run can be parsed
+  // without guessing: the round clock before `Unpause`, at the loop's last
+  // reading, and after the settle window.
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "clockprobe t0=%.3f t1=%.3f t2=%.3f loop_frames=%d settle_frames=%d "
+                      "frame_game_ms=%.1f wall_us=%llu",
+                      static_cast<double>(probe_t0), static_cast<double>(probe_t1),
+                      static_cast<double>(readable ? settled.round_time : probe_t1),
+                      probe_loop_frames, detail->frames - probe_loop_frames,
+                      static_cast<double>(command.frame_game_millis),
+                      static_cast<unsigned long long>(detail->wall_micros));
+#endif
   return connected;
 }
 

@@ -128,6 +128,14 @@ extremes and was chosen on grounds independent of this defect.
 Source data: `sweep-analysis.txt` and `sweep-frame{16.7,50,100,100b,250}.json`
 with per-episode sidecars, session scratchpad.
 
+Since this entry, the settle-window frames after `Pause` no longer count toward
+`game_ms` and run at real-time pacing, the evaluator's frame-arithmetic total is
+named `total_budgeted_game_seconds`, and `speedup` is measured on the round clock
+(`total_round_seconds / total_wall_seconds`) rather than on that budget. The
+`round/game` ratio quoted above is the same quantity as today's
+`total_round_seconds / total_budgeted_game_seconds`; the `speedup` figures quoted
+above are the old, budget-based definition.
+
 ## M1B-E017 — The bridge-side advance loop runs on the real game at 5x, and the game-time witness was wrong
 
 **Date:** 2026-09-17

@@ -329,3 +329,47 @@ instrumented clones on this host multiply that or contend for the GPU is an
 empirical question, and the number that settles it is aggregate *valid* episodes
 per hour, not episodes per hour. Measure it before committing to long training
 runs, because it changes what an equal decision budget costs in wall-clock time.
+
+## Directed next steps — 2026-09-17
+
+Three items the developer set after `M1B-E010`, in dependency order. All need the
+device, which is busy with the speed equivalence gate until it finishes.
+
+**1. A snapshot of the game already running, offline.** The startup network
+window exists only because the game cold-launches into a Firebase check. Saving
+an emulator snapshot while the game sits at `battle_home_tier_1` with the radios
+already down removes that window entirely: every later run restores an
+already-started, already-offline game and never connects at all. Precedent is
+good — `solution.md` 8.1 records that in-place restore preserved the game
+process, the Battle-home state and a clean post-restore fingerprint on the
+canonical AVD. What must be verified is that a *restored* process does not
+re-run the online check.
+
+**2. Remove the last tap by finding the right receiver.** This is the blocker
+`M1B-E004` left open, and it gates item 3. The bridge dispatches every lifecycle
+method through `UnitySendMessage` to the GameObject named `Main`, and `Main`
+only exists inside the battle scene, so `StartNewRoundFunction`, `AutoRetryBattle`
+and `Button_ToggleAutoRestartBattle` all no-op from the home screen. Two cheap
+experiments before any native work:
+
+- Re-test `enable_auto_restart`. It was judged progression-gated at the
+  documented baseline, but the clone has since drifted to Highest Wave 11 and
+  909 coins (`M1B-E005`). If auto-restart is now unlocked the game restarts
+  rounds by itself and the boundary disappears without finding any receiver.
+- Re-test `retry` dispatched at the result panel rather than from home, and
+  record whether `Main` still exists at that moment.
+
+If both fail, the identified work is to locate the GameObject that owns
+`BattlePanelUI.StartNewRound` and address it by name. That needs a main-thread
+trampoline that exists on the home screen, because `UnitySendMessage` is the only
+main-thread entry point the bridge has and it addresses objects by name.
+
+**3. Then the renderer is free.** `-gpu host` was withdrawn in `M1B-E004`
+because it corrupts the frame — smearing, magenta and cyan banding, ghosted text
+— which broke screen classification. Game logic was never affected, because the
+bridge reads exact state rather than pixels. The frame matters for exactly one
+thing: the gated tap. Remove the tap and nothing in the training loop reads a
+pixel, so host rendering becomes admissible again and the `M1B-E003` throughput
+figures taken under it become relevant rather than an unusable upper bound.
+Until then lavapipe stays, because a corrupt frame with a live tap is the
+`M1-E005` failure waiting to happen.

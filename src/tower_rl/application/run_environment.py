@@ -40,11 +40,19 @@ class CadenceConfig:
     max_episode_wall_seconds: float = 900.0
 
 
+#: The one inconsistency the bridge can legitimately show. Health and the round
+#: flag are read separately, so at the instant of death health goes negative a
+#: moment before the game flips game-over (M1B-E008). The settled state arrives
+#: on the next read, so this is recovered rather than excluded.
+DEATH_BOUNDARY_TRANSIENT = "negative health in an active run"
+
+
 @dataclass
 class _EpisodeTally:
     decisions: int = 0
     purchases: int = 0
     invalid_transitions: int = 0
+    recovered_transients: int = 0
     started_at: float = 0.0
     peak_wave: int = 0
 
@@ -205,7 +213,15 @@ class InstrumentedRunEnvironment:
         reading = self.port.read_state()
         if reading is None:
             return None
-        return self.builder.build(reading, captured_at_monotonic=time.monotonic())
+        state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
+        if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
+            # Read once more rather than discarding an otherwise complete episode.
+            # One retry only: a state that stays contradictory is a real failure.
+            settled = self.port.read_state()
+            if settled is not None:
+                self._tally.recovered_transients += 1
+                state = self.builder.build(settled, captured_at_monotonic=time.monotonic())
+        return state
 
     def _finish(
         self,

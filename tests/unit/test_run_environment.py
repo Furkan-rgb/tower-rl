@@ -160,3 +160,48 @@ def test_a_stalled_run_truncates_rather_than_running_forever() -> None:
     assert transition.termination is TerminationOutcome.MAX_EPISODE_DURATION
     assert not transition.admissible
     assert port.active, "truncation is an environment decision, not a game over"
+
+
+def test_the_death_boundary_transient_is_recovered_not_discarded() -> None:
+    """M1B-E008: health goes negative a moment before game-over flips."""
+    from dataclasses import replace
+
+    environment, port = _environment()
+    environment.reset()
+    original = port.read_state
+
+    calls = {"count": 0}
+
+    def flaky_read():
+        reading = original()
+        calls["count"] += 1
+        if calls["count"] == 1 and reading is not None:
+            # Active, but health already negative: the inconsistent instant.
+            return replace(reading, health=-2.0, lifecycle="active", terminal=False)
+        return reading
+
+    port.read_state = flaky_read  # type: ignore[method-assign]
+    state = environment._read_state()
+
+    assert state is not None and state.valid, state.invalid_reasons
+    assert environment._tally.recovered_transients == 1
+
+
+def test_a_persistently_contradictory_state_is_still_invalid() -> None:
+    from dataclasses import replace
+
+    environment, port = _environment()
+    environment.reset()
+    original = port.read_state
+
+    def always_contradictory():
+        reading = original()
+        return None if reading is None else replace(
+            reading, health=-2.0, lifecycle="active", terminal=False
+        )
+
+    port.read_state = always_contradictory  # type: ignore[method-assign]
+    state = environment._read_state()
+
+    assert state is not None and not state.valid
+    assert "negative health in an active run" in state.invalid_reasons

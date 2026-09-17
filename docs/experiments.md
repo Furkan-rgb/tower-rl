@@ -7,6 +7,68 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E008 — 150-episode reliability sample and the death-boundary transient
+
+**Date:** 2026-09-17
+**Status:** 99.3 percent validity over 150 episodes; residual attributed and
+recovered; the full 1,000-attempt gate is running
+
+With rejection reasons now aggregated into evaluation reports, 150 consecutive
+scripted episodes give the first reliability sample worth quoting.
+
+| Quantity | Value |
+| --- | --- |
+| Episodes attempted | 150 |
+| Valid episodes | 149 |
+| Validity | 99.3 percent |
+| Mean final wave | 9.79 |
+| Median final wave | 10 |
+| Standard deviation | 1.26 |
+| Lower quartile | 10 |
+| Range | 5 to 11 |
+| Decisions | 7,829 |
+| Episodes per hour | 236 |
+
+The standard deviation is 1.26, matching the 1.22 from fifty episodes in
+`M1B-E006`, so the sample-size arithmetic that protocol rests on is stable: about
+23 evaluation episodes per arm for a one-wave difference.
+
+### The single residual failure
+
+One episode in 150 ended invalid, and its reason was recorded rather than
+guessed:
+
+```text
+state: negative health in an active run
+```
+
+This is the same overkill behaviour as `M1B-E007`, caught one tick earlier. The
+bridge reads tower health and the round-active flag separately within a snapshot,
+so at the instant of death health has already gone negative while the game has
+not yet flipped its game-over flag. The pair is briefly inconsistent, and the
+inconsistency is real rather than corrupt: it is what the game looks like for one
+moment as the tower dies.
+
+Exclusion was the wrong response to it. Discarding an otherwise complete episode
+because one snapshot caught a transition mid-flight loses a genuine game. The
+environment now re-reads once when a state is invalid for exactly this reason,
+and the settled state is authoritative. Exactly one retry: a state that is still
+contradictory on the second read is a real failure and stays invalid, which a
+test asserts directly.
+
+The validator itself was not weakened. Negative health during a genuinely active
+run remains invalid, health above maximum remains invalid in any lifecycle, and
+the recovery is counted so a rising transient rate would be visible rather than
+silently absorbed.
+
+### Against the M2 gate
+
+The gate requires at least 1,000 consecutive episode attempts at 99 percent
+validity or better with no silent corruption. 150 attempts at 99.3 percent meet
+the threshold but not the volume, so this is evidence toward the gate and not a
+pass. A 1,000-episode run is in progress; at 236 episodes per hour it takes
+about four and a quarter hours.
+
 ## M1B-E007 — The invalid-episode rate was the validator, not the game
 
 **Date:** 2026-09-17

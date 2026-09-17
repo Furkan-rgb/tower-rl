@@ -37,8 +37,10 @@ evidence in `docs/experiments.md`.
    mechanism.** A faster game clock makes each rendered frame worth more game
    time, which coarsens the agent's decisions in proportion to the speed gained:
    4.8 decisions per wave at 64x against 12.2 at 1x (`M1B-E012`). Encoded in
-   `instrumented_run_adapter.py` as `GAME_SPEED = 1.0` and
-   `PAUSE_STEPPING_SPEED = 0.0`, with tests asserting both.
+   `instrumented_run_adapter.py` as `GAME_SPEED = 1.0` with `_pin_game_speed`
+   restoring it at every episode start, and asserted by test. Speed is not a
+   parameter anywhere: not in the adapter, the cadence, or any runner's
+   arguments.
 2. **Speed comes from stepping frames faster.** `Time.captureDeltaTime` makes one
    rendered frame worth a fixed amount of game time however long it took to
    render, so decision moments are identical at any speed *by construction*. The

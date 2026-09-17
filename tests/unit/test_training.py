@@ -32,7 +32,7 @@ def _run(**overrides: object) -> TrainingRun:
     environment = InstrumentedRunEnvironment(
         port=FakeRunPort(damage_per_second=2.0),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
-        cadence=CadenceConfig(slice_game_ms=250, max_quiet_game_ms=1000),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
     backbone = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
     replay = PrioritizedSequenceReplay(capacity=64, seed=0)

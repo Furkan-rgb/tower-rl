@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import io
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from PIL import Image
 
@@ -30,20 +30,12 @@ from tower_rl.infrastructure.visual_profile import (
 from tower_rl.ports.android import ScreenPoint
 from tower_rl.ports.run_port import RunPortError
 
-#: Always step. The game's own speed multiplier is not a speed-up mechanism for
-#: this project: a faster game clock makes every rendered frame worth more game
-#: time, which coarsens the agent's decisions in exact proportion to the speed
-#: gained (`M1B-E012`). Speed comes from stepping frames faster instead, and
-#: `M1B-E016` measured a frame-exact step costing the same whether the multiplier
-#: is 1 or 16 - it no longer affects anything, so it stays at 1.
-#:
-#: The earlier `inf` here disabled stepping entirely, on `M1B-E006`'s finding that
-#: pause-stepping was nineteen times slower. That measurement was of a step
-#: composed from four separate host commands; fused into one bridge command it
-#: costs about 57 ms, and correctness is not negotiable against throughput.
-PAUSE_STEPPING_SPEED = 0.0
-
-#: The game's own multiplier, pinned. See above: it is not a tuning knob.
+#: The game's own speed multiplier, pinned at 1x. It is not a speed-up mechanism
+#: for this project: a faster game clock makes every rendered frame worth more
+#: game time, which coarsens the agent's decisions in exact proportion to the
+#: speed gained (`M1B-E012`). Speed comes from stepping frames faster instead,
+#: with a fixed amount of game time per frame, so the multiplier no longer buys
+#: anything and is held at 1 so that nothing else silently depends on it.
 GAME_SPEED = 1.0
 
 #: The only two coordinates this loop may ever touch, each gated on a positive
@@ -70,16 +62,10 @@ class InstrumentedRunAdapter:
 
     client: InstrumentedBridgeClient
     device: object  # AdbDevice-shaped: screenshot() and tap() only
-    requested_speed: float = GAME_SPEED
-    #: Pause between decisions above this speed. Configurable because the right
-    #: value is an empirical question: pausing protects decision density, but
-    #: each slice costs a round trip, and M1B-E006 measures which dominates.
-    pause_stepping_speed: float = PAUSE_STEPPING_SPEED
     episode_start_timeout: float = 120.0
     #: The result panel animates in; classifying earlier sees a transition, not a
     #: screen, and tapping across a transition is the M1-E005 failure.
     settle_seconds: float = RESULT_SETTLE_SECONDS
-    _last_speed: float = field(default=0.0, init=False)
 
     # -- reading -----------------------------------------------------------
 
@@ -87,7 +73,6 @@ class InstrumentedRunAdapter:
         state = self.client.read_state()
         if isinstance(state, BridgeRunUnavailable):
             return None
-        self._last_speed = state.game_speed
         return state
 
     # -- lifecycle ---------------------------------------------------------
@@ -98,7 +83,7 @@ class InstrumentedRunAdapter:
         while time.monotonic() < deadline:
             state = self.client.read_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
-                self._apply_speed(state)
+                self._pin_game_speed(state)
                 return
             # The result panel appears a moment after the bridge reports terminal,
             # so settle before looking, or the classification races the animation.
@@ -110,7 +95,7 @@ class InstrumentedRunAdapter:
             self._await_active(deadline)
             state = self.client.read_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
-                self._apply_speed(state)
+                self._pin_game_speed(state)
                 return
         raise RunPortError("the instance did not reach an active run in time")
 
@@ -151,37 +136,43 @@ class InstrumentedRunAdapter:
             }
         )
 
-    def advance(self, *, expected_sequence: int, game_ms: int) -> BridgeCommandResult:
-        """Advance game time, pausing between decisions when the world is fast."""
-        if self._last_speed >= self.pause_stepping_speed:
-            # Above the threshold a host round trip costs more game time than the
-            # slice itself, so deliberation must not happen while the world runs.
-            return self.client.send_command(
-                {
-                    "type": "command",
-                    "protocol_version": 1,
-                    "request_id": self._request_id("step"),
-                    "expected_observation_sequence": expected_sequence,
-                    "kind": "step",
-                    "game_ms": game_ms,
-                }
-            )
+    def advance_until_event(
+        self,
+        *,
+        expected_sequence: int,
+        budget_game_ms: int,
+        frame_game_ms: float,
+        health_change_fraction: float,
+    ) -> BridgeCommandResult:
+        """Step frames in the bridge until an event or the budget, in one trip.
+
+        The host used to ask for one short slice at a time and re-read the state
+        after each, which cost a round trip per slice and about eight of them per
+        decision. The bridge now runs that loop itself, so the frame rather than
+        the round trip governs what a decision costs.
+
+        The result carries the settled observation the bridge took after its own
+        pause had landed, so the caller needs no further read to see where the
+        world stopped.
+        """
         return self.client.send_command(
             {
                 "type": "command",
                 "protocol_version": 1,
-                "request_id": self._request_id("wait"),
+                "request_id": self._request_id("advance"),
                 "expected_observation_sequence": expected_sequence,
-                "kind": "wait",
+                "kind": "advance",
+                "budget_game_ms": budget_game_ms,
+                "frame_game_ms": frame_game_ms,
+                "health_change_fraction": health_change_fraction,
             }
         )
 
     # -- speed -------------------------------------------------------------
 
-    def _apply_speed(self, state: BridgeObservation) -> None:
-        """Request the configured training speed, and record what was applied."""
-        if abs(state.game_speed - self.requested_speed) < 0.01:
-            self._last_speed = state.game_speed
+    def _pin_game_speed(self, state: BridgeObservation) -> None:
+        """Hold the game's own multiplier at 1x; it is a pin, not a setting."""
+        if abs(state.game_speed - GAME_SPEED) < 0.01:
             return
         result = self.client.send_command(
             {
@@ -190,14 +181,11 @@ class InstrumentedRunAdapter:
                 "request_id": self._request_id("speed"),
                 "expected_observation_sequence": state.sequence,
                 "kind": "set_speed",
-                "value": self.requested_speed,
+                "value": GAME_SPEED,
             }
         )
         if result.outcome != "confirmed":
-            raise RunPortError(f"the game refused the training speed: {result.reason}")
-        applied = self.client.read_state()
-        if isinstance(applied, BridgeObservation):
-            self._last_speed = applied.game_speed
+            raise RunPortError(f"the game refused the pinned 1x speed: {result.reason}")
 
     def release(self) -> None:
         """Leave the game running, whatever mode this adapter used.

@@ -6,6 +6,9 @@ import struct
 import pytest
 
 from tower_rl.infrastructure.instrumented_bridge import (
+    ADVANCE_WALL_CEILING_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
+    PAUSE_SETTLE_SECONDS,
     BridgeCompatibility,
     BridgeCompatibilityError,
     BridgeDisconnectedError,
@@ -16,6 +19,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     BridgeTimeoutError,
     InstrumentedBridgeClient,
     decode_command,
+    decode_command_result,
     decode_handshake,
     decode_observation,
     encode_frame,
@@ -58,12 +62,12 @@ def _handshake(**overrides: object) -> dict[str, object]:
     return message
 
 
-def _observation(sequence: int = 1) -> dict[str, object]:
+def _observation(sequence: int = 1, wave: int = 7) -> dict[str, object]:
     return {
         "type": "observation",
         "sequence": sequence,
         "lifecycle": "active",
-        "wave": 7,
+        "wave": wave,
         "cash": 123.5,
         "health": 95.0,
         "max_health": 100.0,
@@ -209,33 +213,34 @@ def test_timeout_and_eof_are_distinct() -> None:
 
 
 def test_command_contract_rejects_malformed_and_stale_requests() -> None:
-    malformed_wait = {
+    malformed_advance = {
         "type": "command", "protocol_version": 1, "request_id": "a",
-        "expected_observation_sequence": 1, "kind": "wait", "index": 0,
+        "expected_observation_sequence": 1, "kind": "advance", "index": 0,
+        "budget_game_ms": 2000, "frame_game_ms": 16.0, "health_change_fraction": 0.05,
     }
     with pytest.raises(BridgeProtocolError, match="upgrade target"):
-        decode_command(malformed_wait)
+        decode_command(malformed_advance)
     client, peer = _connected_client()
     try:
         peer.sendall(encode_frame(_observation(1)))
         client.read_observation()
-        stale_wait = {
+        stale_lifecycle = {
             "type": "command", "protocol_version": 1, "request_id": "a",
-            "expected_observation_sequence": 2, "kind": "wait",
+            "expected_observation_sequence": 2, "kind": "lifecycle", "action": "pause",
         }
         with pytest.raises(BridgeStaleObservationError, match="latest"):
-            client.send_command(stale_wait)
+            client.send_command(stale_lifecycle)
         other_result = {
             "type": "command_result", "protocol_version": 1, "request_id": "b",
-            "outcome": "confirmed", "reason": "wait_elapsed", "observation_sequence": 1,
+            "outcome": "confirmed", "reason": "run_active", "observation_sequence": 1,
         }
         peer.sendall(encode_frame(other_result))
-        wait = {
+        mine = {
             "type": "command", "protocol_version": 1, "request_id": "a",
-            "expected_observation_sequence": 1, "kind": "wait",
+            "expected_observation_sequence": 1, "kind": "lifecycle", "action": "pause",
         }
         with pytest.raises(BridgeProtocolError, match="request id"):
-            client.send_command(wait)
+            client.send_command(mine)
     finally:
         client.close()
         peer.close()
@@ -361,7 +366,9 @@ def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
         decode_command(
             {
                 "type": "command", "protocol_version": 1, "request_id": "r",
-                "expected_observation_sequence": 2, "kind": "wait", "action": "retry",
+                "expected_observation_sequence": 2, "kind": "advance", "action": "retry",
+                "budget_game_ms": 2000, "frame_game_ms": 16.0,
+                "health_change_fraction": 0.05,
             }
         )
 
@@ -394,25 +401,166 @@ def test_lifecycle_wire_format_matches_the_native_parser_contract() -> None:
         peer.close()
 
 
-def test_step_command_bounds_the_advanced_game_time() -> None:
-    step = decode_command(
+def test_advance_wire_format_matches_the_native_parser_contract() -> None:
+    """The native parser reads these three fields at fixed offsets, in this order."""
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        client.read_state()
+        peer.sendall(
+            encode_frame(
+                {
+                    "type": "command_result", "protocol_version": 1, "request_id": "adv-1",
+                    "outcome": "confirmed", "reason": "budget_exhausted",
+                    "observation_sequence": 1, "frames": 120, "game_ms": 2000,
+                    "play_ms": 1998, "wall_micros": 57_000,
+                }
+            )
+        )
+        client.send_command(
+            {
+                "type": "command", "protocol_version": 1, "request_id": "adv-1",
+                "expected_observation_sequence": 1, "kind": "advance",
+                "budget_game_ms": 2000, "frame_game_ms": 16.5,
+                "health_change_fraction": 0.05,
+            }
+        )
+        raw = encode_frame(read_frame(peer, timeout=0.1))[4:].decode("utf-8")
+
+        assert raw.endswith(
+            '"kind":"advance","budget_game_ms":2000,"frame_game_ms":16.5,'
+            '"health_change_fraction":0.05}'
+        )
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_advance_command_bounds_every_field_it_carries() -> None:
+    """One advance replaces the host's slicing loop, so its bounds are the contract."""
+    advance = decode_command(
         {
-            "type": "command", "protocol_version": 1, "request_id": "s",
-            "expected_observation_sequence": 1, "kind": "step", "game_ms": 250,
+            "type": "command", "protocol_version": 1, "request_id": "a",
+            "expected_observation_sequence": 1, "kind": "advance",
+            "budget_game_ms": 2000, "frame_game_ms": 1000 / 60,
+            "health_change_fraction": 0.05,
         }
     )
 
-    assert step.kind == "step" and step.game_ms == 250
+    assert advance.kind == "advance"
+    assert advance.budget_game_ms == 2000
+    assert advance.frame_game_ms == 1000 / 60
+    assert advance.health_change_fraction == 0.05
 
-    for out_of_range in (0, 9, 5001):
+    for field, out_of_range in (
+        ("budget_game_ms", 9),
+        ("budget_game_ms", 10_001),
+        ("frame_game_ms", 0.9),
+        ("frame_game_ms", 250.1),
+        ("health_change_fraction", -0.1),
+        ("health_change_fraction", 1.1),
+    ):
+        message = {
+            "type": "command", "protocol_version": 1, "request_id": "a",
+            "expected_observation_sequence": 1, "kind": "advance",
+            "budget_game_ms": 2000, "frame_game_ms": 16.0,
+            "health_change_fraction": 0.05,
+        }
+        message[field] = out_of_range
         with pytest.raises(BridgeProtocolError):
+            decode_command(message)
+
+
+def test_the_step_and_wait_commands_no_longer_exist() -> None:
+    """Slicing from the host is gone, and `WAIT` is an advance; both kinds are dead."""
+    for dead in (
+        {"kind": "step", "game_ms": 250},
+        {"kind": "wait"},
+    ):
+        with pytest.raises(BridgeProtocolError, match="unsupported command kind"):
             decode_command(
                 {
                     "type": "command", "protocol_version": 1, "request_id": "s",
-                    "expected_observation_sequence": 1, "kind": "step",
-                    "game_ms": out_of_range,
+                    "expected_observation_sequence": 1, **dead,
                 }
             )
+
+
+def test_a_command_result_carries_what_the_advance_cost() -> None:
+    """Frames, both clocks and wall time are how the speed-up is measured at all.
+
+    The native encoder writes these in one fixed order - `frames`, `game_ms`,
+    `play_ms`, `wall_micros` - and `game_ms` against `play_ms` is what shows
+    whether the game time each frame was told to be worth actually passed.
+    """
+    result = decode_command_result(
+        {
+            "type": "command_result", "protocol_version": 1, "request_id": "a",
+            "outcome": "confirmed", "reason": "event:wave_changed",
+            "observation_sequence": 7, "frames": 120, "game_ms": 2000.0,
+            "play_ms": 1998.0, "wall_micros": 57_000,
+        }
+    )
+
+    assert result.reason == "event:wave_changed"
+    assert (result.frames, result.game_ms, result.play_ms, result.wall_micros) == (
+        120, 2000.0, 1998.0, 57_000,
+    )
+    # Nothing bound this result to a state, so it honestly carries none.
+    assert result.state is None
+
+    # Commands that burn no game time omit them, and zero is the honest answer.
+    bare = decode_command_result(
+        {
+            "type": "command_result", "protocol_version": 1, "request_id": "b",
+            "outcome": "confirmed", "reason": "confirmed_state_change",
+            "observation_sequence": 7,
+        }
+    )
+
+    assert (bare.frames, bare.game_ms, bare.play_ms, bare.wall_micros) == (0, 0.0, 0.0, 0)
+
+
+def test_a_result_carries_the_observation_the_bridge_sent_with_it() -> None:
+    """The settled observation arrives with the result, so no second read is needed."""
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        client.read_state()
+        peer.sendall(encode_frame(_observation(2, wave=9)))
+        peer.sendall(
+            encode_frame(
+                {
+                    "type": "command_result", "protocol_version": 1, "request_id": "adv-2",
+                    "outcome": "confirmed", "reason": "event:wave_changed",
+                    "observation_sequence": 2, "frames": 60, "game_ms": 1000,
+                    "play_ms": 1000, "wall_micros": 21_000,
+                }
+            )
+        )
+        result = client.send_command(
+            {
+                "type": "command", "protocol_version": 1, "request_id": "adv-2",
+                "expected_observation_sequence": 1, "kind": "advance",
+                "budget_game_ms": 2000, "frame_game_ms": 16.5,
+                "health_change_fraction": 0.05,
+            }
+        )
+
+        assert result.state is not None
+        assert result.state.sequence == 2
+        assert result.state.wave == 9
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_the_default_read_timeout_covers_the_bridge_advance_ceiling() -> None:
+    """A read that gave up first would call a working advance a timeout."""
+    assert DEFAULT_READ_TIMEOUT_SECONDS >= ADVANCE_WALL_CEILING_SECONDS + PAUSE_SETTLE_SECONDS
+    assert DEFAULT_READ_TIMEOUT_SECONDS >= 20.0
+    client = InstrumentedBridgeClient("127.0.0.1", 47651, expected_compatibility=EXPECTED)
+    assert client.read_timeout == DEFAULT_READ_TIMEOUT_SECONDS
 
 
 def test_upgrade_level_above_its_own_maximum_is_rejected() -> None:

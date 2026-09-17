@@ -90,6 +90,17 @@ def test_action_space_is_stable_and_wait_is_first() -> None:
     assert ACTION_SCHEMA_VERSION == "run-action-v1"
 
 
+def test_the_slot_width_matches_the_width_the_bridge_scans() -> None:
+    """The bridge reads availability over `kMaskSlotsPerFamily` slots per family.
+
+    That constant in `native/tower_bridge/tower_bridge.cpp` and this one are the
+    same number in two languages and cannot be shared, so they are pinned here:
+    if they drift, the bridge stops advancing on availability the host has no
+    action for, or ignores availability the host would have acted on.
+    """
+    assert SLOTS_PER_FAMILY == 20
+
+
 def test_actions_outside_the_schema_are_refused() -> None:
     with pytest.raises(ValueError, match="outside the supported range"):
         upgrade_action(UpgradeFamily.ATTACK, SLOTS_PER_FAMILY)

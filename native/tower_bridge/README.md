@@ -47,20 +47,69 @@ as observations.
 
 ## Command path
 
-Policy actions are `wait` and `buy_upgrade`. Navigation and speed are separate
-controller-owned kinds and can never become learned actions:
+Policy actions are `advance` and `buy_upgrade`; the policy's own `WAIT` is an
+`advance`, and there is no separate `wait` command kind. Navigation and speed are
+separate controller-owned kinds and can never become learned actions:
 
 - `lifecycle` with an allowlisted `action` dispatches one of the game's own
   parameterless entry points and waits for the game's own state to agree;
 - `set_speed` writes the game's `gameSpeed` and dispatches its own
   `GameSpeedModifier`, confirmed against the observed `game_speed`;
-- `step` unpauses for a bounded slice of game time and pauses again, so policy
-  latency costs no game time. The window is floored in wall time, because at a
-  high speed the requested slice can be shorter than one rendered frame.
+- `advance` runs the world frame by frame and pauses again, returning the settled
+  observation. It carries `budget_game_ms`, `frame_game_ms`, and
+  `health_change_fraction`.
 
-Stream cadence and `WAIT` are game-time quantities and shorten proportionally as
-speed rises; a fixed wall-clock cadence silently starves the policy of decisions
-per game second (see `M1B-E002`).
+`advance` is how the simulation is decoupled from the wall clock. While
+`Time.captureDeltaTime` is set, one rendered frame advances exactly
+`frame_game_ms` of game time however long it took to render, so the game time
+between decisions depends on neither the host's speed nor the game's own speed
+multiplier. That multiplier is pinned at 1x by standing decision and is never a
+speed-up mechanism: a faster game clock makes each frame worth more game time,
+which coarsens decision moments instead of preserving them (`solution.md` 9.2c,
+`M1B-E016`).
+
+The loop stops at the first decision event, or when the budget is spent. The
+events and their precedence mirror the host's own predicate exactly -
+`event:run_ended`, `event:wave_changed`, `event:newly_affordable`,
+`event:health_changed`, else `budget_exhausted` - so one socket round trip buys
+one policy decision rather than one time slice.
+
+**The observation bound to an `advance` result is settled, and the host uses
+it.** `Pause` is dispatched to Unity's main thread and lands a frame or two after
+it is sent, so the state the instant the loop breaks is mid-frame.
+`captureDeltaTime` therefore stays at `frame_game_ms` until the pause has landed
+- the build resolves no game-owned pause flag, so landing is observed as two
+further rendered frames or 500 ms of wall clock, whichever comes first - and
+those tail frames are counted into `frames` and `game_ms` at the same weight as
+every other frame. Only then is the state read. The readings taken inside the
+loop decide *when* to stop; this settled reading decides what is *reported*, so
+the `reason` in the result and the observation sent immediately before it always
+describe the same moment. The host binds that observation to the result rather
+than waiting for the next free-running stream tick, which is what keeps one
+decision at one round trip. Advancing with the budget set to
+one frame is the single-frame case; there is no separate step command and no
+wall-clock sleep fallback. If no frame renders within the bridge's wall-clock
+ceiling the result is `ambiguous` with `no_frame_rendered`, and if the engine
+clock cannot be resolved it is `ambiguous` with `clock_unavailable`. Only the
+engine leaf icalls `Time::get_frameCount` and `Time::set_captureDeltaTime` are
+called directly, both required to be attributable to `libunity.so`.
+
+Every `command_result` carries `frames`, `game_ms`, `play_ms`, and `wall_micros`,
+in that order; they are zero for the commands that advance no frames. `game_ms`
+is budget accounting - frames times `frame_game_ms` - while `play_ms` is measured
+from the game's own `playTime` clock across the same advance, so the intended 1:1
+mapping between them is checkable rather than assumed. `wall_micros` is real
+elapsed `CLOCK_MONOTONIC` time, which is what makes the bridge's 15-second
+advance ceiling a real ceiling; the host's default read timeout is derived from
+that ceiling plus the settling window. Availability inside the loop is
+read exactly as the host masks it - active run, `unlocked`, not `maxed`, priced
+above zero, and affordable - over the first twenty slots of each family, which is
+the width of the host's action schema.
+
+The free-running stream cadence and `WAIT` remain game-time quantities scaled by
+the observed speed; a fixed wall-clock cadence starves the policy of decisions
+per game second (see `M1B-E002`). With the multiplier pinned at 1x that scaling
+is the identity.
 
 One command may be in flight. A command binds the latest observation sequence and
 carries a bounded ASCII `request_id`; a repeated id or a superseded sequence is
@@ -68,9 +117,6 @@ carries a bounded ASCII `request_id`; a repeated id or a superseded sequence is
 and reads the canonical encoding at fixed offsets, so the client's exact key
 order and compact separators are part of the contract and are pinned by
 `tests/unit/test_instrumented_bridge.py`.
-
-`WAIT` performs no Unity call. It elapses a bounded interval and answers with a
-fresh observation.
 
 `buy_upgrade` validates game-owned preconditions first: the entry must be
 `unlocked`, not `maxed`, priced above zero, and affordable from current cash.

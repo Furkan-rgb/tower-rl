@@ -930,8 +930,8 @@ speed. About 50 ms of host latency per decision is 50 ms of game time at 1x and
 (20 ms to 4 ms, recovering 162 to 230 decisions per episode at 32x), but latency
 is not in the bridge and no cadence setting reaches it.
 
-**Why the existing step primitive does not fix it.** The bridge already fuses the
-cycle into one command: `step_game_millis` unpauses, sleeps, and pauses inside a
+**Why the earlier step primitive did not fix it.** The bridge fused the cycle
+into one command: `step_game_millis` unpaused, slept, and paused inside a
 single round trip, so host latency genuinely costs no game time. But the sleep is
 floored at `kMinStepWallMicros`, 80 ms of wall clock, which at 64x is 5.1 seconds
 of game time per step — worse than free running. The floor is not arbitrary:
@@ -943,8 +943,8 @@ bounded below by one frame, and a frame advances `real_delta x speed` of game
 time. Sleeping for a wall duration is an indirect and speed-dependent way to ask
 for a game-time quantity, which is why the result depends on speed.
 
-**Speed must come from rendering faster, not from a faster game clock.** This is
-how simulation-based RL is normally done: the simulator advances a fixed logical
+**The timestep must be logical, not a faster game clock.** This is how
+simulation-based RL is normally done: the simulator advances a fixed logical
 timestep and is stepped as fast as the hardware allows, with the agent acting
 every N steps. Nothing about Atari, MuJoCo or Isaac speeds up by making the
 simulated clock run faster relative to its own timestep, because that would
@@ -952,22 +952,81 @@ change the control problem. Using the game's own speed multiplier is precisely
 that mistake: game time per frame is `frame_wall_seconds x speed`, so a faster
 clock necessarily coarsens every decision.
 
-**The fundamental fix is to make a frame worth a fixed amount of game time.**
-Unity exposes `Time.captureDeltaTime` for exactly this: while it is set, each
-rendered frame advances time by precisely that amount regardless of how long the
-frame took in real time. The step then becomes:
+**The fix has two halves: a fixed game time per frame, and the advance loop
+inside the bridge.** Unity exposes `Time.captureDeltaTime` for the first: while it
+is set, each rendered frame advances the world by precisely that amount however
+long the frame took in real time. The second half is what makes that affordable.
 
-1. set `Time.captureDeltaTime` to the slice;
-2. read `Time.frameCount`;
-3. unpause;
-4. poll until `Time.frameCount` has advanced by one;
-5. pause.
+**How advancing works now.** The environment issues exactly one `advance` command
+per decision, carrying three numbers: `budget_game_ms` (the game time the bridge
+may spend before coming back anyway), `frame_game_ms` (what one frame is worth,
+default 1000/60), and `health_change_fraction`. The bridge steps frames, checking
+after each one whether a decision condition has appeared, and returns as soon as
+one has or the budget is spent — with the observation, the reason it stopped, and
+what it cost in `frames`, `game_ms`, `play_ms` and `wall_micros`.
 
-Every step is then exactly one slice of game time at any hardware speed, so
-decision moments are identical by construction rather than by measurement. Speed
-stops being a game setting and becomes *how fast frames render*, which is a host
-concern — and that is what makes the renderer matter again, for frame rate rather
-than for pixels.
+`game_ms` is the budget accounting, frames times `frame_game_ms`. `play_ms` is
+the game's own `playTime` clock measured across the same advance. They are
+reported side by side because the whole design rests on their being the same
+number: if the world does not actually pass the game time each frame was told to
+be worth, the decision moments are not what the cadence asked for, and no other
+number would show it. `wall_micros` is real `CLOCK_MONOTONIC` time, so the
+bridge's 15-second ceiling on one advance is a real ceiling and the host's read
+timeout is derived from it rather than guessed.
+
+**The observation the result is bound to is settled, and the environment uses
+it.** `Pause` is dispatched to Unity's main thread and lands a frame or two after
+the loop breaks, so the state at the instant of the break is mid-frame. The
+bridge keeps `captureDeltaTime` at `frame_game_ms` until the pause has landed —
+two further rendered frames or 500 ms, whichever comes first, since this build
+exposes no game-owned pause flag — counts those tail frames at the same weight,
+and only then reads the state it reports. The readings taken inside the loop
+decide *when* to stop; the settled reading decides what the `reason` says, so the
+result and the observation emitted with it always describe the same moment. The
+environment builds its next state from that observation instead of waiting for
+the next stream tick, which is what actually makes one decision cost one round
+trip; a second read would also risk describing a later world than the result
+does.
+
+That replaces a loop that ran on the host: a 250 ms slice at a time, roughly eight
+slices per decision, each its own round trip. A frame is 17 ms at the observed
+58.9 fps while a slice cost about 57 ms, so roughly 40 ms of every slice was host
+round trip plus pause and unpause. One round trip per decision instead of one per
+slice puts the frame back in charge of what a decision costs.
+
+**The host predicate stays authoritative.** `_events_between` in
+`application/run_environment.py` remains the only definition of what a decision
+condition is: run ended, wave changed, newly affordable, health moved beyond the
+fraction. The bridge evaluates the same conditions only to decide *when to stop*,
+and the environment re-derives the events from the returned state regardless of
+what the bridge said. If the two disagree — the bridge names an event the host
+does not find, or reports `budget_exhausted` where the host does find one — the
+transition is recorded with the invalid reason `BRIDGE_EVENT_DIVERGENCE` and
+counted, rather than the host predicate being softened to agree. Two definitions
+of the same condition will drift; this makes the drift an observation instead of a
+silent change to the decision problem. An advance that comes back `ambiguous`
+(`no_frame_rendered`, `clock_unavailable`) ends the episode as
+`ACTION_PIPELINE_FAILED`; it is not treated as an ordinary wait. An advance that
+stops short of its budget with no event — the bridge's own wall-clock ceiling —
+is counted as `advances_cut_short` on the episode, because that is the difference
+between a speed-up and a stall.
+
+**The frame rate is display-bound, and uncapping is not available.** An earlier
+version of this section recommended `QualitySettings.vSyncCount = 0` and
+`Application.targetFrameRate = -1`. That is wrong on Android: with
+`targetFrameRate = -1` and vSync off, Android renders at a fixed 30 fps, and no
+in-app setting exceeds the display's 60 Hz vsync either way. The observed rate in
+the emulator is about 59 fps. Wall-clock decoupling therefore comes entirely from
+the two halves above — fixed game time per frame, and the loop inside the bridge —
+not from rendering frames faster than the display.
+
+**Choosing `frame_game_ms` is empirical.** It must stay at or below
+`Time.maximumDeltaTime` (333 ms by default), above which Unity clamps and the
+requested game time is not delivered. Within that bound, anything rate-limited
+per frame in the game's own logic degrades monotonically as the frame gets
+larger, so the admissible value is found by sweeping it and comparing decision
+density against the 1x reference of 89.3 decisions per episode (`M1B-E014`), not
+by argument.
 
 **The game's own multiplier is pinned at 1x and is not a speed-up mechanism.**
 This is a standing decision, not an interim one. A faster game clock makes every
@@ -976,41 +1035,36 @@ proportion to the speed gained — measured at 4.8 decisions per wave at 64x
 against 12.2 at 1x (`M1B-E012`). Any throughput bought that way is paid for in
 the thing the agent is actually learning from.
 
-`infrastructure/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0`
-is the adapter's default and `PAUSE_STEPPING_SPEED = 0.0` makes stepping
-unconditional, so no speed setting can switch it off. Tests assert both.
+`infrastructure/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0` and
+`_pin_game_speed` puts the game back to 1x when an episode begins and fails
+explicitly if the game refuses. Speed is no longer a parameter anywhere — not in
+the adapter, not in the cadence, not on any runner's command line — so there is
+nothing left to set it to.
 
 8x free running was briefly adopted as an interim, on the evidence that it
 matches normal-speed decision density (`M1B-E014`). It does — but only because 8x
 happens to sit below the point where a frame exceeds the slice, which is a
-coincidence of the current frame rate rather than a property of the design. It is
-withdrawn. Speed comes from stepping frames faster.
+coincidence of the frame rate rather than a property of the design. It is
+withdrawn.
 
-Two settings go with it, or the engine will still wait for real time between
-frames: `QualitySettings.vSyncCount = 0` and `Application.targetFrameRate = -1`.
-And the game's own speed multiplier must be left at 1x. Running both at once
-multiplies game time per frame again and re-introduces exactly the coarsening
-this removes.
-
-Under this scheme game time per frame is no longer a constraint at all: it stays
-at its normal value whether the host renders 30 frames per second or 600, and the
-speed-up is however many frames the machine can push. That is strictly better
-than the current arrangement, which buys speed by spending decisions —
-`M1B-E012` measures the price at 13.4 decisions per wave at 8x against 4.8 at
-64x, neither of them close to normal-speed play.
-
-**Unverified, and it must be verified before it is relied on.** Four things are
-assumptions: that `Time.captureDeltaTime` is reachable and settable through
-IL2CPP from the bridge, which needs a main-thread trampoline the bridge does not
-yet have and which is the same prerequisite the boundary tap needs; that the
-game's own speed modifier can be left at 1x without other behaviour depending on
-it (the bridge sets a game-owned `game_speed` field and dispatches
-`GameSpeedModifier`, which is not raw `Time.timeScale`); that the game's physics
-and any `FixedUpdate` systems step correctly, which may require scaling
+**Still unverified, and it must be verified before it is relied on.** That
+`Time.captureDeltaTime` is reachable and settable through IL2CPP from the bridge;
+that the game's own speed modifier can be left at 1x without other behaviour
+depending on it (the bridge sets a game-owned `game_speed` field and dispatches
+`GameSpeedModifier`, which is not raw `Time.timeScale`); that physics and any
+`FixedUpdate` systems step correctly, which may require scaling
 `Time.fixedDeltaTime` to match; and that nothing important is driven by
 `Time.unscaledDeltaTime` or by wall-clock timestamps, which would keep running at
-real speed while the world does not. Until those
-are checked on the device this is a design intent, not a mechanism.
+real speed while the world does not. Until those are checked on the device this is
+a design intent, not a measurement. The numbers that will settle it are the ones
+`EvaluationReport` now reports: `decisions_per_episode`, `decisions_per_wave`,
+`total_frames`, `total_game_seconds`, `total_play_seconds` and `speedup`, with
+`advances_cut_short` and `total_advance_wall_seconds` beside them. The first two
+are means over the valid episodes alone — an invalid episode is an environment
+failure, and counting its decisions against the episodes that survived would
+flatter exactly the arms that failed most. `total_game_seconds` against
+`total_play_seconds` is the 1:1 check; `total_wall_seconds` minus
+`total_advance_wall_seconds` is what the decision boundaries themselves cost.
 
 ### 9.3 Final network
 

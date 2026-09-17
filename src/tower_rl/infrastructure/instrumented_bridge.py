@@ -15,15 +15,32 @@ import struct
 import time
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
 PROTOCOL_VERSION = 1
-MIN_STEP_GAME_MS = 10
-MAX_STEP_GAME_MS = 5000
+#: Bounds on one `advance` request. The budget is the game time the bridge may
+#: burn before handing a decision back even when nothing happened; the frame is
+#: how much game time each rendered frame is worth, which is what decouples
+#: decision granularity from the wall clock (see solution.md 9.2c).
+MIN_ADVANCE_BUDGET_GAME_MS = 10
+MAX_ADVANCE_BUDGET_GAME_MS = 10_000
+MIN_FRAME_GAME_MS = 1.0
+MAX_FRAME_GAME_MS = 250.0
 MIN_REQUESTED_SPEED = 0.5
 MAX_REQUESTED_SPEED = 64.0
+#: The bridge's own wall-clock ceiling on one advance and the settling window it
+#: then spends waiting for the pause to land. Both mirror `kAdvanceWallBudgetMicros`
+#: and `kPauseSettleMicros` in `native/tower_bridge/tower_bridge.cpp`; they cannot
+#: be shared across the language boundary, so they are cross-referenced instead
+#: and the client's default read timeout is derived from them rather than guessed.
+ADVANCE_WALL_CEILING_SECONDS = 15.0
+PAUSE_SETTLE_SECONDS = 0.5
+#: A read that gave up before the bridge's own ceiling would report a timeout for
+#: an advance that was still going to answer, so the default covers the ceiling,
+#: the settle, and a margin for the round trip itself.
+DEFAULT_READ_TIMEOUT_SECONDS = ADVANCE_WALL_CEILING_SECONDS + PAUSE_SETTLE_SECONDS + 4.5
 COMMAND_CAPABILITY = "semantic-v2"
 LIFECYCLE_ACTIONS = frozenset(
     {
@@ -161,7 +178,9 @@ class BridgeCommand:
     index: int | None = None
     action: str | None = None
     value: float | None = None
-    game_ms: int | None = None
+    budget_game_ms: int | None = None
+    frame_game_ms: float | None = None
+    health_change_fraction: float | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +189,23 @@ class BridgeCommandResult:
     outcome: CommandOutcome
     reason: str
     observation_sequence: int
+    #: What an `advance` actually cost. Every other command reports zeroes,
+    #: because none of them burns game time; that is the honest value, not a
+    #: placeholder.
+    frames: int = 0
+    #: Budget accounting: frames times `frame_game_ms`, the game time the advance
+    #: asked for.
+    game_ms: float = 0.0
+    #: The game's own `playTime` clock across the same advance. Reported beside
+    #: `game_ms` so the 1:1 mapping between them can be checked, not assumed.
+    play_ms: float = 0.0
+    wall_micros: int = 0
+    #: The state message the bridge sent immediately before this result, which
+    #: for an `advance` is the settled observation taken after the pause landed.
+    #: `None` when the bridge sent no state bound to this result - a rejection
+    #: reports the sequence that already stood - or when the run is unavailable,
+    #: which the caller reads exactly as it reads an absent run.
+    state: BridgeObservation | None = None
 
 
 def encode_frame(
@@ -318,25 +354,29 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
     family = message.get("family")
     index = message.get("index")
     action = message.get("action")
-    if kind in {"wait", "lifecycle", "set_speed", "step"} and (
+    if kind in {"lifecycle", "set_speed", "advance"} and (
         family is not None or index is not None
     ):
         raise BridgeProtocolError(f"{kind} command must not contain an upgrade target")
     if kind != "lifecycle" and action is not None:
         raise BridgeProtocolError("only a lifecycle command carries an action")
-    if kind == "wait":
-        return BridgeCommand(
-            request_id, _int(message, "expected_observation_sequence", minimum=1), kind
-        )
-    if kind == "step":
-        game_ms = _int(message, "game_ms", minimum=MIN_STEP_GAME_MS)
-        if game_ms > MAX_STEP_GAME_MS:
-            raise BridgeProtocolError("step game time is outside the allowed range")
+    if kind == "advance":
+        budget = _int(message, "budget_game_ms", minimum=MIN_ADVANCE_BUDGET_GAME_MS)
+        if budget > MAX_ADVANCE_BUDGET_GAME_MS:
+            raise BridgeProtocolError("advance budget is outside the allowed range")
+        frame = _finite_number(message, "frame_game_ms")
+        if not MIN_FRAME_GAME_MS <= frame <= MAX_FRAME_GAME_MS:
+            raise BridgeProtocolError("advance frame game time is outside the allowed range")
+        fraction = _finite_number(message, "health_change_fraction")
+        if not 0.0 <= fraction <= 1.0:
+            raise BridgeProtocolError("health change fraction must be a fraction")
         return BridgeCommand(
             request_id,
             _int(message, "expected_observation_sequence", minimum=1),
             kind,
-            game_ms=game_ms,
+            budget_game_ms=budget,
+            frame_game_ms=frame,
+            health_change_fraction=fraction,
         )
     if kind == "set_speed":
         value = _finite_number(message, "value")
@@ -379,6 +419,10 @@ def decode_command_result(message: Mapping[str, Any]) -> BridgeCommandResult:
     return BridgeCommandResult(
         _string(message, "request_id"), outcome, _string(message, "reason"),
         _int(message, "observation_sequence", minimum=1),
+        frames=_int(message, "frames", minimum=0) if "frames" in message else 0,
+        game_ms=_finite_number(message, "game_ms") if "game_ms" in message else 0.0,
+        play_ms=_finite_number(message, "play_ms") if "play_ms" in message else 0.0,
+        wall_micros=_int(message, "wall_micros", minimum=0) if "wall_micros" in message else 0,
     )
 
 
@@ -395,7 +439,7 @@ class InstrumentedBridgeClient:
         *,
         expected_compatibility: BridgeCompatibility,
         connect_timeout: float = 2.0,
-        read_timeout: float = 2.0,
+        read_timeout: float = DEFAULT_READ_TIMEOUT_SECONDS,
         heartbeat_timeout: float = 5.0,
         max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
         max_upgrade_entries: int = DEFAULT_MAX_UPGRADE_ENTRIES,
@@ -550,10 +594,17 @@ class InstrumentedBridgeClient:
                 canonical["action"] = command.action
             elif command.kind == "set_speed":
                 canonical["value"] = command.value
-            elif command.kind == "step":
-                canonical["game_ms"] = command.game_ms
+            elif command.kind == "advance":
+                canonical["budget_game_ms"] = command.budget_game_ms
+                canonical["frame_game_ms"] = command.frame_game_ms
+                canonical["health_change_fraction"] = command.health_change_fraction
             self._write_message(canonical)
             deadline = time.monotonic() + self.read_timeout
+            # The bridge emits the state a result describes immediately before the
+            # result itself. Keeping it here is what lets one advance cost one
+            # round trip: the caller has the settled observation already and does
+            # not have to wait for the next free-running tick to see it.
+            bound: BridgeObservation | None = None
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -563,8 +614,12 @@ class InstrumentedBridgeClient:
                     decoded = decode_command_result(message_in_flight)
                     if decoded.request_id != command.request_id:
                         raise BridgeProtocolError("command result request id mismatch")
+                    if bound is not None and bound.sequence == decoded.observation_sequence:
+                        return replace(decoded, state=bound)
                     return decoded
-                self._consume_message(message_in_flight)
+                in_flight = self._consume_message(message_in_flight)
+                if isinstance(in_flight, BridgeObservation):
+                    bound = in_flight
         except InstrumentedBridgeError:
             self.close()
             raise
@@ -692,8 +747,11 @@ def _reject_json_constant(value: str) -> None:
 
 
 __all__ = [
+    "ADVANCE_WALL_CEILING_SECONDS",
     "DEFAULT_MAX_FRAME_SIZE",
     "DEFAULT_MAX_UPGRADE_ENTRIES",
+    "DEFAULT_READ_TIMEOUT_SECONDS",
+    "PAUSE_SETTLE_SECONDS",
     "PROTOCOL_VERSION",
     "BridgeCommand",
     "BridgeCommandResult",

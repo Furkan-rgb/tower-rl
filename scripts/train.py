@@ -13,7 +13,7 @@ drifted on the host, the device or the account in between.
 
     TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/train.py \\
         --backbone recurrent-q --backbone stacked-dqn \\
-        --budget-decisions 20000 --speed 64
+        --budget-decisions 20000
 """
 
 from __future__ import annotations
@@ -32,16 +32,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import torch  # noqa: E402
-from run_episodes import compatibility  # noqa: E402
+from run_episodes import (  # noqa: E402
+    add_cadence_arguments,
+    cadence_from,
+    compatibility,
+)
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.comparison import interleave_schedule  # noqa: E402
 from tower_rl.application.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
-    CadenceConfig,
-    InstrumentedRunEnvironment,
-)
+from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.application.training import (  # noqa: E402
     TrainingConfig,
     TrainingProgressReport,
@@ -181,14 +182,14 @@ def build_arm(
     resolved: dict[str, object] = {
         "backbone": name,
         "budget_decisions": arguments.budget_decisions,
-        "speed": arguments.speed,
         "seed": arguments.seed,
         "batch_size": arguments.batch_size,
         "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
         "sequence_length": arguments.sequence_length,
         "burn_in": arguments.burn_in,
         "history_length": arguments.history_length if name == "stacked-dqn" else None,
-        "slice_game_ms": arguments.slice_ms,
+        "frame_game_ms": arguments.frame_game_ms,
+        "max_quiet_game_ms": arguments.max_quiet_game_ms,
         "block_decisions": arguments.block_decisions,
         "device": str(device),
     }
@@ -253,7 +254,6 @@ def main() -> int:
         default=2_000,
         help="decisions before handing the device to the next arm; lands on an episode",
     )
-    parser.add_argument("--speed", type=float, default=64.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--replay-capacity", type=int, default=4096)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -269,7 +269,7 @@ def main() -> int:
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
-    parser.add_argument("--slice-ms", type=int, default=250)
+    add_cadence_arguments(parser)
     parser.add_argument(
         "--run-dir",
         type=Path,
@@ -302,17 +302,11 @@ def main() -> int:
         heartbeat_timeout=60.0,
     )
     client.connect()
-    adapter = InstrumentedRunAdapter(
-        client=client, device=AdbDevice(arguments.serial), requested_speed=arguments.speed
-    )
+    adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
-        cadence=CadenceConfig(
-            slice_game_ms=arguments.slice_ms,
-            max_quiet_game_ms=arguments.slice_ms * 8,
-            max_episode_wall_seconds=600.0,
-        ),
+        cadence=cadence_from(arguments),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -351,7 +345,6 @@ def main() -> int:
         "session": str(session),
         "profile_id": expected.profile_id,
         "source_revision": revision,
-        "speed": arguments.speed,
         "budget_decisions_per_arm": arguments.budget_decisions,
         "block_decisions": arguments.block_decisions,
         "wall_seconds": round(time.monotonic() - started, 1),

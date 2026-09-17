@@ -34,6 +34,13 @@ class _Slot:
 class FakeCommandResult:
     outcome: str
     reason: str
+    frames: int = 0
+    game_ms: float = 0.0
+    play_ms: float = 0.0
+    wall_micros: int = 0
+    #: The settled reading an advance ended on, exactly as the real bridge sends
+    #: the observation its result describes.
+    state: BridgeObservation | None = None
 
 
 @dataclass
@@ -57,10 +64,13 @@ class FakeRunPort:
     wave: int = field(default=0, init=False)
     cash: float = field(default=0.0, init=False)
     health: float = field(default=0.0, init=False)
-    elapsed_ms: int = field(default=0, init=False)
+    elapsed_ms: float = field(default=0.0, init=False)
     active: bool = field(default=False, init=False)
     slots: dict[tuple[str, int], _Slot] = field(default_factory=dict, init=False)
     advances: int = field(default=0, init=False)
+    #: How many times the environment asked for a state of its own accord. One
+    #: decision must not cost one of these on top of its advance.
+    reads: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self._build_slots()
@@ -83,11 +93,15 @@ class FakeRunPort:
         self.wave = 1
         self.cash = self.start_cash
         self.health = self.max_health
-        self.elapsed_ms = 0
+        self.elapsed_ms = 0.0
         self.active = True
         self.sequence += 1
 
     def read_state(self) -> BridgeObservation | None:
+        self.reads += 1
+        return self._observe()
+
+    def _observe(self) -> BridgeObservation | None:
         if not self.active and self.health > 0.0:
             return None
         self.sequence += 1
@@ -123,11 +137,15 @@ class FakeRunPort:
     def buy_upgrade(
         self, family: str, slot_index: int, *, expected_sequence: int
     ) -> FakeCommandResult:
+        # The real bridge sends the settled observation immediately before every
+        # command result, whatever the outcome, so this double binds one too:
+        # a test that only reads `result.state` must see what the bridge would
+        # actually hand back rather than what a fresh `read_state()` would show.
         if expected_sequence != self.sequence:
-            return FakeCommandResult("rejected", "stale_or_duplicate")
+            return FakeCommandResult("rejected", "stale_or_duplicate", state=self._observe())
         slot = self.slots[(family, slot_index)]
         if not slot.unlocked or slot.maxed or slot.cost <= 0 or slot.cost > self.cash:
-            return FakeCommandResult("rejected", "precondition_failed")
+            return FakeCommandResult("rejected", "precondition_failed", state=self._observe())
         self.cash -= slot.cost
         slot.level += 1
         slot.cost = round(slot.cost * 1.5, 3)
@@ -135,21 +153,76 @@ class FakeRunPort:
         # one that only waits. That ordering is what the tests rely on.
         self.damage_per_second = max(0.02, self.damage_per_second * 0.82)
         self.sequence += 1
-        return FakeCommandResult("confirmed", "confirmed_state_change")
+        return FakeCommandResult("confirmed", "confirmed_state_change", state=self._observe())
 
-    def advance(self, *, expected_sequence: int, game_ms: int) -> FakeCommandResult:
+    def advance_until_event(
+        self,
+        *,
+        expected_sequence: int,
+        budget_game_ms: int,
+        frame_game_ms: float,
+        health_change_fraction: float,
+    ) -> FakeCommandResult:
+        """Step frame by frame until a decision event or the budget, as the bridge does.
+
+        The reason it reports is derived from its own transitions, so a test that
+        wants the environment's divergence check to fire has to make this double
+        lie on purpose.
+        """
         if expected_sequence != self.sequence:
             return FakeCommandResult("rejected", "stale_or_duplicate")
         self.advances += 1
         if not self.active:
-            return FakeCommandResult("confirmed", "step_elapsed")
-        seconds = game_ms / 1000.0
-        self.elapsed_ms += game_ms
+            return FakeCommandResult("confirmed", "event:run_ended", state=self._observe())
+        wave = self.wave
+        health_fraction = self.health / self.max_health
+        affordable = self._affordable()
+        play_time_before = self.elapsed_ms
+
+        frames = 0
+        spent = 0.0
+        reason = "budget_exhausted"
+        while spent < budget_game_ms:
+            self._step_one_frame(frame_game_ms)
+            frames += 1
+            spent += frame_game_ms
+            if not self.active:
+                reason = "event:run_ended"
+                break
+            if self.wave != wave:
+                reason = "event:wave_changed"
+                break
+            if self._affordable() - affordable:
+                reason = "event:newly_affordable"
+                break
+            if abs(self.health / self.max_health - health_fraction) >= health_change_fraction:
+                reason = "event:health_changed"
+                break
+        return FakeCommandResult(
+            "confirmed",
+            reason,
+            frames=frames,
+            game_ms=spent,
+            play_ms=self.elapsed_ms - play_time_before,
+            wall_micros=frames * 100,
+            state=self._observe(),
+        )
+
+    def _step_one_frame(self, frame_game_ms: float) -> None:
+        seconds = frame_game_ms / 1000.0
+        self.elapsed_ms += frame_game_ms
         self.cash += self.cash_per_second * seconds
         self.health -= self.damage_per_second * seconds
         self.wave = 1 + int(self.elapsed_ms / 1000.0 / self.seconds_per_wave)
         if self.health <= 0.0:
             self.health = 0.0
             self.active = False
-        self.sequence += 1
-        return FakeCommandResult("confirmed", "step_elapsed")
+
+    def _affordable(self) -> set[tuple[str, int]]:
+        """Exactly what the environment will see as available, rounding included."""
+        cash = round(self.cash, 3)
+        return {
+            key
+            for key, slot in self.slots.items()
+            if slot.unlocked and not slot.maxed and 0 < slot.cost <= cash
+        }

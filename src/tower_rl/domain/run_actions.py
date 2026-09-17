@@ -16,7 +16,10 @@ ACTION_SCHEMA_VERSION = "run-action-v1"
 
 # The supported 29.0.3 baseline reports twenty slots per family. A build that
 # reports a different count is a different action schema and must fail closed
-# rather than silently renumber.
+# rather than silently renumber. The bridge reads availability over exactly this
+# width while it advances, as `kMaskSlotsPerFamily` in
+# `native/tower_bridge/tower_bridge.cpp`; if the two drift apart the bridge stops
+# on availability the host has no action for.
 SLOTS_PER_FAMILY = 20
 
 

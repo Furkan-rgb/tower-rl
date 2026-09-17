@@ -132,31 +132,31 @@ def test_a_terminal_run_taps_retry_from_the_result_screen(monkeypatch) -> None:
     assert device.taps == [module.RETRY_BUTTON]
 
 
-def test_the_world_is_stepped_rather_than_left_running() -> None:
-    """M1B-E016: a frame-exact step costs the same at any game speed.
+def test_one_advance_carries_the_whole_cadence_to_the_bridge() -> None:
+    """M1B-E016: the loop belongs in the bridge, one round trip per decision.
 
-    Free running lets host latency burn game time in proportion to the speed
-    setting, which is what coarsened decisions fourfold at 64x (M1B-E012).
+    Asking for a slice at a time cost a round trip per slice and about eight of
+    them per decision. The three fields pinned here are the whole contract: how
+    long the bridge may run, what a frame is worth, and the health move it must
+    interrupt for.
     """
     client = FakeClient(states=[_observation(speed=1.0)])
     adapter = _adapter(client, FakeDevice())
     adapter.read_state()
 
-    adapter.advance(expected_sequence=1, game_ms=250)
+    adapter.advance_until_event(
+        expected_sequence=1,
+        budget_game_ms=2000,
+        frame_game_ms=1000 / 60,
+        health_change_fraction=0.05,
+    )
 
-    assert client.sent[-1]["kind"] == "step"
-    assert client.sent[-1]["game_ms"] == 250
-
-
-def test_pause_stepping_can_still_be_requested_explicitly() -> None:
-    client = FakeClient(states=[_observation(speed=64.0)])
-    adapter = _adapter(client, FakeDevice(), pause_stepping_speed=16.0)
-    adapter.read_state()
-
-    adapter.advance(expected_sequence=1, game_ms=250)
-
-    assert client.sent[-1]["kind"] == "step"
-    assert client.sent[-1]["game_ms"] == 250
+    message = client.sent[-1]
+    assert message["kind"] == "advance"
+    assert message["budget_game_ms"] == 2000
+    assert message["frame_game_ms"] == 1000 / 60
+    assert message["health_change_fraction"] == 0.05
+    assert message["expected_observation_sequence"] == 1
 
 
 def test_release_leaves_the_game_running_for_the_next_session() -> None:
@@ -169,19 +169,22 @@ def test_release_leaves_the_game_running_for_the_next_session() -> None:
     assert client.sent[-1]["action"] == "unpause"
 
 
-def test_the_game_speed_multiplier_is_pinned_and_stepping_is_unconditional() -> None:
-    """The multiplier is not a speed-up mechanism, so no speed may disable stepping."""
+def test_the_game_speed_multiplier_is_pinned_at_one(monkeypatch) -> None:
+    """The multiplier is not a speed-up mechanism, so the adapter holds it at 1x."""
+    import tower_rl.infrastructure.instrumented_run_adapter as module
+
+    monkeypatch.setattr(module, "classify", lambda _image: Screen.HOME)
     assert GAME_SPEED == 1.0
-    assert InstrumentedRunAdapter(client=FakeClient(), device=FakeDevice()).requested_speed == 1.0
+    # The clone comes back from the boundary running at 8x; the adapter must
+    # put it back to 1x before the episode starts.
+    client = FakeClient(
+        states=[BridgeRunUnavailable(1, "no_initialized_run")], default_speed=8.0
+    )
 
-    for speed in (1.0, 8.0, 64.0):
-        client = FakeClient(states=[_observation(speed=speed)])
-        adapter = _adapter(client, FakeDevice())
-        adapter.read_state()
+    _adapter(client, FakeDevice()).begin_episode()
 
-        adapter.advance(expected_sequence=1, game_ms=250)
-
-        assert client.sent[-1]["kind"] == "step", f"speed {speed} must still step"
+    speed_command = next(message for message in client.sent if message["kind"] == "set_speed")
+    assert speed_command["value"] == 1.0
 
 
 def test_purchases_bind_the_state_they_were_decided_from() -> None:
@@ -196,7 +199,7 @@ def test_purchases_bind_the_state_they_were_decided_from() -> None:
     assert message["expected_observation_sequence"] == 42
 
 
-def test_a_refused_training_speed_is_an_explicit_failure(monkeypatch) -> None:
+def test_a_refused_speed_pin_is_an_explicit_failure(monkeypatch) -> None:
     import tower_rl.infrastructure.instrumented_run_adapter as module
 
     monkeypatch.setattr(module, "classify", lambda _image: Screen.HOME)
@@ -206,5 +209,5 @@ def test_a_refused_training_speed_is_an_explicit_failure(monkeypatch) -> None:
         default_speed=1.5,
     )
 
-    with pytest.raises(RunPortError, match="refused the training speed"):
-        _adapter(client, FakeDevice(), requested_speed=64.0).begin_episode()
+    with pytest.raises(RunPortError, match="refused the pinned 1x speed"):
+        _adapter(client, FakeDevice()).begin_episode()

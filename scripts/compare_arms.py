@@ -7,7 +7,7 @@ hour and then arm B confounds the arm with whatever drifted in between. Results
 are reported as bootstrap intervals rather than verdicts.
 
     TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/compare_arms.py \\
-        --arm scripted@64 --arm scripted@16 --episodes 25
+        --arm scripted --arm random --episodes 25
 """
 
 from __future__ import annotations
@@ -18,13 +18,17 @@ import os
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_episodes import POLICIES, compatibility  # noqa: E402
+from run_episodes import (  # noqa: E402
+    POLICIES,
+    add_cadence_arguments,
+    cadence_from,
+    compatibility,
+)
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.comparison import (  # noqa: E402
@@ -33,57 +37,42 @@ from tower_rl.application.comparison import (  # noqa: E402
     required_episodes,
 )
 from tower_rl.application.evaluator import WaveDistribution  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
-    CadenceConfig,
-    InstrumentedRunEnvironment,
-)
+from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.infrastructure.adb_device import AdbDevice  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
 
-@dataclass(frozen=True)
-class Arm:
-    """One configuration under comparison."""
+def named_policies(requested: list[str]) -> list[str]:
+    """An arm is a policy and nothing else.
 
-    name: str
-    policy: str
-    speed: float
-
-    @classmethod
-    def parse(cls, text: str) -> Arm:
-        """Accept `policy@speed`, for example `scripted@64`."""
-        policy, _, speed = text.partition("@")
-        if policy not in POLICIES:
-            raise SystemExit(f"unknown policy {policy!r}; choose from {sorted(POLICIES)}")
-        if not speed:
-            raise SystemExit(f"arm {text!r} must name a speed, for example scripted@64")
-        return cls(name=text, policy=policy, speed=float(speed))
+    Arms used to be written `policy@speed`. The game's multiplier is pinned at 1x
+    and every arm now runs one identical cadence, so a speed in an arm name could
+    only describe a difference that no longer exists.
+    """
+    for name in requested:
+        if name not in POLICIES:
+            raise SystemExit(f"unknown policy {name!r}; choose from {sorted(POLICIES)}")
+    return list(dict.fromkeys(requested))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arm", action="append", required=True, help="policy@speed")
+    parser.add_argument("--arm", action="append", required=True, help="policy name")
     parser.add_argument("--episodes", type=int, default=25, help="episodes per arm")
     parser.add_argument("--block", type=int, default=5, help="episodes before switching arm")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
-    parser.add_argument("--slice-ms", type=int, default=250)
-    parser.add_argument(
-        "--max-episode-game-seconds",
-        type=float,
-        default=1200.0,
-        help="hang deadline in GAME seconds; converted per arm to wall seconds",
-    )
+    add_cadence_arguments(parser)
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-comparison.json"))
     arguments = parser.parse_args()
 
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to run against the canonical evaluation AVD")
 
-    arms = {arm.name: arm for arm in (Arm.parse(text) for text in arguments.arm)}
+    arms = named_policies(arguments.arm)
     if len(arms) < 2:
         raise SystemExit("a comparison needs at least two distinct arms")
 
@@ -102,34 +91,20 @@ def main() -> int:
     )
     client.connect()
     adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
-    def cadence_for(speed: float) -> CadenceConfig:
-        """The hang deadline is a game-time budget, not a wall-clock one.
-
-        A run takes about the same amount of *game* time whatever speed it is
-        played at, so a fixed wall-clock deadline means something different to
-        every arm. At 64x a 600 second deadline never binds; at 1x it is barely
-        longer than an ordinary episode and would truncate the upper tail of the
-        slow arm - which is exactly the arm a speed comparison is measured
-        against.
-        """
-        return CadenceConfig(
-            slice_game_ms=arguments.slice_ms,
-            max_quiet_game_ms=arguments.slice_ms * 8,
-            max_episode_wall_seconds=max(60.0, arguments.max_episode_game_seconds / speed),
-        )
-
+    # One cadence for every arm: the arms differ in policy, and a comparison in
+    # which they also differed in decision granularity would measure the cadence.
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
-        cadence=cadence_for(max(arm.speed for arm in arms.values())),
+        cadence=cadence_from(arguments),
     )
     actors = {
         name: Actor(
             environment=environment,
-            policy=POLICIES[arm.policy](),
+            policy=POLICIES[name](),
             config=ActorConfig(actor_id=f"{arguments.serial}:{name}"),
         )
-        for name, arm in arms.items()
+        for name in arms
     }
 
     schedule = interleave_schedule(
@@ -141,10 +116,6 @@ def main() -> int:
 
     try:
         for index, name in enumerate(schedule, start=1):
-            # The adapter applies the requested speed when the episode begins, so
-            # setting it here is what makes an arm switch actually take effect.
-            adapter.requested_speed = arms[name].speed
-            environment.cadence = cadence_for(arms[name].speed)
             summary = actors[name].run_episode().summary
             if summary.valid:
                 waves[name].append(summary.final_wave)
@@ -163,13 +134,12 @@ def main() -> int:
         "episodes_requested_per_arm": arguments.episodes,
         "block": arguments.block,
         "seed": arguments.seed,
-        "max_episode_game_seconds": arguments.max_episode_game_seconds,
+        "frame_game_ms": arguments.frame_game_ms,
+        "max_quiet_game_ms": arguments.max_quiet_game_ms,
+        "max_episode_wall_seconds": arguments.max_episode_wall_seconds,
         "wall_seconds": round(time.monotonic() - started, 1),
         "arms": {
             name: {
-                "policy": arms[name].policy,
-                "speed": arms[name].speed,
-                "max_episode_wall_seconds": cadence_for(arms[name].speed).max_episode_wall_seconds,
                 "valid_episodes": len(waves[name]),
                 "invalid_detail": dict(invalid[name]),
                 **_distribution(waves[name]),

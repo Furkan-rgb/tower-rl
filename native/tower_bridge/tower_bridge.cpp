@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstddef>
+#include <ctime>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -68,10 +69,27 @@ constexpr useconds_t kLifecyclePollMicros = 250000;
 // starves the policy of decisions per game second: at 20 ms it bound above 12.5x
 // and cut decisions per episode from 528 to 162 between 1.5x and 32x.
 constexpr useconds_t kMinIntervalMicros = 4000;
-constexpr useconds_t kMinStepWallMicros = 80000;
 // How often to look for the next rendered frame. Well under one frame at any
-// plausible rate, so the step ends promptly rather than overshooting.
+// plausible rate, so an advance notices each frame rather than overshooting it.
 constexpr useconds_t kFramePollMicros = 2000;
+// A hard wall-clock ceiling on one advance, measured against CLOCK_MONOTONIC so
+// it is a real ceiling. Game time is bounded by the requested budget, but a
+// stalled renderer would otherwise never end the loop. The host's read timeout
+// must cover this plus the settle below: `DEFAULT_READ_TIMEOUT_SECONDS` in
+// `src/tower_rl/infrastructure/instrumented_bridge.py` is derived from these two.
+constexpr useconds_t kAdvanceWallBudgetMicros = 15000000;
+// `Pause` is dispatched to Unity's main thread and lands a frame or two later.
+// `MainFields` resolves no game-owned pause flag, so the landing is observed
+// through the frames the game still renders: the advance keeps counting them at
+// the same game-time weight until two more have gone by, or this much wall time
+// has, and only then reads the state it reports.
+constexpr useconds_t kPauseSettleMicros = 500000;
+constexpr int32_t kPauseSettleFrames = 2;
+// The width Python maps into its action mask, per upgrade family. A slot the
+// game does not report is unavailable here exactly as it is masked there; it is
+// `SLOTS_PER_FAMILY` in `src/tower_rl/domain/run_actions.py` and the two must
+// agree or the bridge would stop on availability the host cannot act on.
+constexpr size_t kMaskSlotsPerFamily = 20;
 
 struct Il2CppDomain;
 struct Il2CppThread;
@@ -258,7 +276,7 @@ struct UpgradeEvidence {
 
 // The game's own parameterless entry points. Navigation is controller-owned and
 // never a policy action, so lifecycle commands are a separate kind from the
-// semantic `wait` and `buy_upgrade` the policy emits.
+// `advance` and `buy_upgrade` a policy decision turns into.
 struct LifecycleAction {
   const char* name;
   const char* method;
@@ -288,8 +306,10 @@ constexpr LifecycleAction kLifecycleActions[] = {
 constexpr const char* kCostRefreshMethods[] = {
     "UpgradeCostCalc", "UpgradeDefenseCostCalc", "UpgradeUtilityCostCalc"};
 
-constexpr uint32_t kMinStepGameMillis = 10;
-constexpr uint32_t kMaxStepGameMillis = 5000;
+constexpr uint32_t kMinAdvanceBudgetMillis = 10;
+constexpr uint32_t kMaxAdvanceBudgetMillis = 10000;
+constexpr double kMinFrameGameMillis = 1.0;
+constexpr double kMaxFrameGameMillis = 250.0;
 // The protocol bound is deliberately wider than any endorsed speed. Unity clamps
 // how much game time one frame may advance, so the usable ceiling is set by the
 // achieved frame rate rather than by this number, and which speeds are actually
@@ -302,11 +322,13 @@ struct Command {
   uint64_t expected_sequence;
   const char* family;
   size_t index;
-  bool wait;
   const LifecycleAction* lifecycle;
   bool set_speed;
   float speed;
-  uint32_t step_game_millis;
+  bool advance;
+  uint32_t budget_game_millis;
+  float frame_game_millis;
+  float health_change_fraction;
 };
 
 FieldInfo* Field(const Il2CppApi& api, Il2CppClass* klass, const char* name) {
@@ -583,6 +605,14 @@ bool ReadInboundFrame(int client, std::string* payload) {
   return ReadAll(client, payload->data(), size);
 }
 
+// Read one JSON number that must end exactly where the caller says it does.
+bool ParseNumber(const std::string& text, double* value) {
+  if (text.empty()) return false;
+  char* end = nullptr;
+  *value = std::strtod(text.c_str(), &end);
+  return end != nullptr && *end == '\0' && std::isfinite(*value);
+}
+
 bool ParseCommand(const std::string& payload, Command* command) {
   constexpr char kPrefix[] = "{\"type\":\"command\",\"protocol_version\":1,\"request_id\":\"";
   constexpr char kSequenceKey[] = "\",\"expected_observation_sequence\":";
@@ -598,34 +628,50 @@ bool ParseCommand(const std::string& payload, Command* command) {
   for (size_t i = sequence_start; i < kind; ++i) { if (payload[i] < '0' || payload[i] > '9') return false; command->expected_sequence = command->expected_sequence * 10 + (payload[i] - '0'); }
   if (command->expected_sequence == 0) return false;
   const std::string tail = payload.substr(kind + 9);
-  if (tail == "wait\"}") {
-    command->wait = true; command->family = nullptr; command->index = 0;
-    command->lifecycle = nullptr; return true;
-  }
-  command->wait = false;
   command->lifecycle = nullptr;
   command->set_speed = false;
-  command->step_game_millis = 0;
-  if (tail.rfind("step\",\"game_ms\":", 0) == 0) {
-    const std::string value = tail.substr(std::strlen("step\",\"game_ms\":"));
-    if (value.size() < 2 || value.back() != '}') return false;
-    uint32_t millis = 0;
-    for (size_t i = 0; i + 1 < value.size(); ++i) {
-      if (value[i] < '0' || value[i] > '9') return false;
-      millis = millis * 10 + static_cast<uint32_t>(value[i] - '0');
-      if (millis > kMaxStepGameMillis) return false;
+  command->advance = false;
+  constexpr char kAdvanceKey[] = "advance\",\"budget_game_ms\":";
+  constexpr char kFrameKey[] = ",\"frame_game_ms\":";
+  constexpr char kHealthKey[] = ",\"health_change_fraction\":";
+  if (tail.rfind(kAdvanceKey, 0) == 0) {
+    size_t at = sizeof(kAdvanceKey) - 1, digits = 0;
+    uint32_t budget = 0;
+    for (; at < tail.size() && tail[at] >= '0' && tail[at] <= '9'; ++at, ++digits) {
+      budget = budget * 10 + static_cast<uint32_t>(tail[at] - '0');
+      if (budget > kMaxAdvanceBudgetMillis) return false;
     }
-    if (millis < kMinStepGameMillis) return false;
-    command->step_game_millis = millis;
+    if (digits == 0 || budget < kMinAdvanceBudgetMillis ||
+        tail.compare(at, sizeof(kFrameKey) - 1, kFrameKey) != 0) {
+      return false;
+    }
+    at += sizeof(kFrameKey) - 1;
+    const size_t frame_end = tail.find(',', at);
+    double frame_millis = 0.0, health_fraction = 0.0;
+    if (frame_end == std::string::npos ||
+        !ParseNumber(tail.substr(at, frame_end - at), &frame_millis) ||
+        frame_millis < kMinFrameGameMillis || frame_millis > kMaxFrameGameMillis ||
+        tail.compare(frame_end, sizeof(kHealthKey) - 1, kHealthKey) != 0) {
+      return false;
+    }
+    at = frame_end + sizeof(kHealthKey) - 1;
+    if (tail.size() < at + 2 || tail.back() != '}' ||
+        !ParseNumber(tail.substr(at, tail.size() - at - 1), &health_fraction) ||
+        health_fraction < 0.0 || health_fraction > 1.0) {
+      return false;
+    }
+    command->advance = true;
+    command->budget_game_millis = budget;
+    command->frame_game_millis = static_cast<float>(frame_millis);
+    command->health_change_fraction = static_cast<float>(health_fraction);
     command->family = nullptr; command->index = 0; command->lifecycle = nullptr;
     return true;
   }
   if (tail.rfind("set_speed\",\"value\":", 0) == 0) {
     const std::string value = tail.substr(std::strlen("set_speed\",\"value\":"));
-    if (value.size() < 2 || value.back() != '}') return false;
-    char* end = nullptr;
-    const double parsed = std::strtod(value.substr(0, value.size() - 1).c_str(), &end);
-    if (end == nullptr || *end != '\0' || !std::isfinite(parsed) ||
+    double parsed = 0.0;
+    if (value.size() < 2 || value.back() != '}' ||
+        !ParseNumber(value.substr(0, value.size() - 1), &parsed) ||
         parsed < kMinRequestedSpeed || parsed > kMaxRequestedSpeed) {
       return false;
     }
@@ -654,9 +700,24 @@ bool ParseCommand(const std::string& payload, Command* command) {
   command->family = family; return true;
 }
 
-bool SendCommandResult(int client, const Command& command, const char* outcome, const char* reason, uint64_t sequence) {
+// What one `advance` cost. Reported on every command result so the host's
+// accounting of game time has a single shape to read; it is all zero for the
+// commands that advance no frames.
+struct AdvanceDetail {
+  int32_t frames = 0;
+  // Budget accounting: frames times `frame_game_ms`, which is what the advance
+  // asked the world to be worth.
+  uint32_t game_millis = 0;
+  // The game's own `playTime` clock, measured across the same advance. Reported
+  // beside `game_millis` so the 1:1 mapping between them can be checked rather
+  // than assumed.
+  uint32_t play_millis = 0;
+  uint64_t wall_micros = 0;
+};
+
+bool SendCommandResult(int client, const Command& command, const char* outcome, const char* reason, uint64_t sequence, const AdvanceDetail& detail) {
   char payload[512];
-  const int size = std::snprintf(payload, sizeof(payload), "{\"type\":\"command_result\",\"protocol_version\":1,\"request_id\":\"%s\",\"outcome\":\"%s\",\"reason\":\"%s\",\"observation_sequence\":%llu}", command.request_id, outcome, reason, static_cast<unsigned long long>(sequence));
+  const int size = std::snprintf(payload, sizeof(payload), "{\"type\":\"command_result\",\"protocol_version\":1,\"request_id\":\"%s\",\"outcome\":\"%s\",\"reason\":\"%s\",\"observation_sequence\":%llu,\"frames\":%d,\"game_ms\":%u,\"play_ms\":%u,\"wall_micros\":%llu}", command.request_id, outcome, reason, static_cast<unsigned long long>(sequence), detail.frames, detail.game_millis, detail.play_millis, static_cast<unsigned long long>(detail.wall_micros));
   return size > 0 && static_cast<size_t>(size) < sizeof(payload) && SendFrame(client, payload);
 }
 
@@ -720,7 +781,46 @@ int OpenLoopbackServer() {
   return server;
 }
 
-// Every emitted state message advances one monotonic sequence, so a command can
+// Engine accessors resolved once and validated by provenance: a pointer we
+// cannot attribute to libunity.so is not called at all. These are leaf bindings -
+// they read or write one field of a manager singleton and allocate nothing -
+// which is what makes them safe from this thread, unlike managed game code.
+struct EngineClock {
+  int32_t (*get_frame_count)() = nullptr;
+  void (*set_capture_delta)(float) = nullptr;
+  bool resolved = false;
+};
+
+void* ResolveEngineIcall(const char* signature) {
+  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+  void* (*resolve_icall)(const char*) = nullptr;
+  if (il2cpp == nullptr || !Resolve(il2cpp, "il2cpp_resolve_icall", &resolve_icall)) return nullptr;
+  void* pointer = resolve_icall(signature);
+  Dl_info info{};
+  // Refuse anything that does not come from the engine: a pointer we cannot
+  // attribute is not worth calling blind.
+  if (pointer == nullptr || dladdr(pointer, &info) == 0 || info.dli_fname == nullptr ||
+      std::strstr(info.dli_fname, "libunity.so") == nullptr) {
+    return nullptr;
+  }
+  return pointer;
+}
+
+const EngineClock& Clock() {
+  static EngineClock clock;
+  if (!clock.resolved) {
+    clock.resolved = true;
+    clock.get_frame_count =
+        reinterpret_cast<int32_t (*)()>(ResolveEngineIcall("UnityEngine.Time::get_frameCount()"));
+    clock.set_capture_delta = reinterpret_cast<void (*)(float)>(
+        ResolveEngineIcall("UnityEngine.Time::set_captureDeltaTime(System.Single)"));
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock frames=%p set_capture=%p",
+                        reinterpret_cast<void*>(clock.get_frame_count),
+                        reinterpret_cast<void*>(clock.set_capture_delta));
+  }
+  return clock;
+}
+
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
 Il2CppClass* g_diagnostic_main = nullptr;
 
@@ -753,107 +853,6 @@ void LogClockCandidates(const Il2CppApi& api, Il2CppClass* main) {
 // is the decisive test of whether the lifecycle receiver exists outside the
 // battle scene: a zeroed native handle means the GameObject is gone, which is
 // why `UnitySendMessage` has nothing to deliver to.
-// Engine accessors resolved once and validated by provenance: a pointer we
-// cannot attribute to libunity.so is not called at all. These are leaf bindings -
-// they read or write one field of a manager singleton and allocate nothing -
-// which is what makes them safe from this thread, unlike managed game code.
-struct EngineClock {
-  int32_t (*get_frame_count)() = nullptr;
-  float (*get_capture_delta)() = nullptr;
-  void (*set_capture_delta)(float) = nullptr;
-  bool resolved = false;
-};
-
-void* ResolveEngineIcall(const char* signature) {
-  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
-  void* (*resolve_icall)(const char*) = nullptr;
-  if (il2cpp == nullptr || !Resolve(il2cpp, "il2cpp_resolve_icall", &resolve_icall)) return nullptr;
-  void* pointer = resolve_icall(signature);
-  Dl_info info{};
-  if (pointer == nullptr || dladdr(pointer, &info) == 0 || info.dli_fname == nullptr ||
-      std::strstr(info.dli_fname, "libunity.so") == nullptr) {
-    return nullptr;
-  }
-  return pointer;
-}
-
-const EngineClock& Clock() {
-  static EngineClock clock;
-  if (!clock.resolved) {
-    clock.resolved = true;
-    clock.get_frame_count =
-        reinterpret_cast<int32_t (*)()>(ResolveEngineIcall("UnityEngine.Time::get_frameCount()"));
-    clock.get_capture_delta = reinterpret_cast<float (*)()>(
-        ResolveEngineIcall("UnityEngine.Time::get_captureDeltaTime()"));
-    clock.set_capture_delta = reinterpret_cast<void (*)(float)>(
-        ResolveEngineIcall("UnityEngine.Time::set_captureDeltaTime(System.Single)"));
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock frames=%p get_capture=%p set_capture=%p",
-                        reinterpret_cast<void*>(clock.get_frame_count),
-                        reinterpret_cast<void*>(clock.get_capture_delta),
-                        reinterpret_cast<void*>(clock.set_capture_delta));
-  }
-  return clock;
-}
-
-// Advance exactly one rendered frame worth `game_millis` of game time.
-//
-// `captureDeltaTime` makes a frame worth a fixed amount of game time however
-// long it took to render, so the slice no longer depends on the speed setting or
-// on how fast the host is. That is the whole point: a wall-clock sleep asks for
-// game time indirectly and gets a different answer at every speed.
-//
-// Returns the game milliseconds actually advanced, or -1 if the engine clock is
-// unavailable and the caller should fall back.
-int FrameExactStep(int game_millis, useconds_t timeout_micros) {
-  const EngineClock& clock = Clock();
-  if (clock.get_frame_count == nullptr || clock.set_capture_delta == nullptr) return -1;
-  UnitySendMessage send = ResolveUnitySendMessage();
-  if (send == nullptr) return -1;
-
-  const float slice = static_cast<float>(game_millis) / 1000.0F;
-  const int32_t before = clock.get_frame_count();
-  clock.set_capture_delta(slice);
-  send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
-
-  int32_t advanced = 0;
-  for (useconds_t waited = 0; waited < timeout_micros; waited += kFramePollMicros) {
-    usleep(kFramePollMicros);
-    advanced = clock.get_frame_count() - before;
-    if (advanced >= 1) break;
-  }
-
-  send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
-  // Restore real-time pacing so nothing outside a step observes a frozen clock.
-  clock.set_capture_delta(0.0F);
-  return advanced >= 1 ? advanced * game_millis : 0;
-}
-
-// The first direct engine icall from the socket thread. `get_frameCount` is a
-// leaf getter that reads one counter and allocates nothing, which makes it the
-// cheapest possible test of whether the call is safe at all - and its rate of
-// change is the achieved frame rate, which is the ceiling on the whole
-// frame-exact scheme, because speed becomes slice x fps.
-int32_t ReadFrameCount() {
-  static int32_t (*get_frame_count)() = nullptr;
-  static bool attempted = false;
-  if (!attempted) {
-    attempted = true;
-    void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
-    void* (*resolve_icall)(const char*) = nullptr;
-    if (il2cpp != nullptr && Resolve(il2cpp, "il2cpp_resolve_icall", &resolve_icall)) {
-      void* pointer = resolve_icall("UnityEngine.Time::get_frameCount()");
-      Dl_info info{};
-      // Refuse anything that does not come from the engine: a pointer we cannot
-      // attribute is not worth calling blind.
-      if (pointer != nullptr && dladdr(pointer, &info) != 0 && info.dli_fname != nullptr &&
-          std::strstr(info.dli_fname, "libunity.so") != nullptr) {
-        get_frame_count = reinterpret_cast<int32_t (*)()>(pointer);
-      }
-    }
-  }
-  return get_frame_count == nullptr ? -1 : get_frame_count();
-}
-
 void LogMainLiveness(const Il2CppApi& api, const MainFields& fields, const char* when) {
   Il2CppObject* main = nullptr;
   api.field_static_get_value(fields.instance, &main);
@@ -863,16 +862,18 @@ void LogMainLiveness(const Il2CppApi& api, const MainFields& fields, const char*
     FieldInfo* cached =
         klass == nullptr ? nullptr : api.class_get_field_from_name(klass, "m_CachedPtr");
     if (cached != nullptr) api.field_get_value(main, cached, &handle);
+    const EngineClock& clock = Clock();
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
                         "liveness %s managed=%p cached_ptr=%p field=%s frames=%d", when,
                         static_cast<void*>(main), handle, cached ? "found" : "missing",
-                        ReadFrameCount());
+                        clock.get_frame_count == nullptr ? -1 : clock.get_frame_count());
     return;
   }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "liveness %s managed=null", when);
 }
 #endif
 
+// Every emitted state message advances one monotonic sequence, so a command can
 // always bind the state it was decided from, including between episodes.
 bool SendState(int client, const Il2CppApi& api, const MainFields& fields, uint64_t sequence) {
   std::string payload;
@@ -911,6 +912,16 @@ float CurrentGameSpeed(const Il2CppApi& api, const MainFields& fields) {
   return (std::isfinite(speed) && speed > 1.0F) ? speed : 1.0F;
 }
 
+// Real elapsed microseconds. `usleep` is a floor, not a promise, so counting
+// sleeps overstates progress and understates cost; the advance ceiling is only
+// a ceiling if it is measured.
+uint64_t MonotonicMicros() {
+  timespec now{};
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return static_cast<uint64_t>(now.tv_sec) * 1000000ULL +
+         static_cast<uint64_t>(now.tv_nsec) / 1000ULL;
+}
+
 useconds_t GameTimeInterval(useconds_t interval, float speed) {
   const auto scaled = static_cast<useconds_t>(static_cast<float>(interval) / speed);
   return scaled < kMinIntervalMicros ? kMinIntervalMicros : scaled;
@@ -928,6 +939,207 @@ bool RunIsActive(const Il2CppApi& api, const MainFields& fields) {
     return false;
   }
   return round_active == 1 && game_over == 0;
+}
+
+// Exactly the inputs the host's decision predicate reads, sampled together. The
+// bridge does not own the predicate - Python does - so this mirrors
+// `RunStateBuilder` and `_events_between` member for member, including the
+// `max_health <= 0` case and the clamp, and diverging from them is a defect.
+struct DecisionSnapshot {
+  bool active = false;
+  int32_t wave = 0;
+  double health_fraction = 0.0;
+  //: The game's own clock, so an advance can report the game time it really
+  //: passed beside the game time it budgeted for.
+  double play_time = 0.0;
+  bool available[3 * kMaskSlotsPerFamily] = {};
+};
+
+// A slot the game does not report is unavailable, never assumed cheap.
+void ReadFamilyAvailability(const Il2CppApi& api, Il2CppObject* main, const FamilyFields& family,
+                            double cash, bool active, bool* available) {
+  Il2CppArray *costs = nullptr, *unlocked = nullptr, *maxed = nullptr;
+  if (!ReadField(api, main, family.cost, &costs) ||
+      !ReadField(api, main, family.unlocked, &unlocked) ||
+      !ReadField(api, main, family.maxed, &maxed) || costs == nullptr || unlocked == nullptr ||
+      maxed == nullptr) {
+    return;
+  }
+  const size_t count = api.array_length(costs);
+  if (api.array_length(unlocked) != count || api.array_length(maxed) != count) return;
+  for (size_t index = 0; index < kMaskSlotsPerFamily && index < count; ++index) {
+    double cost = 0.0;
+    uint8_t is_unlocked = 0, is_maxed = 0;
+    if (!ReadPrimitiveArray(api, costs, index, &cost) ||
+        !ReadPrimitiveArray(api, unlocked, index, &is_unlocked) ||
+        !ReadPrimitiveArray(api, maxed, index, &is_maxed) || !std::isfinite(cost)) {
+      continue;
+    }
+    available[index] = active && is_unlocked == 1 && is_maxed == 0 && cost > 0.0 && cost <= cash;
+  }
+}
+
+// Fails when `Main` is gone or unreadable, which the caller treats as the run
+// having ended - the same conclusion the host draws from an unreadable state.
+bool ReadDecisionSnapshot(const Il2CppApi& api, const MainFields& fields, DecisionSnapshot* snapshot) {
+  Il2CppObject* main = nullptr;
+  api.field_static_get_value(fields.instance, &main);
+  if (!NativeHandleIsAlive(api, main)) return false;
+  double cash = 0.0, health = 0.0, max_health = 0.0;
+  uint8_t game_over = 0, round_active = 0;
+  if (!ReadField(api, main, fields.cash, &cash) ||
+      !ReadField(api, main, fields.current_wave, &snapshot->wave) ||
+      !ReadField(api, main, fields.tower_health, &health) ||
+      !ReadField(api, main, fields.tower_max_health, &max_health) ||
+      !ReadField(api, main, fields.game_over, &game_over) ||
+      !ReadField(api, main, fields.round_active, &round_active) ||
+      !ReadField(api, main, fields.play_time, &snapshot->play_time) || !std::isfinite(cash) ||
+      !std::isfinite(health) || !std::isfinite(max_health) ||
+      !std::isfinite(snapshot->play_time)) {
+    return false;
+  }
+  snapshot->active = round_active == 1 && game_over == 0;
+  if (max_health <= 0.0) {
+    snapshot->health_fraction = 0.0;
+  } else {
+    const double ratio = health / max_health;
+    snapshot->health_fraction = ratio < 0.0 ? 0.0 : (ratio > 1.0 ? 1.0 : ratio);
+  }
+  ReadFamilyAvailability(api, main, fields.attack, cash, snapshot->active, snapshot->available);
+  ReadFamilyAvailability(api, main, fields.defense, cash, snapshot->active,
+                         snapshot->available + kMaskSlotsPerFamily);
+  ReadFamilyAvailability(api, main, fields.utility, cash, snapshot->active,
+                         snapshot->available + 2 * kMaskSlotsPerFamily);
+  return true;
+}
+
+bool BecameAvailable(const DecisionSnapshot& before, const DecisionSnapshot& after) {
+  // `WAIT` is the host's mask entry zero and is exactly run-is-active.
+  if (after.active && !before.active) return true;
+  for (size_t index = 0; index < 3 * kMaskSlotsPerFamily; ++index) {
+    if (after.available[index] && !before.available[index]) return true;
+  }
+  return false;
+}
+
+// Advance the world frame by frame until something worth deciding about happens,
+// or until the game-time budget is spent, then pause again.
+//
+// `captureDeltaTime` makes every rendered frame worth exactly `frame_game_ms` of
+// game time however long it took to render, so the game time between decisions
+// depends on neither the game's speed multiplier nor on how fast this host is.
+// Because the loop lives here rather than in the host, the policy's own latency
+// costs no game time at all and one decision costs one round trip.
+//
+// Returns false only when the client connection is gone.
+bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& fields,
+                       const Command& command, uint64_t sequence, const char** outcome,
+                       const char** reason, AdvanceDetail* detail) {
+  const EngineClock& clock = Clock();
+  UnitySendMessage send = ResolveUnitySendMessage();
+  if (clock.get_frame_count == nullptr || clock.set_capture_delta == nullptr || send == nullptr) {
+    *outcome = "ambiguous";
+    *reason = "clock_unavailable";
+    return true;
+  }
+  // The world is paused between commands, so entry state is a settled reading.
+  DecisionSnapshot before{}, after{}, settled{};
+  if (!ReadDecisionSnapshot(api, fields, &before) || !before.active) {
+    *reason = "event:run_ended";
+    return true;
+  }
+  const double health_threshold = static_cast<double>(command.health_change_fraction);
+  clock.set_capture_delta(command.frame_game_millis / 1000.0F);
+  int32_t last_count = clock.get_frame_count();
+  send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
+
+  const uint64_t started = MonotonicMicros();
+  uint64_t last_heartbeat = started;
+  double game_millis = 0.0;
+  bool connected = true;
+  while (true) {
+    usleep(kFramePollMicros);
+    const uint64_t now = MonotonicMicros();
+    detail->wall_micros = now - started;
+    const int32_t count = clock.get_frame_count();
+    if (count > last_count) {
+      const int32_t rendered = count - last_count;
+      last_count = count;
+      detail->frames += rendered;
+      game_millis += rendered * static_cast<double>(command.frame_game_millis);
+      // These mid-frame readings decide only when to stop. What the advance
+      // reports is decided further down, from the settled state.
+      if (!ReadDecisionSnapshot(api, fields, &after) || !after.active) break;
+      if (after.wave != before.wave) break;
+      if (BecameAvailable(before, after)) break;
+      if (std::fabs(after.health_fraction - before.health_fraction) >= health_threshold) break;
+      if (game_millis >= static_cast<double>(command.budget_game_millis)) break;
+    }
+    if (detail->wall_micros >= kAdvanceWallBudgetMicros) break;
+    // A long advance must keep proving the bridge is alive, or the host cannot
+    // tell a quiet world from a dead connection.
+    if (now - last_heartbeat >= kHeartbeatIntervalMicros) {
+      last_heartbeat = now;
+      if (!SendFrame(client, "{\"type\":\"heartbeat\",\"last_observation_sequence\":" +
+                                 std::to_string(sequence) + "}")) {
+        connected = false;
+        break;
+      }
+    }
+  }
+
+  // Pausing a run that has already ended would press a control the game no
+  // longer owns a receiver for; RunIsActive is false then anyway.
+  if (RunIsActive(api, fields)) {
+    send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
+    // `Pause` is dispatched to the main thread and lands a frame or two later.
+    // Until it has, `captureDeltaTime` stays where it was, so the tail frames
+    // are worth the same game time as every other frame instead of silently
+    // reverting to real-time pacing mid-pause.
+    const uint64_t settle_started = MonotonicMicros();
+    const int32_t settle_from = last_count;
+    while (last_count - settle_from < kPauseSettleFrames) {
+      usleep(kFramePollMicros);
+      const int32_t count = clock.get_frame_count();
+      if (count > last_count) {
+        const int32_t rendered = count - last_count;
+        last_count = count;
+        detail->frames += rendered;
+        game_millis += rendered * static_cast<double>(command.frame_game_millis);
+      }
+      if (MonotonicMicros() - settle_started >= kPauseSettleMicros) break;
+    }
+    detail->wall_micros = MonotonicMicros() - started;
+  }
+
+  // The settled state is both what `SendState` will emit to the host and what
+  // this result describes, so the two can never disagree. The loop above chose
+  // the moment to stop; this chooses what that moment turned out to be.
+  const bool readable = ReadDecisionSnapshot(api, fields, &settled);
+  bool ended = false;
+  if (!readable || !settled.active) {
+    *reason = "event:run_ended";
+    ended = true;
+  } else if (settled.wave != before.wave) {
+    *reason = "event:wave_changed";
+  } else if (BecameAvailable(before, settled)) {
+    *reason = "event:newly_affordable";
+  } else if (std::fabs(settled.health_fraction - before.health_fraction) >= health_threshold) {
+    *reason = "event:health_changed";
+  } else {
+    *reason = "budget_exhausted";
+  }
+  // Restore real-time pacing so nothing outside an advance observes a stopped clock.
+  clock.set_capture_delta(0.0F);
+  detail->game_millis = static_cast<uint32_t>(game_millis + 0.5);
+  const double play_millis = readable ? (settled.play_time - before.play_time) * 1000.0 : 0.0;
+  detail->play_millis =
+      play_millis > 0.0 ? static_cast<uint32_t>(play_millis + 0.5) : 0U;
+  if (detail->frames == 0 && !ended) {
+    *outcome = "ambiguous";
+    *reason = "no_frame_rendered";
+  }
+  return connected;
 }
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
@@ -951,6 +1163,7 @@ void LogEngineIcalls() {
       "UnityEngine.Time::set_captureDeltaTime",
       "UnityEngine.Time::get_timeScale()",
       "UnityEngine.Time::get_fixedDeltaTime()",
+      "UnityEngine.Time::get_maximumDeltaTime()",
       "UnityEngine.Application::set_targetFrameRate(System.Int32)",
       "UnityEngine.QualitySettings::set_vSyncCount(System.Int32)",
       "UnityEngine.Object::GetName(UnityEngine.Object)",
@@ -968,6 +1181,18 @@ void LogEngineIcalls() {
   void* foreach_heap = dlsym(il2cpp, "il2cpp_gc_foreach_heap");
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "gc_world stop=%p foreach=%p", stop_world,
                       foreach_heap);
+  // `maximumDeltaTime` is the engine's hard ceiling on how much time one frame
+  // may advance, so it is the ceiling on `frame_game_ms`. Read once, here, where
+  // the value lands in logcat on deploy instead of being assumed.
+  auto get_maximum_delta = reinterpret_cast<float (*)()>(
+      ResolveEngineIcall("UnityEngine.Time::get_maximumDeltaTime()"));
+  auto get_fixed_delta = reinterpret_cast<float (*)()>(
+      ResolveEngineIcall("UnityEngine.Time::get_fixedDeltaTime()"));
+  if (get_maximum_delta != nullptr && get_fixed_delta != nullptr) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "engine maximum_delta=%.6f fixed_delta=%.6f",
+                        static_cast<double>(get_maximum_delta()),
+                        static_cast<double>(get_fixed_delta()));
+  }
 }
 
 // Locate a semantic entry point that does not live on `Main`, by scanning every
@@ -1039,33 +1264,19 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         SendError(client, "protocol_error", "malformed command"); return;
       }
       if (command.expected_sequence != sequence || std::strcmp(command.request_id, last_request_id) == 0) {
-        SendCommandResult(client, command, "rejected", "stale_or_duplicate", sequence); continue;
+        SendCommandResult(client, command, "rejected", "stale_or_duplicate", sequence, AdvanceDetail{}); continue;
       }
       UpgradeEvidence before{}, after{};
       const char* outcome = "confirmed";
-      const char* reason = command.wait ? "wait_elapsed" : "confirmed_state_change";
-      if (command.step_game_millis > 0) {
-        // Preferred: make one rendered frame worth exactly the requested slice,
-        // so the game time between decisions does not depend on the speed setting
-        // or on how fast this host happens to be.
-        const int advanced = FrameExactStep(command.step_game_millis, kCommandTimeoutMicros);
-        if (advanced > 0) {
-          reason = "frame_step";
-        } else if (advanced == 0) {
-          outcome = "ambiguous";
-          reason = "no_frame_rendered";
-        } else {
-          // Fallback: the engine clock could not be resolved, so ask for the
-          // slice the only other way available - a wall-clock sleep scaled by
-          // speed, floored at one frame's worth. This is the old behaviour and
-          // it is speed-dependent, which is why it is not the first choice.
-          UnitySendMessage send = ResolveUnitySendMessage();
-          const useconds_t requested =
-              GameTimeInterval(command.step_game_millis * 1000, CurrentGameSpeed(api, fields));
-          send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
-          usleep(requested < kMinStepWallMicros ? kMinStepWallMicros : requested);
-          send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
-          reason = "step_elapsed";
+      const char* reason = "confirmed_state_change";
+      AdvanceDetail detail{};
+      if (command.advance) {
+        // One round trip per decision: the bridge advances frames of fixed game
+        // time until the host's own decision predicate would fire.
+        reason = "budget_exhausted";
+        if (!AdvanceUntilEvent(client, api, fields, command, sequence, &outcome, &reason,
+                               &detail)) {
+          return;
         }
       } else if (command.set_speed) {
         float applied = 0.0F;
@@ -1108,7 +1319,7 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         } else {
           outcome = "ambiguous"; reason = "lifecycle_timeout";
         }
-      } else if (!command.wait) {
+      } else {
         // `unlocked` is the in-run availability the game itself offers. Live 29.0.3
         // evidence shows `tier_unlocked` is false for every offered upgrade, so it
         // is reported state, not a purchase precondition.
@@ -1137,13 +1348,11 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           }
           if (!confirmed && std::strcmp(outcome, "ambiguous") != 0) { outcome = "ambiguous"; reason = "confirmation_timeout"; }
         }
-      } else {
-        usleep(GameTimeInterval(kObservationIntervalMicros, CurrentGameSpeed(api, fields)));
       }
       std::strncpy(last_request_id, command.request_id, sizeof(last_request_id) - 1);
       if (std::strcmp(outcome, "confirmed") == 0 && command.family != nullptr) RefreshCosts();
       if (!SendState(client, api, fields, ++sequence)) return;
-      if (!SendCommandResult(client, command, outcome, reason, sequence)) return;
+      if (!SendCommandResult(client, command, outcome, reason, sequence, detail)) return;
       continue;
     }
     if (!SendState(client, api, fields, ++sequence)) return;

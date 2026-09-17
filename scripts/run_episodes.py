@@ -6,7 +6,7 @@ bridge adapter to the environment and evaluator and writes its report outside th
 repository. It never touches the canonical evaluation AVD, and every tap it can
 make is gated inside the adapter on a positive screen classification.
 
-    TOWER_BRIDGE_BUILD_DIR=... ./scripts/run_episodes.py --episodes 50 --speed 64
+    TOWER_BRIDGE_BUILD_DIR=... ./scripts/run_episodes.py --episodes 50
 """
 
 from __future__ import annotations
@@ -69,20 +69,48 @@ def compatibility(build_dir: Path) -> BridgeCompatibility:
     )
 
 
+def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
+    """The cadence is game time throughout; the only wall clock is a hang deadline.
+
+    There is no speed argument. The game's own multiplier is pinned at 1x inside
+    the adapter, and speed comes from the bridge stepping frames, so a speed knob
+    here could only reintroduce the coarsening it was removed for (M1B-E012).
+    """
+    parser.add_argument(
+        "--frame-game-ms",
+        type=float,
+        default=1000.0 / 60.0,
+        help="game time one rendered frame is worth; the floor on decision granularity",
+    )
+    parser.add_argument(
+        "--max-quiet-game-ms",
+        type=int,
+        default=2000,
+        help="game time one advance may spend before returning a decision anyway",
+    )
+    parser.add_argument(
+        "--max-episode-wall-seconds",
+        type=float,
+        default=600.0,
+        help="hang deadline in wall seconds; wall time is not bounded by game time",
+    )
+
+
+def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
+    return CadenceConfig(
+        frame_game_ms=arguments.frame_game_ms,
+        max_quiet_game_ms=arguments.max_quiet_game_ms,
+        max_episode_wall_seconds=arguments.max_episode_wall_seconds,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episodes", type=int, default=5)
-    parser.add_argument("--speed", type=float, default=64.0)
     parser.add_argument("--policy", choices=sorted(POLICIES), default="scripted")
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
-    parser.add_argument("--slice-ms", type=int, default=250)
-    parser.add_argument(
-        "--pause-above",
-        type=float,
-        default=float("inf"),
-        help="pause between decisions above this speed; use a huge value to free-run",
-    )
+    add_cadence_arguments(parser)
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-episodes.json"))
     arguments = parser.parse_args()
 
@@ -110,20 +138,11 @@ def main() -> int:
         flush=True,
     )
 
-    adapter = InstrumentedRunAdapter(
-        client=client,
-        device=AdbDevice(arguments.serial),
-        requested_speed=arguments.speed,
-        pause_stepping_speed=arguments.pause_above,
-    )
+    adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
-        cadence=CadenceConfig(
-            slice_game_ms=arguments.slice_ms,
-            max_quiet_game_ms=arguments.slice_ms * 8,
-            max_episode_wall_seconds=600.0,
-        ),
+        cadence=cadence_from(arguments),
     )
 
     started = time.monotonic()
@@ -140,9 +159,8 @@ def main() -> int:
         client.close()
 
     record = to_record(report)
-    record["requested_speed"] = arguments.speed
-    record["slice_game_ms"] = arguments.slice_ms
-    record["pause_above_speed"] = arguments.pause_above
+    record["frame_game_ms"] = arguments.frame_game_ms
+    record["max_quiet_game_ms"] = arguments.max_quiet_game_ms
     record["wall_seconds"] = round(time.monotonic() - started, 1)
     record["episodes_per_hour"] = (
         round(report.valid_episodes / (time.monotonic() - started) * 3600, 1)

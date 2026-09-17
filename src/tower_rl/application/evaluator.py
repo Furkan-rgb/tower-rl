@@ -65,12 +65,57 @@ class EvaluationReport:
     #: reason cannot be diagnosed later (M1B-E007).
     invalid_detail: dict[str, int] = field(default_factory=dict)
     total_decisions: int = 0
+    #: Decisions taken in the valid episodes alone. Density is a property of the
+    #: episodes it is reported over, so an invalid episode's decisions must not
+    #: be divided by a count that excludes the episode itself.
+    decisions_in_valid_episodes: int = 0
     total_wall_seconds: float = 0.0
+    #: Frames the bridge stepped and the game time they were worth, summed over
+    #: every attempted episode.
+    total_frames: int = 0
+    total_game_seconds: float = 0.0
+    #: The game's own clock over the same advances. Against `total_game_seconds`
+    #: it shows whether the budgeted game time was really delivered.
+    total_play_seconds: float = 0.0
+    #: Wall seconds spent inside advances. `total_wall_seconds` minus this is
+    #: what the decision boundaries themselves cost.
+    total_advance_wall_seconds: float = 0.0
+    #: Advances the bridge ended on its own wall ceiling without spending the
+    #: budget or finding an event: the difference between a speed-up and a stall.
+    advances_cut_short: int = 0
 
     @property
     def invalid_rate(self) -> float:
         attempted = self.valid_episodes + self.invalid_episodes
         return 0.0 if attempted == 0 else self.invalid_episodes / attempted
+
+    @property
+    def decisions_per_episode(self) -> float:
+        """Mean decisions in a valid episode; the 1x reference of 89.3 is one.
+
+        Over valid episodes only, numerator and denominator alike. An invalid
+        episode is an environment failure, and folding its decisions into a mean
+        of the episodes that survived would inflate the density of exactly the
+        arms that failed most.
+        """
+        if self.valid_episodes == 0:
+            return 0.0
+        return self.decisions_in_valid_episodes / self.valid_episodes
+
+    @property
+    def decisions_per_wave(self) -> float:
+        """Density per wave, which is what speed used to erode (M1B-E012)."""
+        mean_wave = self.distribution.mean
+        if mean_wave <= 0:
+            return 0.0
+        return self.decisions_per_episode / mean_wave
+
+    @property
+    def speedup(self) -> float:
+        """Game seconds bought per wall second; the point of stepping frames."""
+        if self.total_wall_seconds <= 0:
+            return 0.0
+        return self.total_game_seconds / self.total_wall_seconds
 
     def summary_line(self) -> str:
         """Deliberately puts the spread next to the mean."""
@@ -112,12 +157,22 @@ def evaluate(
     invalid: list[EpisodeSummary] = []
     decisions = 0
     wall = 0.0
+    frames = 0
+    game_ms = 0.0
+    play_ms = 0.0
+    advance_wall = 0.0
+    cut_short = 0
     speed = 0.0
     for _ in range(episodes):
         result = actor.run_episode()
         summary = result.summary
         decisions += summary.decisions
         wall += summary.elapsed_wall_seconds
+        frames += summary.frames
+        game_ms += summary.game_ms
+        play_ms += summary.play_ms
+        advance_wall += summary.advance_wall_seconds
+        cut_short += summary.advances_cut_short
         speed = summary.game_speed
         (valid if summary.valid else invalid).append(summary)
 
@@ -143,7 +198,13 @@ def evaluate(
         invalid_by_reason=reasons,
         invalid_detail=detail,
         total_decisions=decisions,
+        decisions_in_valid_episodes=sum(summary.decisions for summary in valid),
         total_wall_seconds=round(wall, 2),
+        total_frames=frames,
+        total_game_seconds=round(game_ms / 1000.0, 3),
+        total_play_seconds=round(play_ms / 1000.0, 3),
+        total_advance_wall_seconds=round(advance_wall, 3),
+        advances_cut_short=cut_short,
     )
 
 
@@ -167,5 +228,14 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "minimum_final_wave": spread.minimum,
         "maximum_final_wave": spread.maximum,
         "total_decisions": report.total_decisions,
+        "decisions_in_valid_episodes": report.decisions_in_valid_episodes,
         "total_wall_seconds": report.total_wall_seconds,
+        "total_advance_wall_seconds": report.total_advance_wall_seconds,
+        "decisions_per_episode": round(report.decisions_per_episode, 3),
+        "decisions_per_wave": round(report.decisions_per_wave, 3),
+        "total_frames": report.total_frames,
+        "total_game_seconds": report.total_game_seconds,
+        "total_play_seconds": report.total_play_seconds,
+        "advances_cut_short": report.advances_cut_short,
+        "speedup": round(report.speedup, 3),
     }

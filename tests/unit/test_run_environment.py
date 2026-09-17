@@ -7,9 +7,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fakes.fake_run_port import FakeRunPort  # noqa: E402
+from fakes.fake_run_port import FakeCommandResult, FakeRunPort  # noqa: E402
 
 from tower_rl.application.run_environment import (  # noqa: E402
+    BRIDGE_EVENT_DIVERGENCE,
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
@@ -28,7 +29,7 @@ def _environment(**port_kwargs: object) -> tuple[InstrumentedRunEnvironment, Fak
     environment = InstrumentedRunEnvironment(
         port=port,
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
-        cadence=CadenceConfig(slice_game_ms=250, max_quiet_game_ms=1000),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
     return environment, port
 
@@ -82,7 +83,7 @@ def test_a_purchase_is_confirmed_and_immediately_re_decided() -> None:
 
 
 def test_waiting_advances_until_something_actionable_changes() -> None:
-    environment, _ = _environment()
+    environment, port = _environment()
     environment.reset()
 
     transition = environment.step(WAIT)
@@ -91,6 +92,132 @@ def test_waiting_advances_until_something_actionable_changes() -> None:
     assert transition.events != ()
     assert transition.requested_game_ms > 0
     assert transition.next_state is not None
+    assert transition.invalid_reasons == ()
+    # One decision is one bridge command now, not one command per slice.
+    assert port.advances == 1
+
+
+def test_a_decision_costs_no_read_beyond_its_own_advance() -> None:
+    """The advance returns the settled state, so re-reading would be a second trip.
+
+    The bridge already paused the world and let the pause land before answering.
+    Waiting for the next stream tick would pay a round trip per decision for a
+    state that can only be later than the one the result describes.
+    """
+    environment, port = _environment()
+    environment.reset()
+    reads = port.reads
+
+    for _ in range(3):
+        transition = environment.step(WAIT)
+        assert transition.next_state is not None
+
+    assert port.advances == 3
+    assert port.reads == reads, "an advance already carries the state it settled at"
+
+
+def test_a_purchase_costs_no_read_beyond_its_own_command_result() -> None:
+    """A confirmed purchase carries its settled state too, the same mechanism.
+
+    `buy_upgrade`'s result binds the state the bridge sent immediately before
+    it, exactly as `advance_until_event`'s does. Re-reading afterwards would
+    pay a ~250 ms stream-tick wait for a state the result already describes.
+    """
+    environment, port = _environment()
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+    reads = port.reads
+
+    transition = environment.step(target.action)
+
+    assert transition.outcome is ActionOutcome.EXECUTED
+    assert transition.next_state is not None
+    assert port.reads == reads, "a purchase already carries the state it settled at"
+
+
+def test_a_lying_bridge_reason_is_recorded_as_a_divergence() -> None:
+    """The host predicate is authoritative; a disagreement is made visible."""
+    environment, port = _environment(
+        damage_per_second=0.0, cash_per_second=0.0, seconds_per_wave=10_000.0
+    )
+    environment.reset()
+    honest = port.advance_until_event
+
+    def claims_a_wave_that_never_came(**kwargs: object) -> FakeCommandResult:
+        result = honest(**kwargs)  # type: ignore[arg-type]
+        return FakeCommandResult(
+            result.outcome, "event:wave_changed", result.frames, result.game_ms,
+            state=result.state,
+        )
+
+    port.advance_until_event = claims_a_wave_that_never_came  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert transition.next_state is not None
+    assert transition.next_state.wave == transition.state.wave
+    assert BRIDGE_EVENT_DIVERGENCE in transition.invalid_reasons
+    assert not transition.admissible
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).invalid_transitions == 1
+
+
+def test_an_unconfirmed_advance_fails_the_episode_rather_than_passing_as_a_wait() -> None:
+    environment, port = _environment()
+    environment.reset()
+
+    def cannot_say_how_far_it_got(**_kwargs: object) -> FakeCommandResult:
+        return FakeCommandResult("ambiguous", "no_frame_rendered")
+
+    port.advance_until_event = cannot_say_how_far_it_got  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert transition.outcome is ActionOutcome.AMBIGUOUS
+    assert transition.termination is TerminationOutcome.ACTION_PIPELINE_FAILED
+    assert transition.truncated and not transition.admissible
+    assert any("no_frame_rendered" in reason for reason in transition.invalid_reasons)
+
+
+def test_an_advance_cut_short_of_its_budget_is_counted_not_hidden() -> None:
+    """The bridge has its own wall ceiling: stopping early is slowness, not an event."""
+    environment, port = _environment()
+    environment.reset()
+
+    def stopped_on_the_wall_ceiling(**_kwargs: object) -> FakeCommandResult:
+        return FakeCommandResult(
+            "confirmed", "budget_exhausted", frames=3, game_ms=50.0,
+            state=port.read_state(),
+        )
+
+    port.advance_until_event = stopped_on_the_wall_ceiling  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert transition.admissible, "a short advance is still a genuine transition"
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).advances_cut_short == 1
+
+
+def test_the_summary_reports_what_advancing_cost_the_game_clock() -> None:
+    """Game seconds over wall seconds is the speed-up the design is judged on."""
+    environment, _ = _environment(damage_per_second=4.0)
+    environment.reset()
+
+    for _ in range(50):
+        transition = environment.step(WAIT)
+        if transition.terminated:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    summary = environment.summarize(transition.termination)
+    assert summary.frames > 0
+    assert summary.game_ms > 0.0
+    # The game's own clock, beside the budgeted game time it is meant to equal.
+    assert summary.play_ms == pytest.approx(summary.game_ms)
+    # Wall time inside advances, which the report subtracts from total wall time
+    # to show what the decision boundaries cost. The double invents its own
+    # figure, so only that it is carried through is testable here.
+    assert summary.advance_wall_seconds > 0.0
 
 
 def test_reward_is_wave_progress_only() -> None:
@@ -150,7 +277,7 @@ def test_episode_summary_counts_purchases_and_invalid_transitions() -> None:
 def test_a_stalled_run_truncates_rather_than_running_forever() -> None:
     environment, port = _environment(damage_per_second=0.0, seconds_per_wave=10_000.0)
     environment.cadence = CadenceConfig(
-        slice_game_ms=250, max_quiet_game_ms=500, max_episode_wall_seconds=0.0
+        max_quiet_game_ms=500, max_episode_wall_seconds=0.0
     )
     environment.reset()
 

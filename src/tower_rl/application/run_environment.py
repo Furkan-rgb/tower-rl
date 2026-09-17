@@ -21,18 +21,30 @@ from tower_rl.domain.episode import (
     wave_progress_reward,
 )
 from tower_rl.domain.run_actions import RunActionId, action_index
-from tower_rl.domain.run_state import RunState, RunStateBuilder, validate_transition
-from tower_rl.ports.run_port import RunPort, RunPortError
+from tower_rl.domain.run_state import (
+    ExactRunReadingLike,
+    RunState,
+    RunStateBuilder,
+    validate_transition,
+)
+from tower_rl.ports.run_port import AdvanceResultLike, RunPort, RunPortError
 
 
 @dataclass(frozen=True)
 class CadenceConfig:
-    """Event-triggered cadence, expressed in game time (see solution.md 7.3)."""
+    """Event-triggered cadence, expressed in game time (see solution.md 9.2c).
 
-    #: One advance slice. Small enough to notice an event promptly, large enough
-    #: that a quiet stretch does not cost a round trip per frame.
-    slice_game_ms: int = 250
-    #: Backstop: ask for a decision even when nothing else changed.
+    Every field here is game time or a game quantity. Wall clock appears once,
+    as a hang deadline, because how long a run takes in real seconds is a
+    property of the host rather than of the decision problem.
+    """
+
+    #: What one rendered frame is worth. This is the floor on decision
+    #: granularity and it is fixed, so the same game moments are offered to the
+    #: policy however fast the host renders.
+    frame_game_ms: float = 1000.0 / 60.0
+    #: Backstop: ask for a decision even when nothing else changed. Also the
+    #: budget one advance may spend before returning.
     max_quiet_game_ms: int = 2000
     #: A health move worth interrupting for, as a fraction of maximum health.
     health_change_fraction: float = 0.05
@@ -46,6 +58,18 @@ class CadenceConfig:
 #: on the next read, so this is recovered rather than excluded.
 DEATH_BOUNDARY_TRANSIENT = "negative health in an active run"
 
+#: The bridge stops advancing at the first decision condition it sees, but
+#: `_events_between` below remains the only definition of what a decision
+#: condition *is*. When the two disagree the transition is recorded as invalid
+#: rather than the host predicate being relaxed to match: a silent drift between
+#: the two would change the decision problem without anything saying so.
+BRIDGE_EVENT_DIVERGENCE = "the bridge and the host disagree about the decision event"
+
+#: What the bridge prefixes a reason with when it stopped on an event rather
+#: than on the budget, and the reason it gives when it stopped on neither.
+_BRIDGE_EVENT_PREFIX = "event:"
+_BRIDGE_BUDGET_REASON = "budget_exhausted"
+
 
 @dataclass
 class _EpisodeTally:
@@ -55,10 +79,36 @@ class _EpisodeTally:
     recovered_transients: int = 0
     started_at: float = 0.0
     peak_wave: int = 0
+    #: What advancing this episode actually cost the game clock. Wall seconds
+    #: divided into game seconds is the speed-up, which is the number the
+    #: stepping design is judged on.
+    frames: int = 0
+    game_ms: float = 0.0
+    #: The game's own clock across those same advances, and the wall time they
+    #: took. Wall time minus advance wall time is the per-decision boundary cost.
+    play_ms: float = 0.0
+    advance_wall_micros: int = 0
+    #: Advances the bridge ended early, on its own wall-clock ceiling, without
+    #: either spending the budget or finding an event.
+    advances_cut_short: int = 0
     #: The speed the run was seen executing at while it was still running. The
     #: final state is always terminal and the game has stopped time by then, so
     #: sampling there reports zero for every episode (M1B-E009).
     active_game_speed: float = 0.0
+
+
+@dataclass(frozen=True)
+class _Advance:
+    """What advancing to the next decision produced."""
+
+    state: RunState | None
+    events: tuple[DecisionEvent, ...]
+    requested_game_ms: int
+    reasons: tuple[str, ...]
+    #: Set only when the port itself failed, in which case it replaces the
+    #: action's own outcome so the episode is classified as a pipeline failure
+    #: rather than as an ordinary wait.
+    failure: ActionOutcome | None = None
 
 
 @dataclass
@@ -109,6 +159,11 @@ class InstrumentedRunEnvironment:
             termination=termination,
             elapsed_wall_seconds=round(time.monotonic() - self._tally.started_at, 3),
             game_speed=self._tally.active_game_speed,
+            frames=self._tally.frames,
+            game_ms=round(self._tally.game_ms, 3),
+            play_ms=round(self._tally.play_ms, 3),
+            advance_wall_seconds=round(self._tally.advance_wall_micros / 1_000_000, 3),
+            advances_cut_short=self._tally.advances_cut_short,
             invalid_transitions=self._tally.invalid_transitions,
             termination_detail=self._last_reasons,
         )
@@ -132,12 +187,13 @@ class InstrumentedRunEnvironment:
             )
 
         outcome = ActionOutcome.WAITED
+        purchase_result: AdvanceResultLike | None = None
         if not action.is_wait:
             assert action.family is not None and action.slot is not None
-            result = self.port.buy_upgrade(
+            purchase_result = self.port.buy_upgrade(
                 action.family.value, action.slot, expected_sequence=state.source_sequence
             )
-            outcome = _purchase_outcome(result.outcome)
+            outcome = _purchase_outcome(purchase_result.outcome)
             if outcome is ActionOutcome.EXECUTED:
                 self._tally.purchases += 1
             if outcome in (ActionOutcome.AMBIGUOUS, ActionOutcome.FAILED):
@@ -146,62 +202,119 @@ class InstrumentedRunEnvironment:
                 after = self._read_state()
                 return self._finish(
                     state, after, action, outcome, started, 0, (),
-                    (f"purchase was not confirmed: {result.reason}",),
+                    (f"purchase was not confirmed: {purchase_result.reason}",),
                 )
 
-        next_state, events, requested_ms, reasons = self._advance_to_decision(state, action)
+        advanced = self._advance_to_decision(state, action, purchase_result)
         return self._finish(
-            state, next_state, action, outcome, started, requested_ms, events, reasons
+            state,
+            advanced.state,
+            action,
+            advanced.failure or outcome,
+            started,
+            advanced.requested_game_ms,
+            advanced.events,
+            advanced.reasons,
         )
 
     # -- internals ---------------------------------------------------------
 
     def _advance_to_decision(
-        self, state: RunState, action: RunActionId
-    ) -> tuple[RunState | None, tuple[DecisionEvent, ...], int, tuple[str, ...]]:
+        self,
+        state: RunState,
+        action: RunActionId,
+        purchase_result: AdvanceResultLike | None = None,
+    ) -> _Advance:
         """Advance game time until something actionable changes."""
-        events: list[DecisionEvent] = []
-        requested_ms = 0
-        latest = state
-
         if not action.is_wait:
             # A confirmed purchase already changed the decision problem: cash fell
             # and that slot's price rose. Re-decide immediately rather than
-            # advancing the world first.
-            after = self._read_state()
+            # advancing the world first. The command result carries the state
+            # the bridge sent immediately before it, the same mechanism an
+            # advance uses, so reading again would cost a second round trip and
+            # could only show a later state than the one the result describes.
+            assert purchase_result is not None
+            after = self._build_state(purchase_result.state)
             if after is None:
-                return None, (DecisionEvent.RUN_ENDED,), 0, ("run ended during the purchase",)
-            events.append(DecisionEvent.PURCHASE_SETTLED)
-            return after, tuple(events), 0, validate_transition(state, after)
-
-        while requested_ms < self.cadence.max_quiet_game_ms:
-            if time.monotonic() - self._tally.started_at > self.cadence.max_episode_wall_seconds:
-                return (
-                    latest,
-                    (DecisionEvent.SLICE_ELAPSED,),
-                    requested_ms,
-                    ("episode exceeded its wall-clock limit",),
-                )
-            self.port.advance(
-                expected_sequence=latest.source_sequence, game_ms=self.cadence.slice_game_ms
+                reason = ("run ended during the purchase",)
+                return _Advance(None, (DecisionEvent.RUN_ENDED,), 0, reason)
+            return _Advance(
+                after,
+                (DecisionEvent.PURCHASE_SETTLED,),
+                0,
+                validate_transition(state, after),
             )
-            requested_ms += self.cadence.slice_game_ms
-            observed = self._read_state()
-            if observed is None:
-                return None, (DecisionEvent.RUN_ENDED,), requested_ms, ()
-            latest = observed
-            events = list(self._events_between(state, latest))
-            if events:
-                break
-        else:
-            events = [DecisionEvent.SLICE_ELAPSED]
 
-        return (
-            latest,
-            tuple(events or [DecisionEvent.SLICE_ELAPSED]),
-            requested_ms,
-            validate_transition(state, latest),
+        if time.monotonic() - self._tally.started_at > self.cadence.max_episode_wall_seconds:
+            return _Advance(
+                state,
+                (DecisionEvent.SLICE_ELAPSED,),
+                0,
+                ("episode exceeded its wall-clock limit",),
+            )
+
+        budget = self.cadence.max_quiet_game_ms
+        result = self.port.advance_until_event(
+            expected_sequence=state.source_sequence,
+            budget_game_ms=budget,
+            frame_game_ms=self.cadence.frame_game_ms,
+            health_change_fraction=self.cadence.health_change_fraction,
         )
+        self._tally.frames += result.frames
+        self._tally.game_ms += result.game_ms
+        self._tally.play_ms += result.play_ms
+        self._tally.advance_wall_micros += result.wall_micros
+        if result.reason == _BRIDGE_BUDGET_REASON and result.game_ms < budget:
+            # The bridge stopped on its own wall-clock ceiling rather than on the
+            # budget. The transition is genuine, so it is counted rather than
+            # rejected - but counted, because it is the difference between a
+            # speed-up and a stall.
+            self._tally.advances_cut_short += 1
+        if result.outcome != "confirmed":
+            # An advance that cannot say how far it got leaves the record unable
+            # to describe what happened, exactly as an unconfirmed purchase does.
+            # It used to be ignored, which quietly attributed a bridge failure to
+            # the policy's WAIT.
+            return _Advance(
+                self._read_state(),
+                (),
+                budget,
+                (f"advance was not confirmed: {result.reason}",),
+                failure=_advance_failure(result.outcome),
+            )
+
+        # The advance already carries the state the world settled at when it
+        # stopped. Reading again would cost a second round trip per decision and
+        # could only show a later state than the one the result describes.
+        observed = self._build_state(result.state)
+        if observed is None:
+            return _Advance(
+                None,
+                (DecisionEvent.RUN_ENDED,),
+                budget,
+                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,)),
+            )
+        events = self._events_between(state, observed)
+        return _Advance(
+            observed,
+            events or (DecisionEvent.SLICE_ELAPSED,),
+            budget,
+            validate_transition(state, observed) + self._divergence(result.reason, events),
+        )
+
+    def _divergence(
+        self, bridge_reason: str, events: tuple[DecisionEvent, ...]
+    ) -> tuple[str, ...]:
+        """Compare the bridge's stopping reason with this environment's predicate.
+
+        The predicate is never softened to agree with the bridge. If the two drift
+        apart the decisions the agent is offered have changed, so the transition is
+        marked invalid and counted, which is what makes the drift visible.
+        """
+        claims_event = bridge_reason.startswith(_BRIDGE_EVENT_PREFIX)
+        if claims_event != bool(events):
+            return (BRIDGE_EVENT_DIVERGENCE,)
+        return ()
 
     def _events_between(self, before: RunState, after: RunState) -> tuple[DecisionEvent, ...]:
         events: list[DecisionEvent] = []
@@ -218,7 +331,9 @@ class InstrumentedRunEnvironment:
         return tuple(events)
 
     def _read_state(self) -> RunState | None:
-        reading = self.port.read_state()
+        return self._build_state(self.port.read_state())
+
+    def _build_state(self, reading: ExactRunReadingLike | None) -> RunState | None:
         if reading is None:
             return None
         state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
@@ -271,6 +386,10 @@ class InstrumentedRunEnvironment:
         if not transition.admissible:
             self._tally.invalid_transitions += 1
         return transition
+
+
+def _advance_failure(outcome: str) -> ActionOutcome:
+    return ActionOutcome.AMBIGUOUS if outcome == "ambiguous" else ActionOutcome.FAILED
 
 
 def _purchase_outcome(outcome: str) -> ActionOutcome:

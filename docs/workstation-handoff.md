@@ -392,18 +392,20 @@ is one frame, and one frame is worth `frame_wall_seconds x s` of game time. At
 | 16x | 0.53 s |
 | 64x | 2.1 s |
 
-The environment asks for a 250 ms slice. That is achievable up to about 8x and
-impossible above it, and `M1B-E006`'s measured decisions per wave match the
-prediction closely: 63, 79, 69 at 1.5x, 4x and 8x, then 39, 20 and 16 at 16x,
-32x and 64x. Density is flat while a frame is smaller than the slice and
-collapses once it is not.
+The environment asks for a 250 ms slice, which a frame exceeds above about 8x.
+`M1B-E006` reported decisions per wave of 63, 79 and 69 at 1.5x, 4x and 8x
+falling to 39, 20 and 16 above, which appeared to confirm this. **That table does
+not reproduce.** Measured fresh in `M1B-E012`, 8x gives 13.4 decisions per wave
+and 64x gives 4.8: the direction holds, the magnitude does not, and 8x is not a
+speed at which the requirement is met.
 
 Two consequences:
 
-1. **There is a speed that satisfies the requirement today, without any native
-   work: about 8x.** It costs throughput — roughly 105 episodes per hour against
-   502 at 64x — but decision moments are preserved, which is the stated
-   requirement.
+1. **There is no speed that satisfies the requirement.** 8x is 2.8 times better
+   than 64x on decision density and 3.6 times worse on throughput, and it still
+   reaches only 13.4 decisions per wave (`M1B-E012`). Lowering the speed shrinks
+   the violation; it does not remove it, because speed and density are traded
+   against each other by construction.
 2. **Getting both requires decoupling game time per frame from wall time per
    frame**, which is what `Time.captureDeltaTime` does. The obstacle is not
    finding the API, it is calling it: the bridge's only main-thread entry point

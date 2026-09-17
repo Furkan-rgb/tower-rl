@@ -7,6 +7,59 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E012 — Decision density measured fresh, and the 8x claim withdrawn
+
+**Date:** 2026-09-17
+**Status:** Contrary evidence against my own claim one hour earlier. Lowering the
+speed improves decision density but does not restore it, and the `M1B-E006`
+density table does not reproduce under current code.
+
+Eight scripted episodes at each speed, same code, same session, same account.
+
+| Speed | Mean final wave | Decisions per episode | Decisions per wave | Wall seconds per episode | Episodes per hour |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 6.62 | 88.5 | 13.4 | 63.5 | 56.7 |
+| 64 | 8.88 | 42.5 | 4.8 | 17.6 | 205.1 |
+
+### The claim being withdrawn
+
+On the strength of `M1B-E006`'s table — 63, 79 and 69 decisions per wave at 1.5x,
+4x and 8x, collapsing to 39, 20 and 16 above — I claimed that about 8x preserves
+decision moments and could be adopted as the training speed today. That is not
+supported.
+
+Freshly measured, 8x yields 13.4 decisions per wave, not 69. It is 2.8 times
+better than 64x, so the direction is right and the mechanism is real, but it is
+nowhere near the 1.5x reference. Choosing a slower speed does not meet the
+requirement; it only makes the violation smaller while costing 3.6 times the
+throughput.
+
+The `M1B-E006` numbers were taken under a different code state and should not be
+used as a comparator until they are reproduced. Any document quoting 69 decisions
+per wave at 8x as a current property is quoting a superseded number.
+
+### What the sample cannot say
+
+Eight episodes per arm. The final-wave means, 6.62 against 8.88, are not a
+finding: at a standard deviation near 1.3 this needs 23 episodes per arm to
+detect a one-wave difference and 66 at the spread seen during training. The
+direction is also opposite to the naive expectation that more decisions produce
+better play, which is one more reason not to read it.
+
+Decisions per wave is a different matter. It is a near-deterministic property of
+the cadence and the speed rather than a noisy outcome, and 13.4 against 4.8 is
+far outside anything eight episodes could produce by chance.
+
+### Why picking a speed was the wrong shape of answer
+
+Game time per frame is `frame_wall_seconds x speed`, so asking the game to run
+its own clock faster necessarily makes each frame worth more game time, and the
+agent's decisions coarser. Speed and decision density are traded against each
+other by construction. The fix is not to find the best point on that trade; it is
+to remove the trade, by decoupling game time per frame from wall time per frame
+so that speed comes from rendering frames faster rather than from advancing more
+game time per frame. `solution.md` 9.2c records the mechanism.
+
 ## M1B-E011 — The learning pipeline runs end to end on the real game
 
 **Date:** 2026-09-17

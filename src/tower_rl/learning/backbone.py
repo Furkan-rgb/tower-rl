@@ -43,6 +43,12 @@ class SequenceBatch:
     padding: Tensor
     weights: Tensor  # [batch]
     burn_in: int
+    #: Each sequence's stored recurrent state, in the order the batch was
+    #: sampled, exactly as the actor stored it. Empty when the sequences carry
+    #: none, which is every sequence collected by a policy without a recurrent
+    #: state. Left in per-sequence form because how states combine into a batch
+    #: is the recurrent backbone's own business, not collation's.
+    recurrent_states: tuple[Any, ...] = ()
 
     @property
     def batch_size(self) -> int:
@@ -70,6 +76,15 @@ class Backbone(Protocol):
 
     def initial_state(self) -> Any:
         """The recurrent state an episode starts from."""
+        ...
+
+    def stored_recurrent_state(self, state: Any) -> Any:
+        """The carried state as replay must keep it, or `None` to keep nothing.
+
+        See `Policy.stored_recurrent_state`: a backbone that burns in from a
+        stored state stores one, and a backbone that carries no recurrent state
+        stores nothing rather than a state no `learn` would ever read.
+        """
         ...
 
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
@@ -121,6 +136,16 @@ def collate(
         dones.append([step.done for step in sequence.steps])
         padding.append([step.padding for step in sequence.steps])
 
+    states = tuple(sequence.recurrent_state for sequence in sequences)
+    if any(state is None for state in states):
+        if any(state is not None for state in states):
+            # Half a batch burning in from zeros and half from stored states is
+            # the silent version of the bug stored state exists to fix.
+            raise ValueError(
+                "a batch cannot mix sequences with and without a stored recurrent state"
+            )
+        states = ()
+
     row_tensor = torch.tensor(rows, dtype=torch.float32, device=device)
     return SequenceBatch(
         scalars=torch.tensor(scalars, dtype=torch.float32, device=device),
@@ -132,4 +157,5 @@ def collate(
         padding=torch.tensor(padding, dtype=torch.bool, device=device),
         weights=torch.tensor(weights, dtype=torch.float32, device=device),
         burn_in=burn_in,
+        recurrent_states=states,
     )

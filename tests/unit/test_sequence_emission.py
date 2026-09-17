@@ -72,9 +72,16 @@ def _summary() -> EpisodeSummary:
     )
 
 
+def _carried(decisions: int) -> list[str]:
+    """A stand-in recurrent state per step, named after the step it was entered with."""
+    return [f"state-{index}" for index in range(decisions)]
+
+
 def _stored(decisions: int) -> list[ReplaySequence]:
     replay = PrioritizedSequenceReplay(capacity=256, seed=0)
-    offered, accepted = _actor(replay)._emit(_episode(decisions), _summary())
+    offered, accepted = _actor(replay)._emit(
+        _episode(decisions), _carried(decisions), _summary()
+    )
 
     assert offered == accepted, "no window may be refused by replay"
     return list(replay._items)
@@ -143,5 +150,33 @@ def test_windows_overlap_rather_than_lose_the_end_of_a_long_episode() -> None:
 def test_an_episode_with_no_decisions_emits_nothing() -> None:
     replay = PrioritizedSequenceReplay(capacity=4, seed=0)
 
-    assert _actor(replay)._emit([], _summary()) == (0, 0)
+    assert _actor(replay)._emit([], [], _summary()) == (0, 0)
     assert len(replay) == 0
+
+
+@pytest.mark.parametrize("decisions", list(range(LENGTH, 3 * LENGTH + 1)))
+def test_a_window_stores_the_recurrent_state_of_its_first_step(decisions: int) -> None:
+    """R2D2 burns in from a stored state, so the state must be the window's own."""
+    for sequence in _stored(decisions):
+        # Reward is the step index in this fixture, so the first step names the
+        # position in the episode the window begins at.
+        first = int(sequence.steps[0].reward)
+        assert sequence.recurrent_state == f"state-{first}"
+
+
+@pytest.mark.parametrize("decisions", list(range(1, LENGTH)))
+def test_a_left_padded_window_stores_the_state_the_episode_began_from(
+    decisions: int,
+) -> None:
+    """Its padded prefix stands in for before the episode began, and so does its state."""
+    (sequence,) = _stored(decisions)
+
+    assert sequence.steps[0].padding
+    assert sequence.recurrent_state == "state-0"
+
+
+def test_a_window_cannot_be_emitted_without_the_state_its_steps_were_entered_with() -> None:
+    replay = PrioritizedSequenceReplay(capacity=4, seed=0)
+
+    with pytest.raises(ValueError, match="state it was entered with"):
+        _actor(replay)._emit(_episode(LENGTH), _carried(LENGTH - 1), _summary())

@@ -22,6 +22,18 @@ class Policy(Protocol):
 
     def act(self, features: StateFeatures, state: Any, *, epsilon: float) -> tuple[int, Any]: ...
 
+    def stored_recurrent_state(self, state: Any) -> Any:
+        """The carried state as replay must keep it, or `None` to keep nothing.
+
+        R2D2 section 2.3 stores the recurrent state a window began from so the
+        learner burns in from it rather than from zeros. Only a policy that
+        carries a recurrent state has anything to store; every other policy says
+        so by returning `None`, and then no window carries a state nothing reads.
+        An implementation that does store must detach and move to CPU, because a
+        replayed state outlives both the graph and the device that produced it.
+        """
+        ...
+
 
 def valid_actions(features: StateFeatures) -> list[int]:
     return [index for index, allowed in enumerate(features.mask) if allowed]
@@ -38,6 +50,10 @@ class RandomPolicy:
         self._random = random.Random(self.seed)
 
     def initial_state(self) -> None:
+        return None
+
+    def stored_recurrent_state(self, state: None) -> None:
+        """Carries no state across steps, so a window stores none."""
         return None
 
     def act(
@@ -64,6 +80,10 @@ class CheapestFirstPolicy:
     def initial_state(self) -> None:
         return None
 
+    def stored_recurrent_state(self, state: None) -> None:
+        """Carries no state across steps, so a window stores none."""
+        return None
+
     def act(
         self, features: StateFeatures, state: None, *, epsilon: float = 0.0
     ) -> tuple[int, None]:
@@ -87,6 +107,10 @@ class WaitOnlyPolicy:
     """Never buys. The degenerate reference that dies at wave two."""
 
     def initial_state(self) -> None:
+        return None
+
+    def stored_recurrent_state(self, state: None) -> None:
+        """Carries no state across steps, so a window stores none."""
         return None
 
     def act(

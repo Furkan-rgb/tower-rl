@@ -101,6 +101,15 @@ class StackedDqnBackbone:
     def initial_state(self) -> StackedState:
         return self.online.initial_state(1, self.device)
 
+    def stored_recurrent_state(self, state: StackedState) -> None:
+        """Nothing: this backbone has no recurrent state to store.
+
+        Its window is the stored scalars themselves, rebuilt from the burn-in
+        prefix in `learn`, so a carried state in replay would be a field nothing
+        reads.
+        """
+        return None
+
     def act(
         self, features: StateFeatures, state: StackedState | None, *, epsilon: float
     ) -> tuple[int, StackedState]:

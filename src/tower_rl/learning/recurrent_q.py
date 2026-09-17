@@ -85,6 +85,15 @@ class RecurrentQBackbone:
     def initial_state(self) -> RecurrentState:
         return self.online.initial_state(1, self.device)
 
+    def stored_recurrent_state(self, state: RecurrentState) -> RecurrentState:
+        """The LSTM state as replay keeps it: detached, on CPU, its own storage.
+
+        Replay outlives both the autograd graph that produced the state and, on a
+        GPU run, the memory it lived in, so a stored state must own neither.
+        """
+        hidden, cell = state
+        return hidden.detach().cpu().clone(), cell.detach().cpu().clone()
+
     def act(
         self, features: StateFeatures, state: RecurrentState | None, *, epsilon: float
     ) -> tuple[int, RecurrentState]:
@@ -114,13 +123,17 @@ class RecurrentQBackbone:
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
         """One optimisation step over a batch of equal-length sequences."""
         burn_in = batch.burn_in
-        state = self.online.initial_state(batch.batch_size, self.device)
-        target_state = self.target.initial_state(batch.batch_size, self.device)
+        stored = self._stored_state(batch)
+        state = stored
+        target_state = stored
 
         if burn_in:
             # Burn-in reconstructs the recurrent state without training on it, so
-            # a stored state that has drifted since collection cannot bias the
-            # learning window.
+            # the staleness of the stored state - it was produced by older
+            # parameters - is corrected before the learning window, by each
+            # network through its own weights. R2D2 section 2.3 measures this
+            # combination against burning in from zeros and prefers it; zero
+            # state plus burn-in is the variant that paper argues against.
             with torch.no_grad():
                 _, state = self.online(
                     batch.scalars[:, :burn_in], batch.rows[:, :burn_in],
@@ -181,6 +194,21 @@ class RecurrentQBackbone:
             gradient_norm=float(gradient_norm.item()),
             td_errors=real_step_td_errors(absolute, real),
         )
+
+    def _stored_state(self, batch: SequenceBatch) -> RecurrentState:
+        """The state burn-in starts from: what the actor stored, per sequence.
+
+        Batched here rather than in collation because the shape is this network's
+        own: an LSTM state is `[layers, batch, hidden]`, so sequences join along
+        dimension one. A batch that carries no stored state - every sequence
+        collected by a policy without one - starts from zeros, which is the only
+        state there is to start from.
+        """
+        if not batch.recurrent_states:
+            return self.online.initial_state(batch.batch_size, self.device)
+        hidden = torch.cat([state[0] for state in batch.recurrent_states], dim=1)
+        cell = torch.cat([state[1] for state in batch.recurrent_states], dim=1)
+        return hidden.to(self.device), cell.to(self.device)
 
     # -- persistence -------------------------------------------------------
 

@@ -7,6 +7,123 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E019 — The round-time law, and a falsified prediction: `round_delta ≈ 1.07 · frame_game_ms · (loop_frames − 1)`, the pause is a genuine freeze, and a sequence race blocks training
+
+**Date:** 2026-09-17
+**Status:** The `round/game` defect left unresolved in `M1B-E018` is closed for
+reporting purposes. The two-term prediction committed after `M1B-E018` is
+falsified in its specific form; a different, empirically fit law is recorded
+in its place. A separate, decisive finding rules out one candidate mechanism
+outright. A new blocking defect is surfaced and left for a concurrent commit.
+
+Four arms/tests at commit `c07ae35`, which had just fixed settle-frame
+mis-accounting by zeroing `captureDeltaTime` before `Pause`, on the disposable
+clone `emulator-5556`, offline verified by interface before every measurement,
+scripted policy throughout.
+
+### E1 — the ratio sweep, 4 episodes per arm
+
+| f (ms) | round/budgeted | speedup | valid | dec/wave | mean wave | ms/advance |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50 | 1.040 | 2.656 | 4/4 | 20.78 | 8.00 | 540 |
+| 100 | 1.011 | 4.600 | 3/4 | 15.91 | 7.67 | 283 |
+| 250 | 0.932 | 8.309 | 4/4 | 20.72 | 8.00 | 139 |
+
+`advances_cut_short` and `BRIDGE_EVENT_DIVERGENCE` were zero in every arm. The
+one invalid episode (100 ms) was `advance was not confirmed:
+stale_or_duplicate`, not a divergence. Four episodes per arm is ample for the
+ratio, which aggregates hundreds of advances each — it is **not** ample for
+any fidelity or wave claim, and none is made from this arm.
+
+**The committed prediction was falsified in its specific form.** The predicted
+flat ratio of approximately 1.07 did not appear: the ratio still falls
+monotonically (1.040 / 1.011 / 0.932), though the spread collapsed sharply from
+the `M1B-E018` values (0.985 / 0.911 / 0.740) that the fix was meant to
+address. The two-term model `deficit = 2.68·f − 110 ms` does not survive this
+data and is withdrawn. Recording this plainly: the prediction was made, it was
+tested, and it failed.
+
+### E2 — the round-clock regression, 1,572 probed advances
+
+Regressing the chained round-clock delta on `loop_frames` (the chaining is
+exact: `t0(N) = t2(N−1)`):
+
+| f (ms) | fit | R² | n | slope/f | intercept/f |
+| --- | --- | --- | --- | --- | --- |
+| 50 | `53.50·lf − 52.7` | 0.9997 | 569 | 1.070 | −1.053 |
+| 100 | `106.89·lf − 103.4` | 0.9987 | 404 | 1.069 | −1.034 |
+| 250 | `269.47·lf − 279.5` | 0.9773 | 589 | 1.078 | −1.118 |
+
+The law is **`round_delta ≈ 1.07 · frame_game_ms · (loop_frames − 1)`**: the
+game credits about 7% more simulated time per frame than `captureDeltaTime`
+requests, and about one frame per advance is never credited at all. Cross-check
+against E1: `1.07·(lf−1)/lf` with `lf` = 40/20/8 predicts 1.043/1.016/0.936
+against the measured 1.040/1.011/0.932. The earlier "constant 110 ms" term was
+in fact `1.07·f` evaluated at the single frame size it was fit against, not a
+constant.
+
+Also recorded: `t2 − t1` medians of 53/107/267 ms ≈ 1.068·f — the last loop
+frame's credit, which the mid-loop `t1` read precedes. The residual
+`(t1 − t0) − f·lf` has medians of +33 / −74 / −395 ms across 50/100/250 ms:
+frame-size-proportional, not constant.
+
+### E3 — the decisive test: does the round clock credit paused wall time?
+
+35 advances per condition at `frame_game_ms = 100`, through the normal
+adapter/port path. Bridge-reported `round_ms` on full-budget advances: no
+sleep, n=30, median 2033 ms; with a deliberate 1000 ms host-side sleep inserted
+between decisions, n=14, median 2033 ms (mean 2041, max 2140 — one extra
+frame). The chained paused gap `t0(N) − t2(N−1)` was 0.0 ms for all 19 chained
+advances under the sleep.
+
+**Conclusion: the game's round clock does not credit paused wall time.** It is
+a pure per-frame simulated-time accumulator, and `Pause` is a genuine freeze,
+not merely a rendering stop.
+
+### Lead's decisions recorded here
+
+1. The round clock stays the authoritative witness for reported speedup
+   (`total_round_seconds / total_wall_seconds`), already in effect since
+   `c07ae35`.
+2. The advance loop's budget condition stays on `frames × frame_game_ms` and is
+   **not** switched to the round clock. The budget is a bound on quiet game
+   time, not a measurement — advances are stopped by events rather than by the
+   budget, and `M1B-E018` already showed real time per decision flat at about
+   1550 ms across all frame sizes. A 7% systematic offset in a bound moves no
+   decision moment, and coupling the loop to a game-internal float would add
+   complexity for no behavioural gain.
+
+### UNRESOLVED — two mechanisms, neither chased
+
+- **The 1.07 factor is unexplained.** Untested candidates: a permanent
+  account-level game-speed modifier (e.g. a lab bonus), a hidden multiplier, or
+  a `deltaTime` clamp. Note that the adapter pins the game's own multiplier at
+  1.0 and reports it, so a reported-1.0-but-effective-1.07 would indicate a
+  separate modifier from the one the adapter controls.
+- **The one uncredited frame per advance is unexplained.** Candidate: the
+  first frame after `Unpause` does not apply `captureDeltaTime`.
+
+### Blocking finding: a sequence race in the bridge's idle observation stream
+
+15 of 35 advances in the E3 sleep condition were rejected
+`stale_or_duplicate` even after a fresh read. The bridge's roughly 250 ms idle
+observation stream races any sequence-bound command once host latency
+approaches it. This blocks RL training directly: a trained network's forward
+pass plus learning step routinely exceeds 250 ms. It surfaces as
+`ACTION_PIPELINE_FAILED` — lost episodes, not silent corruption. A fix is in
+flight in a concurrent commit.
+
+### Caveats
+
+One host, one build, 4 episodes per E1 arm. The control logcat
+(`lc-e3b-ctrl.txt`) also contains the start of the sleep run — its 9.2 s gap
+outlier is that boundary — while the sleep-condition logcat
+(`lc-e3b-sleep.txt`) is clean.
+
+Source data: `FINDINGS.md`, `E2-statistics.txt`, `e1-f{50,100,250}.json`,
+`e3b-{ctrl,sleep}.json`, `logcat-e1.txt`, `lc-e3b-{ctrl,sleep}.txt`, session
+scratchpad.
+
 ## M1B-E018 — The `frame_game_ms` sweep: decision density is flat, 100 ms is the standing decision, and the round-time witness has its own defect
 
 **Date:** 2026-09-17

@@ -85,17 +85,36 @@ cannot detect a one-wave fidelity difference at 80% power (97/arm would be
 needed), so absence of a detected difference at 50/100 ms is not equivalence,
 only an absence of evidence at this sample size.
 
+### Done: the game-time accounting question is closed for reporting purposes
+
+`M1B-E019`. The round clock stays the authoritative witness for reported
+speedup, already in effect since `c07ae35`; the advance loop's budget stays on
+frame arithmetic (`frames × frame_game_ms`), for the reasons recorded there —
+the budget bounds quiet game time rather than measuring it, and advances stop
+on events rather than on the budget. The measured law is
+`round_delta ≈ 1.07 · frame_game_ms · (loop_frames − 1)`: the game credits
+about 7% more simulated time per frame than requested, and about one frame per
+advance goes uncredited. Two mechanism questions are open and unchased — the
+1.07 factor, and the uncredited frame — see `M1B-E019` for the candidates
+considered.
+
 ### The immediate next slice
 
-**Episode-boundary overhead**, now that frame size is settled. Advance share —
-the fraction of wall clock spent on genuine advances rather than boundary — is
-0.834 at 100 ms and falls further at coarser frames, so the fixed per-episode
-boundary already dominates throughput above 100 ms. The 6-second result-panel
-settle and the gated boundary tap (item 2 below) are the two known
-contributors and are the next thing to cut. If the specialist's recommendation
-on the round-time witness defect (`M1B-E018`, unresolved) lands first, fix the
-game-time accounting before this slice, since it may change how boundary cost
-is measured.
+**The `stale_or_duplicate` sequence race**, which blocks training. `M1B-E019`
+found the bridge's roughly 250 ms idle observation stream races any
+sequence-bound command once host latency approaches it (15 of 35 advances
+rejected in a deliberate-latency test) — a trained network's forward pass plus
+learning step routinely exceeds 250 ms, so this must be fixed before training
+can run unattended. It surfaces as `ACTION_PIPELINE_FAILED` (lost episodes, not
+silent corruption). A fix may be landing concurrently with this note; check
+`M1B-E019` and recent commits for its status before starting new work here.
+
+**Episode-boundary overhead** stays queued after the sequence race. Advance
+share — the fraction of wall clock spent on genuine advances rather than
+boundary — is 0.834 at 100 ms and falls further at coarser frames, so the
+fixed per-episode boundary already dominates throughput above 100 ms. The
+6-second result-panel settle and the gated boundary tap (item 2 below) are the
+two known contributors and are the next thing to cut once the race is closed.
 
 ### After that, in order
 

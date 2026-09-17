@@ -71,6 +71,12 @@ def main() -> int:
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     parser.add_argument("--slice-ms", type=int, default=250)
+    parser.add_argument(
+        "--max-episode-game-seconds",
+        type=float,
+        default=1200.0,
+        help="hang deadline in GAME seconds; converted per arm to wall seconds",
+    )
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-comparison.json"))
     arguments = parser.parse_args()
 
@@ -96,14 +102,26 @@ def main() -> int:
     )
     client.connect()
     adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
+    def cadence_for(speed: float) -> CadenceConfig:
+        """The hang deadline is a game-time budget, not a wall-clock one.
+
+        A run takes about the same amount of *game* time whatever speed it is
+        played at, so a fixed wall-clock deadline means something different to
+        every arm. At 64x a 600 second deadline never binds; at 1x it is barely
+        longer than an ordinary episode and would truncate the upper tail of the
+        slow arm - which is exactly the arm a speed comparison is measured
+        against.
+        """
+        return CadenceConfig(
+            slice_game_ms=arguments.slice_ms,
+            max_quiet_game_ms=arguments.slice_ms * 8,
+            max_episode_wall_seconds=max(60.0, arguments.max_episode_game_seconds / speed),
+        )
+
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
-        cadence=CadenceConfig(
-            slice_game_ms=arguments.slice_ms,
-            max_quiet_game_ms=arguments.slice_ms * 8,
-            max_episode_wall_seconds=600.0,
-        ),
+        cadence=cadence_for(max(arm.speed for arm in arms.values())),
     )
     actors = {
         name: Actor(
@@ -126,6 +144,7 @@ def main() -> int:
             # The adapter applies the requested speed when the episode begins, so
             # setting it here is what makes an arm switch actually take effect.
             adapter.requested_speed = arms[name].speed
+            environment.cadence = cadence_for(arms[name].speed)
             summary = actors[name].run_episode().summary
             if summary.valid:
                 waves[name].append(summary.final_wave)
@@ -144,11 +163,13 @@ def main() -> int:
         "episodes_requested_per_arm": arguments.episodes,
         "block": arguments.block,
         "seed": arguments.seed,
+        "max_episode_game_seconds": arguments.max_episode_game_seconds,
         "wall_seconds": round(time.monotonic() - started, 1),
         "arms": {
             name: {
                 "policy": arms[name].policy,
                 "speed": arms[name].speed,
+                "max_episode_wall_seconds": cadence_for(arms[name].speed).max_episode_wall_seconds,
                 "valid_episodes": len(waves[name]),
                 "invalid_detail": dict(invalid[name]),
                 **_distribution(waves[name]),

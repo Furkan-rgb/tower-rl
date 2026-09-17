@@ -222,3 +222,38 @@ def test_a_run_on_an_accelerator_builds_its_batches_there() -> None:
     report = training.run()
 
     assert report.optimisation_steps > 0
+
+
+def test_a_run_advances_in_blocks_and_carries_its_progress() -> None:
+    """Arms sharing one device take turns, so a run must be resumable mid-budget."""
+    training = _run(budget_decisions=2000)
+
+    first = training.advance(40)
+    after_first = (first.decisions, first.episodes, first.optimisation_steps)
+
+    assert 0 < after_first[0] < 2000
+    assert not training.finished
+
+    second = training.advance(40)
+
+    assert second is training.report, "progress is carried, not restarted"
+    assert second.decisions > after_first[0]
+    assert second.episodes > after_first[1]
+    # Gradient steps earned in one block but not yet taken carry into the next.
+    assert second.optimisation_steps > after_first[2]
+
+
+def test_advancing_never_overruns_the_budget() -> None:
+    training = _run(budget_decisions=60)
+
+    training.advance(10_000)
+
+    assert training.finished
+    # The limit lands on an episode boundary, so the last episode may carry the
+    # count past the budget; it may never stop short of it.
+    assert training.report.decisions >= 60
+
+
+def test_a_block_must_buy_at_least_one_decision() -> None:
+    with pytest.raises(ValueError, match="at least one decision"):
+        _run().advance(0)

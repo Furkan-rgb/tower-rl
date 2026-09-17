@@ -881,6 +881,32 @@ Before recurrence and multiple actors, train a single-actor Double/Dueling DQN o
 
 If real-game learning time is prohibitive for debugging, unit-test the learner with standard toy environments. Do not feed toy or synthetic Tower transitions into the real replay or use toy success as evidence that the Tower environment is correct.
 
+### 9.2b Comparing backbones on one device
+
+Several candidates are compared, and there is only one clone to run them on.
+Training one arm to its full budget and then the next would confound the
+backbone with whatever drifted in between — the device, the host, the account —
+which is the same trap `application/comparison.py` exists to avoid on the
+evaluation side. Training arms are therefore interleaved as well: each arm holds
+its own backbone, replay buffer and actor, and `scripts/train.py` hands the
+device to the next arm every `block_decisions`, in a shuffled round-robin so no
+arm is systematically first.
+
+Three properties make that honest:
+
+- The budget is equal **per arm** and counted in environment decisions, so a
+  stronger policy surviving longer does not buy itself more experience.
+- A block ends on an episode boundary. An episode in progress is played to its
+  classified end, because a half-episode is not experience and its sequences
+  would be tagged with a policy that stopped acting.
+- Exploration, the importance-sampling beta and the gradient-step debt are all
+  carried across blocks, so an arm resumes in exactly the state it paused in.
+  A run advanced in ten blocks must be the same run as one advanced in one.
+
+Replay is per arm and in memory. Arms never share transitions: they are
+different policies, and pooling their experience would make the comparison one
+of optimisers over a common dataset rather than of agents.
+
 ### 9.3 Final network
 
 The observation has two parts with different shapes: a small set of run scalars,

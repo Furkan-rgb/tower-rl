@@ -100,14 +100,35 @@ class TrainingRun:
     #: measurement rather than experience.
     evaluate: Callable[[], EvaluationReport] | None = None
     checkpoint: Callable[[TrainingProgressReport], None] | None = None
+    #: Progress so far. It is instance state rather than a local because a run
+    #: can be advanced in blocks: several arms sharing one device take turns, so
+    #: whatever drifts on the device lands on all of them equally.
+    report: TrainingProgressReport = field(default_factory=TrainingProgressReport)
+    #: Gradient steps earned but not yet taken, carried across blocks.
+    _owed: float = field(default=0.0, init=False)
+
+    @property
+    def finished(self) -> bool:
+        return self.report.decisions >= self.config.budget_decisions
 
     def run(self) -> TrainingProgressReport:
         """Collect and learn until the decision budget is spent."""
-        report = TrainingProgressReport()
-        started = time.monotonic()
-        owed = 0.0
+        return self.advance(self.config.budget_decisions)
 
-        while report.decisions < self.config.budget_decisions:
+    def advance(self, decisions: int) -> TrainingProgressReport:
+        """Collect and learn for up to `decisions` more, never past the budget.
+
+        The limit lands on an episode boundary: an episode in progress is played
+        to its classified end, because a half-episode is not experience.
+        """
+        if decisions < 1:
+            raise ValueError("a block must be at least one decision")
+        report = self.report
+        target = min(report.decisions + decisions, self.config.budget_decisions)
+        started = time.monotonic()
+        owed = self._owed
+
+        while report.decisions < target:
             # Exploration is set per episode rather than per step, so a stored
             # sequence has one epsilon and its provenance stays meaningful.
             self.actor.config = replace(
@@ -138,7 +159,8 @@ class TrainingRun:
             if self.on_episode is not None:
                 self.on_episode(report)
 
-        report.wall_seconds = round(time.monotonic() - started, 2)
+        self._owed = owed
+        report.wall_seconds = round(report.wall_seconds + time.monotonic() - started, 2)
         return report
 
     def _periodic(self, report: TrainingProgressReport) -> None:

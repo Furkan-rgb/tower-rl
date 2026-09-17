@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import random
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 BOOTSTRAP_ITERATIONS = 10_000
@@ -83,8 +84,8 @@ def interleave_schedule(
 
 
 def bootstrap_difference(
-    left: list[int | float],
-    right: list[int | float],
+    left: Sequence[float],
+    right: Sequence[float],
     *,
     iterations: int = BOOTSTRAP_ITERATIONS,
     confidence: float = 0.95,
@@ -105,8 +106,8 @@ def bootstrap_difference(
     observed = statistics.fmean(left) - statistics.fmean(right)
     differences = []
     for _ in range(iterations):
-        resampled_left = statistics.fmean(generator.choices(left, k=len(left)))
-        resampled_right = statistics.fmean(generator.choices(right, k=len(right)))
+        resampled_left = statistics.fmean(generator.choices(list(left), k=len(left)))
+        resampled_right = statistics.fmean(generator.choices(list(right), k=len(right)))
         differences.append(resampled_left - resampled_right)
     differences.sort()
     tail = (1.0 - confidence) / 2.0
@@ -115,7 +116,7 @@ def bootstrap_difference(
     return observed, low, high
 
 
-def cohens_d(left: list[int | float], right: list[int | float]) -> float:
+def cohens_d(left: Sequence[float], right: Sequence[float]) -> float:
     """Standardised effect size, pooled. Reported beside the raw difference."""
     if len(left) < 2 or len(right) < 2:
         raise ValueError("each arm needs at least two episodes")
@@ -130,7 +131,7 @@ def cohens_d(left: list[int | float], right: list[int | float]) -> float:
 
 
 def compare(
-    arms: dict[str, list[int]], *, confidence: float = 0.95, seed: int | None = 0
+    arms: dict[str, Sequence[float]], *, confidence: float = 0.95, seed: int | None = 0
 ) -> tuple[Difference, ...]:
     """Every pairwise comparison, in a stable order."""
     names = sorted(arms)

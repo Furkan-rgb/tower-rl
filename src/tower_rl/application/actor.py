@@ -25,8 +25,11 @@ from tower_rl.application.replay import (
 from tower_rl.application.run_environment import InstrumentedRunEnvironment
 from tower_rl.domain.episode import REWARD_SCHEMA_VERSION, EpisodeSummary, TerminationOutcome
 from tower_rl.domain.features import StateFeatures, encode_state
-from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION, action_at
+from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION, WAIT, action_at, action_index
 from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION
+
+#: `WAIT` is index 0 of `run-action-v1`, asked rather than assumed.
+WAIT_ACTION_INDEX = action_index(WAIT)
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,12 @@ class EpisodeResult:
     sequences_offered: int
     sequences_accepted: int
     total_reward: float
+    #: Decisions that chose `WAIT` (action index 0). Counted here because this
+    #: is where the actions are taken; the episode summary knows what the game
+    #: did, not what the policy asked for. Beside `summary.purchases` it is what
+    #: makes a degenerate policy - one that waits out every episode - visible
+    #: while it is happening rather than only in the final wave.
+    wait_decisions: int = 0
 
 
 @dataclass
@@ -119,7 +128,13 @@ class Actor:
 
         summary = self.environment.summarize(termination)
         offered, accepted = self._emit(steps, carried, summary)
-        return EpisodeResult(summary, offered, accepted, total_reward)
+        return EpisodeResult(
+            summary,
+            offered,
+            accepted,
+            total_reward,
+            wait_decisions=sum(1 for step in steps if step.action_index == WAIT_ACTION_INDEX),
+        )
 
     def _emit(
         self, steps: list[ReplayStep], carried: list[Any], summary: EpisodeSummary

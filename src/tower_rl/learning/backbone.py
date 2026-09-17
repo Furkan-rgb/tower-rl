@@ -20,13 +20,28 @@ from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, StateFeatures
 
 @dataclass(frozen=True)
 class LearnMetrics:
-    """What one optimisation step reports, for tracking and for priorities."""
+    """What one optimisation step reports, for tracking and for priorities.
 
-    loss: float
-    mean_absolute_td_error: float
+    The two scalars a run's health is read from are named for whether the
+    importance-sampling weights are in them, because that distinction is what
+    made the first run unreadable: the weighted loss fell over the run largely
+    because beta annealed the weights upwards, not because the learner improved.
+    """
+
+    #: The optimised quantity: Huber loss scaled by the per-sequence
+    #: importance-sampling weights, and therefore confounded with the beta
+    #: schedule and the priority exponent.
+    weighted_loss: float
+    #: The same batch's mean absolute TD error with no weighting of any kind.
+    #: This is the one to read a learning curve against.
+    unweighted_mean_absolute_td_error: float
     gradient_norm: float
     #: Per-sequence absolute TD errors, in the order the batch was sampled.
     td_errors: tuple[tuple[float, ...], ...]
+    #: Correlation between V(s_t) and the realised discounted return over the
+    #: steps of this batch whose episode ended inside the stored sequence.
+    #: `None` when the batch holds too few such steps to correlate.
+    value_fit_correlation: float | None = None
 
 
 @dataclass(frozen=True)

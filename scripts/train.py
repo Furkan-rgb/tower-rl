@@ -29,6 +29,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -48,9 +49,12 @@ from tower_rl.application.evaluator import EvaluationReport, evaluate, to_record
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.application.training import (  # noqa: E402
+    CollectionWindow,
     TrainingConfig,
     TrainingProgressReport,
     TrainingRun,
+    action_distribution,
+    collection_windows,
 )
 from tower_rl.domain.episode import REWARD_SCHEMA_VERSION  # noqa: E402
 from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
@@ -74,6 +78,7 @@ from tower_rl.ports.experiment_tracker import (  # noqa: E402
     NoExperimentTracker,
     TrackedRun,
 )
+from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 #: Every backbone in the comparison, addressed identically. Adding one here is
 #: all it takes to put it under the same protocol as the others.
@@ -125,6 +130,23 @@ class LearningCurvePoint:
     #: The checkpoint holding exactly the weights this point scored.
     checkpoint_fingerprint: str
     checkpoint_path: str
+    #: The learner's health at this point, as the diagnostics name it. The loss
+    #: carries the importance-sampling weights and the TD error does not, which
+    #: is why they are never reported under one name.
+    weighted_loss: float | None
+    unweighted_mean_absolute_td_error: float | None
+    gradient_norm: float | None
+    #: Predicted value against realised discounted return. Near zero with the
+    #: other signals healthy means the learner is not learning the return.
+    value_fit_correlation: float | None
+    #: What the collecting policy did over the last window of episodes. The
+    #: random baseline buys 18.7 upgrades per episode.
+    collection_wait_fraction: float | None
+    collection_purchases_per_episode: float | None
+    #: True for the single pre-registered exploration-free evaluation of the
+    #: final checkpoint, which is the headline number against the scripted
+    #: reference. Every other point is incidental.
+    pre_registered_final: bool = False
 
     def line(self) -> str:
         spread = "n/a" if self.stdev_final_wave is None else f"{self.stdev_final_wave:.2f}"
@@ -138,14 +160,14 @@ class LearningCurvePoint:
 
 def curve_metrics(
     point: LearningCurvePoint,
-    report: TrainingProgressReport,
     evaluation: EvaluationReport,
 ) -> dict[str, float]:
     """What one curve point is worth tracking for, keyed by nothing but itself.
 
     Every number here is already measured; none is instrumented for tracking.
-    The learner health signals are the ones `learn` returns anyway - loss, TD
-    error magnitude, gradient norm - averaged over the last hundred steps.
+    The learner health signals are the ones `learn` returns anyway - the
+    weighted loss, the unweighted TD error magnitude, the gradient norm and the
+    value fit - averaged over the last hundred steps.
     """
     waves = sum(point.final_waves)
     metrics: dict[str, float] = {
@@ -164,12 +186,43 @@ def curve_metrics(
         # the budget is actually spent at.
         metrics["eval_decisions_per_wave"] = evaluation.decisions_in_valid_episodes / waves
     health = {
-        "mean_recent_loss": report.mean_recent_loss,
-        "mean_recent_absolute_td_error": report.mean_recent_absolute_td_error,
-        "mean_recent_gradient_norm": report.mean_recent_gradient_norm,
+        # Weighted and unweighted are spelled out in the key itself: reading one
+        # as the other is what made the first run look like it was learning.
+        "learner_weighted_loss_with_is_weights": point.weighted_loss,
+        "learner_unweighted_mean_absolute_td_error": point.unweighted_mean_absolute_td_error,
+        "learner_gradient_norm": point.gradient_norm,
+        "learner_value_fit_correlation": point.value_fit_correlation,
+        "collection_wait_fraction": point.collection_wait_fraction,
+        "collection_purchases_per_episode": point.collection_purchases_per_episode,
     }
     metrics.update({key: value for key, value in health.items() if value is not None})
     return metrics
+
+
+def window_metrics(window: CollectionWindow) -> dict[str, float]:
+    """One point of the collection curve, which is what the run is read from."""
+    metrics = {
+        "collection_mean_final_wave": window.mean_final_wave,
+        "collection_versus_scripted_reference": window.mean_final_wave - SCRIPTED_REFERENCE,
+        "collection_episodes": float(window.episodes),
+        "collection_window_wait_fraction": window.wait_fraction,
+        "collection_window_purchases_per_episode": window.purchases_per_episode,
+    }
+    if window.stdev_final_wave is not None and window.standard_error is not None:
+        metrics["collection_stdev_final_wave"] = window.stdev_final_wave
+        metrics["collection_standard_error"] = window.standard_error
+    return metrics
+
+
+def window_line(window: CollectionWindow) -> str:
+    error = "n/a" if window.standard_error is None else f"{window.standard_error:.2f}"
+    return (
+        f"window {window.index} decisions {window.decisions_at_end} "
+        f"mean final wave {window.mean_final_wave:.2f} se {error} "
+        f"over {window.episodes} collected episodes, "
+        f"wait {window.wait_fraction:.1%} purchases/episode "
+        f"{window.purchases_per_episode:.1f}"
+    )
 
 
 def invalid_episodes_by_reason(report: TrainingProgressReport) -> dict[str, int]:
@@ -211,9 +264,20 @@ class Arm:
     #: that keeps nothing, so the code below has no tracked and untracked paths.
     run: TrackedRun
     learning_curve: list[LearningCurvePoint] = field(default_factory=list)
+    #: The collection curve: every window of collected episodes that has closed.
+    #: This is the series the run is read from; the learning curve holds the one
+    #: pre-registered evaluation.
+    collection_curve: list[CollectionWindow] = field(default_factory=list)
     #: The weight digest of the checkpoint last written, which is what a curve
     #: point names when it says which checkpoint it corresponds to.
     last_checkpoint_fingerprint: str = ""
+    #: Runs one exploration-free evaluation and records it on the curve. Held
+    #: here as well as on the training run because the pre-registered final
+    #: evaluation is taken by the session, after the budget is spent, rather
+    #: than on a period.
+    evaluation: Callable[[bool], EvaluationReport] | None = None
+    #: The point that evaluation produced, which is the headline number.
+    final_point: LearningCurvePoint | None = None
 
     @property
     def checkpoint_path(self) -> Path:
@@ -245,7 +309,9 @@ class Arm:
         )
         return digest
 
-    def record_point(self, evaluation: EvaluationReport) -> LearningCurvePoint:
+    def record_point(
+        self, evaluation: EvaluationReport, *, pre_registered_final: bool = False
+    ) -> LearningCurvePoint:
         """Place one evaluation on the curve, against the checkpoint it scored.
 
         Each point gets its own checkpoint file rather than sharing the resume
@@ -254,6 +320,8 @@ class Arm:
         has since moved on would name nothing.
         """
         progress = self.training.report
+        window = self.training.config.collection_window_episodes
+        recent = action_distribution(progress.collected[-window:])
         path = self.run_dir / "checkpoints" / f"decisions-{progress.decisions:07d}.pt"
         digest = self._write(progress, path)
         spread = evaluation.distribution
@@ -274,19 +342,45 @@ class Arm:
             versus_scripted_reference=round(spread.mean - SCRIPTED_REFERENCE, 3),
             checkpoint_fingerprint=digest,
             checkpoint_path=str(path),
+            weighted_loss=progress.mean_recent_weighted_loss,
+            unweighted_mean_absolute_td_error=(
+                progress.mean_recent_unweighted_absolute_td_error
+            ),
+            gradient_norm=progress.mean_recent_gradient_norm,
+            value_fit_correlation=progress.mean_recent_value_fit_correlation,
+            collection_wait_fraction=None if recent is None else recent.wait_fraction,
+            collection_purchases_per_episode=(
+                None if recent is None else recent.purchases_per_episode
+            ),
+            pre_registered_final=pre_registered_final,
         )
         self.learning_curve.append(point)
         # Keyed by decisions consumed, because that is the budget unit the
         # comparison equalises on; the checkpoint goes up under the fingerprint
         # the point names, so a tracked point resolves to an exact file.
-        self.run.log_metrics(
-            curve_metrics(point, progress, evaluation), decisions=progress.decisions
-        )
+        self.run.log_metrics(curve_metrics(point, evaluation), decisions=progress.decisions)
         self.run.log_artifact(path, directory=f"checkpoints/{digest}")
         return point
 
+    def record_collection_windows(self) -> None:
+        """Emit every window of collected episodes that has closed since the last call.
+
+        Called per episode, and cheap: a closed window is never recomputed into a
+        second point, and the series is what both the report and the tracked run
+        carry the curve as.
+        """
+        windows = collection_windows(
+            self.training.report.collected,
+            size=self.training.config.collection_window_episodes,
+        )
+        for window in windows[len(self.collection_curve) :]:
+            self.collection_curve.append(window)
+            self.run.log_metrics(window_metrics(window), decisions=window.decisions_at_end)
+            print(f"[{self.name}] collection: {window_line(window)}", flush=True)
+
     def summary(self) -> dict[str, object]:
         report = self.training.report
+        distribution = action_distribution(report.collected)
         return {
             "backbone": self.name,
             "run_id": self.identity.run_id,
@@ -295,13 +389,27 @@ class Arm:
             "episodes": report.episodes,
             "valid_episodes": report.valid_episodes,
             "optimisation_steps": report.optimisation_steps,
-            "mean_recent_loss": report.mean_recent_loss,
+            "mean_recent_weighted_loss": report.mean_recent_weighted_loss,
             "sequences_accepted": report.sequences_accepted,
             "wall_seconds": report.wall_seconds,
             "final_waves": report.final_waves,
-            # The curve first: it is what the run is read from, and everything
-            # below it is the detail behind one of its points.
+            # The collection curve first: it is what the run is read from, and
+            # the learning curve below it holds the pre-registered evaluation of
+            # the final checkpoint, which is the headline against the floors.
+            "collection_curve": [asdict(window) for window in self.collection_curve],
+            "collection_window_episodes": self.training.config.collection_window_episodes,
+            "final_evaluation": (
+                asdict(self.final_point) if self.final_point is not None else None
+            ),
             "learning_curve": [asdict(point) for point in self.learning_curve],
+            "mean_recent_unweighted_absolute_td_error": (
+                report.mean_recent_unweighted_absolute_td_error
+            ),
+            "mean_recent_gradient_norm": report.mean_recent_gradient_norm,
+            "mean_recent_value_fit_correlation": report.mean_recent_value_fit_correlation,
+            "action_distribution": (
+                asdict(distribution) if distribution is not None else None
+            ),
             "reference_final_waves": REFERENCE_FINAL_WAVES,
             "invalid_episodes_by_reason": invalid_episodes_by_reason(report),
             "failed_episodes": report.failed_episodes,
@@ -324,7 +432,12 @@ def build_backbone(
     record them cannot be compared with the next one.
     """
     if name == "recurrent-q":
-        recurrent = RecurrentQConfig(seed=arguments.seed)
+        recurrent = RecurrentQConfig(
+            seed=arguments.seed,
+            n_step=arguments.n_step,
+            discount=arguments.discount,
+            learning_rate=arguments.learning_rate,
+        )
         return (
             RecurrentQBackbone(
                 config=recurrent,
@@ -333,7 +446,16 @@ def build_backbone(
             ),
             recurrent,
         )
-    stacked = StackedDqnConfig(seed=arguments.seed, history_length=arguments.history_length)
+    stacked = StackedDqnConfig(
+        seed=arguments.seed,
+        history_length=arguments.history_length,
+        n_step=arguments.n_step,
+        discount=arguments.discount,
+        learning_rate=arguments.learning_rate,
+        # The EMA target belongs to this backbone alone; the recurrent arm
+        # copies its target on a period instead.
+        target_ema_decay=arguments.target_ema_decay,
+    )
     return (
         StackedDqnBackbone(
             config=stacked,
@@ -362,22 +484,32 @@ def build_arm(
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     backbone, learner = build_backbone(name, arguments, device)
-    replay = PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
+    replay = PrioritizedSequenceReplay(
+        capacity=arguments.replay_capacity,
+        alpha=arguments.priority_alpha,
+        seed=arguments.seed,
+    )
     config = TrainingConfig(
         budget_decisions=arguments.budget_decisions,
+        warmup_sequences=arguments.warmup_sequences,
         batch_size=arguments.batch_size,
         gradient_steps_per_decision=arguments.gradient_steps_per_decision,
+        epsilon_start=arguments.epsilon_start,
+        epsilon_end=arguments.epsilon_end,
+        epsilon_anneal_decisions=arguments.epsilon_anneal_decisions,
+        collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
+    burn_in = burn_in_for(name, arguments)
     actor = Actor(
         environment=environment,
         policy=backbone,
         config=ActorConfig(
             actor_id=f"{arguments.serial}:{name}",
             sequence_length=arguments.sequence_length,
-            burn_in=arguments.burn_in,
+            burn_in=burn_in,
             stride=stride,
         ),
         replay=replay,
@@ -391,17 +523,25 @@ def build_arm(
         "warmup_sequences": config.warmup_sequences,
         "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
         "sequence_length": arguments.sequence_length,
-        "burn_in": arguments.burn_in,
+        # The burn-in this arm was built with, which is not the same number for
+        # both arms: see `burn_in_for`.
+        "burn_in": burn_in,
         "stride": stride,
         "history_length": arguments.history_length if name == "stacked-dqn" else None,
         "n_step": learner.n_step,
         "discount": learner.discount,
         "learning_rate": learner.learning_rate,
+        "target_ema_decay": (
+            arguments.target_ema_decay if name == "stacked-dqn" else None
+        ),
         "epsilon_start": config.epsilon_start,
         "epsilon_end": config.epsilon_end,
+        "epsilon_anneal_decisions": config.epsilon_anneal_decisions,
         "beta_start": config.beta_start,
         "beta_end": config.beta_end,
+        "priority_alpha": arguments.priority_alpha,
         "replay_capacity": arguments.replay_capacity,
+        "collection_window_episodes": config.collection_window_episodes,
         "evaluate_every_episodes": arguments.evaluate_every_episodes,
         "evaluation_episodes": arguments.evaluation_episodes,
         "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
@@ -448,7 +588,7 @@ def build_arm(
         resolved=resolved,
     )
 
-    def run_evaluation() -> EvaluationReport:
+    def run_evaluation(pre_registered_final: bool = False) -> EvaluationReport:
         # Exploration-free, never written to replay; the evaluator enforces both.
         report = evaluate(
             environment,
@@ -457,18 +597,27 @@ def build_arm(
             profile_id=profile_id,
             model_version=backbone.model_version,
         )
-        point = arm.record_point(report)
+        point = arm.record_point(report, pre_registered_final=pre_registered_final)
+        if pre_registered_final:
+            arm.final_point = point
         print(f"[{name}] {report.summary_line()}", flush=True)
         print(f"[{name}] curve: {point.line()}", flush=True)
         return report
 
+    def on_episode(report: TrainingProgressReport) -> None:
+        arm.record_collection_windows()
+        print(
+            f"[{name}] episode {report.episodes} decisions {report.decisions}/"
+            f"{config.budget_decisions} steps {report.optimisation_steps}",
+            flush=True,
+        )
+
+    arm.evaluation = run_evaluation
+    # The periodic hook takes no argument and is off by default: mid-run
+    # evaluation buys points too noisy to read at the price of device time.
     arm.training.evaluate = run_evaluation
     arm.training.checkpoint = arm.checkpoint
-    arm.training.on_episode = lambda report: print(
-        f"[{name}] episode {report.episodes} decisions {report.decisions}/"
-        f"{config.budget_decisions} steps {report.optimisation_steps}",
-        flush=True,
-    )
+    arm.training.on_episode = on_episode
     manifest = run_dir / "manifest.json"
     write_manifest(manifest, {"run_id": run_id, **resolved})
     run.log_artifact(manifest)
@@ -493,16 +642,75 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--replay-capacity", type=int, default=4096)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--gradient-steps-per-decision", type=float, default=2.0)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--gradient-steps-per-decision",
+        type=float,
+        default=0.25,
+        help="the replay ratio; 0.25 is about 126 transitions replayed per generated",
+    )
+    parser.add_argument("--warmup-sequences", type=int, default=100)
     parser.add_argument("--sequence-length", type=int, default=80)
-    parser.add_argument("--burn-in", type=int, default=40)
+    parser.add_argument(
+        "--burn-in",
+        type=int,
+        default=40,
+        help="recurrent-q only: how much history warms the LSTM state before the unroll",
+    )
+    parser.add_argument(
+        "--stacked-burn-in",
+        type=int,
+        default=7,
+        help=(
+            "stacked-dqn only: exactly history-length - 1, which is what fills the "
+            "window; anything longer discards learnable steps for nothing"
+        ),
+    )
     # Read by stacked-dqn only; the recurrent backbone carries time in its state.
     parser.add_argument("--history-length", type=int, default=8)
-    # Evaluation costs device time at the same rate as training, so its period
-    # is long and its sample is the 23 episodes M1B-E008 sized for one wave.
-    parser.add_argument("--evaluate-every-episodes", type=int, default=100)
-    parser.add_argument("--evaluation-episodes", type=int, default=23)
+    parser.add_argument("--n-step", type=int, default=10)
+    parser.add_argument("--discount", type=float, default=0.99)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--target-ema-decay",
+        type=float,
+        default=0.995,
+        help="stacked-dqn only; the recurrent arm copies its target on a period",
+    )
+    parser.add_argument("--epsilon-start", type=float, default=1.0)
+    parser.add_argument("--epsilon-end", type=float, default=0.05)
+    parser.add_argument(
+        "--epsilon-anneal-decisions",
+        type=int,
+        default=10_000,
+        help="decisions to anneal exploration over; held at the end value afterwards",
+    )
+    parser.add_argument(
+        "--priority-alpha",
+        type=float,
+        default=0.0,
+        help=(
+            "prioritized replay exponent; 0 samples uniformly and makes every "
+            "importance-sampling weight exactly one, so the loss is readable"
+        ),
+    )
+    parser.add_argument(
+        "--collection-window-episodes",
+        type=int,
+        default=100,
+        help="episodes per point of the collection curve the run is read from",
+    )
+    # Mid-run exploration-free evaluation is off: the curve is read from the
+    # collection episodes, and 5-episode points cost device time for a standard
+    # error no improvement worth having could clear. A positive period turns the
+    # periodic hook back on deliberately.
+    parser.add_argument("--evaluate-every-episodes", type=int, default=0)
+    parser.add_argument(
+        "--evaluation-episodes",
+        type=int,
+        default=30,
+        help="the pre-registered exploration-free evaluation of the final checkpoint",
+    )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
@@ -533,13 +741,37 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     arguments.backbone = list(dict.fromkeys(arguments.backbone or ["recurrent-q"]))
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
-    if "stacked-dqn" in arguments.backbone and arguments.burn_in < arguments.history_length - 1:
+    if (
+        "stacked-dqn" in arguments.backbone
+        and arguments.stacked_burn_in < arguments.history_length - 1
+    ):
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
         raise SystemExit(
-            f"burn-in {arguments.burn_in} cannot fill a window of {arguments.history_length}"
+            f"burn-in {arguments.stacked_burn_in} cannot fill a window of "
+            f"{arguments.history_length}"
         )
+    for name in arguments.backbone:
+        if burn_in_for(name, arguments) >= arguments.sequence_length:
+            raise SystemExit(
+                f"burn-in {burn_in_for(name, arguments)} leaves {name} no learning steps "
+                f"in a sequence of {arguments.sequence_length}"
+            )
     return arguments
+
+
+def burn_in_for(name: str, arguments: argparse.Namespace) -> int:
+    """How much of a sequence this backbone burns in before it learns.
+
+    Per arm, because the number means two different things. The recurrent arm
+    burns in to reconstruct an LSTM state that was produced by older parameters,
+    and needs enough steps to do it. The stacked arm has no state to
+    reconstruct: its burn-in only fills the history window, so
+    `history_length - 1` steps fill it exactly and every further step is a
+    learnable step thrown away. A single global flag would therefore have to be
+    wrong for one of the two arms.
+    """
+    return int(arguments.stacked_burn_in if name == "stacked-dqn" else arguments.burn_in)
 
 
 def tracking_uri(arguments: argparse.Namespace) -> str:
@@ -641,6 +873,20 @@ def train_session(
 
         for arm in arms.values():
             arm.checkpoint(arm.training.report)
+            # The one pre-registered measurement of the run: exploration-free,
+            # on the final weights, sized so its standard error can resolve a
+            # real difference against the scripted floor. Taken after the budget
+            # is spent, so it costs no decisions and cannot be chosen after the
+            # fact from a series of mid-run points.
+            if arm.evaluation is None:
+                continue
+            try:
+                arm.evaluation(True)
+            except (RunPortError, ValueError) as failure:
+                # Losing the headline measurement must not lose the run: the
+                # collection curve and the checkpoints are already on disk.
+                arm.training.report.evaluation_failures.append(str(failure))
+                print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
         summaries = [arm.summary() for arm in arms.values()]
         report: dict[str, object] = {

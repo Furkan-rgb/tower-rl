@@ -108,7 +108,7 @@ def test_learning_runs_and_only_the_window_contributes_errors() -> None:
     metrics = backbone.learn(batch)
 
     assert len(metrics.td_errors[0]) == 4, "eight steps minus four burn-in"
-    assert metrics.loss >= 0.0
+    assert metrics.weighted_loss >= 0.0
     assert backbone.model_version == 1
 
 

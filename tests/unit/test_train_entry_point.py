@@ -63,6 +63,26 @@ POINT_KEYS = {
     "versus_scripted_reference",
     "checkpoint_fingerprint",
     "checkpoint_path",
+    "weighted_loss",
+    "unweighted_mean_absolute_td_error",
+    "gradient_norm",
+    "value_fit_correlation",
+    "collection_wait_fraction",
+    "collection_purchases_per_episode",
+    "pre_registered_final",
+}
+
+#: One point of the collection curve, as the report must carry it.
+WINDOW_KEYS = {
+    "index",
+    "episodes",
+    "decisions",
+    "decisions_at_end",
+    "mean_final_wave",
+    "stdev_final_wave",
+    "standard_error",
+    "wait_fraction",
+    "purchases_per_episode",
 }
 
 
@@ -76,12 +96,17 @@ def arguments(run_dir: Path, *backbones: str, **overrides: str) -> argparse.Name
         "--block-decisions": "50",
         "--batch-size": "2",
         "--gradient-steps-per-decision": "0.2",
+        "--warmup-sequences": "2",
         "--sequence-length": "6",
         "--burn-in": "3",
+        # Per arm: the stacked backbone needs exactly `history-length - 1`.
+        "--stacked-burn-in": "3",
         "--history-length": "4",
         "--replay-capacity": "64",
         "--evaluate-every-episodes": "1",
         "--evaluation-episodes": "2",
+        # A run this short would never close a hundred-episode window.
+        "--collection-window-episodes": "2",
         "--checkpoint-every-episodes": "2",
         "--serial": "fake-0",
         "--max-quiet-game-ms": "4000",
@@ -118,11 +143,16 @@ def session(
         )
 
 
+#: Long enough that every arm plays more than one episode, which is what closes
+#: a window of the collection curve.
+INTERLEAVED_BUDGET = "300"
+
+
 @pytest.fixture(scope="module")
 def trained(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """One interleaved session over both backbones, reused by several checks."""
     run_dir = tmp_path_factory.mktemp("runs")
-    return session(run_dir, "recurrent-q", "stacked-dqn")
+    return session(run_dir, "recurrent-q", "stacked-dqn", budget=INTERLEAVED_BUDGET)
 
 
 def test_both_backbones_train_under_one_interleaved_budget(trained: dict[str, Any]) -> None:
@@ -130,7 +160,7 @@ def test_both_backbones_train_under_one_interleaved_budget(trained: dict[str, An
 
     assert [arm["backbone"] for arm in arms] == ["recurrent-q", "stacked-dqn"]
     for arm in arms:
-        assert arm["decisions"] >= 120, "every arm spends the same budget"
+        assert arm["decisions"] >= int(INTERLEAVED_BUDGET), "every arm spends the budget"
         assert arm["episodes"] > 0
         assert arm["optimisation_steps"] > 0
         assert arm["sequences_accepted"] > 0
@@ -264,3 +294,172 @@ def test_an_ambiguous_advance_is_classified_and_the_session_continues(
     assert arm["invalid_episodes_by_reason"] == {
         TerminationOutcome.ACTION_PIPELINE_FAILED.value: 1
     }
+
+
+def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path) -> None:
+    """The settings of the second training run, where the developer reads them.
+
+    Pinned as a test because every one of them was chosen against a measured
+    failure of the first run; a silent drift back would cost another run of
+    device time to discover.
+    """
+    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+
+    assert defaults.gradient_steps_per_decision == 0.25
+    assert defaults.batch_size == 8
+    assert defaults.warmup_sequences == 100
+    assert defaults.sequence_length == 80
+    assert defaults.stacked_burn_in == defaults.history_length - 1 == 7
+    assert defaults.burn_in == 40, "the recurrent arm reconstructs a state, not a window"
+    assert defaults.n_step == 10
+    assert defaults.discount == 0.99
+    assert defaults.learning_rate == 1e-4
+    assert defaults.target_ema_decay == 0.995
+    assert (defaults.epsilon_start, defaults.epsilon_end) == (1.0, 0.05)
+    assert defaults.epsilon_anneal_decisions == 10_000
+    assert defaults.priority_alpha == 0.0, "importance weights of exactly one"
+    assert defaults.replay_capacity == 4096
+    assert defaults.collection_window_episodes == 100
+    assert defaults.evaluate_every_episodes == 0, "no frequent mid-run evaluation"
+    assert defaults.evaluation_episodes == 30
+
+
+def _arm(run_dir: Path, name: str, **overrides: str) -> Any:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        return train.build_arm(
+            name,
+            arguments(run_dir, name, **overrides),
+            environment=environment(),
+            device=torch.device("cpu"),
+            profile_id=PROFILE,
+            parent=run_dir,
+            revision="test",
+            started=0.0,
+            tracker=train.NoExperimentTracker(),
+            tags={},
+        )
+
+
+def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
+    """A flag that reaches nothing is worse than no flag: it looks like a knob."""
+    arm = _arm(
+        tmp_path,
+        "stacked-dqn",
+        **{
+            "--n-step": "3",
+            "--discount": "0.9",
+            "--learning-rate": "0.002",
+            "--target-ema-decay": "0.9",
+            "--warmup-sequences": "7",
+            "--epsilon-start": "0.8",
+            "--epsilon-end": "0.02",
+            "--epsilon-anneal-decisions": "77",
+            "--priority-alpha": "0.3",
+            "--collection-window-episodes": "5",
+            "--gradient-steps-per-decision": "0.25",
+            "--batch-size": "4",
+        },
+    )
+
+    learner = arm.backbone.config
+    assert (learner.n_step, learner.discount, learner.learning_rate) == (3, 0.9, 0.002)
+    assert learner.target_ema_decay == 0.9
+    assert arm.replay.alpha == 0.3
+    config = arm.training.config
+    assert config.warmup_sequences == 7
+    assert (config.epsilon_start, config.epsilon_end) == (0.8, 0.02)
+    assert config.epsilon_anneal_decisions == 77
+    assert config.collection_window_episodes == 5
+    assert (config.batch_size, config.gradient_steps_per_decision) == (4, 0.25)
+    # And the run records what it was actually built with.
+    resolved = arm.resolved
+    assert resolved["n_step"] == 3 and resolved["discount"] == 0.9
+    assert resolved["priority_alpha"] == 0.3
+    assert resolved["epsilon_anneal_decisions"] == 77
+    assert resolved["target_ema_decay"] == 0.9
+
+
+def test_the_two_backbones_burn_in_differently(tmp_path: Path) -> None:
+    """Burn-in means two different things, so one number cannot serve both arms.
+
+    The stacked arm's burn-in only fills its history window; anything past
+    `history_length - 1` throws learnable steps away. The recurrent arm's burn-in
+    reconstructs a stored LSTM state and needs the length it was tuned with.
+    """
+    stacked = _arm(tmp_path / "stacked", "stacked-dqn", **{"--stacked-burn-in": "3"})
+    recurrent = _arm(tmp_path / "recurrent", "recurrent-q", **{"--burn-in": "4"})
+
+    assert stacked.training.actor.config.burn_in == 3
+    assert recurrent.training.actor.config.burn_in == 4
+    assert stacked.resolved["burn_in"] == 3
+    assert recurrent.resolved["burn_in"] == 4
+
+
+def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -> None:
+    """Checked before the device is touched, not an hour into collection."""
+    with pytest.raises(SystemExit, match="cannot fill a window"):
+        arguments(tmp_path, "stacked-dqn", **{"--stacked-burn-in": "2"})
+
+
+def test_the_report_carries_the_collection_curve(trained: dict[str, Any]) -> None:
+    """The series the run is read from: collected episodes, in closed windows."""
+    for arm in trained["arms"]:
+        curve = arm["collection_curve"]
+
+        assert curve, "a run of several episodes closes at least one window"
+        assert all(set(window) == WINDOW_KEYS for window in curve)
+        assert [window["index"] for window in curve] == list(range(len(curve)))
+        assert arm["collection_window_episodes"] == 2
+        placements = [window["decisions_at_end"] for window in curve]
+        assert placements == sorted(placements)
+        for window in curve:
+            assert window["episodes"] == 2
+            assert window["mean_final_wave"] > 0
+            assert window["standard_error"] is not None
+            assert 0.0 <= window["wait_fraction"] <= 1.0
+            assert window["purchases_per_episode"] >= 0.0
+        # The windows do not overlap, so their episodes sum to what was scored
+        # without double counting; a trailing partial window is not a point.
+        scored = sum(window["episodes"] for window in curve)
+        assert scored <= arm["valid_episodes"] < scored + 2
+
+
+def test_the_run_ends_on_one_pre_registered_exploration_free_evaluation(
+    trained: dict[str, Any],
+) -> None:
+    for arm in trained["arms"]:
+        final = arm["final_evaluation"]
+
+        assert final is not None and final["pre_registered_final"] is True
+        # It scores the final weights, after the budget was spent.
+        assert final["decisions"] == arm["decisions"]
+        assert final["model_version"] == arm["optimisation_steps"]
+        assert final["versus_scripted_reference"] == pytest.approx(
+            final["mean_final_wave"] - train.SCRIPTED_REFERENCE, abs=1e-3
+        )
+        # Exactly one, and it is the last point on the curve.
+        headline = [
+            point for point in arm["learning_curve"] if point["pre_registered_final"]
+        ]
+        assert headline == [final] == [arm["learning_curve"][-1]]
+
+
+def test_the_learner_diagnostics_travel_with_every_point(trained: dict[str, Any]) -> None:
+    """Without them a flat curve cannot be told from a broken learner."""
+    for arm in trained["arms"]:
+        point = arm["final_evaluation"]
+
+        assert point["weighted_loss"] is not None
+        assert point["unweighted_mean_absolute_td_error"] is not None
+        # Two names, because they are two quantities: the loss carries the
+        # importance-sampling weights and moves with the beta schedule.
+        assert point["weighted_loss"] != point["unweighted_mean_absolute_td_error"]
+        assert point["gradient_norm"] is not None
+        fit = point["value_fit_correlation"]
+        assert fit is None or -1.0 <= fit <= 1.0
+        assert 0.0 <= point["collection_wait_fraction"] <= 1.0
+        assert point["collection_purchases_per_episode"] >= 0.0
+        distribution = arm["action_distribution"]
+        assert distribution["episodes"] == arm["episodes"] - arm["failed_episodes"]
+        assert distribution["decisions"] == arm["decisions"]

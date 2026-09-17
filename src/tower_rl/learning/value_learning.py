@@ -107,3 +107,53 @@ def real_step_td_errors(absolute: Tensor, real: Tensor) -> tuple[tuple[float, ..
         tuple(row[flags].tolist())
         for row, flags in zip(absolute.detach().cpu(), kept, strict=True)
     )
+
+
+def value_fit_correlation(
+    online_q: Tensor,
+    mask: Tensor,
+    rewards: Tensor,
+    dones: Tensor,
+    real: Tensor,
+    *,
+    discount: float,
+) -> float | None:
+    """Correlation between V(s_t) and the return the episode actually realised.
+
+    This is the falsifier a flat learning curve cannot distinguish without: a
+    learner whose values track the realised return is learning slowly, and one
+    whose values are uncorrelated with it is broken, and the two look identical
+    in the final-wave distribution.
+
+    The return is realised rather than bootstrapped, so only steps whose episode
+    terminates inside the stored sequence have one: for any later step the tail
+    of the return is missing and a truncated return would be a different
+    quantity. Padded steps are not experience and are excluded like everywhere
+    else. `None` when the batch holds fewer than two such steps, or when either
+    side is constant across them - a correlation is undefined there, and zero
+    would be a claim.
+    """
+    values = torch.where(mask, online_q, torch.full_like(online_q, float("-inf"))).amax(dim=-1)
+    time = rewards.shape[1]
+    terminal = dones.to(rewards.dtype)
+    returns = torch.zeros_like(rewards)
+    ends_inside = torch.zeros_like(rewards)
+    running = torch.zeros(rewards.shape[0], device=rewards.device)
+    ended = torch.zeros_like(running)
+    for step in reversed(range(time)):
+        running = rewards[:, step] + discount * (1.0 - terminal[:, step]) * running
+        ended = torch.maximum(terminal[:, step], ended)
+        returns[:, step] = running
+        ends_inside[:, step] = ended
+
+    keep = (ends_inside > 0) & (real > 0) & torch.isfinite(values)
+    predicted = values[keep]
+    realised = returns[keep]
+    if predicted.numel() < 2:
+        return None
+    predicted = predicted - predicted.mean()
+    realised = realised - realised.mean()
+    spread = predicted.norm() * realised.norm()
+    if float(spread.item()) <= 0.0:
+        return None
+    return float((predicted @ realised / spread).item())

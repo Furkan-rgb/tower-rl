@@ -27,6 +27,7 @@ from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork, Stack
 from tower_rl.learning.value_learning import (
     n_step_targets,
     real_step_td_errors,
+    value_fit_correlation,
     weighted_sequence_loss,
 )
 
@@ -37,8 +38,14 @@ class StackedDqnConfig:
     #: The candidate study treats this as the tuned knob in the range 4 to 16 and
     #: names k = 1 as the ablation that settles whether history is needed at all.
     history_length: int = 8
-    discount: float = 0.997
-    n_step: int = 5
+    #: 1/(1 - discount) is the horizon in decisions. An episode here is about
+    #: 121 decisions, so 0.997 (horizon 333) is effectively undiscounted and
+    #: leaves the return dominated by noise far past anything the state predicts.
+    discount: float = 0.99
+    #: About 21.7 decisions pass per wave, and the whole reward is the wave
+    #: change, so a short n-step needs several bootstrap hops to carry one wave
+    #: back to the decisions that earned it.
+    n_step: int = 10
     learning_rate: float = 1e-4
     #: Decoupled weight decay, hence AdamW rather than Adam.
     weight_decay: float = 1e-5
@@ -194,13 +201,23 @@ class StackedDqnBackbone:
         self._update_target()
 
         absolute = errors.abs().detach()
+        with torch.no_grad():
+            fit = value_fit_correlation(
+                online_q.detach(),
+                mask,
+                rewards,
+                dones,
+                real,
+                discount=self.config.discount,
+            )
         return LearnMetrics(
-            loss=float(loss.detach().item()),
-            mean_absolute_td_error=float(
+            weighted_loss=float(loss.detach().item()),
+            unweighted_mean_absolute_td_error=float(
                 (absolute.sum() / real.sum().clamp(min=1.0)).item()
             ),
             gradient_norm=float(gradient_norm.item()),
             td_errors=real_step_td_errors(absolute, real),
+            value_fit_correlation=fit,
         )
 
     def _update_target(self) -> None:

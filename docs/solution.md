@@ -1249,10 +1249,18 @@ ablation shows structured observations are insufficient.
 Use configurable defaults close to established R2D2 practice:
 
 - stored sequence length: 80 decisions;
-- burn-in: 40 decisions;
-- learning unroll: 40 decisions;
+- burn-in: per backbone, because the word means two different things. The
+  recurrent arm burns in 40 decisions to reconstruct a stored LSTM state that
+  older parameters produced. The stacked arm has no state to reconstruct: its
+  burn-in only fills the history window, so it is exactly `history_length - 1`
+  (7 at the standing window of 8) and every further step would be a learnable
+  step discarded for nothing;
 - overlapping actor sequences;
-- n-step return: 5;
+- n-step return: 10. About 21.7 decisions pass per wave and the whole reward is
+  the wave delta, so a shorter n-step needs several bootstrap hops to carry one
+  wave back to the decisions that earned it;
+- discount 0.99. Its horizon of 100 decisions is comparable to the ~121 decision
+  episode; 0.997 is a horizon of 333 and is effectively undiscounted here;
 - Double Q-learning;
 - dueling head;
 - prioritized replay;
@@ -1277,6 +1285,35 @@ flagged step is never a training target and never contributes a TD error to a
 priority.
 
 For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Configure and record prioritization alpha, importance-sampling beta schedule, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
+
+What matters about the replay ratio is transitions replayed per transition
+generated, not gradient steps per decision: a gradient step here replays a whole
+batch of unrolled sequences. At 80-step sequences, burn-in 7, n-step 10 and
+batch 8 one step replays about 504 transitions, so 0.25 gradient steps per
+decision is about 126:1 - between SPR (64) and BBF (256), where the first
+training run's 2.0 was 1087:1 against 8 for DQN and about 1 for R2D2.
+
+Exploration anneals over a horizon counted in decisions and is then held at the
+floor, rather than being derived from progress through the whole budget.
+Deriving it from the budget made the mean epsilon of the first run 0.525, so
+over half of it collected near-random data and none of its episodes could be
+read as a policy's performance.
+
+The learning curve is read from the collection episodes themselves, in
+consecutive non-overlapping windows of 100 episodes. They are collected at the
+held epsilon anyway, so a window costs no device time, and 100 episodes put the
+standard error near 0.2 waves where the 5-episode exploration-free points of the
+first run could not resolve less than about 3 waves. Exploration-free evaluation
+is then a single pre-registered measurement of the final checkpoint, sized at 30
+episodes, and it is the headline number against the scripted floor.
+
+Every point carries the learner diagnostics that separate a broken learner from
+a slow one: the weighted loss and the unweighted mean absolute TD error under
+names that cannot be confused (the weighted one falls as beta anneals whether or
+not anything is learned), the gradient norm, the correlation between V(s_t) and
+the realised discounted return over steps whose episode ended inside the stored
+sequence, and what the collecting policy did - WAIT fraction and purchases per
+episode against the random baseline's 18.7.
 
 Both backbones draw from this one replay under this one configuration; that is
 what makes their comparison fair. Where `stacked-dqn` departs is only in its

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import statistics
 import sys
 from pathlib import Path
 
@@ -18,9 +19,16 @@ from tower_rl.application.run_environment import (  # noqa: E402
     InstrumentedRunEnvironment,
 )
 from tower_rl.application.training import (  # noqa: E402
+    CollectedEpisode,
     TrainingConfig,
     TrainingRun,
+    action_distribution,
+    collection_windows,
     episode_budget,
+)
+from tower_rl.domain.episode import (  # noqa: E402
+    EpisodeSummary,
+    TerminationOutcome,
 )
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
@@ -68,7 +76,9 @@ def test_a_run_spends_its_decision_budget_and_learns() -> None:
     assert report.episodes > 0
     assert report.optimisation_steps > 0
     assert training.backbone.model_version == report.optimisation_steps
-    assert report.recent_losses and all(loss >= 0 for loss in report.recent_losses)
+    assert report.recent_weighted_losses and all(
+        loss >= 0 for loss in report.recent_weighted_losses
+    )
 
 
 def test_the_budget_is_counted_in_decisions_not_episodes() -> None:
@@ -82,14 +92,40 @@ def test_the_budget_is_counted_in_decisions_not_episodes() -> None:
     assert episode_budget(TrainingConfig(budget_decisions=240), 40.0) == 6
 
 
-def test_exploration_anneals_across_the_budget() -> None:
-    config = TrainingConfig(budget_decisions=1000, epsilon_start=1.0, epsilon_end=0.05)
+def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
+    """Over a horizon in decisions, never over the budget.
+
+    Annealing across the whole budget is what left the first run collecting at a
+    mean epsilon of 0.525: more than half of it was near-random data, and the
+    collection episodes could not be read as a policy's performance at all.
+    """
+    config = TrainingConfig(
+        budget_decisions=20_000,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_anneal_decisions=10_000,
+    )
 
     assert config.epsilon(0) == pytest.approx(1.0)
-    assert config.epsilon(500) == pytest.approx(0.525)
-    assert config.epsilon(1000) == pytest.approx(0.05)
-    # Past the budget it clamps rather than going negative.
-    assert config.epsilon(5000) == pytest.approx(0.05)
+    assert config.epsilon(5_000) == pytest.approx(0.525)
+    assert config.epsilon(10_000) == pytest.approx(0.05)
+    # Held for the whole second half of the budget, not annealed further.
+    assert config.epsilon(15_000) == pytest.approx(0.05)
+    assert config.epsilon(20_000) == pytest.approx(0.05)
+
+
+def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
+    """The same horizon means the same exploration whatever the budget is."""
+    short = TrainingConfig(budget_decisions=12_000, epsilon_anneal_decisions=10_000)
+    long = TrainingConfig(budget_decisions=200_000, epsilon_anneal_decisions=10_000)
+
+    assert short.epsilon(5_000) == pytest.approx(long.epsilon(5_000))
+    assert long.epsilon(10_001) == pytest.approx(long.epsilon_end)
+
+
+def test_a_horizon_of_no_decisions_is_refused() -> None:
+    with pytest.raises(ValueError, match="anneal horizon"):
+        TrainingConfig(budget_decisions=100, epsilon_anneal_decisions=0)
 
 
 def test_importance_sampling_correction_anneals_the_other_way() -> None:
@@ -264,12 +300,15 @@ def test_a_block_must_buy_at_least_one_decision() -> None:
 def test_the_loss_window_is_reported_and_empty_before_any_step() -> None:
     training = _run(budget_decisions=2000)
 
-    assert training.report.mean_recent_loss is None
+    assert training.report.mean_recent_weighted_loss is None
 
     report = training.advance(40)
 
     assert report.optimisation_steps > 0
-    assert report.mean_recent_loss is not None and report.mean_recent_loss >= 0.0
+    assert (
+        report.mean_recent_weighted_loss is not None
+        and report.mean_recent_weighted_loss >= 0.0
+    )
 
 
 def _failing_run(**overrides: object) -> TrainingRun:
@@ -350,3 +389,115 @@ def test_an_evaluation_that_cannot_be_scored_does_not_lose_the_run() -> None:
     assert report.decisions >= 100
     assert report.evaluations == []
     assert report.evaluation_failures and "cannot be scored" in report.evaluation_failures[0]
+
+
+def _collected(
+    wave: int,
+    *,
+    decisions: int = 100,
+    waits: int = 50,
+    purchases: int = 10,
+    valid: bool = True,
+) -> CollectedEpisode:
+    """One collected episode, as the report keeps it."""
+    return CollectedEpisode(
+        summary=EpisodeSummary(
+            episode_id=f"episode-{wave}",
+            profile_id="fake-profile-v1",
+            final_wave=wave,
+            decisions=decisions,
+            purchases=purchases,
+            termination=(
+                TerminationOutcome.GAME_OVER if valid else TerminationOutcome.DEVICE_FAILED
+            ),
+            elapsed_wall_seconds=1.0,
+            game_speed=8.0,
+            invalid_transitions=0,
+        ),
+        wait_decisions=waits,
+    )
+
+
+def test_the_collection_curve_is_cut_into_non_overlapping_windows() -> None:
+    """The curve the run is read from: the collected episodes themselves."""
+    collected = [_collected(wave) for wave in (4, 6, 8, 10)]
+
+    windows = collection_windows(collected, size=2)
+
+    assert [window.index for window in windows] == [0, 1]
+    assert [window.episodes for window in windows] == [2, 2]
+    assert [window.mean_final_wave for window in windows] == [5.0, 9.0]
+    # Each window is placed where the budget had been spent to at its last
+    # episode, and carries the decisions spent inside it.
+    assert [window.decisions_at_end for window in windows] == [200, 400]
+    assert [window.decisions for window in windows] == [200, 200]
+    assert windows[0].stdev_final_wave == pytest.approx(statistics.stdev([4, 6]))
+    assert windows[0].standard_error == pytest.approx(
+        statistics.stdev([4, 6]) / 2 ** 0.5
+    )
+
+
+def test_a_window_that_has_not_closed_is_not_a_point() -> None:
+    """A point averaged over fewer episodes has a different standard error."""
+    windows = collection_windows([_collected(4), _collected(6), _collected(8)], size=2)
+
+    assert len(windows) == 1
+    assert windows[0].mean_final_wave == 5.0
+
+
+def test_an_invalid_episode_costs_decisions_without_scoring_a_window() -> None:
+    """It has no final wave to average, but its decisions were still spent."""
+    collected = [_collected(4), _collected(99, valid=False), _collected(6)]
+
+    windows = collection_windows(collected, size=2)
+
+    assert len(windows) == 1
+    assert windows[0].mean_final_wave == 5.0
+    assert windows[0].decisions_at_end == 300
+
+
+def test_a_window_reports_what_the_policy_did_in_it() -> None:
+    """A collapsed policy waits out every decision and buys nothing."""
+    collected = [
+        _collected(4, decisions=100, waits=95, purchases=0),
+        _collected(6, decisions=100, waits=85, purchases=2),
+    ]
+
+    windows = collection_windows(collected, size=2)
+
+    assert windows[0].wait_fraction == pytest.approx(0.9)
+    assert windows[0].purchases_per_episode == pytest.approx(1.0)
+
+
+def test_the_action_distribution_is_none_before_any_episode() -> None:
+    assert action_distribution([]) is None
+    distribution = action_distribution([_collected(4, decisions=10, waits=2, purchases=3)])
+    assert distribution is not None
+    assert distribution.wait_fraction == pytest.approx(0.2)
+    assert distribution.purchases_per_episode == pytest.approx(3.0)
+
+
+def test_a_run_records_the_action_distribution_of_what_it_collected() -> None:
+    report = _run(budget_decisions=100).run()
+
+    distribution = action_distribution(report.collected)
+
+    assert distribution is not None
+    assert distribution.episodes == len(report.collected)
+    assert 0.0 <= distribution.wait_fraction <= 1.0
+    assert distribution.decisions == report.decisions
+
+
+def test_the_weighted_loss_and_the_unweighted_td_error_are_reported_apart() -> None:
+    """Two signals, two names: the weighted one moves with the beta schedule."""
+    report = _run(budget_decisions=150).run()
+
+    assert report.optimisation_steps > 0
+    assert len(report.recent_weighted_losses) == len(report.recent_unweighted_td_errors)
+    assert report.mean_recent_weighted_loss is not None
+    assert report.mean_recent_unweighted_absolute_td_error is not None
+    assert report.mean_recent_unweighted_absolute_td_error >= 0.0
+    # The value fit is reported whenever a batch held completed episodes; when
+    # none did it is absent rather than zero.
+    fit = report.mean_recent_value_fit_correlation
+    assert fit is None or -1.0 <= fit <= 1.0

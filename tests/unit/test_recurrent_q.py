@@ -93,7 +93,7 @@ def test_one_learning_step_changes_weights_and_reports_errors() -> None:
     metrics = backbone.learn(batch)
 
     assert backbone.model_version == 1
-    assert metrics.loss >= 0.0
+    assert metrics.weighted_loss >= 0.0
     assert metrics.gradient_norm > 0.0
     assert len(metrics.td_errors) == 2
     after = list(backbone.online.parameters())

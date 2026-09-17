@@ -115,7 +115,7 @@ def test_learning_advances_the_model_version_and_reports_its_errors(
     metrics = backbone.learn(batch)
 
     assert backbone.model_version == before + 1
-    assert metrics.loss >= 0.0
+    assert metrics.weighted_loss >= 0.0
     # One TD error per sequence per learnable step: replay prioritises on these.
     assert len(metrics.td_errors) == 2
     assert all(len(row) == 8 - BURN_IN for row in metrics.td_errors)
@@ -135,7 +135,7 @@ def test_padding_is_neither_trained_on_nor_prioritised(
     quiet = backbone.learn(collate((_sequence(padding=3),), (1.0,)))
     loud = other.learn(collate((_sequence(padding=3, padded_reward=999.0),), (1.0,)))
 
-    assert quiet.loss == loud.loss, "padding cannot move the loss"
+    assert quiet.weighted_loss == loud.weighted_loss, "padding cannot move the loss"
     real_learning_steps = 8 - max(BURN_IN, 3)
     assert len(quiet.td_errors[0]) == real_learning_steps
 

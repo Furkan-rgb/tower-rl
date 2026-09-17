@@ -26,14 +26,17 @@ from tower_rl.learning.network import (
 from tower_rl.learning.value_learning import (
     n_step_targets,
     real_step_td_errors,
+    value_fit_correlation,
     weighted_sequence_loss,
 )
 
 
 @dataclass(frozen=True)
 class RecurrentQConfig:
-    discount: float = 0.997
-    n_step: int = 5
+    #: See `StackedDqnConfig`: both arms must share the target definition, so
+    #: the horizon and the bootstrap length are the same on both.
+    discount: float = 0.99
+    n_step: int = 10
     learning_rate: float = 1e-4
     #: How often the target network copies the online one, in optimisation steps.
     target_update_interval: int = 200
@@ -186,13 +189,23 @@ class RecurrentQBackbone:
             self.target.load_state_dict(self.online.state_dict())
 
         absolute = errors.abs().detach()
+        with torch.no_grad():
+            fit = value_fit_correlation(
+                online_q.detach(),
+                mask,
+                rewards,
+                dones,
+                real,
+                discount=self.config.discount,
+            )
         return LearnMetrics(
-            loss=float(loss.detach().item()),
-            mean_absolute_td_error=float(
+            weighted_loss=float(loss.detach().item()),
+            unweighted_mean_absolute_td_error=float(
                 (absolute.sum() / real.sum().clamp(min=1.0)).item()
             ),
             gradient_norm=float(gradient_norm.item()),
             td_errors=real_step_td_errors(absolute, real),
+            value_fit_correlation=fit,
         )
 
     def _stored_state(self, batch: SequenceBatch) -> RecurrentState:

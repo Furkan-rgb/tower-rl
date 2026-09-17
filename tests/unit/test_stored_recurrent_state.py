@@ -159,7 +159,7 @@ def _state(value: float) -> tuple[torch.Tensor, torch.Tensor]:
 
 def _loss(state: object) -> float:
     backbone = _recurrent()
-    return backbone.learn(collate((_sequence(state),), (1.0,))).loss
+    return backbone.learn(collate((_sequence(state),), (1.0,))).weighted_loss
 
 
 def test_burn_in_starts_from_the_stored_state_rather_than_from_zeros() -> None:
@@ -217,10 +217,10 @@ def test_the_stacked_backbone_stores_no_recurrent_state() -> None:
 
     assert backbone.stored_recurrent_state(backbone.initial_state()) is None
 
-    first = backbone.learn(collate((_sequence(None),), (1.0,))).loss
+    first = backbone.learn(collate((_sequence(None),), (1.0,))).weighted_loss
     again = StackedDqnBackbone(
         config=StackedDqnConfig(seed=0, history_length=BURN_IN + 1), network_config=SMALL
-    ).learn(collate((_sequence(None),), (1.0,))).loss
+    ).learn(collate((_sequence(None),), (1.0,))).weighted_loss
     assert first == pytest.approx(again)
 
 

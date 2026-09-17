@@ -131,8 +131,13 @@ def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -
     assert calls[:3] == ["start_run", "log_artifact", "log_metrics"]
     assert calls[-2:] == ["log_artifact", "finish"]
     assert calls.count("log_metrics") == len(recorded.points) >= 2
-    # Each curve point contributes a measurement and the checkpoint it scored.
-    assert calls.count("log_artifact") == len(recorded.points) + 2
+    # Each evaluation point contributes a measurement and the checkpoint it
+    # scored; a collection-curve point is a measurement and nothing else,
+    # because it scores episodes that were collected rather than weights.
+    evaluations = [
+        point for point in recorded.points if "eval_mean_final_wave" in point.metrics
+    ]
+    assert calls.count("log_artifact") == len(evaluations) + 2
 
 
 def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
@@ -142,7 +147,21 @@ def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
     # A point sits where the budget had actually been spent to, which is past
     # the limit by whatever the last episode needed to reach a classified end.
     assert steps[-1] >= 120
-    for point in recorded.points:
+    evaluations = [
+        point for point in recorded.points if "eval_mean_final_wave" in point.metrics
+    ]
+    windows = [
+        point
+        for point in recorded.points
+        if "collection_mean_final_wave" in point.metrics
+    ]
+    assert windows, "the collection curve is what the run is read from"
+    for point in windows:
+        assert point.metrics["collection_mean_final_wave"] > 0
+        assert point.metrics["collection_episodes"] == pytest.approx(2.0)
+        assert 0.0 <= point.metrics["collection_window_wait_fraction"] <= 1.0
+        assert point.metrics["collection_window_purchases_per_episode"] >= 0.0
+    for point in evaluations:
         assert point.metrics["eval_mean_final_wave"] > 0
         assert point.metrics["eval_valid_episodes"] + point.metrics[
             "eval_invalid_episodes"
@@ -150,11 +169,15 @@ def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
         assert point.metrics["versus_scripted_reference"] == pytest.approx(
             point.metrics["eval_mean_final_wave"] - train.SCRIPTED_REFERENCE, abs=1e-3
         )
-    # The learning-health signals `learn` already returns, once it has run.
-    last = recorded.points[-1].metrics
-    assert last["mean_recent_loss"] >= 0.0
-    assert last["mean_recent_absolute_td_error"] >= 0.0
-    assert last["mean_recent_gradient_norm"] >= 0.0
+    # The learning-health signals `learn` already returns, once it has run. The
+    # weighted loss and the unweighted TD error are separate keys on purpose:
+    # reading the first as the second is what made the first run unreadable.
+    last = evaluations[-1].metrics
+    assert last["learner_weighted_loss_with_is_weights"] >= 0.0
+    assert last["learner_unweighted_mean_absolute_td_error"] >= 0.0
+    assert last["learner_gradient_norm"] >= 0.0
+    assert "collection_wait_fraction" in last
+    assert last["collection_purchases_per_episode"] >= 0.0
     assert last["eval_decisions_per_wave"] > 0.0
 
 
@@ -172,8 +195,13 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
         "burn_in",
         "stride",
         "n_step",
+        "discount",
+        "learning_rate",
         "epsilon_start",
         "epsilon_end",
+        "epsilon_anneal_decisions",
+        "priority_alpha",
+        "collection_window_episodes",
         "beta_start",
         "beta_end",
         "batch_size",
@@ -212,7 +240,10 @@ def test_a_tracked_point_resolves_to_the_exact_checkpoint_file(
         if directory is not None
     ]
 
-    assert len(checkpoints) == len(recorded.points)
+    evaluations = [
+        point for point in recorded.points if "eval_mean_final_wave" in point.metrics
+    ]
+    assert len(checkpoints) == len(evaluations)
     for path, directory in checkpoints:
         assert path.exists() and directory is not None
         assert directory == f"checkpoints/{directory.split('/')[1]}"

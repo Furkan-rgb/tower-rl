@@ -8,8 +8,9 @@ what the environment actually costs.
 
 from __future__ import annotations
 
+import statistics
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 
 from tower_rl.application.actor import Actor, ActorConfig
@@ -33,17 +34,32 @@ class TrainingConfig:
 
     #: The equalised budget. Every arm of a comparison gets the same number.
     budget_decisions: int
-    #: Sequences required before the first optimisation step.
-    warmup_sequences: int = 16
+    #: Sequences required before the first optimisation step. About 35 episodes
+    #: at this geometry: enough that the first gradient steps see more than a
+    #: handful of episodes of one policy.
+    warmup_sequences: int = 100
     batch_size: int = 8
-    #: Gradient steps per environment decision: the replay ratio, and the knob
-    #: the data-efficient recipe of `docs/rl-candidates.md` 3.1 turns, which
-    #: specifies 2 to 8. The default is its conservative end. Raising it costs
-    #: GPU rather than device time, which is the resource we are not short of.
-    gradient_steps_per_decision: float = 2.0
-    #: Exploration anneals from start to end across the budget.
+    #: Gradient steps per environment decision: the replay ratio. What matters
+    #: is the transitions replayed per transition generated, which is this times
+    #: the learnable steps in a batch - at 80-step sequences, burn-in 7, n-step
+    #: 10 and batch 8 that is about 504 per step, so 0.25 puts the run at 126:1,
+    #: between SPR (64) and BBF (256). The 2.0 of the first run was 1087:1.
+    gradient_steps_per_decision: float = 0.25
+    #: Exploration anneals from start to end over `epsilon_anneal_decisions` and
+    #: is held at `epsilon_end` afterwards.
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
+    #: The horizon of the anneal, in decisions, and deliberately not the budget:
+    #: annealing across the whole budget spent over half the first run at an
+    #: epsilon above 0.5, so most of what was collected was near-random and the
+    #: collection curve could not be read as a policy's performance at all.
+    epsilon_anneal_decisions: int = 10_000
+    #: Episodes per point of the collection curve. The curve is read from the
+    #: collection episodes themselves rather than from exploration-free
+    #: evaluations: at epsilon 0.05 they are almost on-policy, they cost no
+    #: extra device time, and 100 episodes put the standard error near 0.2
+    #: waves where a 5-episode evaluation point sits near 0.9.
+    collection_window_episodes: int = 100
     #: Importance-sampling correction anneals the other way, as is conventional.
     beta_start: float = 0.4
     beta_end: float = 1.0
@@ -65,6 +81,10 @@ class TrainingConfig:
             raise ValueError("batch size and warm-up must be positive")
         if self.gradient_steps_per_decision <= 0:
             raise ValueError("gradient steps per decision must be positive")
+        if self.epsilon_anneal_decisions < 1:
+            raise ValueError("the epsilon anneal horizon must be positive")
+        if self.collection_window_episodes < 1:
+            raise ValueError("a collection window needs at least one episode")
         if self.max_consecutive_episode_failures < 1:
             raise ValueError("at least one episode failure must be survivable")
 
@@ -72,12 +92,135 @@ class TrainingConfig:
         return min(1.0, decisions / self.budget_decisions)
 
     def epsilon(self, decisions: int) -> float:
-        fraction = self.progress(decisions)
+        """Anneal over the horizon, then hold - never over the whole budget."""
+        fraction = min(1.0, decisions / self.epsilon_anneal_decisions)
         return self.epsilon_start + (self.epsilon_end - self.epsilon_start) * fraction
 
     def beta(self, decisions: int) -> float:
         fraction = self.progress(decisions)
         return self.beta_start + (self.beta_end - self.beta_start) * fraction
+
+
+@dataclass(frozen=True)
+class CollectedEpisode:
+    """One episode of collection, with what the policy did in it.
+
+    The summary says what the game did; `wait_decisions` says what the policy
+    asked for. Both are needed to tell a policy that is learning slowly from one
+    that has collapsed onto `WAIT`, which the final wave alone cannot.
+    """
+
+    summary: EpisodeSummary
+    wait_decisions: int
+
+    @property
+    def wait_fraction(self) -> float:
+        decisions = self.summary.decisions
+        return 0.0 if decisions == 0 else self.wait_decisions / decisions
+
+
+@dataclass(frozen=True)
+class ActionDistribution:
+    """What a policy spent its decisions on over a span of episodes.
+
+    The random baseline buys 18.7 upgrades per episode; a policy that has
+    collapsed waits out more than nine decisions in ten and buys nothing.
+    """
+
+    episodes: int
+    decisions: int
+    wait_fraction: float
+    purchases_per_episode: float
+
+
+@dataclass(frozen=True)
+class CollectionWindow:
+    """One point of the collection curve: a block of episodes as they were played.
+
+    Read in preference to exploration-free evaluation points. These episodes are
+    collected at the held epsilon anyway, so the window costs no device time, and
+    a hundred of them put the standard error of the mean near 0.2 waves - small
+    enough that a real improvement of half a wave is visible, where the five
+    episode evaluation points of the first run could not resolve less than about
+    three waves.
+    """
+
+    #: Zero-based ordinal of the window within the run.
+    index: int
+    #: Valid episodes in the window; always the configured size.
+    episodes: int
+    #: Decisions spent inside the window, and the budget position at its end.
+    decisions: int
+    decisions_at_end: int
+    mean_final_wave: float
+    #: None only for a one-episode window, which has no spread.
+    stdev_final_wave: float | None
+    standard_error: float | None
+    wait_fraction: float
+    purchases_per_episode: float
+
+
+def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribution | None:
+    """What the policy did over these episodes, or None if there are none."""
+    if not episodes:
+        return None
+    decisions = sum(episode.summary.decisions for episode in episodes)
+    waits = sum(episode.wait_decisions for episode in episodes)
+    purchases = sum(episode.summary.purchases for episode in episodes)
+    return ActionDistribution(
+        episodes=len(episodes),
+        decisions=decisions,
+        wait_fraction=0.0 if decisions == 0 else waits / decisions,
+        purchases_per_episode=purchases / len(episodes),
+    )
+
+
+def collection_windows(
+    collected: Sequence[CollectedEpisode], *, size: int
+) -> list[CollectionWindow]:
+    """Cut the collection episodes into consecutive non-overlapping windows.
+
+    Windows are counted in valid episodes, because an invalid episode has no
+    final wave to average; the decisions of every episode still count towards
+    the budget position a window is placed at, since they were all spent. A
+    trailing partial window is not emitted at all: a point averaged over fewer
+    episodes than the rest has a different standard error and would be read as
+    if it did not.
+    """
+    if size < 1:
+        raise ValueError("a collection window needs at least one episode")
+    windows: list[CollectionWindow] = []
+    current: list[CollectedEpisode] = []
+    spent = 0
+    window_decisions = 0
+    for episode in collected:
+        spent += episode.summary.decisions
+        window_decisions += episode.summary.decisions
+        if not episode.summary.valid:
+            continue
+        current.append(episode)
+        if len(current) < size:
+            continue
+        waves = [item.summary.final_wave for item in current]
+        distribution = action_distribution(current)
+        assert distribution is not None  # a full window is never empty
+        stdev = statistics.stdev(waves) if len(waves) > 1 else None
+        windows.append(
+            CollectionWindow(
+                index=len(windows),
+                episodes=len(current),
+                decisions=window_decisions,
+                decisions_at_end=spent,
+                mean_final_wave=statistics.fmean(waves),
+                stdev_final_wave=stdev,
+                standard_error=None if stdev is None else stdev / len(waves) ** 0.5,
+                wait_fraction=distribution.wait_fraction,
+                purchases_per_episode=distribution.purchases_per_episode,
+            )
+        )
+        current = []
+        window_decisions = 0
+    return windows
 
 
 @dataclass
@@ -89,13 +232,20 @@ class TrainingProgressReport:
     optimisation_steps: int = 0
     sequences_accepted: int = 0
     wall_seconds: float = 0.0
-    episode_summaries: list[EpisodeSummary] = field(default_factory=list)
-    recent_losses: list[float] = field(default_factory=list)
-    #: The other two learning-health signals `learn` already returns, kept over
-    #: the same window as the loss and for the same reason: a loss that looks
-    #: steady while TD errors or gradients run away is still a learner problem.
-    recent_td_errors: list[float] = field(default_factory=list)
+    #: Every episode collected, in the order it was played. The collection curve
+    #: is read from this; evaluation is the headline, not the curve.
+    collected: list[CollectedEpisode] = field(default_factory=list)
+    #: The optimised quantity, which carries the importance-sampling weights in
+    #: it and therefore moves with the beta schedule whether or not the learner
+    #: improves. Named for that, and never reported without the unweighted TD
+    #: error beside it.
+    recent_weighted_losses: list[float] = field(default_factory=list)
+    #: The signal to read instead: absolute TD error with no weighting at all.
+    recent_unweighted_td_errors: list[float] = field(default_factory=list)
     recent_gradient_norms: list[float] = field(default_factory=list)
+    #: Correlation between predicted value and realised return, per step that
+    #: could compute one. The strongest evidence that the learner works at all.
+    recent_value_fits: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
     #: Episodes the port could not produce at all - a boundary that would not
@@ -109,32 +259,47 @@ class TrainingProgressReport:
     evaluation_failures: list[str] = field(default_factory=list)
 
     @property
+    def episode_summaries(self) -> list[EpisodeSummary]:
+        """The collected episodes as the environment classified them."""
+        return [episode.summary for episode in self.collected]
+
+    @property
     def valid_episodes(self) -> int:
-        return sum(1 for summary in self.episode_summaries if summary.valid)
+        return sum(1 for episode in self.collected if episode.summary.valid)
 
     @property
     def final_waves(self) -> list[int]:
-        return [summary.final_wave for summary in self.episode_summaries if summary.valid]
+        return [
+            episode.summary.final_wave for episode in self.collected if episode.summary.valid
+        ]
 
     @property
-    def mean_recent_loss(self) -> float | None:
-        """Mean loss over the last hundred optimisation steps, or None before any.
+    def mean_recent_weighted_loss(self) -> float | None:
+        """Mean of the optimised loss over the last hundred steps, or None before any.
 
         Reported beside the outcome because section 9.7 asks for it: a loss that
         stops moving while episodes keep arriving is a learner problem, and it is
-        invisible in the final-wave distribution alone.
+        invisible in the final-wave distribution alone. It is weighted, so it
+        falls as beta anneals even when nothing is learned; that is what made the
+        first run's apparent progress an artefact, and why it is never reported
+        without `mean_recent_unweighted_absolute_td_error`.
         """
-        return _mean(self.recent_losses)
+        return _mean(self.recent_weighted_losses)
 
     @property
-    def mean_recent_absolute_td_error(self) -> float | None:
-        """Mean absolute TD error over the same window, or None before any step."""
-        return _mean(self.recent_td_errors)
+    def mean_recent_unweighted_absolute_td_error(self) -> float | None:
+        """Mean absolute TD error over the same window, with no weighting in it."""
+        return _mean(self.recent_unweighted_td_errors)
 
     @property
     def mean_recent_gradient_norm(self) -> float | None:
         """Mean gradient norm over the same window, or None before any step."""
         return _mean(self.recent_gradient_norms)
+
+    @property
+    def mean_recent_value_fit_correlation(self) -> float | None:
+        """Mean value-fit correlation over the same window, or None before any."""
+        return _mean(self.recent_value_fits)
 
 
 @dataclass
@@ -212,19 +377,29 @@ class TrainingRun:
             report.episodes += 1
             report.decisions += result.summary.decisions
             report.sequences_accepted += result.sequences_accepted
-            report.episode_summaries.append(result.summary)
+            report.collected.append(
+                CollectedEpisode(result.summary, wait_decisions=result.wait_decisions)
+            )
 
             owed += result.summary.decisions * self.config.gradient_steps_per_decision
             while owed >= 1.0 and len(self.replay) >= self.config.warmup_sequences:
                 metrics = self._optimise(report.decisions)
                 report.optimisation_steps += 1
-                report.recent_losses.append(metrics.loss)
-                report.recent_td_errors.append(metrics.mean_absolute_td_error)
+                report.recent_weighted_losses.append(metrics.weighted_loss)
+                report.recent_unweighted_td_errors.append(
+                    metrics.unweighted_mean_absolute_td_error
+                )
                 report.recent_gradient_norms.append(metrics.gradient_norm)
+                if metrics.value_fit_correlation is not None:
+                    # A batch with too few completed episodes in it reports no
+                    # correlation rather than a zero that would look like a
+                    # learner predicting nothing.
+                    report.recent_value_fits.append(metrics.value_fit_correlation)
                 for window in (
-                    report.recent_losses,
-                    report.recent_td_errors,
+                    report.recent_weighted_losses,
+                    report.recent_unweighted_td_errors,
                     report.recent_gradient_norms,
+                    report.recent_value_fits,
                 ):
                     del window[:-100]
                 owed -= 1.0
@@ -285,7 +460,12 @@ def episode_budget(config: TrainingConfig, decisions_per_episode: float) -> int:
 
 
 __all__ = [
+    "ActionDistribution",
     "ActorConfig",
+    "CollectedEpisode",
+    "CollectionWindow",
+    "action_distribution",
+    "collection_windows",
     "TrainingConfig",
     "TrainingProgressReport",
     "TrainingRun",

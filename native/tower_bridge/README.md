@@ -50,6 +50,14 @@ command rejected as `stale_or_duplicate`, even straight after a fresh read. A ru
 that ended under an advance is never paused, so the screens between episodes keep
 streaming and the episode boundary still sees its lifecycle transitions.
 
+Whether the world is paused is reported by the code that decided it, never
+re-derived afterwards: the advance says whether it pressed `Pause`, and a
+lifecycle `pause` counts only once the game's own state confirms it. Asking
+`RunIsActive` again would sample a different instant, and a round that started in
+between - the game's own auto-restart does that - would mark a running world as
+paused, which is the one way the host could be left acting on a view the bridge
+had stopped refreshing.
+
 Between episodes the game holds no initialized run. That is reported as a
 `run_unavailable` message carrying the same monotonic sequence, so a controller
 can still bind and send a command, and no invented run values are ever presented

@@ -1019,6 +1019,16 @@ while the world is paused. The world is only paused by this bridge, and a run
 that ends under an advance is never paused, so the episode boundary — home
 screen, result screen, lifecycle transitions — keeps receiving fresh state.
 
+Two consequences follow from a world that can stand still. An episode that ends
+host-side while the run is still going leaves it paused, so `begin_episode`
+unpauses before it reads: otherwise the next episode would begin on a cached
+reading of a world that had stopped moving. And the death boundary — health
+negative a moment before the game flips game-over (`M1B-E008`) — cannot be
+resolved by reading again, because the frozen world answers with the identical
+reading. It is settled by advancing one frame and taking that settled
+observation; a recovery advance that is not confirmed classifies the episode as
+`ACTION_PIPELINE_FAILED` rather than being retried around.
+
 That replaces a loop that ran on the host: a 250 ms slice at a time, roughly eight
 slices per decision, each its own round trip. A frame is 17 ms at the observed
 58.9 fps while a slice cost about 57 ms, so roughly 40 ms of every slice was host

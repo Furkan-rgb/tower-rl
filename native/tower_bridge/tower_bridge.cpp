@@ -1048,10 +1048,16 @@ bool BecameAvailable(const DecisionSnapshot& before, const DecisionSnapshot& aft
 // Because the loop lives here rather than in the host, the policy's own latency
 // costs no game time at all and one decision costs one round trip.
 //
-// Returns false only when the client connection is gone.
+// Returns false only when the client connection is gone. `*paused` reports
+// whether this advance left the world paused, which only this function knows:
+// it is the one that decides whether to press `Pause`. Deriving it afterwards
+// from `RunIsActive` would read a different instant, and a round that started
+// in between would then be reported as a paused world - the one way the host
+// could be left acting on a view the bridge had stopped refreshing.
 bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& fields,
                        const Command& command, uint64_t sequence, const char** outcome,
-                       const char** reason, AdvanceDetail* detail) {
+                       const char** reason, AdvanceDetail* detail, bool* paused) {
+  *paused = false;
   const EngineClock& clock = Clock();
   UnitySendMessage send = ResolveUnitySendMessage();
   if (clock.get_frame_count == nullptr || clock.set_capture_delta == nullptr || send == nullptr) {
@@ -1122,6 +1128,7 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // Pausing a run that has already ended would press a control the game no
   // longer owns a receiver for; RunIsActive is false then anyway.
   if (RunIsActive(api, fields)) {
+    *paused = true;
     // `Pause` is dispatched to the main thread and lands a frame or two later.
     // Those tail frames advance no meaningful world state, so pacing them at
     // `frame_game_ms` each credited the budget with game time the world never
@@ -1331,14 +1338,14 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         // One round trip per decision: the bridge advances frames of fixed game
         // time until the host's own decision predicate would fire.
         reason = "budget_exhausted";
-        if (!AdvanceUntilEvent(client, api, fields, command, sequence, &outcome, &reason,
-                               &detail)) {
-          return;
-        }
         // The advance pauses the world again exactly when the run is still
         // active; a run that ended under it was never paused and its screens
-        // keep changing, so its state must keep streaming.
-        world_paused = RunIsActive(api, fields);
+        // keep changing, so its state must keep streaming. It reports that
+        // itself rather than being asked again afterwards.
+        if (!AdvanceUntilEvent(client, api, fields, command, sequence, &outcome, &reason,
+                               &detail, &world_paused)) {
+          return;
+        }
       } else if (command.set_speed) {
         float applied = 0.0F;
         api.field_static_set_value(fields.game_speed, &command.speed);
@@ -1359,9 +1366,6 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         // The game owns the transition; the bridge only presses its own control
         // and then waits for the game's own state to agree.
         ResolveUnitySendMessage()(TOWER_BRIDGE_MAIN_GAME_OBJECT, command.lifecycle->method, "");
-        // `pause` is the one lifecycle control that stops the world; every other
-        // one leaves it running, including the `unpause` that ends a session.
-        world_paused = std::strcmp(command.lifecycle->name, "pause") == 0;
         reason = command.lifecycle->expect_active ? "run_active" : "run_closed";
         bool settled = false;
         // A scene transition takes seconds. The stream must keep proving it is
@@ -1378,6 +1382,12 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
                                        std::to_string(sequence) + "}")) return;
           }
         }
+        // `pause` is the one lifecycle control that stops the world; every other
+        // one leaves it running, including the `unpause` that ends a session.
+        // Only a confirmed outcome may hold the sequence: a `pause` pressed from
+        // a screen that cannot take it times out ambiguous, and believing it
+        // would freeze the stream for a world that never stopped.
+        world_paused = settled && std::strcmp(command.lifecycle->name, "pause") == 0;
         if (settled) {
           if (command.lifecycle->expect_active) RefreshCosts();
         } else {

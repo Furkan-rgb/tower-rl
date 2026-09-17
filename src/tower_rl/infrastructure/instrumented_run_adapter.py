@@ -79,6 +79,7 @@ class InstrumentedRunAdapter:
 
     def begin_episode(self) -> None:
         """Bring the instance into an active run, tapping only when classified."""
+        self._resume_a_frozen_run()
         deadline = time.monotonic() + self.episode_start_timeout
         while time.monotonic() < deadline:
             state = self.client.read_state()
@@ -98,6 +99,38 @@ class InstrumentedRunAdapter:
                 self._pin_game_speed(state)
                 return
         raise RunPortError("the instance did not reach an active run in time")
+
+    def _resume_a_frozen_run(self) -> None:
+        """Never start an episode on a reading of a world that is standing still.
+
+        An episode can end host-side - a truncation, an invalid observation, a
+        pipeline failure - while the run itself is still going. The bridge then
+        holds that run paused and streams no new state, so `begin_episode` would
+        see a cached active reading, return at once, and hand the policy a run it
+        has already been playing as though it had just begun.
+
+        Unpausing is what makes the bridge stream again; the game's own state
+        after the command is therefore current. A run that is already over is
+        never the paused case, and the bridge's own `unpause` waits for a run to
+        be active, so it is left alone for the tap flow below to restart.
+        """
+        state = self.client.read_state()
+        if not isinstance(state, BridgeObservation) or state.terminal:
+            return
+        result = self.client.send_command(
+            {
+                "type": "command",
+                "protocol_version": 1,
+                "request_id": self._request_id("unpause"),
+                "expected_observation_sequence": state.sequence,
+                "kind": "lifecycle",
+                "action": "unpause",
+            }
+        )
+        if result.outcome != "confirmed":
+            raise RunPortError(
+                f"the previous run could not be resumed to start an episode: {result.reason}"
+            )
 
     def _await_active(self, deadline: float) -> None:
         while time.monotonic() < deadline:

@@ -54,9 +54,18 @@ class CadenceConfig:
 
 #: The one inconsistency the bridge can legitimately show. Health and the round
 #: flag are read separately, so at the instant of death health goes negative a
-#: moment before the game flips game-over (M1B-E008). The settled state arrives
-#: on the next read, so this is recovered rather than excluded.
+#: moment before the game flips game-over (M1B-E008). The two agree again once
+#: the game has processed another frame, so this is recovered rather than
+#: excluded - by advancing the world minimally, never by looking again: between
+#: decisions the bridge holds the world paused, and a frozen world answers a
+#: second read with the identical reading.
 DEATH_BOUNDARY_TRANSIENT = "negative health in an active run"
+
+#: The smallest advance the wire protocol will carry, mirroring
+#: `MIN_ADVANCE_BUDGET_GAME_MS` in `infrastructure/instrumented_bridge.py`. The
+#: death-boundary recovery asks for one frame of game time, or for this floor
+#: when a frame is worth less than the protocol allows.
+MIN_ADVANCE_GAME_MS = 10
 
 #: The bridge stops advancing at the first decision condition it sees, but
 #: `_events_between` below remains the only definition of what a decision
@@ -69,6 +78,20 @@ BRIDGE_EVENT_DIVERGENCE = "the bridge and the host disagree about the decision e
 #: than on the budget, and the reason it gives when it stopped on neither.
 _BRIDGE_EVENT_PREFIX = "event:"
 _BRIDGE_BUDGET_REASON = "budget_exhausted"
+
+
+class _DeathBoundaryUnresolved(RunPortError):
+    """The minimal advance that should have settled the death boundary failed.
+
+    It is a `RunPortError` because that is what it is - the port could not move
+    the world - but `step` catches it and classifies the episode, exactly as it
+    classifies any other advance that could not say what it did.
+    """
+
+    def __init__(self, outcome: ActionOutcome, reason: str) -> None:
+        super().__init__(reason)
+        self.outcome = outcome
+        self.reason = reason
 
 
 @dataclass
@@ -189,24 +212,31 @@ class InstrumentedRunEnvironment:
 
         outcome = ActionOutcome.WAITED
         purchase_result: AdvanceResultLike | None = None
-        if not action.is_wait:
-            assert action.family is not None and action.slot is not None
-            purchase_result = self.port.buy_upgrade(
-                action.family.value, action.slot, expected_sequence=state.source_sequence
-            )
-            outcome = _purchase_outcome(purchase_result.outcome)
-            if outcome is ActionOutcome.EXECUTED:
-                self._tally.purchases += 1
-            if outcome in (ActionOutcome.AMBIGUOUS, ActionOutcome.FAILED):
-                # An unconfirmed purchase leaves the game in a state the record
-                # cannot describe, so the episode is classified, not continued.
-                after = self._read_state()
-                return self._finish(
-                    state, after, action, outcome, started, 0, (),
-                    (f"purchase was not confirmed: {purchase_result.reason}",),
+        try:
+            if not action.is_wait:
+                assert action.family is not None and action.slot is not None
+                purchase_result = self.port.buy_upgrade(
+                    action.family.value, action.slot, expected_sequence=state.source_sequence
                 )
+                outcome = _purchase_outcome(purchase_result.outcome)
+                if outcome is ActionOutcome.EXECUTED:
+                    self._tally.purchases += 1
+                if outcome in (ActionOutcome.AMBIGUOUS, ActionOutcome.FAILED):
+                    # An unconfirmed purchase leaves the game in a state the record
+                    # cannot describe, so the episode is classified, not continued.
+                    after = self._read_state()
+                    return self._finish(
+                        state, after, action, outcome, started, 0, (),
+                        (f"purchase was not confirmed: {purchase_result.reason}",),
+                    )
 
-        advanced = self._advance_to_decision(state, action, purchase_result)
+            advanced = self._advance_to_decision(state, action, purchase_result)
+        except _DeathBoundaryUnresolved as unresolved:
+            # A death boundary the world would not settle is a pipeline failure,
+            # not a wait: nothing here can say what the game did next.
+            return self._finish(
+                state, None, action, unresolved.outcome, started, 0, (), (unresolved.reason,)
+            )
         return self._finish(
             state,
             advanced.state,
@@ -339,13 +369,45 @@ class InstrumentedRunEnvironment:
             return None
         state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
         if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
-            # Read once more rather than discarding an otherwise complete episode.
-            # One retry only: a state that stays contradictory is a real failure.
-            settled = self.port.read_state()
-            if settled is not None:
-                self._tally.recovered_transients += 1
-                state = self.builder.build(settled, captured_at_monotonic=time.monotonic())
+            return self._settle_death_boundary(state)
         return state
+
+    def _settle_death_boundary(self, state: RunState) -> RunState:
+        """Let the game take one more frame so the death boundary can resolve.
+
+        The world is paused while the host decides, and a frozen world cannot
+        resolve an inconsistency by being observed again: the same reading comes
+        back. What settles the boundary is the game processing another frame, so
+        the recovery asks for the smallest advance there is - a single frame's
+        worth of game time - and takes the settled observation it returns.
+
+        One attempt only. A state that is still contradictory after the world has
+        moved on is a real failure, and it keeps its reasons so the episode is
+        classified invalid rather than quietly accepted.
+        """
+        result = self.port.advance_until_event(
+            expected_sequence=state.source_sequence,
+            budget_game_ms=max(MIN_ADVANCE_GAME_MS, int(self.cadence.frame_game_ms)),
+            frame_game_ms=self.cadence.frame_game_ms,
+            health_change_fraction=self.cadence.health_change_fraction,
+        )
+        # This frame really was stepped, so it is charged to the episode like any
+        # other: the speed-up is measured from what the game clock actually cost.
+        self._tally.frames += result.frames
+        self._tally.game_ms += result.game_ms
+        self._tally.round_ms += result.round_ms
+        self._tally.advance_wall_micros += result.wall_micros
+        if result.outcome != "confirmed" or result.state is None:
+            # The same failure an unconfirmed advance is: the record cannot say
+            # what the world did, so the episode is classified, never continued.
+            raise _DeathBoundaryUnresolved(
+                _advance_failure(result.outcome),
+                f"the death boundary did not settle: {result.reason}",
+            )
+        settled = self.builder.build(result.state, captured_at_monotonic=time.monotonic())
+        if settled.valid:
+            self._tally.recovered_transients += 1
+        return settled
 
     def _finish(
         self,

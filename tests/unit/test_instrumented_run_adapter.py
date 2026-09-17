@@ -97,7 +97,12 @@ def test_an_unavailable_run_reads_as_no_state_not_as_invented_values() -> None:
 
 
 def test_a_tap_is_refused_unless_the_screen_is_positively_classified(monkeypatch) -> None:
-    client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run")])
+    client = FakeClient(
+        states=[
+            BridgeRunUnavailable(1, "no_initialized_run"),
+            BridgeRunUnavailable(1, "no_initialized_run"),
+        ]
+    )
     device = FakeDevice()
     # The real classifier sees a blank frame here, which is deliberately UNKNOWN.
     adapter = _adapter(client, device, episode_start_timeout=0.2)
@@ -111,7 +116,13 @@ def test_a_classified_home_screen_permits_exactly_the_battle_tap(monkeypatch) ->
     import tower_rl.infrastructure.instrumented_run_adapter as module
 
     monkeypatch.setattr(module, "classify", lambda _image: Screen.HOME)
-    client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run"), _observation()])
+    client = FakeClient(
+        states=[
+            BridgeRunUnavailable(1, "no_initialized_run"),
+            BridgeRunUnavailable(1, "no_initialized_run"),
+            _observation(),
+        ]
+    )
     device = FakeDevice()
 
     _adapter(client, device).begin_episode()
@@ -124,7 +135,9 @@ def test_a_terminal_run_taps_retry_from_the_result_screen(monkeypatch) -> None:
     import tower_rl.infrastructure.instrumented_run_adapter as module
 
     monkeypatch.setattr(module, "classify", lambda _image: Screen.RESULT)
-    client = FakeClient(states=[_observation(terminal=True), _observation()])
+    client = FakeClient(
+        states=[_observation(terminal=True), _observation(terminal=True), _observation()]
+    )
     device = FakeDevice()
 
     _adapter(client, device).begin_episode()
@@ -211,3 +224,42 @@ def test_a_refused_speed_pin_is_an_explicit_failure(monkeypatch) -> None:
 
     with pytest.raises(RunPortError, match="refused the pinned 1x speed"):
         _adapter(client, FakeDevice()).begin_episode()
+
+
+def test_a_frozen_leftover_run_is_resumed_before_an_episode_begins() -> None:
+    """An episode that ended host-side leaves the bridge holding the world still.
+
+    The cached reading of a paused run still says "active", so without this the
+    next episode would start on a view of a world that had stopped moving, and
+    on a sequence frozen at whatever the previous episode last saw.
+    """
+    client = FakeClient(states=[_observation(sequence=9)])
+
+    _adapter(client, FakeDevice()).begin_episode()
+
+    resume = client.sent[0]
+    assert resume["kind"] == "lifecycle" and resume["action"] == "unpause"
+    assert resume["expected_observation_sequence"] == 9
+
+
+def test_a_run_that_will_not_resume_refuses_to_start_an_episode() -> None:
+    client = FakeClient(states=[_observation(sequence=9)], outcome="ambiguous")
+
+    with pytest.raises(RunPortError, match="could not be resumed"):
+        _adapter(client, FakeDevice()).begin_episode()
+
+
+def test_a_finished_run_is_not_asked_to_resume() -> None:
+    """The bridge never pauses a run that ended, and its `unpause` waits for an
+    active run, so asking would only stall the retry flow."""
+    import tower_rl.infrastructure.instrumented_run_adapter as module
+
+    client = FakeClient(
+        states=[_observation(terminal=True), _observation(terminal=True), _observation()]
+    )
+    device = FakeDevice()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "classify", lambda _image: Screen.RESULT)
+        _adapter(client, device).begin_episode()
+
+    assert all(message["kind"] != "lifecycle" for message in client.sent)

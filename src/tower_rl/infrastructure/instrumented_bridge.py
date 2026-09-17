@@ -643,6 +643,10 @@ class InstrumentedBridgeClient:
         stream, self._socket = self._socket, None
         self._handshake = None
         self._last_state = None
+        # The sequence belongs to the connection, not to the client: a reconnect
+        # starts a fresh one, and keeping the old high-water mark would reject
+        # the new stream's first observations as not newer.
+        self._last_observation_sequence = 0
         self._last_inbound_at = None
         if stream is not None:
             with suppress(OSError):

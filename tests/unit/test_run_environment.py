@@ -289,49 +289,113 @@ def test_a_stalled_run_truncates_rather_than_running_forever() -> None:
     assert port.active, "truncation is an environment decision, not a game over"
 
 
-def test_the_death_boundary_transient_is_recovered_not_discarded() -> None:
-    """M1B-E008: health goes negative a moment before game-over flips."""
+def test_the_death_boundary_is_settled_by_advancing_not_by_reading_again() -> None:
+    """M1B-E008: health goes negative a moment before game-over flips.
+
+    Between decisions the bridge holds the world paused, so a second read returns
+    the identical reading however many times it is asked. Only another frame of
+    game time can settle the boundary, so the recovery advances minimally.
+    """
     from dataclasses import replace
 
     environment, port = _environment()
     environment.reset()
     original = port.read_state
 
-    calls = {"count": 0}
-
-    def flaky_read():
-        reading = original()
-        calls["count"] += 1
-        if calls["count"] == 1 and reading is not None:
-            # Active, but health already negative: the inconsistent instant.
-            return replace(reading, health=-2.0, lifecycle="active", terminal=False)
-        return reading
-
-    port.read_state = flaky_read  # type: ignore[method-assign]
-    state = environment._read_state()
-
-    assert state is not None and state.valid, state.invalid_reasons
-    assert environment._tally.recovered_transients == 1
-
-
-def test_a_persistently_contradictory_state_is_still_invalid() -> None:
-    from dataclasses import replace
-
-    environment, port = _environment()
-    environment.reset()
-    original = port.read_state
-
-    def always_contradictory():
+    def frozen_read():
+        # A paused world: the same contradictory instant, read as often as liked.
         reading = original()
         return None if reading is None else replace(
             reading, health=-2.0, lifecycle="active", terminal=False
         )
 
-    port.read_state = always_contradictory  # type: ignore[method-assign]
+    port.read_state = frozen_read  # type: ignore[method-assign]
+    advances = port.advances
     state = environment._read_state()
+
+    assert state is not None and state.valid, state.invalid_reasons
+    assert port.advances == advances + 1, "the world has to move for the boundary to settle"
+    assert environment._tally.recovered_transients == 1
+
+
+def test_the_recovery_advance_asks_for_one_frame_and_no_more() -> None:
+    """Recovering costs the smallest amount of game time the protocol carries."""
+    from dataclasses import replace
+
+    environment, port = _environment()
+    environment.cadence = CadenceConfig(max_quiet_game_ms=1000, frame_game_ms=100.0)
+    environment.reset()
+    original = port.advance_until_event
+    asked: list[int] = []
+
+    def recording_advance(**kwargs):
+        asked.append(kwargs["budget_game_ms"])
+        return original(**kwargs)
+
+    port.advance_until_event = recording_advance  # type: ignore[method-assign]
+    reading = port.read_state()
+    assert reading is not None
+    environment._build_state(replace(reading, health=-2.0, lifecycle="active", terminal=False))
+
+    assert asked == [100], "one frame's worth of game time, not a decision's worth"
+
+
+def test_a_persistently_contradictory_state_is_still_invalid() -> None:
+    """A boundary that survives another frame is a real failure, not a transient."""
+    from dataclasses import replace
+
+    environment, port = _environment()
+    environment.reset()
+    original = port.advance_until_event
+
+    def contradictory_advance(**kwargs):
+        result = original(**kwargs)
+        assert result.state is not None
+        return replace(
+            result,
+            state=replace(result.state, health=-2.0, lifecycle="active", terminal=False),
+        )
+
+    port.advance_until_event = contradictory_advance  # type: ignore[method-assign]
+    reading = port.read_state()
+    assert reading is not None
+    state = environment._build_state(
+        replace(reading, health=-2.0, lifecycle="active", terminal=False)
+    )
 
     assert state is not None and not state.valid
     assert "negative health in an active run" in state.invalid_reasons
+    assert environment._tally.recovered_transients == 0, "nothing admissible was recovered"
+
+
+def test_a_recovery_advance_that_is_not_confirmed_fails_the_episode_visibly() -> None:
+    """An unrecoverable boundary is a pipeline failure, never a silent wait."""
+    from dataclasses import replace
+
+    environment, port = _environment()
+    environment.reset()
+    original = port.advance_until_event
+    calls = {"count": 0}
+
+    def failing_recovery(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            result = original(**kwargs)
+            assert result.state is not None
+            return replace(
+                result,
+                state=replace(result.state, health=-2.0, lifecycle="active", terminal=False),
+            )
+        return FakeCommandResult("ambiguous", "no_frame_rendered")
+
+    port.advance_until_event = failing_recovery  # type: ignore[method-assign]
+    transition = environment.step(WAIT)
+
+    assert transition.termination is TerminationOutcome.ACTION_PIPELINE_FAILED
+    assert transition.outcome is ActionOutcome.AMBIGUOUS
+    assert not transition.admissible
+    assert any("death boundary did not settle" in reason for reason in transition.invalid_reasons)
+    assert environment._tally.recovered_transients == 0
 
 
 def test_the_summary_reports_the_speed_the_run_actually_executed_at() -> None:

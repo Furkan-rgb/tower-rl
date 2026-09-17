@@ -66,17 +66,19 @@ def _handshake(**overrides: object) -> dict[str, object]:
     return message
 
 
-def _observation(sequence: int = 1, wave: int = 7) -> dict[str, object]:
+def _observation(
+    sequence: int = 1, wave: int = 7, *, terminal: bool = False
+) -> dict[str, object]:
     return {
         "type": "observation",
         "sequence": sequence,
-        "lifecycle": "active",
+        "lifecycle": "terminal" if terminal else "active",
         "wave": wave,
         "cash": 123.5,
-        "health": 95.0,
+        "health": 0.0 if terminal else 95.0,
         "max_health": 100.0,
-        "terminal": False,
-        "round_active": True,
+        "terminal": terminal,
+        "round_active": not terminal,
         "game_speed": 1.5,
         "play_time": 3546.9,
         "upgrades": [
@@ -650,10 +652,13 @@ class _IdleStreamBridge:
         *,
         holds_the_sequence_while_paused: bool,
         idle_interval: float = 0.05,
+        run_ends_under_advance: bool = False,
     ) -> None:
         self._peer = peer
         self._holds = holds_the_sequence_while_paused
         self._idle_interval = idle_interval
+        self._run_ends_under_advance = run_ends_under_advance
+        self._run_active = True
         self._paused = False
         self._sequence = 0
         self._last_request_id = ""
@@ -689,7 +694,7 @@ class _IdleStreamBridge:
                     )
                 else:
                     self._sequence += 1
-                    self._send(_observation(self._sequence))
+                    self._send(_observation(self._sequence, terminal=not self._run_active))
                 continue
             try:
                 command = read_frame(self._peer, timeout=1.0)
@@ -703,10 +708,27 @@ class _IdleStreamBridge:
                 self._send(self._result(request_id, "rejected", "stale_or_duplicate"))
                 continue
             self._last_request_id = request_id
-            self._paused = command["kind"] == "advance"
+            self._apply_pause_rule(command)
             self._sequence += 1
-            self._send(_observation(self._sequence))
+            self._send(_observation(self._sequence, terminal=not self._run_active))
             self._send(self._result(request_id, "confirmed", "budget_exhausted"))
+
+    def _apply_pause_rule(self, command: dict[str, object]) -> None:
+        """Exactly the rule `ServeClient` applies to `world_paused`.
+
+        An advance pauses the world again only when the run is still active; a
+        run that ended under it was never paused and its screens keep changing.
+        A lifecycle command holds the world only when a `pause` is confirmed.
+        Every other command - a purchase, a speed change - leaves the pause
+        exactly as it found it, which is why a purchase cannot resume the stream.
+        """
+        kind = command["kind"]
+        if kind == "advance":
+            if self._run_ends_under_advance:
+                self._run_active = False
+            self._paused = self._run_active
+        elif kind == "lifecycle":
+            self._paused = command.get("action") == "pause"
 
 
 def _slow_bridge_client() -> tuple[InstrumentedBridgeClient, socket.socket]:
@@ -753,6 +775,82 @@ def test_a_paused_world_holds_the_sequence_across_a_slow_decision() -> None:
             # heartbeat stands for the state the bridge has already sent.
             standing = client.read_state()
             assert standing.sequence == second.observation_sequence
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_closing_forgets_the_sequence_so_a_reconnect_can_start_over() -> None:
+    """The sequence belongs to the connection, not to the client.
+
+    A bridge that restarts begins counting again, so a client still holding the
+    old high-water mark would reject the new stream's first observations as not
+    newer than a stream that no longer exists.
+    """
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(9)))
+        assert client.read_state().sequence == 9
+        client.close()
+
+        client._socket, peer_again = socket.socketpair()
+        client._handshake = decode_handshake(_handshake(), EXPECTED)
+        peer_again.sendall(encode_frame(_observation(1)))
+
+        assert client.read_state().sequence == 1
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_a_purchase_does_not_resume_a_paused_stream() -> None:
+    """Only an advance or a lifecycle command decides whether the world is paused.
+
+    A purchase presses an upgrade button; it never unpauses anything. A double
+    that resumed the stream on one would hide the very rejections the pause was
+    introduced to prevent.
+    """
+    client, peer = _slow_bridge_client()
+    try:
+        with _IdleStreamBridge(peer, holds_the_sequence_while_paused=True):
+            state = client.read_state()
+            advance = client.send_command(_advance("adv-1", state.sequence))
+            purchase = client.send_command(
+                {
+                    "type": "command", "protocol_version": 1, "request_id": "buy-1",
+                    "expected_observation_sequence": advance.observation_sequence,
+                    "kind": "buy_upgrade", "family": "attack", "index": 0,
+                }
+            )
+            assert purchase.outcome.value == "confirmed"
+
+            time.sleep(0.4)
+            after = client.send_command(_advance("adv-2", purchase.observation_sequence))
+
+            assert after.outcome.value == "confirmed"
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_a_run_that_ended_under_an_advance_keeps_streaming() -> None:
+    """The episode boundary needs fresh state, and that run was never paused."""
+    client, peer = _slow_bridge_client()
+    try:
+        with _IdleStreamBridge(
+            peer, holds_the_sequence_while_paused=True, run_ends_under_advance=True
+        ):
+            state = client.read_state()
+            ended = client.send_command(_advance("adv-1", state.sequence))
+
+            time.sleep(0.2)
+            boundary = client.read_state()
+
+            assert boundary.terminal
+            assert boundary.sequence > ended.observation_sequence, (
+                "a run that ended under an advance is never paused, so its screens "
+                "keep changing and its state must keep streaming"
+            )
     finally:
         client.close()
         peer.close()

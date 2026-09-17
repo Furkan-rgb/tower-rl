@@ -213,7 +213,7 @@ def test_the_summary_reports_what_advancing_cost_the_game_clock() -> None:
     assert summary.frames > 0
     assert summary.game_ms > 0.0
     # The game's own clock, beside the budgeted game time it is meant to equal.
-    assert summary.play_ms == pytest.approx(summary.game_ms)
+    assert summary.round_ms == pytest.approx(summary.game_ms)
     # Wall time inside advances, which the report subtracts from total wall time
     # to show what the decision boundaries cost. The double invents its own
     # figure, so only that it is carried through is testable here.

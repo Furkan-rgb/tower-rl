@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import time
 
 import pytest
 
@@ -413,7 +414,7 @@ def test_advance_wire_format_matches_the_native_parser_contract() -> None:
                     "type": "command_result", "protocol_version": 1, "request_id": "adv-1",
                     "outcome": "confirmed", "reason": "budget_exhausted",
                     "observation_sequence": 1, "frames": 120, "game_ms": 2000,
-                    "play_ms": 1998, "wall_micros": 57_000,
+                    "round_ms": 1998, "wall_micros": 57_000,
                 }
             )
         )
@@ -490,20 +491,22 @@ def test_a_command_result_carries_what_the_advance_cost() -> None:
     """Frames, both clocks and wall time are how the speed-up is measured at all.
 
     The native encoder writes these in one fixed order - `frames`, `game_ms`,
-    `play_ms`, `wall_micros` - and `game_ms` against `play_ms` is what shows
+    `round_ms`, `wall_micros` - and `game_ms` against `round_ms` is what shows
     whether the game time each frame was told to be worth actually passed.
+    `round_ms` comes from the game's own per-round clock; `playTime` runs at wall
+    rate whatever the game clock does, so it could never witness this.
     """
     result = decode_command_result(
         {
             "type": "command_result", "protocol_version": 1, "request_id": "a",
             "outcome": "confirmed", "reason": "event:wave_changed",
             "observation_sequence": 7, "frames": 120, "game_ms": 2000.0,
-            "play_ms": 1998.0, "wall_micros": 57_000,
+            "round_ms": 1998.0, "wall_micros": 57_000,
         }
     )
 
     assert result.reason == "event:wave_changed"
-    assert (result.frames, result.game_ms, result.play_ms, result.wall_micros) == (
+    assert (result.frames, result.game_ms, result.round_ms, result.wall_micros) == (
         120, 2000.0, 1998.0, 57_000,
     )
     # Nothing bound this result to a state, so it honestly carries none.
@@ -518,7 +521,7 @@ def test_a_command_result_carries_what_the_advance_cost() -> None:
         }
     )
 
-    assert (bare.frames, bare.game_ms, bare.play_ms, bare.wall_micros) == (0, 0.0, 0.0, 0)
+    assert (bare.frames, bare.game_ms, bare.round_ms, bare.wall_micros) == (0, 0.0, 0.0, 0)
 
 
 def test_a_result_carries_the_observation_the_bridge_sent_with_it() -> None:
@@ -534,7 +537,7 @@ def test_a_result_carries_the_observation_the_bridge_sent_with_it() -> None:
                     "type": "command_result", "protocol_version": 1, "request_id": "adv-2",
                     "outcome": "confirmed", "reason": "event:wave_changed",
                     "observation_sequence": 2, "frames": 60, "game_ms": 1000,
-                    "play_ms": 1000, "wall_micros": 21_000,
+                    "round_ms": 1000, "wall_micros": 21_000,
                 }
             )
         )
@@ -550,6 +553,58 @@ def test_a_result_carries_the_observation_the_bridge_sent_with_it() -> None:
         assert result.state is not None
         assert result.state.sequence == 2
         assert result.state.wave == 9
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_any_inbound_frame_proves_the_bridge_is_alive() -> None:
+    """A heartbeat is not the only proof of life, and demanding one kills healthy runs.
+
+    With one command in flight per decision the bridge never reaches the idle
+    branch that emits heartbeats, so a stream of observations and command results
+    is all a working run produces. Liveness therefore has to be renewed by any
+    inbound frame; otherwise the deadline trips in the middle of healthy play
+    (M1B-E017 - every unattended run died at about sixty seconds).
+    """
+    client_socket, peer = socket.socketpair()
+    client = InstrumentedBridgeClient(
+        "127.0.0.1", 47651, expected_compatibility=EXPECTED,
+        read_timeout=0.5, heartbeat_timeout=0.05,
+    )
+    client._socket = client_socket
+    client._handshake = decode_handshake(_handshake(), EXPECTED)
+    # What a real `connect` leaves behind: the handshake frame started the clock.
+    client._last_inbound_at = time.monotonic()
+    try:
+        for sequence in range(1, 8):
+            # Each gap is inside the deadline; the whole exchange is well past it.
+            time.sleep(0.02)
+            peer.sendall(encode_frame(_observation(2 * sequence - 1)))
+            assert client.read_state().sequence == 2 * sequence - 1
+            peer.sendall(encode_frame(_observation(2 * sequence)))
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "command_result", "protocol_version": 1,
+                        "request_id": f"adv-{sequence}", "outcome": "confirmed",
+                        "reason": "budget_exhausted",
+                        "observation_sequence": 2 * sequence, "frames": 3,
+                        "game_ms": 300, "round_ms": 300, "wall_micros": 50_000,
+                    }
+                )
+            )
+            result = client.send_command(
+                {
+                    "type": "command", "protocol_version": 1,
+                    "request_id": f"adv-{sequence}",
+                    "expected_observation_sequence": 2 * sequence - 1, "kind": "advance",
+                    "budget_game_ms": 2000, "frame_game_ms": 100.0,
+                    "health_change_fraction": 0.05,
+                }
+            )
+            assert result.outcome.value == "confirmed"
+            read_frame(peer, timeout=0.1)
     finally:
         client.close()
         peer.close()

@@ -7,6 +7,95 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E017 — The bridge-side advance loop runs on the real game at 5x, and the game-time witness was wrong
+
+**Date:** 2026-09-17
+**Status:** The mechanism works on the device. One reported number was measuring
+the wrong thing and is corrected here. No speed is yet established as admissible.
+
+Five scripted episodes at commit `611667d` on the clone, `--frame-game-ms 100`,
+defaults otherwise, offline verified by interface before every measurement. The
+one command per decision design of `M1B-E016`'s consequence is now the thing that
+actually ran.
+
+| Quantity | Value |
+| --- | --- |
+| Valid episodes | 5 of 5 (`invalid_detail` empty) |
+| Speed-up | 5.013 |
+| Frames / advance wall seconds | 8,153 / 135.0 = 60.4 fps |
+| Frames per decision | 16.6 |
+| Wall milliseconds per advance | 274.4 |
+| `advances_cut_short` | 0 |
+| `BRIDGE_EVENT_DIVERGENCE` | 0 |
+| Decisions per episode | 98.4 |
+| Decisions per wave | 15.871 |
+| Mean final wave | 6.2 (median 6, range 1 to 10) |
+| Episodes per hour | 80.6 |
+
+The per-advance cost is accounted for entirely by frames: 16.6 frames at 16.6 ms
+each. The 500 ms pause-settle window is not timing out; it costs about two frames.
+Zero `advances_cut_short` means no advance hit the bridge's wall ceiling, and zero
+`BRIDGE_EVENT_DIVERGENCE` means the bridge's stopping conditions and the host's
+predicate agreed on every one of the 492 decisions.
+
+### The engine ceiling on `frame_game_ms` is measured, not assumed
+
+The one-time diagnostics line read `maximum_delta=0.333333 fixed_delta=0.020000`.
+Unity clamps how much game time one frame may advance at `Time.maximumDeltaTime`,
+so **333.33 ms is the hard ceiling on `frame_game_ms`**, whatever the protocol
+bound says. `Time.fixedDeltaTime` is 20 ms. The 100 ms used here is well under.
+
+### `playTime` was the wrong witness — a bad metric, not a bad mechanism
+
+`total_play_seconds / total_game_seconds` came out 0.168, not the 1.0 the design
+requires. That is not evidence against `captureDeltaTime`: `Main.playTime` is the
+account-lifetime clock and advances at wall rate regardless of the game clock, so
+`play_ms` was measuring wall time. It tracked `total_advance_wall_seconds` to
+1.7 percent, and 0.168 is simply one over the measured speed-up of 5.013. The
+ratio was arithmetically incapable of saying anything.
+
+Independent, game-owned evidence that `captureDeltaTime` **is** applying: the
+game's per-round clock advanced at a median **4.877 game-seconds per wall-second**
+(mean 4.451, 595 consecutive sample pairs from the diagnostics log), which agrees
+with the measured speed-up of 5.013. `roundTime` tracks it identically.
+
+Corrected in this commit: the command result reports `round_ms` from
+`Main.gameplayTimeThisRound` in place of `play_ms`, and the evaluator reports
+`total_round_seconds`, whose ratio to `total_game_seconds` must be about 1. A
+related earlier reading is also overturned: the note that `roundTime`,
+`gameplayTimeThisRound`, and `realTimeThisRound` "all read 0.0 throughout a run"
+came from reading `float` fields as `double`. Read as singles they advance.
+
+### The heartbeat defect: every unattended run died at about sixty seconds
+
+`tower_bridge.cpp` accumulates `heartbeat_elapsed` only on the *idle* branch of
+the stream loop, and an advance emits its own heartbeat only when it exceeds one
+second. With one command permanently in flight at ~275 ms per advance the idle
+branch is never reached, so no heartbeat is ever sent and the host's 60-second
+check tripped during healthy play — masking the real state behind
+`BridgeTimeoutError` on release. The measurement above was taken with a
+host-side workaround, not a repository change.
+
+Fixed on the host, where the domain sits: a heartbeat exists to prove the bridge
+is alive, and an observation or a command result is strictly stronger proof, so
+**any successfully decoded inbound frame renews liveness**. The bridge keeps its
+in-advance heartbeat for genuinely quiet long advances.
+
+### UNRESOLVED — fidelity at 100 ms per frame is not decided
+
+Mean final wave was **6.2** against the 9.79 reference of `M1B-E008`, and
+decisions per wave **15.9** against roughly 9.1 (89.3 decisions per episode at 1x
+in `M1B-E014` over that 9.79). Both gaps are consistent with **either** fidelity
+degrading at 100 ms per frame **or** ordinary variance over five episodes — the
+standard deviation of final wave here is 3.35, and `M1B-E008` needed about 23
+episodes to resolve a one-wave difference. This entry does not decide it. **The
+pending `frame_game_ms` sweep decides it, and until it does no speed has been
+validated as admissible.**
+
+Caveat on the sample: `begin_episode` adopts any non-terminal run, and episode 1
+adopted the partial run left by an aborted first attempt, so its decision count is
+understated and the minimum final wave of 1 is most likely that episode.
+
 ## M1B-E016 — The frame-exact step works, and the bottleneck moves to the round trip
 
 **Date:** 2026-09-17

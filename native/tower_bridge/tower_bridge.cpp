@@ -247,6 +247,11 @@ struct MainFields {
   FieldInfo* game_speed;
   FieldInfo* game_max_speed;
   FieldInfo* play_time;
+  // The game's own per-round clock, and the only witness that `captureDeltaTime`
+  // really made a frame worth what the advance asked for. `playTime` cannot be:
+  // it is the account-lifetime clock and advances at wall rate whatever the
+  // game clock does. Stored as a `float` by the game, unlike `playTime`.
+  FieldInfo* round_time;
   FieldInfo* cash;
   FieldInfo* current_wave;
   FieldInfo* tower_health;
@@ -340,6 +345,9 @@ bool LoadFields(const Il2CppApi& api, Il2CppClass* main, Il2CppClass* int_select
   fields->game_speed = Field(api, main, "gameSpeed");
   fields->game_max_speed = Field(api, main, "gameMaxSpeed");
   fields->play_time = Field(api, main, "playTime");
+  // `roundTime` tracks this field identically on the pinned build (M1B-E017);
+  // the gameplay clock is the one named for what it measures.
+  fields->round_time = Field(api, main, "gameplayTimeThisRound");
   fields->cash = Field(api, main, "cash");
   fields->current_wave = Field(api, main, "currentWave");
   fields->tower_health = Field(api, main, "towerHealth");
@@ -366,7 +374,8 @@ bool LoadFields(const Il2CppApi& api, Il2CppClass* main, Il2CppClass* int_select
   if (fields->instance == nullptr || fields->game_speed == nullptr || fields->cash == nullptr ||
       fields->current_wave == nullptr || fields->tower_health == nullptr ||
       fields->tower_max_health == nullptr || fields->game_over == nullptr ||
-      fields->round_active == nullptr || fields->upgrade_select == nullptr) return false;
+      fields->round_active == nullptr || fields->round_time == nullptr ||
+      fields->upgrade_select == nullptr) return false;
   for (const FamilyFields& family : families) {
     if (family.cost == nullptr || family.level == nullptr || family.unlocked == nullptr ||
         family.tier_unlocked == nullptr || family.max_level == nullptr || family.maxed == nullptr) {
@@ -708,16 +717,17 @@ struct AdvanceDetail {
   // Budget accounting: frames times `frame_game_ms`, which is what the advance
   // asked the world to be worth.
   uint32_t game_millis = 0;
-  // The game's own `playTime` clock, measured across the same advance. Reported
+  // The game's own per-round clock, measured across the same advance. Reported
   // beside `game_millis` so the 1:1 mapping between them can be checked rather
-  // than assumed.
-  uint32_t play_millis = 0;
+  // than assumed. Zero whenever the settled state could not be read, which the
+  // outcome and reason on the same result already say.
+  uint32_t round_millis = 0;
   uint64_t wall_micros = 0;
 };
 
 bool SendCommandResult(int client, const Command& command, const char* outcome, const char* reason, uint64_t sequence, const AdvanceDetail& detail) {
   char payload[512];
-  const int size = std::snprintf(payload, sizeof(payload), "{\"type\":\"command_result\",\"protocol_version\":1,\"request_id\":\"%s\",\"outcome\":\"%s\",\"reason\":\"%s\",\"observation_sequence\":%llu,\"frames\":%d,\"game_ms\":%u,\"play_ms\":%u,\"wall_micros\":%llu}", command.request_id, outcome, reason, static_cast<unsigned long long>(sequence), detail.frames, detail.game_millis, detail.play_millis, static_cast<unsigned long long>(detail.wall_micros));
+  const int size = std::snprintf(payload, sizeof(payload), "{\"type\":\"command_result\",\"protocol_version\":1,\"request_id\":\"%s\",\"outcome\":\"%s\",\"reason\":\"%s\",\"observation_sequence\":%llu,\"frames\":%d,\"game_ms\":%u,\"round_ms\":%u,\"wall_micros\":%llu}", command.request_id, outcome, reason, static_cast<unsigned long long>(sequence), detail.frames, detail.game_millis, detail.round_millis, static_cast<unsigned long long>(detail.wall_micros));
   return size > 0 && static_cast<size_t>(size) < sizeof(payload) && SendFrame(client, payload);
 }
 
@@ -949,9 +959,9 @@ struct DecisionSnapshot {
   bool active = false;
   int32_t wave = 0;
   double health_fraction = 0.0;
-  //: The game's own clock, so an advance can report the game time it really
-  //: passed beside the game time it budgeted for.
-  double play_time = 0.0;
+  //: The game's own per-round clock, so an advance can report the game time it
+  //: really passed beside the game time it budgeted for.
+  double round_time = 0.0;
   bool available[3 * kMaskSlotsPerFamily] = {};
 };
 
@@ -993,11 +1003,16 @@ bool ReadDecisionSnapshot(const Il2CppApi& api, const MainFields& fields, Decisi
       !ReadField(api, main, fields.tower_max_health, &max_health) ||
       !ReadField(api, main, fields.game_over, &game_over) ||
       !ReadField(api, main, fields.round_active, &round_active) ||
-      !ReadField(api, main, fields.play_time, &snapshot->play_time) || !std::isfinite(cash) ||
-      !std::isfinite(health) || !std::isfinite(max_health) ||
-      !std::isfinite(snapshot->play_time)) {
+      !std::isfinite(cash) || !std::isfinite(health) || !std::isfinite(max_health)) {
     return false;
   }
+  // The game stores the round clock as a single, so it has to be read as one:
+  // reading it into a double returns garbage rather than the time.
+  float round_time = 0.0F;
+  if (!ReadField(api, main, fields.round_time, &round_time) || !std::isfinite(round_time)) {
+    return false;
+  }
+  snapshot->round_time = round_time;
   snapshot->active = round_active == 1 && game_over == 0;
   if (max_health <= 0.0) {
     snapshot->health_fraction = 0.0;
@@ -1132,9 +1147,13 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // Restore real-time pacing so nothing outside an advance observes a stopped clock.
   clock.set_capture_delta(0.0F);
   detail->game_millis = static_cast<uint32_t>(game_millis + 0.5);
-  const double play_millis = readable ? (settled.play_time - before.play_time) * 1000.0 : 0.0;
-  detail->play_millis =
-      play_millis > 0.0 ? static_cast<uint32_t>(play_millis + 0.5) : 0U;
+  // An unreadable settled state means the run ended under the advance, which
+  // the outcome reports; there is no round clock left to difference. The round
+  // clock also resets when a round ends, so a negative difference is not a
+  // measurement either.
+  const double round_millis = readable ? (settled.round_time - before.round_time) * 1000.0 : 0.0;
+  detail->round_millis =
+      round_millis > 0.0 ? static_cast<uint32_t>(round_millis + 0.5) : 0U;
   if (detail->frames == 0 && !ended) {
     *outcome = "ambiguous";
     *reason = "no_frame_rendered";

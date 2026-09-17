@@ -36,7 +36,7 @@ class FakeCommandResult:
     reason: str
     frames: int = 0
     game_ms: float = 0.0
-    play_ms: float = 0.0
+    round_ms: float = 0.0
     wall_micros: int = 0
     #: The settled reading an advance ended on, exactly as the real bridge sends
     #: the observation its result describes.
@@ -177,7 +177,7 @@ class FakeRunPort:
         wave = self.wave
         health_fraction = self.health / self.max_health
         affordable = self._affordable()
-        play_time_before = self.elapsed_ms
+        round_time_before = self.elapsed_ms
 
         frames = 0
         spent = 0.0
@@ -203,7 +203,7 @@ class FakeRunPort:
             reason,
             frames=frames,
             game_ms=spent,
-            play_ms=self.elapsed_ms - play_time_before,
+            round_ms=self.elapsed_ms - round_time_before,
             wall_micros=frames * 100,
             state=self._observe(),
         )

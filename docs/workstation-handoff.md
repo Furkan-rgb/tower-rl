@@ -29,7 +29,8 @@ evidence in `docs/experiments.md`.
   the dueling heads and the n-step double-Q targets, so only the core differs.
 - **The comparison machinery**: interleaved scheduling, bootstrap intervals,
   Cohen's d, and `required_episodes` for power.
-- **Frame-exact stepping** (`M1B-E016`), described below.
+- **Frame-exact stepping** (`M1B-E016`) and **the advance loop inside the
+  bridge** (`M1B-E017`), described below.
 
 ### Standing decisions a new agent must not re-litigate
 
@@ -55,30 +56,38 @@ evidence in `docs/experiments.md`.
    check and an OFFLINE modal. `scripts/clone_session.py start` performs the
    launch-online, reach-home, cut-radios sequence and verifies the result.
 
+### Done: the advance loop is inside the bridge
+
+Commit `611667d`, measured on the device in `M1B-E017`. One `advance` command per
+decision, 5 of 5 episodes valid at 100 ms per frame, speed-up 5.013, 60.4 fps,
+274 ms per advance, zero `advances_cut_short`, and zero `BRIDGE_EVENT_DIVERGENCE`
+— the bridge's stopping conditions and the host's `_events_between` agreed on
+every decision, which is the invariant that keeps the host definition
+authoritative. Two defects that run exposed are fixed in the commit that carries
+`M1B-E017`: the host now treats **any** inbound frame as liveness (no heartbeat
+reaches it while a command is always in flight, so every unattended run died at
+about 60 seconds), and the game-time witness is now the game's own per-round
+clock, `round_ms`, because `playTime` runs at wall rate and witnessed nothing.
+
 ### The immediate next slice
 
-**Move the advance loop into the bridge.** Frame stepping is correct but
-round-trip-bound: a frame is 17 ms at 58.9 fps, while each step costs ~57 ms,
-so ~40 ms is host round trip plus pause and unpause, giving 4.4x. The
-environment advances slice after slice until something actionable changes —
-about eight slices per decision — and each slice is a separate command. One
-bridge command that advances frames until an event or a game-time budget
-expires, returning the observation, gives **one round trip per decision instead
-of per slice** and puts the frame back in charge of the cost.
-
-Event detection currently lives in `application/run_environment.py`
-`_events_between`: wave change, newly affordable, health move beyond
-`health_change_fraction`, run ended. If the bridge evaluates the same
-conditions, the host definition stays authoritative and the two must be kept
-provably identical or they will drift.
-
-Then re-measure decisions per episode across speeds. **The requirement is met
-when that number stops depending on speed and matches the 1x reference of 89.3**
-(`M1B-E014`).
+**Sweep `frame_game_ms`.** Nothing has yet established which speed is admissible.
+`M1B-E017` measured mean final wave 6.2 against the 9.79 reference and 15.9
+decisions per wave against roughly 9.1, and those gaps are equally consistent
+with fidelity degrading at 100 ms per frame and with five-episode variance. The
+sweep decides it, against enough episodes to resolve a one-wave difference (about
+23, per `M1B-E008`). `Time.maximumDeltaTime` is 0.3333 s on this build, which is
+the hard engine ceiling on `frame_game_ms` whatever the protocol allows. **The
+requirement is met when decisions per episode stops depending on the frame weight
+and matches the 1x reference of 89.3** (`M1B-E014`).
 
 ### After that, in order
 
-1. Decide frame stepping versus free running on the re-measured evidence.
+1. `instrumented_bridge.sh deploy`'s cold-launch gap. It force-stops and
+   cold-launches, which lands on the OFFLINE modal when the device is offline:
+   the `M1B-E017` run had to bring the radios back up, force-stop, relaunch, wait
+   for home, and cut the radios again before it could deploy. Every device run
+   pays this until it is fixed.
 2. The boundary tap. `Main.Instance` *is* alive at the home screen with a
    non-zero native handle (`M1B-E015`), so the long-held premise that `Main`
    exists only in the battle scene is wrong and the receiver hunt was aimed at a
@@ -90,14 +99,12 @@ when that number stops depending on speed and matches the 1x reference of 89.3**
    seconds of per-episode boundary that is 48 percent of wall clock.
 3. Save an already-started offline snapshot with `clone_session.py snapshot` and
    verify `restore` does not re-run the Firebase check.
-4. Fix `instrumented_bridge.sh deploy`, which force-stops and cold-launches and
-   therefore lands on the OFFLINE modal when the device is offline.
-5. Revisit the renderer only once nothing in the loop reads a pixel. `-gpu host`
+4. Revisit the renderer only once nothing in the loop reads a pixel. `-gpu host`
    was withdrawn for corrupting the frame (`M1B-E004`), which broke screen
    classification; game logic was never affected. Under frame stepping with the
    loop moved into the bridge, frame rate governs throughput, so this matters
    again — for fps, not for pixels.
-6. Longer training runs, the comparison floor (scripted, random, wait arms), and
+5. Longer training runs, the comparison floor (scripted, random, wait arms), and
    the speed equivalence gate.
 
 ### Claims this session corrected — do not reinstate them
@@ -137,7 +144,17 @@ To resume: launch with `clone_session.py start`, then
 `TOWER_BRIDGE_BUILD_DIR=<private build dir> ./scripts/instrumented_bridge.sh
 deploy`. The private build directory holds `libtower_bridge.so` and the patched
 `libunity-bridge.so`; the NDK is at `~/.local/share/android-sdk/ndk/29.0.14206865`
-and the bridge is rebuilt with `cmake --build <build dir>`. The logcat tag is
+and the bridge is rebuilt with `cmake --build <build dir>`.
+
+**`/tmp/tower-bridge-live.latest` is not to be trusted without checking.** Before
+the `M1B-E017` run it pointed at a build whose `CMakeCache` read `unconfigured`
+for every compatibility value and which had no patched `libunity-bridge.so`, so
+it could neither deploy nor handshake. That run rebuilt it, with the package
+version, version code, signer and library hashes verified against the live
+device, and repointed the file. Verify the cache values and the presence of both
+libraries before relying on the pointer; `/tmp` does not survive a reboot.
+
+The logcat tag is
 `tower_bridge`. Always finish with `cleanup`.
 
 ### Host quirks worth knowing

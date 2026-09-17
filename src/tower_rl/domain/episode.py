@@ -115,10 +115,10 @@ class EpisodeSummary:
     #: game time they were worth. Game seconds over wall seconds is the speed-up.
     frames: int = 0
     game_ms: float = 0.0
-    #: The game's own `playTime` clock across the same advances. Beside
+    #: The game's own per-round clock across the same advances. Beside
     #: `game_ms` it is what makes the intended 1:1 mapping between budgeted and
     #: passed game time checkable instead of assumed.
-    play_ms: float = 0.0
+    round_ms: float = 0.0
     #: Wall time spent inside advances alone. The rest of `elapsed_wall_seconds`
     #: is decision-boundary overhead, which is only readable as the difference.
     advance_wall_seconds: float = 0.0

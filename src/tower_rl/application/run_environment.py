@@ -84,9 +84,10 @@ class _EpisodeTally:
     #: stepping design is judged on.
     frames: int = 0
     game_ms: float = 0.0
-    #: The game's own clock across those same advances, and the wall time they
-    #: took. Wall time minus advance wall time is the per-decision boundary cost.
-    play_ms: float = 0.0
+    #: The game's own per-round clock across those same advances, and the wall
+    #: time they took. Wall time minus advance wall time is the per-decision
+    #: boundary cost.
+    round_ms: float = 0.0
     advance_wall_micros: int = 0
     #: Advances the bridge ended early, on its own wall-clock ceiling, without
     #: either spending the budget or finding an event.
@@ -161,7 +162,7 @@ class InstrumentedRunEnvironment:
             game_speed=self._tally.active_game_speed,
             frames=self._tally.frames,
             game_ms=round(self._tally.game_ms, 3),
-            play_ms=round(self._tally.play_ms, 3),
+            round_ms=round(self._tally.round_ms, 3),
             advance_wall_seconds=round(self._tally.advance_wall_micros / 1_000_000, 3),
             advances_cut_short=self._tally.advances_cut_short,
             invalid_transitions=self._tally.invalid_transitions,
@@ -262,7 +263,7 @@ class InstrumentedRunEnvironment:
         )
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
-        self._tally.play_ms += result.play_ms
+        self._tally.round_ms += result.round_ms
         self._tally.advance_wall_micros += result.wall_micros
         if result.reason == _BRIDGE_BUDGET_REASON and result.game_ms < budget:
             # The bridge stopped on its own wall-clock ceiling rather than on the

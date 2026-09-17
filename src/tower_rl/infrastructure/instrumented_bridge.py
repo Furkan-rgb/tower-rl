@@ -76,7 +76,7 @@ class BridgeDisconnectedError(InstrumentedBridgeError):
 
 
 class BridgeTimeoutError(InstrumentedBridgeError):
-    """A bounded bridge read or heartbeat deadline expired."""
+    """A bounded bridge read or liveness deadline expired."""
 
 
 class BridgeStaleObservationError(InstrumentedBridgeError):
@@ -196,9 +196,11 @@ class BridgeCommandResult:
     #: Budget accounting: frames times `frame_game_ms`, the game time the advance
     #: asked for.
     game_ms: float = 0.0
-    #: The game's own `playTime` clock across the same advance. Reported beside
+    #: The game's own per-round clock across the same advance. Reported beside
     #: `game_ms` so the 1:1 mapping between them can be checked, not assumed.
-    play_ms: float = 0.0
+    #: `playTime` cannot serve here: it advances at wall rate whatever the game
+    #: clock does, so it witnesses the host's speed-up, not the game's time.
+    round_ms: float = 0.0
     wall_micros: int = 0
     #: The state message the bridge sent immediately before this result, which
     #: for an `advance` is the settled observation taken after the pause landed.
@@ -421,7 +423,7 @@ def decode_command_result(message: Mapping[str, Any]) -> BridgeCommandResult:
         _int(message, "observation_sequence", minimum=1),
         frames=_int(message, "frames", minimum=0) if "frames" in message else 0,
         game_ms=_finite_number(message, "game_ms") if "game_ms" in message else 0.0,
-        play_ms=_finite_number(message, "play_ms") if "play_ms" in message else 0.0,
+        round_ms=_finite_number(message, "round_ms") if "round_ms" in message else 0.0,
         wall_micros=_int(message, "wall_micros", minimum=0) if "wall_micros" in message else 0,
     )
 
@@ -456,13 +458,15 @@ class InstrumentedBridgeClient:
         self.expected_compatibility = expected_compatibility
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
+        # The liveness deadline: how long the host tolerates hearing nothing at
+        # all from the bridge. Any inbound frame renews it, not heartbeats alone.
         self.heartbeat_timeout = heartbeat_timeout
         self.max_frame_size = max_frame_size
         self.max_upgrade_entries = max_upgrade_entries
         self._socket: socket.socket | None = None
         self._handshake: BridgeHandshake | None = None
         self._last_observation_sequence = 0
-        self._last_heartbeat_at: float | None = None
+        self._last_inbound_at: float | None = None
 
     @property
     def handshake(self) -> BridgeHandshake:
@@ -478,7 +482,6 @@ class InstrumentedBridgeClient:
             self._socket = socket.create_connection((self.host, self.port), self.connect_timeout)
             message = self._read_message(self.read_timeout)
             self._handshake = decode_handshake(message, self.expected_compatibility)
-            self._last_heartbeat_at = time.monotonic()
             return self._handshake
         except TimeoutError as error:
             self.close()
@@ -529,7 +532,7 @@ class InstrumentedBridgeClient:
     def _read_state(self) -> BridgeObservation | BridgeRunUnavailable:
         if self._socket is None or self._handshake is None:
             raise BridgeDisconnectedError("bridge is not connected")
-        self._check_heartbeat()
+        self._check_liveness()
         deadline = time.monotonic() + self.read_timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -547,14 +550,12 @@ class InstrumentedBridgeClient:
         if message_type == "observation":
             observation = decode_observation(message, max_upgrade_entries=self.max_upgrade_entries)
             self._advance_sequence(observation.sequence)
-            self._check_heartbeat()
             return observation
         if message_type == "run_unavailable":
             unavailable = BridgeRunUnavailable(
                 _int(message, "sequence", minimum=1), _string(message, "reason")
             )
             self._advance_sequence(unavailable.sequence)
-            self._check_heartbeat()
             return unavailable
         if message_type == "heartbeat":
             sequence = _int(message, "last_observation_sequence", minimum=0)
@@ -562,7 +563,6 @@ class InstrumentedBridgeClient:
                 raise BridgeStaleObservationError(
                     "heartbeat sequence does not match the latest observation"
                 )
-            self._last_heartbeat_at = time.monotonic()
             return None
         if message_type == "error":
             code = _string(message, "code")
@@ -628,7 +628,7 @@ class InstrumentedBridgeClient:
         """Close the local stream without leaking a socket descriptor."""
         stream, self._socket = self._socket, None
         self._handshake = None
-        self._last_heartbeat_at = None
+        self._last_inbound_at = None
         if stream is not None:
             with suppress(OSError):
                 stream.shutdown(socket.SHUT_RDWR)
@@ -637,7 +637,14 @@ class InstrumentedBridgeClient:
     def _read_message(self, timeout: float) -> dict[str, Any]:
         if self._socket is None:
             raise BridgeDisconnectedError("bridge is not connected")
-        return read_frame(self._socket, timeout=timeout, max_frame_size=self.max_frame_size)
+        message = read_frame(self._socket, timeout=timeout, max_frame_size=self.max_frame_size)
+        # A heartbeat only exists to prove the bridge is alive, and any frame it
+        # decodes to is strictly stronger proof, so every inbound frame - an
+        # observation, a command result, a heartbeat - renews liveness. Under one
+        # command in flight per decision the bridge has no idle moment in which
+        # to emit a heartbeat, and requiring one would kill a healthy run.
+        self._last_inbound_at = time.monotonic()
+        return message
 
     def _write_message(self, message: Mapping[str, object]) -> None:
         if self._socket is None:
@@ -658,12 +665,13 @@ class InstrumentedBridgeClient:
             )
         self._last_observation_sequence = sequence
 
-    def _check_heartbeat(self) -> None:
+    def _check_liveness(self) -> None:
+        """Fail when nothing at all has arrived from the bridge for too long."""
         if (
-            self._last_heartbeat_at is not None
-            and time.monotonic() - self._last_heartbeat_at > self.heartbeat_timeout
+            self._last_inbound_at is not None
+            and time.monotonic() - self._last_inbound_at > self.heartbeat_timeout
         ):
-            raise BridgeTimeoutError("bridge heartbeat expired")
+            raise BridgeTimeoutError("bridge liveness expired")
 
 
 def _read_exact(stream: socket.socket, size: int, timeout: float) -> bytes:

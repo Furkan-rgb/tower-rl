@@ -963,14 +963,26 @@ may spend before coming back anyway), `frame_game_ms` (what one frame is worth,
 default 1000/60), and `health_change_fraction`. The bridge steps frames, checking
 after each one whether a decision condition has appeared, and returns as soon as
 one has or the budget is spent — with the observation, the reason it stopped, and
-what it cost in `frames`, `game_ms`, `play_ms` and `wall_micros`.
+what it cost in `frames`, `game_ms`, `round_ms` and `wall_micros`.
 
-`game_ms` is the budget accounting, frames times `frame_game_ms`. `play_ms` is
-the game's own `playTime` clock measured across the same advance. They are
-reported side by side because the whole design rests on their being the same
-number: if the world does not actually pass the game time each frame was told to
-be worth, the decision moments are not what the cadence asked for, and no other
-number would show it. `wall_micros` is real `CLOCK_MONOTONIC` time, so the
+`game_ms` is the budget accounting, frames times `frame_game_ms`. `round_ms` is
+the game's own per-round clock — `Main.gameplayTimeThisRound` — measured across
+the same advance. They are reported side by side because the whole design rests
+on their being the same number: if the world does not actually pass the game time
+each frame was told to be worth, the decision moments are not what the cadence
+asked for, and no other number would show it. The evaluator sums them as
+`total_round_seconds` against `total_game_seconds`, and the ratio must be about
+one.
+
+**`playTime` is not that witness, and using it was a mistake.** `Main.playTime`
+is the account-lifetime clock: it advances at wall rate whatever
+`captureDeltaTime` is doing. The first device run of the bridge-side advance loop
+reported `play_ms` against `game_ms` as 0.168, which is simply one over the
+measured speed-up of 5.013 — a number that says nothing about whether game time
+passed. The per-round clock is a genuine witness because the game itself advances
+it by the world's own delta time; it read 4.877 game-seconds per wall-second in
+the same run, agreeing with the speed-up (M1B-E017). `playTime` remains in the
+observation as provenance, which is all it was ever good for. `wall_micros` is real `CLOCK_MONOTONIC` time, so the
 bridge's 15-second ceiling on one advance is a real ceiling and the host's read
 timeout is derived from it rather than guessed.
 
@@ -1055,15 +1067,21 @@ depending on it (the bridge sets a game-owned `game_speed` field and dispatches
 `FixedUpdate` systems step correctly, which may require scaling
 `Time.fixedDeltaTime` to match; and that nothing important is driven by
 `Time.unscaledDeltaTime` or by wall-clock timestamps, which would keep running at
-real speed while the world does not. Until those are checked on the device this is
-a design intent, not a measurement. The numbers that will settle it are the ones
+real speed while the world does not. The first device run of the bridge-side
+advance loop settled the first of these: `captureDeltaTime` is reachable,
+settable, and applying, with the game's own round clock advancing 4.877
+game-seconds per wall-second against a measured speed-up of 5.013, and Unity's
+`maximumDeltaTime` of 0.3333 s standing as the hard ceiling on `frame_game_ms`
+(`M1B-E017`). The rest are still design intent, and no speed has yet been shown
+admissible: whether 100 ms per frame preserves fidelity is what the pending sweep
+decides. The numbers that settle it are the ones
 `EvaluationReport` now reports: `decisions_per_episode`, `decisions_per_wave`,
-`total_frames`, `total_game_seconds`, `total_play_seconds` and `speedup`, with
+`total_frames`, `total_game_seconds`, `total_round_seconds` and `speedup`, with
 `advances_cut_short` and `total_advance_wall_seconds` beside them. The first two
 are means over the valid episodes alone — an invalid episode is an environment
 failure, and counting its decisions against the episodes that survived would
 flatter exactly the arms that failed most. `total_game_seconds` against
-`total_play_seconds` is the 1:1 check; `total_wall_seconds` minus
+`total_round_seconds` is the 1:1 check; `total_wall_seconds` minus
 `total_advance_wall_seconds` is what the decision boundaries themselves cost.
 
 ### 9.3 Final network

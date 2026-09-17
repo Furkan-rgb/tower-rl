@@ -94,11 +94,17 @@ clock cannot be resolved it is `ambiguous` with `clock_unavailable`. Only the
 engine leaf icalls `Time::get_frameCount` and `Time::set_captureDeltaTime` are
 called directly, both required to be attributable to `libunity.so`.
 
-Every `command_result` carries `frames`, `game_ms`, `play_ms`, and `wall_micros`,
-in that order; they are zero for the commands that advance no frames. `game_ms`
-is budget accounting - frames times `frame_game_ms` - while `play_ms` is measured
-from the game's own `playTime` clock across the same advance, so the intended 1:1
-mapping between them is checkable rather than assumed. `wall_micros` is real
+Every `command_result` carries `frames`, `game_ms`, `round_ms`, and
+`wall_micros`, in that order; they are zero for the commands that advance no
+frames. `game_ms` is budget accounting - frames times `frame_game_ms` - while
+`round_ms` is measured from the game's own per-round clock
+(`Main.gameplayTimeThisRound`, a `float`) across the same advance, so the
+intended 1:1 mapping between them is checkable rather than assumed. `playTime`
+cannot serve as that witness: it is the account-lifetime clock and advances at
+wall rate whatever `captureDeltaTime` does, so a ratio built on it only
+reproduces one over the speed-up (M1B-E017). `round_ms` is zero when the settled
+state could not be read at all, which the outcome and reason on the same result
+already report, and zero when the round clock reset under the advance. `wall_micros` is real
 elapsed `CLOCK_MONOTONIC` time, which is what makes the bridge's 15-second
 advance ceiling a real ceiling; the host's default read timeout is derived from
 that ceiling plus the settling window. Availability inside the loop is
@@ -149,9 +155,14 @@ purchase. Entries without a positive cost are still rejected.
 
 `Main` exists only inside the battle scene, so no `Main` method starts a run from
 the home screen, and the known restart entry points are progression-gated at this
-baseline. The episode boundary therefore still needs one bridge-gated tap. The build keeps no live in-run clock: `roundTime`, `gameplayTimeThisRound`, and
-`realTimeThisRound` all read 0.0 throughout a run, so the controller owns run
-time.
+baseline. The episode boundary therefore still needs one bridge-gated tap.
+
+The build does keep live in-run clocks: `roundTime`, `gameplayTimeThisRound`, and
+`realTimeThisRound` are `float` fields, and the earlier reading that they "all
+read 0.0" came from reading them as `double`. Read as singles they advance
+together with the round and are the game-owned witness `round_ms` reports
+(M1B-E017). The controller still owns run *boundaries*, which is a separate
+question.
 
 `tower_bridge.cpp` uses only exported IL2CPP APIs for fields and arrays:
 `il2cpp_field_get_value`, `il2cpp_field_static_get_value`,

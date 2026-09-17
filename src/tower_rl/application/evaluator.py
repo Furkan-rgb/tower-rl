@@ -74,9 +74,10 @@ class EvaluationReport:
     #: every attempted episode.
     total_frames: int = 0
     total_game_seconds: float = 0.0
-    #: The game's own clock over the same advances. Against `total_game_seconds`
-    #: it shows whether the budgeted game time was really delivered.
-    total_play_seconds: float = 0.0
+    #: The game's own per-round clock over the same advances. Against
+    #: `total_game_seconds` it shows whether the budgeted game time was really
+    #: delivered; the two should agree to within rounding.
+    total_round_seconds: float = 0.0
     #: Wall seconds spent inside advances. `total_wall_seconds` minus this is
     #: what the decision boundaries themselves cost.
     total_advance_wall_seconds: float = 0.0
@@ -159,7 +160,7 @@ def evaluate(
     wall = 0.0
     frames = 0
     game_ms = 0.0
-    play_ms = 0.0
+    round_ms = 0.0
     advance_wall = 0.0
     cut_short = 0
     speed = 0.0
@@ -170,7 +171,7 @@ def evaluate(
         wall += summary.elapsed_wall_seconds
         frames += summary.frames
         game_ms += summary.game_ms
-        play_ms += summary.play_ms
+        round_ms += summary.round_ms
         advance_wall += summary.advance_wall_seconds
         cut_short += summary.advances_cut_short
         speed = summary.game_speed
@@ -202,7 +203,7 @@ def evaluate(
         total_wall_seconds=round(wall, 2),
         total_frames=frames,
         total_game_seconds=round(game_ms / 1000.0, 3),
-        total_play_seconds=round(play_ms / 1000.0, 3),
+        total_round_seconds=round(round_ms / 1000.0, 3),
         total_advance_wall_seconds=round(advance_wall, 3),
         advances_cut_short=cut_short,
     )
@@ -235,7 +236,7 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "decisions_per_wave": round(report.decisions_per_wave, 3),
         "total_frames": report.total_frames,
         "total_game_seconds": report.total_game_seconds,
-        "total_play_seconds": report.total_play_seconds,
+        "total_round_seconds": report.total_round_seconds,
         "advances_cut_short": report.advances_cut_short,
         "speedup": round(report.speedup, 3),
     }

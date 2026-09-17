@@ -80,9 +80,11 @@ class Checkpoint:
 def fingerprint(state: Mapping[str, Any]) -> str:
     """A stable digest of tensor contents, used to verify a resume really matched."""
     digest = hashlib.sha256()
-    for key in sorted(state):
+    # Keys are not all strings: a stepped optimizer's state is keyed by integer
+    # parameter index, so both the ordering and the digest go through `repr`.
+    for key in sorted(state, key=repr):
         value = state[key]
-        digest.update(key.encode("utf-8"))
+        digest.update(repr(key).encode("utf-8"))
         if isinstance(value, torch.Tensor):
             digest.update(value.detach().cpu().numpy().tobytes())
         elif isinstance(value, Mapping):

@@ -167,3 +167,18 @@ def test_manifests_are_written_atomically(tmp_path: Path) -> None:
 
     assert "run-1" in path.read_text()
     assert not list(tmp_path.glob("*.partial"))
+
+
+def test_fingerprint_handles_the_integer_keys_a_stepped_optimizer_uses() -> None:
+    """A real optimizer state is keyed by parameter index, not by name."""
+    parameter = torch.nn.Parameter(torch.ones(2))
+    optimizer = torch.optim.Adam([parameter], lr=0.1)
+    parameter.sum().backward()
+    optimizer.step()
+    state = optimizer.state_dict()
+
+    assert any(isinstance(key, int) for key in state["state"])
+    digest = fingerprint(state)
+
+    assert digest == fingerprint(state), "the digest must be stable"
+    assert len(digest) == 64

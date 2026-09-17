@@ -87,6 +87,15 @@ class EvaluationReport:
     #: Advances the bridge ended on its own wall ceiling without spending the
     #: budget or finding an event: the difference between a speed-up and a stall.
     advances_cut_short: int = 0
+    #: Every attempted episode, valid and invalid alike, in the order they ran.
+    #: A statistical comparison needs the per-episode samples, not just the
+    #: aggregates above; this is what feeds bootstrap intervals and Cohen's d
+    #: (`comparison.py`) without a throwaway observer wrapper.
+    episodes: tuple[EpisodeSummary, ...] = ()
+    #: Episodes whose first state was already past wave 1: the episode
+    #: continued a leftover run instead of starting fresh. Not excluded, only
+    #: counted, so contamination stays visible in an unattended run.
+    episodes_not_started_fresh: int = 0
 
     @property
     def invalid_rate(self) -> float:
@@ -164,6 +173,7 @@ def evaluate(
 
     valid: list[EpisodeSummary] = []
     invalid: list[EpisodeSummary] = []
+    attempted: list[EpisodeSummary] = []
     decisions = 0
     wall = 0.0
     frames = 0
@@ -183,6 +193,7 @@ def evaluate(
         advance_wall += summary.advance_wall_seconds
         cut_short += summary.advances_cut_short
         speed = summary.game_speed
+        attempted.append(summary)
         (valid if summary.valid else invalid).append(summary)
 
     if not valid:
@@ -214,7 +225,42 @@ def evaluate(
         total_round_seconds=round(round_ms / 1000.0, 3),
         total_advance_wall_seconds=round(advance_wall, 3),
         advances_cut_short=cut_short,
+        episodes=tuple(attempted),
+        episodes_not_started_fresh=sum(1 for summary in attempted if summary.starting_wave > 1),
     )
+
+
+def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
+    """One episode's shape for the durable log; valid and invalid alike.
+
+    This is what `comparison.py`'s bootstrap intervals, Cohen's d, and
+    `required_episodes` consume — per-episode samples, not the aggregates
+    above. Shared between `evaluator.py` and any caller that collects
+    `EpisodeSummary` itself (`compare_arms.py`), so the shape is not
+    duplicated per call site.
+    """
+    return {
+        "episode_index": index,
+        "valid": summary.valid,
+        "final_wave": summary.final_wave,
+        "decisions": summary.decisions,
+        "purchases": summary.purchases,
+        "frames": summary.frames,
+        "budgeted_game_ms": summary.game_ms,
+        "round_ms": summary.round_ms,
+        "advance_wall_seconds": summary.advance_wall_seconds,
+        "elapsed_wall_seconds": summary.elapsed_wall_seconds,
+        # The reasons the episode was invalid; empty for a valid episode. Today
+        # this is the same tuple as `termination_detail` because every invalid
+        # transition here also terminates the episode, but the two are kept as
+        # separate keys because they answer different questions: this one asks
+        # why the episode is excluded from scoring, the other how it ended.
+        "invalid_reasons": summary.termination_detail if not summary.valid else (),
+        "termination_detail": summary.termination_detail,
+        "advances_cut_short": summary.advances_cut_short,
+        "recovered_transients": summary.recovered_transients,
+        "starting_wave": summary.starting_wave,
+    }
 
 
 def to_record(report: EvaluationReport) -> dict[str, Any]:
@@ -247,4 +293,8 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "total_round_seconds": report.total_round_seconds,
         "advances_cut_short": report.advances_cut_short,
         "speedup": round(report.speedup, 3),
+        "episodes_not_started_fresh": report.episodes_not_started_fresh,
+        "episodes": [
+            episode_record(index, summary) for index, summary in enumerate(report.episodes)
+        ],
     }

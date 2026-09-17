@@ -102,6 +102,9 @@ class _EpisodeTally:
     recovered_transients: int = 0
     started_at: float = 0.0
     peak_wave: int = 0
+    #: The wave observed in this episode's first state. A fresh run starts at 1;
+    #: anything else means the episode continued a leftover run.
+    starting_wave: int = 0
     #: What advancing this episode actually cost the game clock. Wall seconds
     #: divided into game seconds is the speed-up, which is the number the
     #: stepping design is judged on.
@@ -160,6 +163,7 @@ class InstrumentedRunEnvironment:
         self._tally = _EpisodeTally(
             started_at=time.monotonic(),
             peak_wave=state.wave,
+            starting_wave=state.wave,
             active_game_speed=state.game_speed,
         )
         self._last_reasons = ()
@@ -190,6 +194,8 @@ class InstrumentedRunEnvironment:
             advances_cut_short=self._tally.advances_cut_short,
             invalid_transitions=self._tally.invalid_transitions,
             termination_detail=self._last_reasons,
+            recovered_transients=self._tally.recovered_transients,
+            starting_wave=self._tally.starting_wave,
         )
 
     # -- stepping ----------------------------------------------------------

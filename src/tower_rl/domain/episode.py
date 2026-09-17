@@ -130,6 +130,15 @@ class EpisodeSummary:
     #: Why the episode ended the way it did. An outcome without its reason cannot
     #: be diagnosed later, and a rate without reasons cannot be fixed at all.
     termination_detail: tuple[str, ...] = ()
+    #: Death-boundary transients the environment recovered from by advancing a
+    #: single frame, rather than by excluding the episode (M1B-E008).
+    recovered_transients: int = 0
+    #: The wave observed in this episode's first state. A fresh run always
+    #: starts at 1; anything higher means the episode continued a leftover run
+    #: instead of starting one, which is contamination that must stay visible
+    #: rather than be silently recovered from (`begin_episode` refreshes a
+    #: frozen leftover run but still continues it).
+    starting_wave: int = 0
 
     @property
     def valid(self) -> bool:

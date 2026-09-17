@@ -36,8 +36,9 @@ from tower_rl.application.comparison import (  # noqa: E402
     interleave_schedule,
     required_episodes,
 )
-from tower_rl.application.evaluator import WaveDistribution  # noqa: E402
+from tower_rl.application.evaluator import WaveDistribution, episode_record  # noqa: E402
 from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
+from tower_rl.domain.episode import EpisodeSummary  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.infrastructure.adb_device import AdbDevice  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
@@ -112,11 +113,16 @@ def main() -> int:
     )
     waves: dict[str, list[float]] = defaultdict(list)
     invalid: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    # Per-episode records, attributable to their arm: what the comparison
+    # protocol's bootstrap intervals, Cohen's d and `required_episodes` need,
+    # without a throwaway observer wrapper around this loop.
+    episodes: dict[str, list[EpisodeSummary]] = defaultdict(list)
     started = time.monotonic()
 
     try:
         for index, name in enumerate(schedule, start=1):
             summary = actors[name].run_episode().summary
+            episodes[name].append(summary)
             if summary.valid:
                 waves[name].append(summary.final_wave)
             else:
@@ -142,6 +148,13 @@ def main() -> int:
             name: {
                 "valid_episodes": len(waves[name]),
                 "invalid_detail": dict(invalid[name]),
+                "episodes_not_started_fresh": sum(
+                    1 for summary in episodes[name] if summary.starting_wave > 1
+                ),
+                "episodes": [
+                    episode_record(index, summary)
+                    for index, summary in enumerate(episodes[name])
+                ],
                 **_distribution(waves[name]),
             }
             for name in arms

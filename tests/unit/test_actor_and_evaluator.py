@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fakes.fake_run_port import FakeRunPort  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
+from tower_rl.application.comparison import bootstrap_difference, cohens_d  # noqa: E402
 from tower_rl.application.evaluator import (  # noqa: E402
     WaveDistribution,
+    episode_record,
     evaluate,
     to_record,
 )
@@ -26,6 +28,7 @@ from tower_rl.application.run_environment import (  # noqa: E402
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
+from tower_rl.domain.episode import EpisodeSummary, TerminationOutcome  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 
 PROFILE = "fake-profile-v1"
@@ -274,3 +277,156 @@ def test_invalid_episodes_carry_their_validator_reason() -> None:
 
     assert record["invalid_detail"] == {"state: health exceeds maximum": 1}
     assert record["invalid_rate"] == 0.025
+
+
+def _summary(**overrides: object) -> EpisodeSummary:
+    defaults: dict[str, object] = dict(
+        episode_id="ep",
+        profile_id=PROFILE,
+        final_wave=5,
+        decisions=10,
+        purchases=2,
+        termination=TerminationOutcome.GAME_OVER,
+        elapsed_wall_seconds=1.0,
+        game_speed=8.0,
+        invalid_transitions=0,
+        frames=100,
+        game_ms=1000.0,
+        round_ms=1000.0,
+        advance_wall_seconds=0.5,
+        advances_cut_short=0,
+        termination_detail=(),
+        recovered_transients=0,
+        starting_wave=1,
+    )
+    defaults.update(overrides)
+    return EpisodeSummary(**defaults)  # type: ignore[arg-type]
+
+
+def test_per_episode_records_cover_valid_and_invalid_episodes_alike() -> None:
+    """Every attempted episode is carried through, not only the valid ones.
+
+    This is the gap that used to force a throwaway observer wrapper around
+    every statistical comparison: the aggregates alone cannot feed a bootstrap
+    interval or Cohen's d.
+    """
+    from tower_rl.application.evaluator import EvaluationReport
+
+    valid = _summary(episode_id="valid", final_wave=7, starting_wave=1)
+    invalid = _summary(
+        episode_id="invalid",
+        final_wave=2,
+        termination=TerminationOutcome.OBSERVATION_INVALID,
+        termination_detail=("state: health exceeds maximum",),
+        starting_wave=3,
+    )
+    report = EvaluationReport(
+        policy="p",
+        profile_id=PROFILE,
+        model_version=0,
+        game_speed=8.0,
+        valid_episodes=1,
+        invalid_episodes=1,
+        distribution=WaveDistribution.of([7]),
+        episodes=(valid, invalid),
+        episodes_not_started_fresh=1,
+    )
+
+    record = to_record(report)
+
+    assert record["episodes_not_started_fresh"] == 1
+    episodes = record["episodes"]
+    assert len(episodes) == 2
+
+    first, second = episodes
+    assert first["episode_index"] == 0
+    assert first["valid"] is True
+    assert first["final_wave"] == 7
+    assert first["invalid_reasons"] == ()
+    assert first["starting_wave"] == 1
+    for key in (
+        "decisions",
+        "purchases",
+        "frames",
+        "budgeted_game_ms",
+        "round_ms",
+        "advance_wall_seconds",
+        "elapsed_wall_seconds",
+        "termination_detail",
+        "advances_cut_short",
+        "recovered_transients",
+    ):
+        assert key in first
+
+    assert second["episode_index"] == 1
+    assert second["valid"] is False
+    assert second["final_wave"] == 2
+    assert second["invalid_reasons"] == ("state: health exceeds maximum",)
+    assert second["termination_detail"] == ("state: health exceeds maximum",)
+    assert second["starting_wave"] == 3
+
+
+def test_episode_record_matches_the_episode_summary_it_wraps() -> None:
+    summary = _summary(recovered_transients=1)
+
+    record = episode_record(3, summary)
+
+    assert record["episode_index"] == 3
+    assert record["recovered_transients"] == 1
+    assert record["budgeted_game_ms"] == summary.game_ms
+
+
+def test_starting_wave_flags_an_episode_that_did_not_start_fresh() -> None:
+    """A fresh run always starts at wave 1; anything higher continued a leftover run."""
+    report = evaluate(
+        _environment(damage_per_second=1.0, starting_wave=3),
+        CheapestFirstPolicy(),
+        episodes=2,
+        profile_id=PROFILE,
+    )
+
+    assert all(summary.starting_wave == 3 for summary in report.episodes)
+    assert report.episodes_not_started_fresh == len(report.episodes)
+
+
+def test_a_fresh_run_is_not_counted_as_contaminated() -> None:
+    report = evaluate(
+        _environment(damage_per_second=1.0),
+        CheapestFirstPolicy(),
+        episodes=2,
+        profile_id=PROFILE,
+    )
+
+    assert all(summary.starting_wave == 1 for summary in report.episodes)
+    assert report.episodes_not_started_fresh == 0
+
+
+def test_per_episode_records_feed_the_comparison_protocol_directly() -> None:
+    """No throwaway observer wrapper: the report's own episodes are enough.
+
+    `bootstrap_difference`, `cohens_d` and `required_episodes` all consume
+    per-episode samples; this proves `report.episodes` is that sample without
+    any adapter between the evaluator and `comparison.py`.
+    """
+    scripted = evaluate(
+        _environment(damage_per_second=2.0),
+        CheapestFirstPolicy(),
+        episodes=6,
+        profile_id=PROFILE,
+    )
+    waiting = evaluate(
+        _environment(damage_per_second=2.0),
+        WaitOnlyPolicy(),
+        episodes=6,
+        profile_id=PROFILE,
+    )
+
+    scripted_waves = [summary.final_wave for summary in scripted.episodes if summary.valid]
+    waiting_waves = [summary.final_wave for summary in waiting.episodes if summary.valid]
+
+    observed, low, high = bootstrap_difference(scripted_waves, waiting_waves, seed=0)
+    effect_size = cohens_d(scripted_waves, waiting_waves)
+
+    assert observed > 0, "buying survives longer, so its waves should lead"
+    assert low <= observed <= high
+    assert effect_size > 0

@@ -274,6 +274,30 @@ def test_episode_summary_counts_purchases_and_invalid_transitions() -> None:
     assert not summary.valid, "only a game over counts as a valid episode"
 
 
+def test_the_summary_records_the_wave_the_episode_actually_started_at() -> None:
+    """A fresh run starts at wave 1; anything higher continued a leftover run."""
+    environment, _ = _environment()
+    environment.reset()
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.starting_wave == 1
+
+
+def test_a_leftover_run_is_recorded_rather_than_started_fresh() -> None:
+    """`begin_episode` refreshes a frozen leftover run but still continues it.
+
+    Nothing here recovers from the contamination; the point is only that it
+    stays visible in the record.
+    """
+    environment, _ = _environment(starting_wave=3)
+    environment.reset()
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.starting_wave == 3
+
+
 def test_a_stalled_run_truncates_rather_than_running_forever() -> None:
     environment, port = _environment(damage_per_second=0.0, seconds_per_wave=10_000.0)
     environment.cadence = CadenceConfig(
@@ -316,6 +340,7 @@ def test_the_death_boundary_is_settled_by_advancing_not_by_reading_again() -> No
     assert state is not None and state.valid, state.invalid_reasons
     assert port.advances == advances + 1, "the world has to move for the boundary to settle"
     assert environment._tally.recovered_transients == 1
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).recovered_transients == 1
 
 
 def test_the_recovery_advance_asks_for_one_frame_and_no_more() -> None:

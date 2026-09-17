@@ -59,6 +59,10 @@ class FakeRunPort:
     start_cash: float = 80.0
     #: Set to raise from `begin_episode`, to exercise failure classification.
     refuse_to_start: bool = False
+    #: The wave `begin_episode` starts at. A real fresh run always starts at 1;
+    #: setting this above 1 simulates continuing a leftover run, to exercise the
+    #: episode-independence check without a second fake port.
+    starting_wave: int = 1
 
     sequence: int = field(default=0, init=False)
     wave: int = field(default=0, init=False)
@@ -90,7 +94,7 @@ class FakeRunPort:
         if self.refuse_to_start:
             raise RunPortError("fake instance refused to start")
         self._build_slots()
-        self.wave = 1
+        self.wave = self.starting_wave
         self.cash = self.start_cash
         self.health = self.max_health
         self.elapsed_ms = 0.0
@@ -213,7 +217,7 @@ class FakeRunPort:
         self.elapsed_ms += frame_game_ms
         self.cash += self.cash_per_second * seconds
         self.health -= self.damage_per_second * seconds
-        self.wave = 1 + int(self.elapsed_ms / 1000.0 / self.seconds_per_wave)
+        self.wave = self.starting_wave + int(self.elapsed_ms / 1000.0 / self.seconds_per_wave)
         if self.health <= 0.0:
             self.health = 0.0
             self.active = False

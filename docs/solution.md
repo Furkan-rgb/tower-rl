@@ -889,23 +889,42 @@ number of upgrades is data rather than architecture.
 
 ```text
 run scalars                     upgrade rows (60 today)
-(wave, cash, health fraction,   (cost, level, max_level, headroom,
- max health, last action,        affordability, family, upgrade-id embedding)
- last outcome)                          ↓
+(wave_log, cash_log,            (cost_log, affordability, level_fraction,
+ health_fraction,                headroom, unlocked, maxed, available)
+ max_health_log)                        ↓
         ↓                        shared per-entry encoder
    scalar encoder                (same weights for every row)
         ↓                               ↓
-        └────────► concat ◄──── pooled entry summary
+        └────────► concat ◄──── pooled entry summary (mean ⊕ max)
                       ↓
-              single-layer LSTM
+                    core
                       ↓
         dueling value and advantage heads
                       ↓
-   WAIT advantage from the recurrent state; each BUY advantage from the
-   shared scorer applied to (entry embedding ⊕ recurrent state)
+   WAIT advantage from the core summary; each BUY advantage from the
+   shared scorer applied to (entry embedding ⊕ core summary)
                       ↓
         masked Q-values for semantic actions
 ```
+
+The trunk and the heads above are one implementation, `TowerTrunk` and
+`DuelingHeads` in `learning/network.py`. Only the **core** varies between
+candidates, and that is deliberate: it is the one architectural choice the
+benchmark is actually comparing, so everything around it must be identical or
+the comparison measures an accident instead.
+
+- `RecurrentPolicyNetwork` threads a single-layer LSTM state, as section 9.4's
+  R2D2 skeleton requires. Burn-in reconstructs that state before the learning
+  window.
+- `StackedPolicyNetwork` has no state to warm. Its core is a feed-forward MLP,
+  and time is carried by concatenating the last `k` run-scalar vectors, `k`
+  being a tuned hyperparameter in the range 4 to 16 with `k = 1` as the
+  no-history ablation. Upgrade rows are supplied for the current step only:
+  they already describe the build, so stacking them multiplies the input width
+  for no information gain. Burn-in fills the window instead of warming a state,
+  which makes it the same requirement expressed differently — and a burn-in too
+  short to fill the window is refused rather than silently zero-padded, because
+  padded history is not a state that acting ever encounters mid-episode.
 
 The per-entry encoder and the action scorer share one set of weights across every
 upgrade. Parameter count therefore does not depend on how many upgrades exist,
@@ -935,10 +954,12 @@ a profile as section 8.6 requires.
 
 Masking is applied to advantages before both the acting argmax and the
 bootstrapped target maximum, so an invalid purchase can never be selected or
-back up value through the target.
+back up value through the target. The dueling mean subtraction is taken over
+valid actions only; centring over all 61 would let the permanently masked slots
+drag the Q-values of the handful that are actually available.
 
 Start with a compact model: 128–256 hidden units in the scalar encoder, entry
-encoder, and LSTM. The 4090 is not the reason to enlarge it; environment sample
+encoder, and core. The 4090 is not the reason to enlarge it; environment sample
 quality and throughput dominate. Add a CNN playfield branch only after an
 ablation shows structured observations are insufficient.
 
@@ -963,6 +984,14 @@ Use configurable defaults close to established R2D2 practice:
 Exact values are starting hypotheses, not acceptance requirements. Record every experiment's resolved values.
 
 For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Configure and record prioritization alpha, importance-sampling beta schedule, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
+
+Both backbones draw from this one replay under this one configuration; that is
+what makes their comparison fair. Where `stacked-dqn` departs is only in its
+optimisation, and only in the three ways the Atari 100k literature in
+`docs/rl-candidates.md` 3.1 calls for: an exponential-moving-average target
+instead of a periodic hard copy, decoupled weight decay (AdamW), and a replay
+ratio the training loop supplies rather than the algorithm. Every such departure
+is a resolved value recorded with the experiment, not a hidden default.
 
 ### 9.5 Distributed exploration
 

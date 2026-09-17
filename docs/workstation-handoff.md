@@ -294,3 +294,34 @@ AVDs, temporary XAPK/APK extraction, IL2CPP dumps, patched native libraries,
 temporary signing key, save bytes, logs, and account-bearing state. None may be
 committed. The only durable repository evidence is the sanitized experiment and
 this handoff.
+
+## Open questions — 2026-09-17
+
+Recorded rather than guessed at, so the next slice does not quietly decide them.
+
+**Resuming an interrupted training run.** `scripts/train.py` writes a complete,
+identity-bound checkpoint every 25 episodes and once at the end, and
+`learning/checkpoint.py` will refuse to load one whose profile or schema differs.
+Nothing reads one back yet: `TrainingRun.run()` always starts from zero
+decisions, so resuming would need it to begin from a restored progress counter,
+and the replay buffer is in memory and is lost with the process either way. A
+multi-hour run interrupted at hour three therefore restarts. The question is
+whether resume should restore replay as well — a checkpoint that restores
+weights but not replay resumes into a very different learning problem from the
+one it stopped in, and recording that honestly matters more than the
+convenience. Not blocking: the budget is counted in decisions, so an interrupted
+run is a shorter run rather than a corrupt one.
+
+**Where the stacked agent's window length should sit.** `docs/rl-candidates.md`
+3.1 treats `k` as a tuned hyperparameter between 4 and 16 and section 5 names
+`k = 1` as the ablation that settles whether history is needed at all. The
+default here is 8, chosen as the midpoint and nothing more. The ablation is a
+comparison arm like any other and belongs after the comparison floor (E), not
+before it.
+
+**Actor-count scaling.** Still unmeasured. One emulator sustains about 236
+episodes per hour at 99.3 percent validity (M1B-E008). Whether two or four
+instrumented clones on this host multiply that or contend for the GPU is an
+empirical question, and the number that settles it is aggregate *valid* episodes
+per hour, not episodes per hour. Measure it before committing to long training
+runs, because it changes what an equal decision budget costs in wall-clock time.

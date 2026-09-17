@@ -48,19 +48,11 @@ from run_episodes import POLICIES, add_cadence_arguments  # noqa: E402
 
 from tower_rl.application.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
 
-#: The host port of instance 0, forwarded to the bridge's fixed device port.
-#: Every instance forwards the same device port, so the host side must differ.
-FIRST_BRIDGE_HOST_PORT = 47652
 #: A rejected command the bridge reports by name; the environment carries the
 #: name through into the episode's termination detail.
 STALE_OR_DUPLICATE = "stale_or_duplicate"
 
 SCRIPTS = Path(__file__).resolve().parent
-
-
-def bridge_host_port(instance: CloneInstance) -> int:
-    """One host port per instance, derived the same way the bridge script does."""
-    return FIRST_BRIDGE_HOST_PORT + instance.index
 
 
 @dataclass(frozen=True)
@@ -223,7 +215,7 @@ def run_bridge(command: str, instance: CloneInstance) -> None:
             str(SCRIPTS / "instrumented_bridge.sh"),
             command,
             instance.serial,
-            str(bridge_host_port(instance)),
+            str(instance.bridge_host_port),
         ],
         capture_output=True,
         text=True,
@@ -244,12 +236,15 @@ def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> 
         restore(instance, arguments.snapshot, read_only=True, cores=arguments.cores)
     else:
         start(instance, arguments.renderer, read_only=True, cores=arguments.cores)
-    # By interface, per instance, immediately before anything is measured.
+    # By interface, per instance, immediately before anything is measured, and
+    # because `deploy` refuses an online instance.
     require_offline(instance)
     run_bridge("deploy", instance)
-    # deploy cold-launches the game, and an offline cold launch lands on the
-    # OFFLINE modal rather than home, so the launch has to come back through
-    # the online-then-offline sequence before any episode can start.
+    # deploy cold-launches the game, and an offline cold launch stays on the
+    # OFFLINE modal, so the launch has to come back through the
+    # online-then-offline sequence before any episode can start. It comes after
+    # deploy for a second reason now: home is established by asking the bridge,
+    # which only answers once its overlay is mounted and loaded.
     launch_game_at_home(instance)
     require_offline(instance)
 
@@ -261,7 +256,7 @@ def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> 
             "--episodes", str(arguments.episodes),
             "--policy", arguments.policy,
             "--serial", instance.serial,
-            "--port", str(bridge_host_port(instance)),
+            "--port", str(instance.bridge_host_port),
             "--frame-game-ms", str(arguments.frame_game_ms),
             "--max-quiet-game-ms", str(arguments.max_quiet_game_ms),
             "--max-episode-wall-seconds", str(arguments.max_episode_wall_seconds),

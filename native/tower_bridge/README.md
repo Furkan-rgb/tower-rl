@@ -69,7 +69,15 @@ bridge had stopped refreshing.
 Between episodes the game holds no initialized run. That is reported as a
 `run_unavailable` message carrying the same monotonic sequence, so a controller
 can still bind and send a command, and no invented run values are ever presented
-as observations.
+as observations. Its `reason` separates the two states that reach it:
+
+- `no_initialized_run` — `Main` is alive but its scalars do not describe a run.
+  The game is up and idle at the home screen (`M1B-E015`).
+- `main_unavailable` — `Main` is not alive yet. The game has not finished
+  starting: the splash, or the Firebase OFFLINE modal.
+
+Host bring-up reads that difference as its readiness signal, which is why the
+bridge reports it instead of answering `run_unavailable` for both.
 
 ## Command path
 

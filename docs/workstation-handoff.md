@@ -53,8 +53,16 @@ evidence in `docs/experiments.md`.
    confirm nothing but `lo` holds an IPv4 address. `instrumented_bridge.sh
    deploy` now refuses otherwise.
 4. **The game needs a network to *start*, not to play.** It blocks on a Firebase
-   check and an OFFLINE modal. `scripts/clone_session.py start` performs the
-   launch-online, reach-home, cut-radios sequence and verifies the result.
+   check and an OFFLINE modal. `scripts/clone_session.py launch` performs the
+   launch-online, wait-for-the-bridge, cut-radios sequence and verifies the
+   result by interface. It runs *after* `instrumented_bridge.sh deploy`, because
+   deploy cold-launches the game offline and because readiness is the bridge's
+   own reading.
+5. **Bring-up readiness is non-visual.** The bridge reports `main_unavailable`
+   while the game is still starting — the splash, or the OFFLINE modal — and
+   `no_initialized_run` once it is up and idle at home, so nothing in the
+   automated path classifies a screenshot. `visual_profile` stays for the
+   review/spectate path, where a human watches and the picture is the point.
 
 ### Done: the advance loop is inside the bridge
 
@@ -234,9 +242,11 @@ Nothing is running. The last stage was closed with
 `29.0.3`, installer `com.android.vending`), zero mounts, artifacts removed,
 device offline, no emulator running.
 
-To resume: launch with `clone_session.py start`, then
-`TOWER_BRIDGE_BUILD_DIR=<private build dir> ./scripts/instrumented_bridge.sh
-deploy`. The private build directory holds `libtower_bridge.so` and the patched
+To resume: `clone_session.py start` (instance up and offline, game not yet
+launched), then `TOWER_BRIDGE_BUILD_DIR=<private build dir>
+./scripts/instrumented_bridge.sh deploy`, then `clone_session.py launch` (the one
+online window, ending with the bridge reporting the game up and idle). The
+private build directory holds `libtower_bridge.so` and the patched
 `libunity-bridge.so`; the NDK is at `~/.local/share/android-sdk/ndk/29.0.14206865`
 and the bridge is rebuilt with `cmake --build <build dir>`.
 

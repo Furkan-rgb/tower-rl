@@ -3,8 +3,9 @@
 
 Private device runner for the instrumented-training profile. It wires the real
 bridge adapter to the environment and evaluator and writes its report outside the
-repository. It never touches the canonical evaluation AVD, and every tap it can
-make is gated inside the adapter on a positive screen classification.
+repository. It never touches the canonical evaluation AVD, and it never taps:
+since the round boundary moved into the bridge, nothing in this path reads a
+pixel or touches the screen.
 
     TOWER_BRIDGE_BUILD_DIR=... ./scripts/run_episodes.py --episodes 50
 """

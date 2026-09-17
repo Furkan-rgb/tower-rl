@@ -29,7 +29,6 @@ from run_actors import (  # noqa: E402
     ActorFailure,
     ActorOutcome,
     aggregate,
-    bridge_host_port,
     collect_episodes,
     health_counters,
     run_actor,
@@ -93,7 +92,7 @@ def test_instance_index_derives_an_even_console_port_and_its_serial() -> None:
 
 
 def test_each_instance_gets_its_own_bridge_host_port() -> None:
-    ports = [bridge_host_port(CloneInstance(index=index)) for index in range(3)]
+    ports = [CloneInstance(index=index).bridge_host_port for index in range(3)]
     assert ports == [47652, 47653, 47654]
     assert len(set(ports)) == 3
 

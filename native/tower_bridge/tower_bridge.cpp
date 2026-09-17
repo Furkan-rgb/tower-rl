@@ -942,14 +942,25 @@ bool SendState(int client, const Il2CppApi& api, const MainFields& fields, uint6
       LogClockCandidates(api, g_diagnostic_main);
 #endif
       return SendFrame(client, payload);
-    case ObservationResult::kNoRun:
+    case ObservationResult::kNoRun: {
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
       // Logged exactly where the receiver question is decided: if the handle is
       // zero here, `Main` is destroyed and UnitySendMessage has no target.
       LogMainLiveness(api, fields, "no_run");
 #endif
+      // Two different truths reach this point and the host must tell them apart.
+      // `Main` alive with scalars that do not describe a run is the home screen:
+      // the game is up and idle (`M1B-E015`). `Main` not alive is a game that has
+      // not finished starting — the splash, or the Firebase OFFLINE modal. Host
+      // bring-up decides when it is safe to cut the network from this difference,
+      // so it is reported rather than collapsed into one reason.
+      Il2CppObject* main = nullptr;
+      api.field_static_get_value(fields.instance, &main);
+      const char* reason =
+          NativeHandleIsAlive(api, main) ? "no_initialized_run" : "main_unavailable";
       return SendFrame(client, "{\"type\":\"run_unavailable\",\"sequence\":" +
-                                   std::to_string(sequence) + ",\"reason\":\"no_initialized_run\"}");
+                                   std::to_string(sequence) + ",\"reason\":\"" + reason + "\"}");
+    }
     case ObservationResult::kError:
       break;
   }

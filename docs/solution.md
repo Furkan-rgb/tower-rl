@@ -911,6 +911,63 @@ Replay is per arm and in memory. Arms never share transitions: they are
 different policies, and pooling their experience would make the comparison one
 of optimisers over a common dataset rather than of agents.
 
+### 9.2c Decision moments must not depend on speed
+
+**Requirement.** Speeding the game up must produce the same decision moments,
+only sooner. If the agent decides at different points in *game* time at 64x than
+at 1x, the two are not the same problem, and a policy trained fast does not
+transfer to normal speed.
+
+**This is currently violated, and by a lot.** `M1B-E006` measured decisions per
+wave falling from 63 at 1.5x to 16 at 64x with the same scripted policy: a
+four-fold loss of decision density purely from the speed setting.
+
+**Why.** The game never stops while the host thinks. `advance` is a wall-clock
+sleep scaled by speed, so every host cost — socket round trip, JSON decode, state
+build, the policy's own forward pass — also burns game time, multiplied by the
+speed. About 50 ms of host latency per decision is 50 ms of game time at 1x and
+3.2 seconds at 64x. The bridge's cadence floor was a second cause and was fixed
+(20 ms to 4 ms, recovering 162 to 230 decisions per episode at 32x), but latency
+is not in the bridge and no cadence setting reaches it.
+
+**Why the existing step primitive does not fix it.** The bridge already fuses the
+cycle into one command: `step_game_millis` unpauses, sleeps, and pauses inside a
+single round trip, so host latency genuinely costs no game time. But the sleep is
+floored at `kMinStepWallMicros`, 80 ms of wall clock, which at 64x is 5.1 seconds
+of game time per step — worse than free running. The floor is not arbitrary:
+Unity advances time per rendered frame, so a slice shorter than one frame passes
+no world time at all and the policy would step forever without progress.
+
+**So the real constraint is the frame, not the sleep.** Game time per step is
+bounded below by one frame, and a frame advances `real_delta x speed` of game
+time. Sleeping for a wall duration is an indirect and speed-dependent way to ask
+for a game-time quantity, which is why the result depends on speed.
+
+**The fundamental fix is to make a frame worth a fixed amount of game time.**
+Unity exposes `Time.captureDeltaTime` for exactly this: while it is set, each
+rendered frame advances time by precisely that amount regardless of how long the
+frame took in real time. The step then becomes:
+
+1. set `Time.captureDeltaTime` to the slice;
+2. read `Time.frameCount`;
+3. unpause;
+4. poll until `Time.frameCount` has advanced by one;
+5. pause.
+
+Every step is then exactly one slice of game time at any hardware speed, so
+decision moments are identical by construction rather than by measurement. Speed
+stops being a game setting and becomes *how fast frames render*, which is a host
+concern — and that is what makes the renderer matter again, for frame rate rather
+than for pixels.
+
+**Unverified, and it must be verified before it is relied on.** Three things are
+assumptions: that `Time.captureDeltaTime` is reachable and settable through
+IL2CPP from the bridge; that the game's own speed modifier composes with it
+rather than fighting it (the bridge sets a game-owned `game_speed` field and
+dispatches `GameSpeedModifier`, which is not raw `Time.timeScale`); and that the
+game's fixed-step systems behave under a large `captureDeltaTime`. Until those
+are checked on the device this is a design intent, not a mechanism.
+
 ### 9.3 Final network
 
 The observation has two parts with different shapes: a small set of run scalars,

@@ -7,6 +7,127 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E018 — The `frame_game_ms` sweep: decision density is flat, 100 ms is the standing decision, and the round-time witness has its own defect
+
+**Date:** 2026-09-17
+**Status:** The sweep this project has been waiting on since `M1B-E017`. Frame
+size does not move decision density across the range tested. `250 ms` is
+rejected on a detected dynamics difference. `100 ms` is adopted. A second,
+unrelated defect in the game-time witness is exposed and left open.
+
+Five arms at commit `38fb276` on the disposable clone `emulator-5556`, offline
+verified by interface before every measurement, scripted policy, 8 episodes per
+arm, all `run_episodes.py` defaults except `--frame-game-ms`. The arms ran
+**sequentially**, in the order 100, 16.7, 250, 50, 100b — **not interleaved**.
+That leaves in-game progression drift as an uncontrolled confound across the
+run, partly bounded by the repeated 100 ms arm (`100` and `100b`) taken first
+and last.
+
+### The 89.3 decisions/episode figure is not the baseline — correcting an expectation this project has been carrying since `M1B-E014`/`M1B-E017`
+
+`M1B-E014`'s 89.3 decisions/episode at 1x, and the requirement in
+`docs/workstation-handoff.md` that asked for a match to it, were both measured
+through the **old** wall-clock-sleep code path. They are not comparable to
+anything measured through the current advance-loop-in-the-bridge path
+(`M1B-E016`/`M1B-E017`). Through the current path, every arm in this sweep —
+16.7 ms through 250 ms — lands at **124 to 167 decisions/episode**, well above
+89.3 regardless of frame size. Quoting 89.3 as a target for the current path
+would be an error; the correct reference is the 16.7 ms arm of this sweep,
+which is the finest frame tested and the closest surrogate for uncapped
+per-frame decisions through the current path. This corrects the expectation
+stated in `M1B-E017`'s unresolved section and in `docs/workstation-handoff.md`.
+
+### Per-arm results
+
+| Arm | Valid | dec/ep | dec/wave | Mean final wave (sd) | Speed-up | round/game | Advance share | ms/advance | ep/h |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 16.7 ms | 8/8 | 123.8 | 21.06 | 5.88 (2.48) | 0.97 | 1.040 | 0.985 | 1513 | 17.9 |
+| 50 ms | 8/8 | 145.3 | 21.13 | 6.88 (2.03) | 2.70 | 0.985 | 0.906 | 533 | 37.3 |
+| 100 ms (first) | 7/8 | 103.6 | 18.13 | 5.71 (3.20) | 5.01 | 0.911 | 0.831 | 277 | 67.0 |
+| 100 ms (repeat, `100b`) | 8/8 | 129.4 | 21.12 | 6.13 (3.14) | 5.05 | 0.911 | 0.834 | 280 | 65.9 |
+| 250 ms | 8/8 | 167.4 | 20.92 | 8.00 (1.51) | 11.62 | 0.740 | 0.722 | 134 | 85.2 |
+
+`BRIDGE_EVENT_DIVERGENCE` and invalid state transitions were zero in every arm,
+across all 40 episodes. `advances_cut_short` was zero everywhere. The only
+invalid episode in the whole sweep was one `action_pipeline_failed` (`"advance
+was not confirmed: stale_or_duplicate"`) in the first 100 ms arm.
+
+### Bootstrap intervals against the 16.7 ms reference
+
+95% intervals, 10,000 resamples, the project's own `comparison.py`:
+
+| Arm | Final wave, diff [95% CI], Cohen's d | dec/wave, diff [95% CI], Cohen's d |
+| --- | --- | --- |
+| 50 ms | +1.00 [-1.12, +3.12], d=+0.44 | -0.25 [-1.13, +0.69], d=-0.24 |
+| 100 ms (`100b`) | +0.25 [-2.38, +2.88], d=+0.09 | +0.36 [-1.17, +2.00], d=+0.21 |
+| 250 ms | +2.12 [+0.25, +4.00], d=+1.04 | -0.56 [-1.37, +0.33], d=-0.60 |
+
+Only the 250 ms final-wave interval excludes zero.
+
+### Power: this sample could not have detected a one-wave fidelity loss at any frame size
+
+Reference standard deviations (16.7 ms arm): 2.47 waves, 1.23 decisions/wave.
+`required_episodes` for 80% power: **97 per arm** to detect a 1-wave difference,
+25 for a 2-wave difference, 11 for a 3-wave difference; 24 per arm for a 1
+decision/wave difference, 6 for a 2 decision/wave difference. Eight episodes per
+arm is far short of 97. This sample could **not** have detected a one-wave
+fidelity loss at any of the frame sizes tested — the absence of a detected
+difference at 50 ms and 100 ms is not evidence of equivalence at that
+resolution, only an absence of evidence at this sample size.
+
+### Findings
+
+**(a) Decision density is flat.** dec/wave sits at 20.9–21.1 across 16.7, 50,
+100b, and 250 ms — a range of 0.2 decisions/wave. Frame size does not move the
+decision density the requirement is about, over the range tested.
+
+**(b) `M1B-E017`'s concern does not reproduce and is withdrawn.** That entry's
+100 ms sample (mean wave 6.2, 15.9 dec/wave, 5 episodes) is not seen again at
+100 ms here — 5.71–6.13 mean wave, 18.1–21.1 dec/wave over 15 episodes across
+two 100 ms arms. `M1B-E017`'s unresolved section is corrected in place with a
+pointer to this entry rather than by editing its recorded numbers.
+
+**(c) 250 ms is rejected.** Its final-wave difference against the 16.7 ms
+reference is +2.12 waves, and the 95% interval excludes zero — the only arm
+where that happens. The direction is favourable (episodes run longer at 250 ms,
+not shorter), but a detected difference in either direction is still a
+detected dynamics difference from the reference. **250 ms is judged not
+faithful to the reference and is rejected**, regardless of its direction.
+
+**(d) DECISION: the benchmark runs at `frame_game_ms = 100`.** Grounds: no
+detected difference from the 16.7 ms reference at 100 ms; 5 physics steps per
+frame against the measured 16-step (`Time.fixedDeltaTime` 20 ms into
+`Time.maximumDeltaTime` 333.3 ms) clamp, leaving headroom `M1B-E017` already
+established; a smaller game-time accounting error than 250 ms (see below); and
+only +29% throughput available from going to 250 ms, because the
+episode-boundary cost already dominates above 100 ms — advance share falls from
+0.985 at 16.7 ms to 0.722 at 250 ms, i.e. the fixed per-episode boundary, not
+the frame, is what limits throughput past 100 ms.
+
+### UNRESOLVED — the round-time witness does not hold at ≈1, and the cause is not yet known
+
+`round/game` — the round clock's own witness of game-time fidelity introduced in
+`M1B-E017` — does **not** hold at approximately 1 across this sweep. It reads
+1.040 / 0.985 / 0.911 / 0.740 at 16.7 / 50 / 100 / 250 ms: monotone in frame
+size and reproducible (the two 100 ms arms agree, 0.911 both times). Budgeted
+game time (frames × `frame_game_ms`) systematically exceeds the game's own
+round clock as frames coarsen, so the reported `speedup` figure overstates real
+game progress — at 250 ms, `speedup` claims 11.62 against 8.59 read from the
+round clock itself.
+
+The leading hypothesis under investigation is that the two tail frames of each
+advance are counted at full `frame_game_ms` weight after `Pause`, which is
+consistent with the shortfall growing at 250 and 100 ms but is not by itself
+consistent with the 1.040 excess (game clock running slightly *ahead* of
+budget) seen at 16.7 ms, implying a second, opposite-signed effect around
+unpause. A specialist analysis of this discrepancy is in flight. This entry
+does not present a conclusion on the cause — only that the decision in (d)
+above does not depend on resolving it, since 100 ms sits between the two
+extremes and was chosen on grounds independent of this defect.
+
+Source data: `sweep-analysis.txt` and `sweep-frame{16.7,50,100,100b,250}.json`
+with per-episode sidecars, session scratchpad.
+
 ## M1B-E017 — The bridge-side advance loop runs on the real game at 5x, and the game-time witness was wrong
 
 **Date:** 2026-09-17
@@ -91,6 +212,16 @@ standard deviation of final wave here is 3.35, and `M1B-E008` needed about 23
 episodes to resolve a one-wave difference. This entry does not decide it. **The
 pending `frame_game_ms` sweep decides it, and until it does no speed has been
 validated as admissible.**
+
+**Correction (`M1B-E018`):** the sweep this section calls for has since run.
+This entry's concern does not reproduce at 100 ms (mean wave 5.71–6.13 over 15
+episodes across two arms, not 6.2 over 5). More importantly, the 89.3
+decisions/episode figure quoted above as a reference is from the **old**,
+pre-`M1B-E016` code path and is not comparable to anything measured through the
+current advance-loop-in-the-bridge path — every arm of the `M1B-E018` sweep
+lands at 124–167 decisions/episode regardless of frame size. Do not read this
+section as still asking for a match to 89.3. See `M1B-E018` for the sweep, the
+decision (`frame_game_ms = 100`), and what remains open.
 
 Caveat on the sample: `begin_episode` adopts any non-terminal run, and episode 1
 adopted the partial run left by an aborted first attempt, so its decision count is

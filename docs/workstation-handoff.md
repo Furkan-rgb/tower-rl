@@ -69,17 +69,33 @@ reaches it while a command is always in flight, so every unattended run died at
 about 60 seconds), and the game-time witness is now the game's own per-round
 clock, `round_ms`, because `playTime` runs at wall rate and witnessed nothing.
 
+### Done: the `frame_game_ms` sweep, and the standing speed decision
+
+`M1B-E018`. Five arms (16.7, 50, 100, 100 repeat, 250 ms), 8 episodes each,
+sequential not interleaved. Decision density (dec/wave) is flat at 20.9–21.1
+across 16.7/50/100/250 ms — frame size does not move it over this range. 250 ms
+shows a statistically detected final-wave difference from the 16.7 ms reference
+and is rejected as not faithful to it, regardless of its (favourable) direction.
+**Standing decision: the benchmark runs at `frame_game_ms = 100`.** The prior
+target of matching 89.3 decisions/episode (`M1B-E014`) is withdrawn as an error:
+that figure is from the old, pre-`M1B-E016` code path, and every arm of the
+`M1B-E018` sweep lands at 124–167 decisions/episode through the current path,
+regardless of frame size. `M1B-E018` also flags that eight episodes per arm
+cannot detect a one-wave fidelity difference at 80% power (97/arm would be
+needed), so absence of a detected difference at 50/100 ms is not equivalence,
+only an absence of evidence at this sample size.
+
 ### The immediate next slice
 
-**Sweep `frame_game_ms`.** Nothing has yet established which speed is admissible.
-`M1B-E017` measured mean final wave 6.2 against the 9.79 reference and 15.9
-decisions per wave against roughly 9.1, and those gaps are equally consistent
-with fidelity degrading at 100 ms per frame and with five-episode variance. The
-sweep decides it, against enough episodes to resolve a one-wave difference (about
-23, per `M1B-E008`). `Time.maximumDeltaTime` is 0.3333 s on this build, which is
-the hard engine ceiling on `frame_game_ms` whatever the protocol allows. **The
-requirement is met when decisions per episode stops depending on the frame weight
-and matches the 1x reference of 89.3** (`M1B-E014`).
+**Episode-boundary overhead**, now that frame size is settled. Advance share —
+the fraction of wall clock spent on genuine advances rather than boundary — is
+0.834 at 100 ms and falls further at coarser frames, so the fixed per-episode
+boundary already dominates throughput above 100 ms. The 6-second result-panel
+settle and the gated boundary tap (item 2 below) are the two known
+contributors and are the next thing to cut. If the specialist's recommendation
+on the round-time witness defect (`M1B-E018`, unresolved) lands first, fix the
+game-time accounting before this slice, since it may change how boundary cost
+is measured.
 
 ### After that, in order
 
@@ -106,6 +122,17 @@ and matches the 1x reference of 89.3** (`M1B-E014`).
    again — for fps, not for pixels.
 5. Longer training runs, the comparison floor (scripted, random, wait arms), and
    the speed equivalence gate.
+
+### A small gap worth closing: `run_episodes.py` writes no per-episode data
+
+It writes one aggregate JSON record per invocation (`--output`, default
+`/tmp/tower-rl-episodes.json`) and nothing per episode. The `M1B-E018` sweep
+needed per-episode waves, decision counts, and timing to compute its bootstrap
+intervals and had to bootstrap that data through a scratchpad observer wrapper
+around the runner rather than reading it from the runner itself. Worth closing
+in the runner: writing a per-episode sidecar (or extending the aggregate record
+with a per-episode array) would remove the need for an ad hoc wrapper the next
+time a sweep or comparison needs episode-level data.
 
 ### Claims this session corrected — do not reinstate them
 

@@ -1,5 +1,153 @@
 # Tower-RL — Workstation Handoff
 
+## START HERE — current state, 2026-09-17
+
+This section is the one place that says where the project actually is. Everything
+below it is historical and dated; read this first and treat older sections as
+context rather than as current truth.
+
+### The goal
+
+A reproducible benchmark on the real game in which several RL backbones are
+trained and compared under one identical budgeted protocol, where the best
+learned model reproducibly beats the random and scripted baselines, with all
+evidence in `docs/experiments.md`.
+
+### What is proven and working
+
+- **The environment.** The game is observed and controlled through its own
+  runtime, with no OCR in the decision loop. 1,000 consecutive scripted episodes
+  ran at 100 percent validity (`M1B-E009`). That clears M2's *reliability*
+  clauses. **M2 is not complete**: its speed/actor-count comparison clause and
+  its visual-evidence clause are both open.
+- **The learning pipeline, end to end on the real game.** Both backbones,
+  interleaved on one device, 54 episodes, 614 optimisation steps, no replay
+  rejections, checkpoints round-tripping with identity and checksums
+  (`M1B-E011`). This proves plumbing, not learning.
+- **Two backbones behind one contract suite**: `recurrent-q` and `stacked-dqn`
+  (the rank-1 candidate from `docs/rl-candidates.md`). They share the trunk,
+  the dueling heads and the n-step double-Q targets, so only the core differs.
+- **The comparison machinery**: interleaved scheduling, bootstrap intervals,
+  Cohen's d, and `required_episodes` for power.
+- **Frame-exact stepping** (`M1B-E016`), described below.
+
+### Standing decisions a new agent must not re-litigate
+
+1. **The game's own speed multiplier is pinned at 1x and is not a speed-up
+   mechanism.** A faster game clock makes each rendered frame worth more game
+   time, which coarsens the agent's decisions in proportion to the speed gained:
+   4.8 decisions per wave at 64x against 12.2 at 1x (`M1B-E012`). Encoded in
+   `instrumented_run_adapter.py` as `GAME_SPEED = 1.0` and
+   `PAUSE_STEPPING_SPEED = 0.0`, with tests asserting both.
+2. **Speed comes from stepping frames faster.** `Time.captureDeltaTime` makes one
+   rendered frame worth a fixed amount of game time however long it took to
+   render, so decision moments are identical at any speed *by construction*. The
+   bridge implements this; a 250 ms step costs about 57 ms of wall clock whether
+   the multiplier is 1 or 16 (`M1B-E016`).
+3. **The clone must be offline during automation, verified by interface.**
+   `airplane_mode_on` reads 1 while the wifi radio is up and was never evidence
+   of anything (`M1B-E010`). Use `svc wifi disable` / `svc data disable` and
+   confirm nothing but `lo` holds an IPv4 address. `instrumented_bridge.sh
+   deploy` now refuses otherwise.
+4. **The game needs a network to *start*, not to play.** It blocks on a Firebase
+   check and an OFFLINE modal. `scripts/clone_session.py start` performs the
+   launch-online, reach-home, cut-radios sequence and verifies the result.
+
+### The immediate next slice
+
+**Move the advance loop into the bridge.** Frame stepping is correct but
+round-trip-bound: a frame is 17 ms at 58.9 fps, while each step costs ~57 ms,
+so ~40 ms is host round trip plus pause and unpause, giving 4.4x. The
+environment advances slice after slice until something actionable changes —
+about eight slices per decision — and each slice is a separate command. One
+bridge command that advances frames until an event or a game-time budget
+expires, returning the observation, gives **one round trip per decision instead
+of per slice** and puts the frame back in charge of the cost.
+
+Event detection currently lives in `application/run_environment.py`
+`_events_between`: wave change, newly affordable, health move beyond
+`health_change_fraction`, run ended. If the bridge evaluates the same
+conditions, the host definition stays authoritative and the two must be kept
+provably identical or they will drift.
+
+Then re-measure decisions per episode across speeds. **The requirement is met
+when that number stops depending on speed and matches the 1x reference of 89.3**
+(`M1B-E014`).
+
+### After that, in order
+
+1. Decide frame stepping versus free running on the re-measured evidence.
+2. The boundary tap. `Main.Instance` *is* alive at the home screen with a
+   non-zero native handle (`M1B-E015`), so the long-held premise that `Main`
+   exists only in the battle scene is wrong and the receiver hunt was aimed at a
+   problem that does not exist. Why `UnitySendMessage` does not take is the open
+   question: the method may not be on the component attached to that object, the
+   object may be inactive and so invisible to `GameObject.Find` semantics,
+   preconditions may be unmet, or the transition may exceed the 30-second wait.
+   Removing the tap also removes the 6-second result-panel settle — 6 of the 7.3
+   seconds of per-episode boundary that is 48 percent of wall clock.
+3. Save an already-started offline snapshot with `clone_session.py snapshot` and
+   verify `restore` does not re-run the Firebase check.
+4. Fix `instrumented_bridge.sh deploy`, which force-stops and cold-launches and
+   therefore lands on the OFFLINE modal when the device is offline.
+5. Revisit the renderer only once nothing in the loop reads a pixel. `-gpu host`
+   was withdrawn for corrupting the frame (`M1B-E004`), which broke screen
+   classification; game logic was never affected. Under frame stepping with the
+   loop moved into the bridge, frame rate governs throughput, so this matters
+   again — for fps, not for pixels.
+6. Longer training runs, the comparison floor (scripted, random, wait arms), and
+   the speed equivalence gate.
+
+### Claims this session corrected — do not reinstate them
+
+- `M1B-E006`'s decisions-per-wave table (63/79/69) **does not reproduce** and
+  must never be quoted as current.
+- 8x was adopted then withdrawn as a training speed. It does match 1x density,
+  but only because 8x sits below the frame limit by coincidence.
+- "A property setter from the socket thread crashed the game twice" was
+  **misattributed**. The recorded double crash was `il2cpp_domain_get` at
+  library-load time before any client connected. No entry records a
+  `runtime_invoke` crash. The rule is: never execute managed game code or Unity
+  scene-graph code from the socket thread; engine leaf accessors, attributed to
+  `libunity.so` by `dladdr` first, are a different category and are proven safe.
+- `Main` existing only inside the battle scene: **disproved** by `M1B-E015`.
+
+### Where things are tracked
+
+| Document | Holds |
+| --- | --- |
+| `docs/task.md` | Authoritative scope, milestones and gate criteria |
+| `docs/solution.md` | Design decisions, including 9.2c on decision moments |
+| `docs/experiments.md` | Every finding, newest first, including negatives |
+| `docs/rl-candidates.md` | The RL algorithm study and its ranking |
+| `docs/adr/` | Architecture decisions 0005-0008 |
+| This section | Current state and what to do next |
+
+### Device state
+
+Nothing is running. The last stage was closed with
+`instrumented_bridge.sh cleanup`: original `libunity.so` SHA-256
+`ffc1f3ef…dd0040` verified, package identity unchanged (`versionCode 1199`,
+`29.0.3`, installer `com.android.vending`), zero mounts, artifacts removed,
+device offline, no emulator running.
+
+To resume: launch with `clone_session.py start`, then
+`TOWER_BRIDGE_BUILD_DIR=<private build dir> ./scripts/instrumented_bridge.sh
+deploy`. The private build directory holds `libtower_bridge.so` and the patched
+`libunity-bridge.so`; the NDK is at `~/.local/share/android-sdk/ndk/29.0.14206865`
+and the bridge is rebuilt with `cmake --build <build dir>`. The logcat tag is
+`tower_bridge`. Always finish with `cleanup`.
+
+### Host quirks worth knowing
+
+- Background tasks are killed by a low-memory watchdog that reads `free` rather
+  than `available`; it killed two runs on a machine with 92 GB available. Run
+  device measurements in the foreground or detached with `setsid nohup`.
+- Piping a command through `tail` masks its exit status. It hid a mypy failure
+  at `1be263a` and a crashed training run behind exit code 0. Check each check's
+  own status.
+
+
 ## What exists on this Mac
 
 The validated account-bearing snapshot is stored outside the repository at:

@@ -4,10 +4,12 @@
 
 Before planning, editing code, or delegating work, read these files completely:
 
-1. `docs/task.md`
-2. `docs/solution.md`
-3. Any relevant ADRs under `docs/adr/`
-4. The current implementation and tests for the affected area
+1. `docs/workstation-handoff.md` — the START HERE section at the top says where
+   the project actually is, what is already decided, and what the next slice is
+2. `docs/task.md`
+3. `docs/solution.md`
+4. Any relevant ADRs under `docs/adr/`
+5. The current implementation and tests for the affected area
 
 Do not rely on conversation context as a substitute for the repository documents.
 

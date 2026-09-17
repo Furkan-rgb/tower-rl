@@ -750,6 +750,32 @@ void LogClockCandidates(const Il2CppApi& api, Il2CppClass* main) {
 // is the decisive test of whether the lifecycle receiver exists outside the
 // battle scene: a zeroed native handle means the GameObject is gone, which is
 // why `UnitySendMessage` has nothing to deliver to.
+// The first direct engine icall from the socket thread. `get_frameCount` is a
+// leaf getter that reads one counter and allocates nothing, which makes it the
+// cheapest possible test of whether the call is safe at all - and its rate of
+// change is the achieved frame rate, which is the ceiling on the whole
+// frame-exact scheme, because speed becomes slice x fps.
+int32_t ReadFrameCount() {
+  static int32_t (*get_frame_count)() = nullptr;
+  static bool attempted = false;
+  if (!attempted) {
+    attempted = true;
+    void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+    void* (*resolve_icall)(const char*) = nullptr;
+    if (il2cpp != nullptr && Resolve(il2cpp, "il2cpp_resolve_icall", &resolve_icall)) {
+      void* pointer = resolve_icall("UnityEngine.Time::get_frameCount()");
+      Dl_info info{};
+      // Refuse anything that does not come from the engine: a pointer we cannot
+      // attribute is not worth calling blind.
+      if (pointer != nullptr && dladdr(pointer, &info) != 0 && info.dli_fname != nullptr &&
+          std::strstr(info.dli_fname, "libunity.so") != nullptr) {
+        get_frame_count = reinterpret_cast<int32_t (*)()>(pointer);
+      }
+    }
+  }
+  return get_frame_count == nullptr ? -1 : get_frame_count();
+}
+
 void LogMainLiveness(const Il2CppApi& api, const MainFields& fields, const char* when) {
   Il2CppObject* main = nullptr;
   api.field_static_get_value(fields.instance, &main);
@@ -760,8 +786,9 @@ void LogMainLiveness(const Il2CppApi& api, const MainFields& fields, const char*
         klass == nullptr ? nullptr : api.class_get_field_from_name(klass, "m_CachedPtr");
     if (cached != nullptr) api.field_get_value(main, cached, &handle);
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                        "liveness %s managed=%p cached_ptr=%p field=%s", when,
-                        static_cast<void*>(main), handle, cached ? "found" : "missing");
+                        "liveness %s managed=%p cached_ptr=%p field=%s frames=%d", when,
+                        static_cast<void*>(main), handle, cached ? "found" : "missing",
+                        ReadFrameCount());
     return;
   }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "liveness %s managed=null", when);

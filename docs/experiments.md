@@ -7,6 +7,94 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E015 — Main exists at the home screen, engine icalls are safe, and the frame rate is 59
+
+**Date:** 2026-09-17
+**Status:** Three results from one instrumented deploy. One of them overturns
+`M1B-E013`'s explanation of the boundary tap.
+
+### 1. `Main.Instance` is alive at the home screen
+
+The premise carried since `M1B-E004` — that `Main` exists only inside the battle
+scene, which is why `UnitySendMessage` has nothing to deliver to from home — is
+**wrong**. Logged at a positively classified `battle_home_tier_1` screen:
+
+```text
+liveness no_run managed=0x764b4fd3d000 cached_ptr=0x764ba1905790 field=found
+```
+
+The managed reference is non-null *and* the native handle is non-zero, so this is
+a live component, not Unity's fake null. `Main` is a singleton that persists
+across scenes. The receiver exists, and the receiver hunt was aimed at a problem
+that does not exist.
+
+`M1B-E013`'s measurement stands — `enable_auto_restart` and `retry` do time out —
+but its explanation does not. The cause is something else: the method may not be
+on the component attached to the object named `Main`, the object may be inactive
+(`UnitySendMessage` uses `GameObject.Find` semantics and cannot see inactive
+objects), the call may have unmet preconditions, or the transition may exceed the
+30-second lifecycle wait. That is the question to ask next, and it is a much
+cheaper question than enumerating the scene.
+
+A note on reading the log correctly: this line is emitted on the `run_unavailable`
+path, which at the home screen is reached through the *scalar validation* return,
+not the liveness return. `Main` being alive while its wave and health scalars do
+not describe a run is exactly right between episodes.
+
+### 2. A direct engine icall from the socket thread is safe
+
+`UnityEngine.Time::get_frameCount()` was resolved through `il2cpp_resolve_icall`,
+attributed to `libunity.so` with `dladdr` before being called, and then invoked
+roughly four times a second for twenty seconds. No crash; the game process
+survived and kept rendering. This is the first direct engine call the bridge has
+made from its own thread, and it supports the narrowed rule: engine leaf
+accessors are a different category from managed game code.
+
+Every binding the frame-exact step needs resolves, all of them in `libunity.so`:
+
+| Binding | Resolved |
+| --- | --- |
+| `Time::get_frameCount()` | yes |
+| `Time::get_captureDeltaTime()` | yes |
+| `Time::set_captureDeltaTime(System.Single)` | yes |
+| `Time::get_timeScale()` | yes |
+| `Time::get_fixedDeltaTime()` | yes |
+| `Application::set_targetFrameRate(System.Int32)` | yes |
+| `QualitySettings::set_vSyncCount(System.Int32)` | yes |
+| `Object::GetName(UnityEngine.Object)` | **no** (null) |
+
+`il2cpp_stop_gc_world` and `il2cpp_gc_foreach_heap` are both present, so the
+stop-the-world heap walk remains available as a fallback. `Object::GetName` not
+resolving under that signature removes the cheap route to a GameObject's name —
+which no longer matters for the tap, given result 1.
+
+### 3. The frame rate, which is the ceiling on the whole scheme
+
+`frames=1703` at 08:57:11.699 and `frames=2842` at 08:57:31.028: 1,139 frames in
+19.33 seconds, **58.9 frames per second**, at the home screen under lavapipe with
+`-no-window`.
+
+That fixes the ceiling. Under the frame-exact scheme, speed is `slice x achieved
+fps`, so a 250 ms slice at 59 fps is about **14.7x** — with decision moments exact
+by construction, against 8x today with decision moments merely *equal* to normal
+play. Whether uncapping `vSyncCount` and `targetFrameRate` lifts the rate above
+the 60 Hz that is plainly capping it now is the next measurement, and it is what
+decides whether this reaches well past 14.7x or settles there.
+
+The measurement was taken at the home screen, where nothing is being simulated. A
+busy late wave will render slower, so 14.7x is an upper bound rather than a
+promise.
+
+### Incidental: `deploy` cold-launches the game and therefore needs the network
+
+`instrumented_bridge.sh deploy` force-stops and relaunches the package. Offline,
+that lands on the Firebase OFFLINE modal (`M1B-E010`) and the game never reaches
+home, so the bridge reports `run_unavailable` from a splash screen and a client
+that expects a run gets a closed stream. An earlier reading in this session was
+taken in exactly that state and briefly looked like evidence that `Main` was
+absent. It was evidence about the splash screen. Deploy needs the same
+start-online-then-cut treatment `clone_session.py start` performs.
+
 ## M1B-E014 — 8x does preserve decision moments; the reference was the thing missing
 
 **Date:** 2026-09-17
@@ -81,9 +169,16 @@ retry               -> ambiguous / lifecycle_timeout
 
 Both still fail. Progression is not the explanation, and the `M1B-E004`
 suggestion that auto-restart is gated should be treated as unsupported rather
-than merely untested. The likelier explanation remains the one that entry also
-offered: `UnitySendMessage` addresses a GameObject by name, the bridge addresses
-`Main`, and `Main` does not exist outside the battle scene.
+than merely untested.
+
+**The explanation offered here was also wrong.** This entry proposed that `Main`
+does not exist outside the battle scene, so `UnitySendMessage` had no target.
+`M1B-E015` measured `Main.Instance` at a positively classified home screen and
+found it alive, with a non-zero native handle. The receiver exists. The timeouts
+have some other cause — the method may not be on the component attached to that
+object, the object may be inactive and therefore invisible to `GameObject.Find`
+semantics, preconditions may be unmet, or the transition may exceed the 30-second
+wait.
 
 ### The free diagnostic is not available
 

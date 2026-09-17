@@ -1049,11 +1049,12 @@ bool BecameAvailable(const DecisionSnapshot& before, const DecisionSnapshot& aft
 // costs no game time at all and one decision costs one round trip.
 //
 // Returns false only when the client connection is gone. `*paused` reports
-// whether this advance left the world paused, which only this function knows:
-// it is the one that decides whether to press `Pause`. Deriving it afterwards
-// from `RunIsActive` would read a different instant, and a round that started
-// in between would then be reported as a paused world - the one way the host
-// could be left acting on a view the bridge had stopped refreshing.
+// whether this advance left the world standing still, which takes both halves
+// of what only this function knows: that it pressed `Pause`, and what the
+// settled state it is about to emit turned out to be. Asking `RunIsActive`
+// again afterwards would read a third instant, and a round that started in
+// between would then be reported as a paused world - the one way the host could
+// be left acting on a view the bridge had stopped refreshing.
 bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& fields,
                        const Command& command, uint64_t sequence, const char** outcome,
                        const char** reason, AdvanceDetail* detail, bool* paused) {
@@ -1126,9 +1127,12 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   const int32_t probe_loop_frames = detail->frames;
 #endif
   // Pausing a run that has already ended would press a control the game no
-  // longer owns a receiver for; RunIsActive is false then anyway.
-  if (RunIsActive(api, fields)) {
-    *paused = true;
+  // longer owns a receiver for; RunIsActive is false then anyway. This is the
+  // last instant at which the question can be asked, because the control has to
+  // be pressed before the settle window it is settling for; what the advance
+  // then *reports* is decided from the settled state below, not from here.
+  const bool pressed_pause = RunIsActive(api, fields);
+  if (pressed_pause) {
     // `Pause` is dispatched to the main thread and lands a frame or two later.
     // Those tail frames advance no meaningful world state, so pacing them at
     // `frame_game_ms` each credited the budget with game time the world never
@@ -1156,6 +1160,14 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // this result describes, so the two can never disagree. The loop above chose
   // the moment to stop; this chooses what that moment turned out to be.
   const bool readable = ReadDecisionSnapshot(api, fields, &settled);
+  // The pause is reported as the settled state found it. A tower that died
+  // inside the settle window - where the last advance before a death always
+  // sits, because a health change is what ends the loop - leaves a run that has
+  // ENDED, and an ended run is not a world standing still: its screens keep
+  // changing and the host needs those observations to cross the episode
+  // boundary. Reporting the intent to pause instead froze the stream on a
+  // terminal reading the host could never get past.
+  *paused = pressed_pause && readable && settled.active;
   bool ended = false;
   if (!readable || !settled.active) {
     *reason = "event:run_ended";
@@ -1310,7 +1322,10 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
   // This bridge is the only thing that pauses the world, so it knows when the
   // world is paused. That matters because the sequence exists to stop the host
   // acting on a stale view: while the world is paused no new information can
-  // exist, so the view cannot go stale and the sequence must not move.
+  // exist, so the view cannot go stale and the sequence must not move. The
+  // claim only holds for a world that is standing still, which is a pause the
+  // game took *and* a run still in progress; a run that has ended keeps
+  // producing new screens whatever control was last pressed.
   bool world_paused = false;
   while (true) {
     fd_set readable;
@@ -1338,10 +1353,11 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         // One round trip per decision: the bridge advances frames of fixed game
         // time until the host's own decision predicate would fire.
         reason = "budget_exhausted";
-        // The advance pauses the world again exactly when the run is still
-        // active; a run that ended under it was never paused and its screens
-        // keep changing, so its state must keep streaming. It reports that
-        // itself rather than being asked again afterwards.
+        // The advance leaves the world standing still only when the run is
+        // still in progress once its pause has settled; a run that ended under
+        // it - including under that settle window - keeps changing its screens,
+        // so its state must keep streaming. It reports that itself rather than
+        // being asked again afterwards.
         if (!AdvanceUntilEvent(client, api, fields, command, sequence, &outcome, &reason,
                                &detail, &world_paused)) {
           return;
@@ -1425,6 +1441,13 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
       }
       std::strncpy(last_request_id, command.request_id, sizeof(last_request_id) - 1);
       if (std::strcmp(outcome, "confirmed") == 0 && command.family != nullptr) RefreshCosts();
+      // The sequence may only be held for a world that is standing still, so
+      // the claim is confirmed once more against the state about to be sent.
+      // The lifecycle `pause` path settles on the first poll after its control
+      // is dispatched, which is the same window in which a tower can die; this
+      // closes that path too. It can only ever clear the flag, never set one,
+      // so a round that started in between is still never taken for a pause.
+      if (world_paused && !RunIsActive(api, fields)) world_paused = false;
       if (!SendState(client, api, fields, ++sequence)) return;
       if (!SendCommandResult(client, command, outcome, reason, sequence, detail)) return;
       continue;

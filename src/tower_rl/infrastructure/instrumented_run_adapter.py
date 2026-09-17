@@ -111,8 +111,11 @@ class InstrumentedRunAdapter:
 
         Unpausing is what makes the bridge stream again; the game's own state
         after the command is therefore current. A run that is already over is
-        never the paused case, and the bridge's own `unpause` waits for a run to
-        be active, so it is left alone for the tap flow below to restart.
+        never the standing-still case - the bridge holds the sequence only for a
+        pause its settled state confirms, so a terminal reading is always a
+        reading it is still refreshing - and its own `unpause` waits for an
+        active run. So a finished run is left alone for the tap flow to restart:
+        asking it to resume would only stall the boundary on a lifecycle timeout.
         """
         state = self.client.read_state()
         if not isinstance(state, BridgeObservation) or state.terminal:

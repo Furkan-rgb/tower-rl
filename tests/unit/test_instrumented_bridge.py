@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import select
 import socket
 import struct
@@ -8,6 +9,7 @@ import time
 from contextlib import suppress
 
 import pytest
+from PIL import Image
 
 from tower_rl.infrastructure.instrumented_bridge import (
     ADVANCE_WALL_CEILING_SECONDS,
@@ -29,6 +31,12 @@ from tower_rl.infrastructure.instrumented_bridge import (
     encode_frame,
     read_frame,
 )
+from tower_rl.infrastructure.instrumented_run_adapter import (
+    RETRY_BUTTON,
+    InstrumentedRunAdapter,
+)
+from tower_rl.infrastructure.visual_profile import Screen
+from tower_rl.ports.android import CapturedFrame, InputReceipt, ScreenPoint
 
 EXPECTED = BridgeCompatibility(
     package_version="29.0.3",
@@ -67,7 +75,7 @@ def _handshake(**overrides: object) -> dict[str, object]:
 
 
 def _observation(
-    sequence: int = 1, wave: int = 7, *, terminal: bool = False
+    sequence: int = 1, wave: int = 7, *, terminal: bool = False, speed: float = 1.5
 ) -> dict[str, object]:
     return {
         "type": "observation",
@@ -79,7 +87,7 @@ def _observation(
         "max_health": 100.0,
         "terminal": terminal,
         "round_active": not terminal,
-        "game_speed": 1.5,
+        "game_speed": speed,
         "play_time": 3546.9,
         "upgrades": [
             {
@@ -653,11 +661,13 @@ class _IdleStreamBridge:
         holds_the_sequence_while_paused: bool,
         idle_interval: float = 0.05,
         run_ends_under_advance: bool = False,
+        run_ends_in_pause_settle: bool = False,
     ) -> None:
         self._peer = peer
         self._holds = holds_the_sequence_while_paused
         self._idle_interval = idle_interval
         self._run_ends_under_advance = run_ends_under_advance
+        self._run_ends_in_pause_settle = run_ends_in_pause_settle
         self._run_active = True
         self._paused = False
         self._sequence = 0
@@ -672,6 +682,16 @@ class _IdleStreamBridge:
     def __exit__(self, *_: object) -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)
+
+    def restart_run(self) -> None:
+        """The game starts another round, which the bridge only ever observes.
+
+        On the device this is what the RETRY tap causes. The bridge presses no
+        control for it, so nothing about the pause changes: its stream simply
+        starts reporting an active run again, which it can only do if the ended
+        run left the sequence free to move.
+        """
+        self._run_active = True
 
     def _send(self, message: dict[str, object]) -> None:
         with suppress(OSError):
@@ -694,7 +714,11 @@ class _IdleStreamBridge:
                     )
                 else:
                     self._sequence += 1
-                    self._send(_observation(self._sequence, terminal=not self._run_active))
+                    self._send(
+                        _observation(
+                            self._sequence, terminal=not self._run_active, speed=1.0
+                        )
+                    )
                 continue
             try:
                 command = read_frame(self._peer, timeout=1.0)
@@ -710,15 +734,19 @@ class _IdleStreamBridge:
             self._last_request_id = request_id
             self._apply_pause_rule(command)
             self._sequence += 1
-            self._send(_observation(self._sequence, terminal=not self._run_active))
+            self._send(_observation(self._sequence, terminal=not self._run_active, speed=1.0))
             self._send(self._result(request_id, "confirmed", "budget_exhausted"))
 
     def _apply_pause_rule(self, command: dict[str, object]) -> None:
         """Exactly the rule `ServeClient` applies to `world_paused`.
 
-        An advance pauses the world again only when the run is still active; a
-        run that ended under it was never paused and its screens keep changing.
-        A lifecycle command holds the world only when a `pause` is confirmed.
+        An advance presses `Pause` when the run is still active as its frame
+        loop ends, but what it reports is read after the pause has settled: the
+        world is standing still only if the run is still in progress then. A
+        tower that dies inside that settle window - the case the real bridge
+        deadlocked on - was paused for nothing, and its screens keep changing.
+        A lifecycle command holds the world only when a `pause` is confirmed,
+        and there too the flag survives only while the run is in progress.
         Every other command - a purchase, a speed change - leaves the pause
         exactly as it found it, which is why a purchase cannot resume the stream.
         """
@@ -726,9 +754,37 @@ class _IdleStreamBridge:
         if kind == "advance":
             if self._run_ends_under_advance:
                 self._run_active = False
-            self._paused = self._run_active
+            pressed_pause = self._run_active
+            if pressed_pause and self._run_ends_in_pause_settle:
+                self._run_active = False
+            self._paused = pressed_pause and self._run_active
         elif kind == "lifecycle":
-            self._paused = command.get("action") == "pause"
+            self._paused = command.get("action") == "pause" and self._run_active
+
+
+class _ResultScreenDevice:
+    """The device at an episode boundary: the result screen, and one RETRY tap.
+
+    The tap is what restarts the run; the bridge only observes that happening,
+    exactly as on the device.
+    """
+
+    def __init__(self, bridge: _IdleStreamBridge) -> None:
+        self._bridge = bridge
+        self.taps: list[ScreenPoint] = []
+
+    def screenshot(self) -> CapturedFrame:
+        buffer = io.BytesIO()
+        Image.new("RGB", (1080, 1920), (0, 0, 0)).save(buffer, format="PNG")
+        return CapturedFrame(
+            frame_id="frame", captured_at_monotonic=0.0, width=1080, height=1920,
+            png_bytes=buffer.getvalue(),
+        )
+
+    def tap(self, point: ScreenPoint) -> InputReceipt:
+        self.taps.append(point)
+        self._bridge.restart_run()
+        return InputReceipt(event_id="tap", accepted_at_monotonic=0.0)
 
 
 def _slow_bridge_client() -> tuple[InstrumentedBridgeClient, socket.socket]:
@@ -851,6 +907,75 @@ def test_a_run_that_ended_under_an_advance_keeps_streaming() -> None:
                 "a run that ended under an advance is never paused, so its screens "
                 "keep changing and its state must keep streaming"
             )
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_a_run_that_died_inside_the_pause_settle_window_keeps_streaming() -> None:
+    """The boundary deadlock: `Pause` was pressed, and then the tower died.
+
+    The last advance before a death always sits in the settle window, because a
+    health change is what ends the frame loop. The bridge used to report the
+    pause it had intended rather than the state it settled on, so it withheld
+    every observation after that terminal one and the host could never see the
+    world move again: roughly one device episode boundary in seven died here.
+    """
+    client, peer = _slow_bridge_client()
+    try:
+        with _IdleStreamBridge(
+            peer, holds_the_sequence_while_paused=True, run_ends_in_pause_settle=True
+        ):
+            state = client.read_state()
+            ended = client.send_command(_advance("adv-1", state.sequence))
+            assert ended.outcome.value == "confirmed"
+
+            time.sleep(0.2)
+            boundary = client.read_state()
+
+            assert boundary.terminal
+            assert boundary.sequence > ended.observation_sequence, (
+                "a run that ended while its pause was landing is not a world "
+                "standing still, so the sequence must not be held"
+            )
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_the_episode_boundary_completes_after_a_death_under_an_advance(monkeypatch) -> None:
+    """The whole boundary, over the stream rule that deadlocked it.
+
+    The previous episode ended terminally while its advance was pausing. The
+    adapter must then see a fresh terminal reading, tap RETRY from the result
+    screen, and see the new run - which is only possible if the bridge kept
+    streaming. With the sequence held, `begin_episode` polled a cached terminal
+    reading until `RunPortError` killed the run.
+    """
+    import tower_rl.infrastructure.instrumented_run_adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "classify", lambda _image: Screen.RESULT)
+    client, peer = _slow_bridge_client()
+    try:
+        with _IdleStreamBridge(
+            peer, holds_the_sequence_while_paused=True, run_ends_in_pause_settle=True
+        ) as bridge:
+            device = _ResultScreenDevice(bridge)
+            adapter = InstrumentedRunAdapter(
+                client=client, device=device, episode_start_timeout=10.0, settle_seconds=0.0
+            )
+            state = client.read_state()
+            adapter.advance_until_event(
+                expected_sequence=state.sequence,
+                budget_game_ms=2000,
+                frame_game_ms=1000 / 60,
+                health_change_fraction=0.05,
+            )
+
+            adapter.begin_episode()
+
+            assert device.taps == [RETRY_BUTTON]
+            assert not client.read_state().terminal
     finally:
         client.close()
         peer.close()

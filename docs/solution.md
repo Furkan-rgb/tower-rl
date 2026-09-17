@@ -1015,9 +1015,16 @@ retried around. While the world is paused no new information can exist, so the
 bridge holds the sequence and emits a heartbeat instead; liveness is unaffected,
 because any inbound frame proves the bridge alive. The host reads that heartbeat
 as "the state already sent still stands", which is what keeps `read_state` total
-while the world is paused. The world is only paused by this bridge, and a run
-that ends under an advance is never paused, so the episode boundary — home
-screen, result screen, lifecycle transitions — keeps receiving fresh state.
+while the world is paused. The world is only paused by this bridge, and the hold
+applies to a world that is standing still, not to a control that was pressed: the
+bridge holds the sequence only while it has pressed `Pause` **and** the settled
+state it is sending still shows a run in progress. A run that has ended is never
+the standing-still case, so the episode boundary — home screen, result screen,
+lifecycle transitions — keeps receiving fresh state. Deciding the hold before the
+pause had settled cost two 78-episode device runs: a tower that died inside the
+settle window, which is where the last advance before a death always sits, left a
+terminal observation with the stream held behind it, and `begin_episode` polled
+that single reading to its timeout about once in every seven boundaries.
 
 Two consequences follow from a world that can stand still. An episode that ends
 host-side while the run is still going leaves it paused, so `begin_episode`

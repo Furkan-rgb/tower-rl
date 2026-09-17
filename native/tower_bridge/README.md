@@ -47,16 +47,24 @@ run paused — the idle tick emits a heartbeat instead of a fresh observation, a
 the heartbeat names the sequence that still stands. Without that, a policy whose
 forward pass and learning step take longer than one stream interval had every
 command rejected as `stale_or_duplicate`, even straight after a fresh read. A run
-that ended under an advance is never paused, so the screens between episodes keep
-streaming and the episode boundary still sees its lifecycle transitions.
+that has ENDED is never that world: it keeps producing screens, so the screens
+between episodes keep streaming and the episode boundary still sees its lifecycle
+transitions.
 
-Whether the world is paused is reported by the code that decided it, never
-re-derived afterwards: the advance says whether it pressed `Pause`, and a
-lifecycle `pause` counts only once the game's own state confirms it. Asking
-`RunIsActive` again would sample a different instant, and a round that started in
-between - the game's own auto-restart does that - would mark a running world as
-paused, which is the one way the host could be left acting on a view the bridge
-had stopped refreshing.
+The sequence is therefore held only when the world is standing still, which takes
+both halves: this bridge pressed `Pause`, **and** the run is still in progress in
+the settled state the host is about to be sent. The advance reports the pair
+itself, because only it knows it pressed the control; a lifecycle `pause` counts
+only once the game's own state confirms it; and the flag is confirmed once more
+against the state about to be sent, which can clear it but never set it. Reporting
+the intent to pause instead is what deadlocked the episode boundary: a tower that
+died inside the pause-settle window — where the last advance before a death always
+sits — left a terminal observation with the stream held behind it, and the host
+polled that one reading until it timed out, at roughly one boundary in seven.
+Re-deriving the flag from scratch would be the opposite error: a round that
+started in between — the game's own auto-restart does that — would mark a running
+world as paused, which is the one way the host could be left acting on a view the
+bridge had stopped refreshing.
 
 Between episodes the game holds no initialized run. That is reported as a
 `run_unavailable` message carrying the same monotonic sequence, so a controller

@@ -11,22 +11,48 @@ set -euo pipefail
 #   deploy   install the built bridge and mount the overlay, then start the game
 #   cleanup  stop the game, unmount, remove artifacts, and re-verify identity
 #
+# Several clone instances can run at once, so the target instance is an argument:
+#
+#   instrumented_bridge.sh <verify|deploy|cleanup> [serial] [host_port]
+#
+# One host port per instance, since every instance forwards to the same device
+# port. Left out, it follows the serial: emulator-5556 -> 47652, 5558 -> 47653.
+#
 # Machine-local inputs (never committed):
 #   TOWER_BRIDGE_SERIAL     adb serial of the rooted clone (default emulator-5556)
 #   TOWER_BRIDGE_BUILD_DIR  private NDK build dir holding libtower_bridge.so and
 #                           the patched libunity-bridge.so
 #   TOWER_BRIDGE_HOST_PORT  host port forwarded to device port 47651
 
-command="${1:?usage: instrumented_bridge.sh <verify|deploy|cleanup>}"
-serial="${TOWER_BRIDGE_SERIAL:-emulator-5556}"
-build_dir="${TOWER_BRIDGE_BUILD_DIR:-$(cat /tmp/tower-bridge-live.latest 2>/dev/null || true)}"
-host_port="${TOWER_BRIDGE_HOST_PORT:-47652}"
+command="${1:?usage: instrumented_bridge.sh <verify|deploy|cleanup> [serial] [host_port]}"
+serial="${2:-${TOWER_BRIDGE_SERIAL:-emulator-5556}}"
 package="com.TechTreeGames.TheTower"
 device_port=47651
+first_console_port=5556
+first_host_port=47652
+canonical_avd="tower_rl_api36_play_x86_64"
+
+derived_host_port() {
+  local console="${serial#emulator-}"
+  case "$console" in
+    ''|*[!0-9]*) echo "$first_host_port" ;;
+    *) echo $(( first_host_port + (console - first_console_port) / 2 )) ;;
+  esac
+}
+
+build_dir="${TOWER_BRIDGE_BUILD_DIR:-$(cat /tmp/tower-bridge-live.latest 2>/dev/null || true)}"
+host_port="${3:-${TOWER_BRIDGE_HOST_PORT:-$(derived_host_port)}}"
 adb="${ANDROID_SDK_ROOT:-$HOME/.local/share/android-sdk}/platform-tools/adb"
 
 device() { "$adb" -s "$serial" "$@"; }
 su_device() { device shell "su -c '$1'"; }
+
+# The canonical evaluation AVD is never instrumented, whatever serial it is on.
+running_avd="$(device emu avd name 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+if [ "$running_avd" = "$canonical_avd" ]; then
+  echo "refusing: $serial is the canonical evaluation AVD $canonical_avd" >&2
+  exit 1
+fi
 
 lib_path() {
   device shell pm path "$package" | sed -n '1s#package:##p' | tr -d '\r' |

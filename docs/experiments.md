@@ -7,6 +7,89 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E011 — The learning pipeline runs end to end on the real game
+
+**Date:** 2026-09-17
+**Status:** Plumbing proven. Not evidence of learning, and far too small a sample
+to be. Two real defects found in the first twelve minutes of running it.
+
+The first end-to-end training run on the instrumented clone: both backbones,
+interleaved in decision blocks, 800 decisions each at speed 64.
+
+| Quantity | recurrent-q | stacked-dqn |
+| --- | --- | --- |
+| Decisions | 800 | 810 |
+| Episodes | 29 | 25 |
+| Valid episodes | 29 | 25 |
+| Optimisation steps | 306 | 308 |
+| Sequences accepted | 39 | 46 |
+| Replay rejections | 0 | 0 |
+| Mean recent loss | 0.107 | 0.064 |
+| Mean final wave | 6.72 | 7.44 |
+| Range | 4 to 11 | 3 to 11 |
+| Wall seconds | 353 | 333 |
+
+Whole session: 1,610 decisions, 54 episodes, 54 valid, 614 optimisation steps,
+716.7 s. Checkpoints for both arms load cleanly with their checksum sidecars and
+carry the identity that produced them — profile
+`tower-play-29.0.3-rooted-readonly-v1`, source revision `2a14890`, epsilon
+0.050, beta 1.00 at the end of budget.
+
+### What this establishes, and what it does not
+
+It establishes that the pipeline works: the actor collects from the real game,
+sequences reach replay and none are rejected, the learner takes gradient steps,
+priorities feed back, both backbones run under one budget interleaved on one
+device, and checkpoints round-trip.
+
+It establishes nothing about learning. Epsilon anneals from 1.0 to 0.05 across
+the budget, so most of these episodes were mostly random. The comparison between
+the two arms is what it looks like:
+
+```text
+recurrent-q 6.72 vs stacked-dqn 7.44: difference -0.72 [-1.68, +0.24] d=-0.39
+n=29/25 — indistinguishable
+```
+
+The interval spans zero. At the spread actually observed here, sd 2.04, detecting
+a one-wave difference needs **66 episodes per arm**, not 25. Anyone reading 7.44
+against 6.72 as "the stacked agent is better" would be reading noise.
+
+For orientation rather than comparison: the scripted policy reaches mean 9.758
+(`M1B-E009`) and always-wait dies at wave 2. Mostly-random play reaching 6 to 7
+says the action space is forgiving, not that anything was learned.
+
+### It corroborates the decision-density problem from the live loop
+
+| | decisions per episode | decisions per wave |
+| --- | --- | --- |
+| recurrent-q at 64x | 27.6 | 4.1 |
+| stacked-dqn at 64x | 32.4 | 4.4 |
+| scripted at 1.5x (`M1B-E006`) | 528 | 63 |
+
+The agents get about four decisions per wave. This is the same effect
+`M1B-E006` measured and `solution.md` 9.2c now specifies against: the world runs
+away from the policy while it decides, because game time keeps passing during
+host latency and is multiplied by the speed. It is not a training bug; it is the
+environment handing the agent a much coarser control problem than a normal-speed
+player gets.
+
+### Two defects, both found by running something short
+
+- **Checkpoint fingerprinting crashed on the first checkpoint after the first
+  gradient step.** `fingerprint` assumed every mapping key was a string; a
+  *stepped* optimizer keys its state by integer parameter index. The existing
+  tests fingerprint a fresh optimizer, whose state is empty, so nothing caught
+  it. Fixed in `2a14890` with a test that steps a real optimizer first.
+- **A run was killed by the harness's low-memory watchdog** with 92 GB actually
+  available — `free` was low only because 103 GB sat in reclaimable cache. A
+  false positive, but the rerun used a replay capacity matched to the run rather
+  than the default 4096, which is worth doing anyway: replay holds features as
+  Python tuples, and 4096 sequences per arm is on the order of a gigabyte each.
+
+Both were found within twelve minutes of running the pipeline for real, and
+neither would have been found sooner by a longer run.
+
 ## M1B-E010 — The clone was never offline, and the game will not start without a network
 
 **Date:** 2026-09-17

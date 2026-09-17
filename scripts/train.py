@@ -15,6 +15,20 @@ drifted on the host, the device or the account in between.
         --backbone recurrent-q --backbone stacked-dqn \\
         --budget-decisions 20000
 
+`--actors N` collects on N emulator instances at once, one actor thread each,
+into the one replay buffer and the one learner, so the budget is spent about N
+times faster: collection measured linearly to four instances on this host,
+8,850 decisions an hour at N=1 and 27,781 at N=4 with fidelity intact at every N
+(M1B-E028). A single actor is the default and keeps addressing `--serial` and
+`--port`, which is the instance the operator brought up by hand. A fleet owns
+its instances instead: it takes them from `CloneInstance` by index exactly as
+`run_actors.py` does, brings each one up only after the previous one is ready -
+four simultaneous cold boots is the one thing the fleet measurement broke on -
+and tears them all down when the run ends.
+
+    TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
+        --backbone recurrent-q --actors 4 --budget-decisions 100000
+
 The run records itself to the local MLflow store under `~/.local/state/tower-rl`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
 run without recording, which leaves nothing to compare the run against later.
@@ -29,7 +43,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -37,6 +51,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import torch  # noqa: E402
+from clone_session import CloneInstance, bring_up, require_offline  # noqa: E402
+from run_actors import (  # noqa: E402
+    STALE_OR_DUPLICATE,
+    deploy_bridge,
+    prepare_pinned_snapshot,
+    tear_down_instance,
+)
 from run_episodes import (  # noqa: E402
     add_cadence_arguments,
     cadence_from,
@@ -47,8 +68,12 @@ from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.comparison import interleave_schedule  # noqa: E402
 from tower_rl.application.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
+from tower_rl.application.run_environment import (  # noqa: E402
+    BRIDGE_EVENT_DIVERGENCE,
+    InstrumentedRunEnvironment,
+)
 from tower_rl.application.training import (  # noqa: E402
+    ActorProgress,
     CollectionWindow,
     TrainingConfig,
     TrainingProgressReport,
@@ -56,10 +81,16 @@ from tower_rl.application.training import (  # noqa: E402
     action_distribution,
     collection_windows,
 )
-from tower_rl.domain.episode import REWARD_SCHEMA_VERSION  # noqa: E402
+from tower_rl.domain.episode import (  # noqa: E402
+    REWARD_SCHEMA_VERSION,
+    EpisodeSummary,
+)
 from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
 from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilder  # noqa: E402
-from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
+from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
+    BridgeCompatibility,
+    InstrumentedBridgeClient,
+)
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
@@ -247,6 +278,70 @@ def source_revision() -> str:
     return result.stdout.strip() or "unknown"
 
 
+@dataclass(frozen=True)
+class ActorInstance:
+    """One emulator instance an actor collects on, and what it is called.
+
+    Identity and environment travel together because the report is per actor:
+    an aggregate that cannot name the instance a failure came from cannot say
+    which emulator to look at.
+    """
+
+    serial: str
+    environment: InstrumentedRunEnvironment
+
+
+def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, int]:
+    """The health counters a fleet is watched by, summed over these episodes.
+
+    The same four `run_actors.py` reports for a scripted fleet, read from the
+    same places: two bridge-level reasons out of the per-episode termination
+    detail, and two the environment counts itself.
+    """
+    detail = [text for summary in summaries for text in summary.termination_detail]
+    return {
+        "bridge_event_divergence": sum(
+            1 for text in detail if BRIDGE_EVENT_DIVERGENCE in text
+        ),
+        "stale_or_duplicate": sum(1 for text in detail if STALE_OR_DUPLICATE in text),
+        "advances_cut_short": sum(summary.advances_cut_short for summary in summaries),
+        "episodes_not_started_fresh": sum(
+            1 for summary in summaries if summary.starting_wave > 1
+        ),
+    }
+
+
+def per_hour(count: int, wall_seconds: float) -> float:
+    """A rate over the fleet's wall clock, which is the device time it cost.
+
+    N actors collecting for an hour bought one hour of device time however many
+    of them were alive for it, so the fleet's own clock is the denominator.
+    """
+    return round(count / wall_seconds * 3600, 1) if wall_seconds > 0 else 0.0
+
+
+def actor_summary(
+    progress: ActorProgress,
+    report: TrainingProgressReport,
+) -> dict[str, object]:
+    """What one actor of the fleet contributed, beside the aggregate."""
+    summaries = [episode.summary for episode in report.episodes_of(progress.actor_id)]
+    return {
+        "actor_id": progress.actor_id,
+        "episodes": progress.episodes,
+        "decisions": progress.decisions,
+        "valid_episodes": progress.valid_episodes,
+        "invalid_episodes": progress.invalid_episodes,
+        "failed_episodes": progress.failed_episodes,
+        # Set only for an actor whose instance failed every episode the limit
+        # allows; the rest of the fleet kept collecting without it.
+        "withdrawn": progress.withdrawn,
+        "episodes_per_hour": per_hour(progress.episodes, report.wall_seconds),
+        "decisions_per_hour": per_hour(progress.decisions, report.wall_seconds),
+        **health_counters(summaries),
+    }
+
+
 @dataclass
 class Arm:
     """One backbone under training, with everything that belongs only to it."""
@@ -411,6 +506,17 @@ class Arm:
                 asdict(distribution) if distribution is not None else None
             ),
             "reference_final_waves": REFERENCE_FINAL_WAVES,
+            # The fleet: what each actor contributed, and the aggregate rate the
+            # run was actually collected at.
+            "actors": [
+                actor_summary(progress, report) for progress in report.actors.values()
+            ],
+            "actors_withdrawn": sum(
+                1 for progress in report.actors.values() if progress.withdrawn is not None
+            ),
+            "health": health_counters(report.episode_summaries),
+            "episodes_per_hour": per_hour(report.episodes, report.wall_seconds),
+            "decisions_per_hour": per_hour(report.decisions, report.wall_seconds),
             "invalid_episodes_by_reason": invalid_episodes_by_reason(report),
             "failed_episodes": report.failed_episodes,
             "episode_failures": report.episode_failures,
@@ -470,7 +576,7 @@ def build_arm(
     name: str,
     arguments: argparse.Namespace,
     *,
-    environment: InstrumentedRunEnvironment,
+    instances: Sequence[ActorInstance],
     device: torch.device,
     profile_id: str,
     parent: Path,
@@ -503,21 +609,31 @@ def build_arm(
     )
     stride = max(1, arguments.sequence_length // 2)
     burn_in = burn_in_for(name, arguments)
-    actor = Actor(
-        environment=environment,
-        policy=backbone,
-        config=ActorConfig(
-            actor_id=f"{arguments.serial}:{name}",
-            sequence_length=arguments.sequence_length,
-            burn_in=burn_in,
-            stride=stride,
-        ),
-        replay=replay,
-    )
-    cadence = environment.cadence
+    # One actor per instance, all of them writing into the one buffer above and
+    # acting from the one backbone. `TrainingRun` is what hands them the guarded
+    # view of it; what is passed here is the network they are to act from.
+    actors = [
+        Actor(
+            environment=instance.environment,
+            policy=backbone,
+            config=ActorConfig(
+                actor_id=f"{instance.serial}:{name}",
+                sequence_length=arguments.sequence_length,
+                burn_in=burn_in,
+                stride=stride,
+            ),
+            replay=replay,
+        )
+        for instance in instances
+    ]
+    cadence = instances[0].environment.cadence
     resolved: dict[str, object] = {
         "backbone": name,
         "budget_decisions": arguments.budget_decisions,
+        # The fleet this arm actually collected with, and the instances it
+        # addressed - one actor per emulator instance.
+        "actors": len(actors),
+        "actor_ids": [actor.config.actor_id for actor in actors],
         "seed": arguments.seed,
         "batch_size": arguments.batch_size,
         "warmup_sequences": config.warmup_sequences,
@@ -569,7 +685,7 @@ def build_arm(
         backbone=backbone,
         replay=replay,
         training=TrainingRun(
-            actor=actor,
+            actors=actors,
             replay=replay,
             backbone=backbone,
             config=config,
@@ -590,8 +706,11 @@ def build_arm(
 
     def run_evaluation(pre_registered_final: bool = False) -> EvaluationReport:
         # Exploration-free, never written to replay; the evaluator enforces both.
+        # It borrows the first instance, so it may only run while the fleet is
+        # not collecting: the one pre-registered evaluation is taken after the
+        # budget is spent, and mid-run evaluation is refused for a fleet.
         report = evaluate(
-            environment,
+            instances[0].environment,
             backbone,
             episodes=arguments.evaluation_episodes,
             profile_id=profile_id,
@@ -714,6 +833,22 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
+    parser.add_argument(
+        "--actors",
+        type=int,
+        default=1,
+        help=(
+            "emulator instances collecting at once, one actor each, into the one "
+            "replay and the one learner; above 1 the fleet brings its own "
+            "instances up by index and tears them down again"
+        ),
+    )
+    # Read on the fleet path only: a single actor collects on the instance the
+    # operator brought up, and nothing here starts or stops it.
+    parser.add_argument("--renderer", default="lavapipe", help="fleet bring-up only")
+    parser.add_argument(
+        "--cores", type=int, default=4, help="emulator cores per instance; fleet only"
+    )
     add_cadence_arguments(parser)
     parser.add_argument(
         "--run-dir",
@@ -741,6 +876,26 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     arguments.backbone = list(dict.fromkeys(arguments.backbone or ["recurrent-q"]))
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
+    if arguments.actors < 1:
+        raise SystemExit("a run needs at least one actor")
+    if arguments.actors > 1:
+        first = CloneInstance(index=0)
+        if arguments.serial != first.serial or arguments.port != first.bridge_host_port:
+            # A fleet derives every instance from `CloneInstance`, the same
+            # source `run_actors.py` uses, so a serial or port named by hand
+            # would address one instance and be ignored for the rest.
+            raise SystemExit(
+                "a fleet takes its instances from CloneInstance by index; "
+                "--serial and --port configure a single actor only"
+            )
+        if arguments.evaluate_every_episodes:
+            # Evaluation borrows an instance, and every instance is collecting.
+            # The pre-registered final evaluation is unaffected: it is taken
+            # after the budget is spent, with the fleet stopped.
+            raise SystemExit(
+                "mid-run evaluation needs an instance to itself and cannot run "
+                "while a fleet is collecting; leave --evaluate-every-episodes at 0"
+            )
     if (
         "stacked-dqn" in arguments.backbone
         and arguments.stacked_burn_in < arguments.history_length - 1
@@ -817,19 +972,23 @@ def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
 
 def train_session(
     arguments: argparse.Namespace,
-    environment: InstrumentedRunEnvironment,
+    instances: Sequence[ActorInstance],
     *,
     profile_id: str,
     revision: str,
     device: torch.device,
     tracker: ExperimentTracker | None = None,
     bridge_version: str | None = None,
+    bring_up_failures: Sequence[str] = (),
 ) -> dict[str, object]:
     """Train every named arm to its budget and return the session report.
 
-    The environment is a parameter rather than something built here, so the one
-    place a bridge to the real device is opened is `main`. Nothing else decides
+    The instances are a parameter rather than something built here, so the one
+    place a bridge to a real device is opened is `main`. Nothing else decides
     what the arms are talking to.
+
+    Every arm collects with the whole fleet; the arms still take turns, so only
+    one backbone is ever driving the instances at a time.
     """
     names = list(arguments.backbone)
     started = time.monotonic()
@@ -839,10 +998,10 @@ def train_session(
         "source_revision": revision,
         "profile_id": profile_id,
         "session": session.name,
-        "device_serial": arguments.serial,
-        # One actor per arm: the arms take turns on the one instance rather
-        # than collecting in parallel.
-        "actors": "1",
+        "device_serial": ",".join(instance.serial for instance in instances),
+        # The fleet the arm collected with, as it actually came up: an instance
+        # that failed its bring-up is not one of these.
+        "actors": str(len(instances)),
     }
     if bridge_version is not None:
         tags["bridge_version"] = bridge_version
@@ -850,7 +1009,7 @@ def train_session(
         name: build_arm(
             name,
             arguments,
-            environment=environment,
+            instances=instances,
             device=device,
             profile_id=profile_id,
             parent=session,
@@ -895,6 +1054,11 @@ def train_session(
             "source_revision": revision,
             "budget_decisions_per_arm": arguments.budget_decisions,
             "block_decisions": arguments.block_decisions,
+            "actors": len(instances),
+            "actor_serials": [instance.serial for instance in instances],
+            # Instances that never came up at all, which cost the fleet an actor
+            # before a single episode was collected.
+            "bring_up_failures": list(bring_up_failures),
             "wall_seconds": round(time.monotonic() - started, 1),
             # Repeated at the top of the report as well as inside each arm: the
             # curve is meaningless without the floors it is read against.
@@ -917,6 +1081,75 @@ def train_session(
             arm.run.finish()
 
 
+def connect(
+    serial: str,
+    port: int,
+    arguments: argparse.Namespace,
+    expected: BridgeCompatibility,
+    opened: list[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]],
+) -> ActorInstance:
+    """Open one instance's bridge and present it as an environment to train on.
+
+    Every client it opens is appended to `opened`, which is what the caller
+    releases and closes afterwards: a fleet that half connected must still put
+    down every bridge it picked up.
+    """
+    client = InstrumentedBridgeClient(
+        "127.0.0.1",
+        port,
+        expected_compatibility=expected,
+        connect_timeout=5.0,
+        read_timeout=120.0,
+        heartbeat_timeout=60.0,
+    )
+    client.connect()
+    adapter = InstrumentedRunAdapter(client=client)
+    opened.append((adapter, client))
+    return ActorInstance(
+        serial=serial,
+        environment=InstrumentedRunEnvironment(
+            port=adapter,
+            builder=RunStateBuilder(profile_id=expected.profile_id),
+            cadence=cadence_from(arguments),
+        ),
+    )
+
+
+def bring_up_fleet(
+    instances: Sequence[CloneInstance],
+    open_instance: Callable[[CloneInstance], ActorInstance],
+) -> tuple[list[ActorInstance], list[str]]:
+    """Bring each instance up only after the previous one's bring-up concludes.
+
+    This is `run_actors.stagger_bring_up`'s rule with nothing left to gate.
+    Four emulators cold-booting at the same instant pushed host load to 10.71
+    and left the last of them unable to reach home inside its timeout, while
+    steady-state collection uses 563% of 3,200% available CPU (M1B-E028): the
+    contention is entirely in the boot, so a bring-up must not begin until the
+    previous one has concluded. There it is an event each actor waits on,
+    because collection starts as soon as an instance is ready; here training
+    starts only once the fleet is up, so sequencing the bring-ups is the same
+    rule and needs no gate at all.
+
+    A bring-up that fails costs that actor and not the fleet, exactly as a
+    failed bring-up there still releases the next actor: it is reported, and the
+    next instance is brought up regardless.
+    """
+    ready: list[ActorInstance] = []
+    failures: list[str] = []
+    for instance in instances:
+        try:
+            ready.append(open_instance(instance))
+        except Exception as error:  # noqa: BLE001 - one actor's failure, not the fleet's
+            failures.append(f"{instance.serial}: {type(error).__name__}: {error}")
+            print(f"{instance.serial}: bring-up failed: {error}", flush=True)
+            continue
+        print(f"{instance.serial}: ready", flush=True)
+    if not ready:
+        raise SystemExit(f"no instance of the fleet came up: {'; '.join(failures)}")
+    return ready, failures
+
+
 def main() -> int:
     arguments = parse_arguments()
 
@@ -937,35 +1170,59 @@ def main() -> int:
         or Path("/tmp/tower-bridge-live.latest").read_text().strip()
     )
     expected = compatibility(build_dir)
-    client = InstrumentedBridgeClient(
-        "127.0.0.1",
-        arguments.port,
-        expected_compatibility=expected,
-        connect_timeout=5.0,
-        read_timeout=120.0,
-        heartbeat_timeout=60.0,
-    )
-    client.connect()
-    adapter = InstrumentedRunAdapter(client=client)
-    environment = InstrumentedRunEnvironment(
-        port=adapter,
-        builder=RunStateBuilder(profile_id=expected.profile_id),
-        cadence=cadence_from(arguments),
-    )
+    opened: list[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]] = []
+    started: list[CloneInstance] = []
 
+    def open_instance(instance: CloneInstance) -> ActorInstance:
+        """Bring one instance of the fleet up ready and offline, and connect."""
+        bring_up(
+            instance,
+            arguments.renderer,
+            deploy=deploy_bridge,
+            read_only=True,
+            cores=arguments.cores,
+        )
+        # By interface, per instance, before anything is collected on it.
+        require_offline(instance)
+        started.append(instance)
+        return connect(instance.serial, instance.bridge_host_port, arguments, expected, opened)
+
+    failures: list[str] = []
     try:
+        if arguments.actors == 1:
+            # Exactly as before there were fleets: the instance the operator
+            # brought up, addressed by --serial and --port, and left running.
+            instances = [connect(arguments.serial, arguments.port, arguments, expected, opened)]
+        else:
+            # A read-only fleet cannot save a snapshot, so the pinned one is
+            # prepared once before any actor starts, exactly as the scripted
+            # fleet does it.
+            prepare_pinned_snapshot(arguments.renderer, arguments.cores)
+            instances, failures = bring_up_fleet(
+                [CloneInstance(index=index) for index in range(arguments.actors)],
+                open_instance,
+            )
         report = train_session(
             arguments,
-            environment,
+            instances,
             profile_id=expected.profile_id,
             revision=source_revision(),
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             tracker=tracker,
             bridge_version=expected.bridge_version,
+            bring_up_failures=failures,
         )
     finally:
-        adapter.release()
-        client.close()
+        for adapter, client in opened:
+            adapter.release()
+            client.close()
+        for instance in started:
+            # Only instances this run brought up are torn down, and one that
+            # refuses to clean up must not leave the others running.
+            try:
+                tear_down_instance(instance)
+            except Exception as error:  # noqa: BLE001 - reported, never fatal
+                print(f"{instance.serial}: teardown failed: {error}", flush=True)
 
     print(json.dumps(report, indent=2, default=str), flush=True)
     return 0

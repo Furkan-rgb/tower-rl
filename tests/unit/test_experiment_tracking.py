@@ -24,7 +24,7 @@ from test_train_entry_point import (  # noqa: E402
     PROFILE,
     SMALL_NETWORK,
     arguments,
-    environment,
+    fleet,
 )
 
 from tower_rl.ports.experiment_tracker import (  # noqa: E402
@@ -43,7 +43,7 @@ def tracked_session(run_dir: Path, tracker: RecordingTracker) -> dict[str, Any]:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
             arguments(run_dir, "recurrent-q", **{"--budget-decisions": "120"}),
-            environment(),
+            fleet(),
             profile_id=PROFILE,
             revision="test-revision",
             device=torch.device("cpu"),
@@ -80,7 +80,7 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         report = train.train_session(
             arguments(tmp_path, "recurrent-q", **{"--budget-decisions": "120"}),
-            environment(),
+            fleet(),
             profile_id=PROFILE,
             revision="test",
             device=torch.device("cpu"),

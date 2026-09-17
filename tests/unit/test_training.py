@@ -20,6 +20,7 @@ from tower_rl.application.run_environment import (  # noqa: E402
 )
 from tower_rl.application.training import (  # noqa: E402
     CollectedEpisode,
+    SharedPolicy,
     TrainingConfig,
     TrainingRun,
     action_distribution,
@@ -60,7 +61,7 @@ def _run(**overrides: object) -> TrainingRun:
     }
     settings.update(overrides)
     return TrainingRun(
-        actor=actor,
+        actors=[actor],
         replay=replay,
         backbone=backbone,
         config=TrainingConfig(**settings),  # type: ignore[arg-type]
@@ -255,7 +256,8 @@ def test_a_run_on_an_accelerator_builds_its_batches_there() -> None:
         network_config=SMALL,
         device=torch.device("cuda"),
     )
-    training.actor.policy = training.backbone
+    training.policy = SharedPolicy(training.backbone)
+    training.actors[0].policy = training.policy
 
     report = training.run()
 
@@ -315,7 +317,7 @@ def _failing_run(**overrides: object) -> TrainingRun:
     """A run whose port refuses the episodes named in `refuse_episodes`."""
     port = FakeRunPort(damage_per_second=2.0, refuse_episodes=frozenset({2, 3}))
     training = _run(**overrides)
-    training.actor.environment = InstrumentedRunEnvironment(
+    training.actors[0].environment = InstrumentedRunEnvironment(
         port=port,
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
@@ -346,7 +348,7 @@ def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:
     a retry would hide a stranded sequence rather than report it.
     """
     training = _run(budget_decisions=150)
-    training.actor.environment = InstrumentedRunEnvironment(
+    training.actors[0].environment = InstrumentedRunEnvironment(
         port=FakeRunPort(damage_per_second=2.0, stale_advance_episodes=frozenset({2, 3})),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
@@ -363,7 +365,7 @@ def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:
 def test_an_instance_that_fails_every_episode_stops_the_run() -> None:
     """Continuing against a broken instance would spin without collecting."""
     training = _run(budget_decisions=150, max_consecutive_episode_failures=3)
-    training.actor.environment = InstrumentedRunEnvironment(
+    training.actors[0].environment = InstrumentedRunEnvironment(
         port=FakeRunPort(refuse_to_start=True),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),

@@ -9,6 +9,7 @@ which profile a sequence came from, and it refuses to mix them.
 from __future__ import annotations
 
 import random
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -120,6 +121,10 @@ class PrioritizedSequenceReplay:
     without limit. Compatibility is fixed by the first accepted sequence: mixing
     profiles or schema versions would silently train one model on two different
     environments.
+
+    Nothing here is thread-safe on its own. One buffer is shared by a fleet of
+    actors and one learner, and `lock` is what they share it under; see the
+    field for why that discipline is the caller's rather than each method's.
     """
 
     capacity: int
@@ -127,6 +132,15 @@ class PrioritizedSequenceReplay:
     #: Sampling exponent. 0 is uniform; 1 is fully proportional to priority.
     alpha: float = 0.6
     seed: int | None = None
+
+    #: Held by every caller that adds, samples or updates priorities, because
+    #: several actors write into one buffer while the learner reads it. It is
+    #: not taken inside the methods below: `update_priorities` refuses indices
+    #: an eviction has shifted, so the learner must hold this across `sample`,
+    #: `learn` and `update_priorities` together rather than around each of them,
+    #: and a lock already held by the caller could not be taken again here. An
+    #: actor holds it for the sequences of one episode.
+    lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     _items: deque[ReplaySequence] = field(default_factory=deque, init=False)
     _priorities: deque[float] = field(default_factory=deque, init=False)

@@ -1,10 +1,11 @@
 """The training entry point, end to end against the fake port.
 
-No emulator, no adb, no bridge: `train_session` takes the environment it trains
+No emulator, no adb, no bridge: `train_session` takes the instances it trains
 against, so the double never reaches a path a device run can take. What is under
 test is the thing the developer actually starts - argument parsing, arm
 construction, the interleaved block schedule, periodic evaluation and
-checkpointing, and the learning curve the run is read from.
+checkpointing, the learning curve the run is read from, and the fleet: a session
+on several instances, its per-actor account, and its staggered bring-up.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import train  # noqa: E402
+from clone_session import CloneInstance  # noqa: E402
 from fakes.fake_run_port import FakeRunPort  # noqa: E402
 
 from tower_rl.application.actor import ActorConfig  # noqa: E402
@@ -129,14 +132,34 @@ def environment(**overrides: Any) -> InstrumentedRunEnvironment:
     )
 
 
+def fleet(count: int = 1, **fake: Any) -> list[train.ActorInstance]:
+    """`count` independent fake instances, named as a fleet's instances are."""
+    return [
+        train.ActorInstance(serial=f"fake-{index}", environment=environment(**fake))
+        for index in range(count)
+    ]
+
+
 def session(
-    run_dir: Path, *backbones: str, budget: str = "120", **fake: Any
+    run_dir: Path, *backbones: str, budget: str = "120", actors: int = 1, **fake: Any
 ) -> dict[str, Any]:
+    overrides = {"--budget-decisions": budget}
+    if actors > 1:
+        overrides.update(
+            {
+                "--actors": str(actors),
+                # A fleet addresses its instances through `CloneInstance`, so
+                # the single-actor serial may not be named beside it.
+                "--serial": CloneInstance(index=0).serial,
+                # Mid-run evaluation would need an instance to itself.
+                "--evaluate-every-episodes": "0",
+            }
+        )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
-            arguments(run_dir, *backbones, **{"--budget-decisions": budget}),
-            environment(**fake),
+            arguments(run_dir, *backbones, **overrides),
+            fleet(actors, **fake),
             profile_id=PROFILE,
             revision="test",
             device=torch.device("cpu"),
@@ -330,7 +353,7 @@ def _arm(run_dir: Path, name: str, **overrides: str) -> Any:
         return train.build_arm(
             name,
             arguments(run_dir, name, **overrides),
-            environment=environment(),
+            instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
             profile_id=PROFILE,
             parent=run_dir,
@@ -390,8 +413,8 @@ def test_the_two_backbones_burn_in_differently(tmp_path: Path) -> None:
     stacked = _arm(tmp_path / "stacked", "stacked-dqn", **{"--stacked-burn-in": "3"})
     recurrent = _arm(tmp_path / "recurrent", "recurrent-q", **{"--burn-in": "4"})
 
-    assert stacked.training.actor.config.burn_in == 3
-    assert recurrent.training.actor.config.burn_in == 4
+    assert stacked.training.actors[0].config.burn_in == 3
+    assert recurrent.training.actors[0].config.burn_in == 4
     assert stacked.resolved["burn_in"] == 3
     assert recurrent.resolved["burn_in"] == 4
 
@@ -463,3 +486,194 @@ def test_the_learner_diagnostics_travel_with_every_point(trained: dict[str, Any]
         distribution = arm["action_distribution"]
         assert distribution["episodes"] == arm["episodes"] - arm["failed_episodes"]
         assert distribution["decisions"] == arm["decisions"]
+
+
+#: Two fake instances and both backbones, which is the fleet arrangement a
+#: device run takes: the arms still take turns, and each turn uses every actor.
+FLEET_BUDGET = "300"
+
+
+@pytest.fixture(scope="module")
+def fleet_trained(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    run_dir = tmp_path_factory.mktemp("fleet")
+    return session(
+        run_dir, "recurrent-q", "stacked-dqn", budget=FLEET_BUDGET, actors=2
+    )
+
+
+def test_a_fleet_trains_every_backbone_under_one_budget(
+    fleet_trained: dict[str, Any],
+) -> None:
+    """Both arms still work, and each spends its budget across both instances."""
+    assert fleet_trained["actors"] == 2
+    assert fleet_trained["actor_serials"] == ["fake-0", "fake-1"]
+    assert fleet_trained["bring_up_failures"] == []
+
+    for arm in fleet_trained["arms"]:
+        assert arm["decisions"] >= int(FLEET_BUDGET)
+        assert arm["optimisation_steps"] > 0 and arm["sequences_accepted"] > 0
+        assert arm["resolved_config"]["actors"] == 2
+        assert arm["resolved_config"]["actor_ids"] == [
+            f"fake-0:{arm['backbone']}",
+            f"fake-1:{arm['backbone']}",
+        ]
+        # The pre-registered evaluation still lands, taken with the fleet stopped.
+        assert arm["final_evaluation"]["pre_registered_final"] is True
+
+
+def test_the_report_accounts_for_every_actor_and_for_the_fleet(
+    fleet_trained: dict[str, Any],
+) -> None:
+    """An aggregate that cannot name a stalled instance cannot report one."""
+    for arm in fleet_trained["arms"]:
+        actors = arm["actors"]
+
+        assert [actor["actor_id"] for actor in actors] == arm["resolved_config"][
+            "actor_ids"
+        ]
+        assert sum(actor["decisions"] for actor in actors) == arm["decisions"]
+        assert sum(actor["episodes"] for actor in actors) == arm["episodes"]
+        assert arm["actors_withdrawn"] == 0
+        assert arm["episodes_per_hour"] > 0 and arm["decisions_per_hour"] > 0
+        for actor in actors:
+            assert actor["episodes"] > 0 and actor["decisions"] > 0
+            assert actor["valid_episodes"] + actor["invalid_episodes"] <= actor["episodes"]
+            assert actor["withdrawn"] is None
+            assert actor["episodes_per_hour"] > 0
+            # The health counters a fleet is watched by, per actor and summed.
+            for counter in train.health_counters([]):
+                assert actor[counter] == 0
+        for counter, total in arm["health"].items():
+            assert total == sum(actor[counter] for actor in actors)
+
+
+def test_the_collection_curve_survives_a_fleet(fleet_trained: dict[str, Any]) -> None:
+    """One series in completion order, cut into windows exactly as before."""
+    for arm in fleet_trained["arms"]:
+        curve = arm["collection_curve"]
+
+        assert curve and all(set(window) == WINDOW_KEYS for window in curve)
+        assert [window["index"] for window in curve] == list(range(len(curve)))
+        placements = [window["decisions_at_end"] for window in curve]
+        assert placements == sorted(placements)
+        assert all(window["episodes"] == 2 for window in curve)
+        scored = sum(window["episodes"] for window in curve)
+        assert scored <= arm["valid_episodes"] < scored + 2
+
+
+def test_one_dead_instance_does_not_end_a_fleet_run(tmp_path: Path) -> None:
+    """One emulator refusing every episode costs an actor, not the run."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        report = train.train_session(
+            arguments(
+                tmp_path,
+                "recurrent-q",
+                **{
+                    "--budget-decisions": "150",
+                    "--actors": "2",
+                    "--serial": CloneInstance(index=0).serial,
+                    "--evaluate-every-episodes": "0",
+                },
+            ),
+            [
+                train.ActorInstance(serial="fake-0", environment=environment()),
+                train.ActorInstance(
+                    serial="fake-1", environment=environment(refuse_to_start=True)
+                ),
+            ],
+            profile_id=PROFILE,
+            revision="test",
+            device=torch.device("cpu"),
+        )
+
+    arm = report["arms"][0]
+    dead = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-1:recurrent-q")
+    alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:recurrent-q")
+    assert dead["withdrawn"] is not None and dead["failed_episodes"] > 0
+    assert arm["actors_withdrawn"] == 1
+    assert alive["decisions"] == arm["decisions"] >= 150
+    assert arm["final_evaluation"] is not None, "the run was still measured"
+
+
+def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
+    """The default, and the configuration the in-flight run is reproducible from."""
+    assert train.parse_arguments(["--run-dir", str(tmp_path)]).actors == 1
+
+    report = session(tmp_path, "recurrent-q")
+
+    assert report["actors"] == 1 and report["actor_serials"] == ["fake-0"]
+    arm = report["arms"][0]
+    assert arm["resolved_config"]["actors"] == 1
+    assert [actor["actor_id"] for actor in arm["actors"]] == ["fake-0:recurrent-q"]
+    assert arm["actors"][0]["decisions"] == arm["decisions"]
+
+
+def test_a_fleet_refuses_an_instance_named_by_hand(tmp_path: Path) -> None:
+    """--serial and --port configure one actor; a fleet is addressed by index."""
+    with pytest.raises(SystemExit, match="CloneInstance"):
+        arguments(tmp_path, "recurrent-q", **{"--actors": "2", "--serial": "fake-0"})
+
+
+def test_a_fleet_refuses_mid_run_evaluation(tmp_path: Path) -> None:
+    """Evaluation borrows an instance, and every instance is collecting."""
+    with pytest.raises(SystemExit, match="instance to itself"):
+        arguments(
+            tmp_path,
+            "recurrent-q",
+            **{
+                "--actors": "2",
+                "--serial": CloneInstance(index=0).serial,
+                "--evaluate-every-episodes": "1",
+            },
+        )
+
+
+def test_a_run_needs_at_least_one_actor(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="at least one actor"):
+        arguments(tmp_path, "recurrent-q", **{"--actors": "0"})
+
+
+def test_a_fleet_brings_its_instances_up_one_at_a_time(tmp_path: Path) -> None:
+    """Four cold boots at once is the one thing the fleet measurement broke on."""
+    spans: list[tuple[str, float, float]] = []
+
+    def open_instance(instance: CloneInstance) -> train.ActorInstance:
+        started = time.monotonic()
+        time.sleep(0.01)
+        spans.append((instance.serial, started, time.monotonic()))
+        return train.ActorInstance(serial=instance.serial, environment=environment())
+
+    instances = [CloneInstance(index=index) for index in range(4)]
+
+    ready, failures = train.bring_up_fleet(instances, open_instance)
+
+    assert failures == []
+    assert [item.serial for item in ready] == [item.serial for item in instances]
+    # No bring-up began before the previous one had concluded.
+    for (_, _, ended), (_, next_started, _) in zip(spans, spans[1:], strict=False):
+        assert next_started >= ended
+
+
+def test_an_instance_that_will_not_come_up_costs_one_actor(tmp_path: Path) -> None:
+    """A failed bring-up must not stall the instances behind it."""
+
+    def open_instance(instance: CloneInstance) -> train.ActorInstance:
+        if instance.index == 1:
+            raise RuntimeError("never left main_unavailable")
+        return train.ActorInstance(serial=instance.serial, environment=environment())
+
+    ready, failures = train.bring_up_fleet(
+        [CloneInstance(index=index) for index in range(3)], open_instance
+    )
+
+    assert [item.serial for item in ready] == ["emulator-5556", "emulator-5560"]
+    assert len(failures) == 1 and "emulator-5558" in failures[0]
+
+
+def test_a_fleet_that_will_not_come_up_at_all_is_refused(tmp_path: Path) -> None:
+    def refuse(instance: CloneInstance) -> train.ActorInstance:
+        raise RuntimeError("no snapshot")
+
+    with pytest.raises(SystemExit, match="no instance of the fleet came up"):
+        train.bring_up_fleet([CloneInstance(index=0)], refuse)

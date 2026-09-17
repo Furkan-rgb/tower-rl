@@ -155,22 +155,27 @@ class Actor:
         if len(carried) != len(steps):
             raise ValueError("every stored step needs the state it was entered with")
         offered = accepted = 0
-        for start, window in self._windows(steps):
-            offered += 1
-            # Replay is the authority on admissibility; a window containing a
-            # classified failure is refused there and counted, not dropped here.
-            sequence = ReplaySequence(
-                metadata,
-                window,
-                self.config.burn_in,
-                # The state the window's first real step was entered with. A
-                # left-padded window starts at step 0, whose state is the one the
-                # episode opened from - the initial state - which is exactly what
-                # its padded prefix stands in for.
-                recurrent_state=carried[start],
-            )
-            if self.replay.add(sequence):
-                accepted += 1
+        # One acquisition for the whole episode: several actors write into the
+        # one buffer while the learner samples it, and replay leaves that
+        # discipline to its callers (see `PrioritizedSequenceReplay.lock`).
+        # Uncontended for a single actor, which is the fleet of one.
+        with self.replay.lock:
+            for start, window in self._windows(steps):
+                offered += 1
+                # Replay is the authority on admissibility; a window containing a
+                # classified failure is refused there and counted, not dropped here.
+                sequence = ReplaySequence(
+                    metadata,
+                    window,
+                    self.config.burn_in,
+                    # The state the window's first real step was entered with. A
+                    # left-padded window starts at step 0, whose state is the one the
+                    # episode opened from - the initial state - which is exactly what
+                    # its padded prefix stands in for.
+                    recurrent_state=carried[start],
+                )
+                if self.replay.add(sequence):
+                    accepted += 1
         return offered, accepted
 
     def _windows(self, steps: list[ReplayStep]) -> list[tuple[int, tuple[ReplayStep, ...]]]:

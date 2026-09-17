@@ -13,6 +13,27 @@ trained and compared under one identical budgeted protocol, where the best
 learned model reproducibly beats the random and scripted baselines, with all
 evidence in `docs/experiments.md`.
 
+### Task tracking is on GitHub, not in this file
+
+Work items, priorities, and status live in GitHub Issues, tracked against two
+milestones on this repository:
+
+- [`M1 Foundation`](https://github.com/Furkan-rgb/tower-rl/milestone/1) —
+  everything needed before RL training can start.
+- [`M2 Training`](https://github.com/Furkan-rgb/tower-rl/milestone/2) —
+  running and comparing backbones.
+
+The working view is the project board:
+<https://github.com/users/Furkan-rgb/projects/3> (columns `Backlog`, `Next`,
+`In progress`, `Blocked`, `Done`). Deferred, unscheduled ideas carry the
+`deferred` label and sit in `Backlog` with no milestone. This replaces the
+numbered priority lists that used to live in this file — do not re-add an
+ordered task list here; open or update an issue instead.
+
+`docs/experiments.md` is the evidence log — every finding, dated, newest
+first, including negatives. It is **not** a task list: it records what was
+measured, not what to do next.
+
 ### What is proven and working
 
 - **The environment.** The game is observed and controlled through its own
@@ -165,32 +186,11 @@ issue any command of its own initiative while a round is in progress.
 
 ### The current priority order
 
-The Lead has set this order for what follows:
-
-1. **Re-run the device chain stages 3–5 on a quiet host, at `cf504b8`.**
-   `M1B-E024`'s stage 3 failure and its diagnostic were both taken under a
-   host with two foreign processes holding ~1250% CPU each; the fix has not
-   yet been verified at rest, and stages 4 (`-gpu host` equivalence) and 5
-   (multi-actor scaling) have not run at all.
-2. **Then equal-budget backbone training, with the learning curve tracked**
-   (MLflow, on by default under `uv run --extra tracking`).
-3. **The boundary deadlock fix** (below) — blocks any further
-   single-process multi-episode run; still open, check recent commits for
-   status.
-4. **Re-run the comparison floor properly powered** (≈97 episodes/arm for a
-   1-wave difference) once multi-actor scaling lands and makes that
-   affordable.
-
-**Open items surfaced by this device chain, not yet addressed:**
-
-- The deploy cold-launch online window is still required even when starting
-  from a snapshot — a restored snapshot's embedded bridge does not answer
-  the current client, so a redeploy (and the online window that brings) is
-  needed regardless (`M1B-E024`).
-- A stream-level stale error closes the client socket with no reconnect, so
-  on an unattended run it would burn the failure budget rather than being
-  absorbed as a single lost episode.
-- `run_actors` multi-actor scaling remains unmeasured on device.
+Superseded by the GitHub board — see "Task tracking is on GitHub, not in
+this file" above for the milestones and the board URL. The device-chain and
+comparison-floor work referenced here is tracked as milestone issues; the
+stale-observation reconnect gap and multi-actor scaling are tracked under
+the `deferred` label.
 
 ### The boundary deadlock
 
@@ -231,30 +231,11 @@ known contributors.
 
 ### After that, in order
 
-1. `instrumented_bridge.sh deploy`'s cold-launch gap. It force-stops and
-   cold-launches, which lands on the OFFLINE modal when the device is offline:
-   the `M1B-E017` run had to bring the radios back up, force-stop, relaunch, wait
-   for home, and cut the radios again before it could deploy. Every device run
-   pays this until it is fixed.
-2. **Done.** The boundary tap is retired (`M1B-E022`): the receiver was
-   `BattlePanelUI.StartNewRound` on `BattlePanel`, not anything on `Main`,
-   found by dumping IL2CPP metadata. The 6-second result-panel settle is gone
-   with it; boundary cost fell from 7.25 s to 1.716 s.
-3. Save an already-started offline snapshot with `clone_session.py snapshot` and
-   verify `restore` does not re-run the Firebase check. Partially done:
-   `M1B-E022`/`M1B-E024` saved and restored `nonvisual_baseline_home_offline`,
-   but its embedded bridge does not answer the current client, so a restore
-   still needs a redeploy and the online window that brings — see "Open
-   items" under "The current priority order" above.
-4. **Done, with the verdict pending a quiet-host rerun.** `-gpu host` cleared
-   its health checks in `M1B-E022` (3/3 valid, zero divergence), but that
-   arm's throughput and wave figures were measured under the 1.52x game-time
-   inflation `M1B-E023` diagnosed, so they are not a usable renderer verdict.
-   Re-run at `cf504b8` on a quiet host — see "The current priority order"
-   above.
-5. Longer training runs and the speed equivalence gate. The comparison floor
-   itself is measured (`M1B-E021`); see "The current priority order" above for
-   what follows it.
+Superseded by the GitHub board (see above). Two items from this list are
+already done and remain recorded in "Done: the boundary tap is retired, and
+a 1.52x game-time inflation was found and fixed" above: the boundary tap
+receiver was found and the cold-launch/snapshot and `-gpu host` items are
+tracked as open issues on the board.
 
 ### A small gap worth closing: `run_episodes.py` writes no per-episode data
 
@@ -661,47 +642,11 @@ runs, because it changes what an equal decision budget costs in wall-clock time.
 
 ## Directed next steps — 2026-09-17
 
-Three items the developer set after `M1B-E010`, in dependency order. All need the
-device, which is busy with the speed equivalence gate until it finishes.
-
-**1. A snapshot of the game already running, offline.** The startup network
-window exists only because the game cold-launches into a Firebase check. Saving
-an emulator snapshot while the game sits at `battle_home_tier_1` with the radios
-already down removes that window entirely: every later run restores an
-already-started, already-offline game and never connects at all. Precedent is
-good — `solution.md` 8.1 records that in-place restore preserved the game
-process, the Battle-home state and a clean post-restore fingerprint on the
-canonical AVD. What must be verified is that a *restored* process does not
-re-run the online check.
-
-**2. Remove the last tap by finding the right receiver.** This is the blocker
-`M1B-E004` left open, and it gates item 3. The bridge dispatches every lifecycle
-method through `UnitySendMessage` to the GameObject named `Main`, and `Main`
-only exists inside the battle scene, so `StartNewRoundFunction`, `AutoRetryBattle`
-and `Button_ToggleAutoRestartBattle` all no-op from the home screen. Two cheap
-experiments before any native work:
-
-- Re-test `enable_auto_restart`. It was judged progression-gated at the
-  documented baseline, but the clone has since drifted to Highest Wave 11 and
-  909 coins (`M1B-E005`). If auto-restart is now unlocked the game restarts
-  rounds by itself and the boundary disappears without finding any receiver.
-- Re-test `retry` dispatched at the result panel rather than from home, and
-  record whether `Main` still exists at that moment.
-
-If both fail, the identified work is to locate the GameObject that owns
-`BattlePanelUI.StartNewRound` and address it by name. That needs a main-thread
-trampoline that exists on the home screen, because `UnitySendMessage` is the only
-main-thread entry point the bridge has and it addresses objects by name.
-
-**3. Then the renderer is free.** `-gpu host` was withdrawn in `M1B-E004`
-because it corrupts the frame — smearing, magenta and cyan banding, ghosted text
-— which broke screen classification. Game logic was never affected, because the
-bridge reads exact state rather than pixels. The frame matters for exactly one
-thing: the gated tap. Remove the tap and nothing in the training loop reads a
-pixel, so host rendering becomes admissible again and the `M1B-E003` throughput
-figures taken under it become relevant rather than an unusable upper bound.
-Until then lavapipe stays, because a corrupt frame with a live tap is the
-`M1-E005` failure waiting to happen.
+Superseded by the GitHub board (see "Task tracking is on GitHub, not in this
+file" above). Item 2 (finding the round-start receiver) is done — see "Done:
+the boundary tap is retired, and a 1.52x game-time inflation was found and
+fixed" above. Items 1 (offline-started snapshot) and 3 (`-gpu host`) are
+tracked as open issues.
 
 
 ## The frame is the floor on decision granularity — 2026-09-17

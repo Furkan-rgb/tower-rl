@@ -466,6 +466,7 @@ class InstrumentedBridgeClient:
         self._socket: socket.socket | None = None
         self._handshake: BridgeHandshake | None = None
         self._last_observation_sequence = 0
+        self._last_state: BridgeObservation | BridgeRunUnavailable | None = None
         self._last_inbound_at: float | None = None
 
     @property
@@ -509,6 +510,10 @@ class InstrumentedBridgeClient:
         drained and only the newest state is returned. Between episodes the game
         holds no initialized run, which is reported as its own state rather than
         as invented run values.
+
+        While the world is paused the bridge deliberately streams no new state,
+        because a paused world has none: a heartbeat then stands for the state
+        already sent, and that is what this returns.
         """
         try:
             state = self._read_state()
@@ -538,9 +543,16 @@ class InstrumentedBridgeClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise BridgeTimeoutError("timed out waiting for bridge state")
-            state = self._consume_message(self._read_message(remaining))
+            message = self._read_message(remaining)
+            state = self._consume_message(message)
             if state is not None:
                 return state
+            # A heartbeat says the state the bridge has already sent still stands.
+            # While the world is paused that is the whole truth about it, and the
+            # bridge sends no further observation, so waiting for one would wait
+            # out the read timeout for a world that cannot change.
+            if message.get("type") == "heartbeat" and self._last_state is not None:
+                return self._last_state
 
     def _consume_message(
         self, message: Mapping[str, Any]
@@ -550,12 +562,14 @@ class InstrumentedBridgeClient:
         if message_type == "observation":
             observation = decode_observation(message, max_upgrade_entries=self.max_upgrade_entries)
             self._advance_sequence(observation.sequence)
+            self._last_state = observation
             return observation
         if message_type == "run_unavailable":
             unavailable = BridgeRunUnavailable(
                 _int(message, "sequence", minimum=1), _string(message, "reason")
             )
             self._advance_sequence(unavailable.sequence)
+            self._last_state = unavailable
             return unavailable
         if message_type == "heartbeat":
             sequence = _int(message, "last_observation_sequence", minimum=0)
@@ -628,6 +642,7 @@ class InstrumentedBridgeClient:
         """Close the local stream without leaking a socket descriptor."""
         stream, self._socket = self._socket, None
         self._handshake = None
+        self._last_state = None
         self._last_inbound_at = None
         if stream is not None:
             with suppress(OSError):

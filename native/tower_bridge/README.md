@@ -40,6 +40,16 @@ running, not an in-run game clock and not a policy feature. The bridge sends a
 heartbeat with the latest observation sequence at least once a second, including
 while a slow lifecycle transition is in flight.
 
+**While the world is paused the sequence does not move.** The sequence exists to
+stop the host acting on a stale view; a paused world produces no new information,
+so its view cannot go stale. Between commands — the advance leaves a still-active
+run paused — the idle tick emits a heartbeat instead of a fresh observation, and
+the heartbeat names the sequence that still stands. Without that, a policy whose
+forward pass and learning step take longer than one stream interval had every
+command rejected as `stale_or_duplicate`, even straight after a fresh read. A run
+that ended under an advance is never paused, so the screens between episodes keep
+streaming and the episode boundary still sees its lifecycle transitions.
+
 Between episodes the game holds no initialized run. That is reported as a
 `run_unavailable` message carrying the same monotonic sequence, so a controller
 can still bind and send a command, and no invented run values are ever presented
@@ -119,7 +129,8 @@ is the identity.
 
 One command may be in flight. A command binds the latest observation sequence and
 carries a bounded ASCII `request_id`; a repeated id or a superseded sequence is
-`rejected` with `stale_or_duplicate`. The native parser is deliberately minimal
+`rejected` with `stale_or_duplicate`; because the paused stream holds the
+sequence, host latency alone can no longer supersede it. The native parser is deliberately minimal
 and reads the canonical encoding at fixed offsets, so the client's exact key
 order and compact separators are part of the contract and are pinned by
 `tests/unit/test_instrumented_bridge.py`.

@@ -1300,6 +1300,11 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
   uint64_t sequence = 0;
   char last_request_id[65] = "";
   useconds_t heartbeat_elapsed = 0;
+  // This bridge is the only thing that pauses the world, so it knows when the
+  // world is paused. That matters because the sequence exists to stop the host
+  // acting on a stale view: while the world is paused no new information can
+  // exist, so the view cannot go stale and the sequence must not move.
+  bool world_paused = false;
   while (true) {
     fd_set readable;
     FD_ZERO(&readable);
@@ -1330,6 +1335,10 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
                                &detail)) {
           return;
         }
+        // The advance pauses the world again exactly when the run is still
+        // active; a run that ended under it was never paused and its screens
+        // keep changing, so its state must keep streaming.
+        world_paused = RunIsActive(api, fields);
       } else if (command.set_speed) {
         float applied = 0.0F;
         api.field_static_set_value(fields.game_speed, &command.speed);
@@ -1350,6 +1359,9 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         // The game owns the transition; the bridge only presses its own control
         // and then waits for the game's own state to agree.
         ResolveUnitySendMessage()(TOWER_BRIDGE_MAIN_GAME_OBJECT, command.lifecycle->method, "");
+        // `pause` is the one lifecycle control that stops the world; every other
+        // one leaves it running, including the `unpause` that ends a session.
+        world_paused = std::strcmp(command.lifecycle->name, "pause") == 0;
         reason = command.lifecycle->expect_active ? "run_active" : "run_closed";
         bool settled = false;
         // A scene transition takes seconds. The stream must keep proving it is
@@ -1405,6 +1417,17 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
       if (std::strcmp(outcome, "confirmed") == 0 && command.family != nullptr) RefreshCosts();
       if (!SendState(client, api, fields, ++sequence)) return;
       if (!SendCommandResult(client, command, outcome, reason, sequence, detail)) return;
+      continue;
+    }
+    if (world_paused) {
+      // A paused world has nothing new to report, and reporting it anyway would
+      // move the sequence out from under a command the host is already
+      // composing: a policy that thinks for longer than this interval would have
+      // every command rejected as `stale_or_duplicate`. The heartbeat still
+      // proves the bridge is alive and names the sequence that still stands.
+      if (!SendFrame(client, "{\"type\":\"heartbeat\",\"last_observation_sequence\":" +
+                                 std::to_string(sequence) + "}")) return;
+      heartbeat_elapsed = 0;
       continue;
     }
     if (!SendState(client, api, fields, ++sequence)) return;

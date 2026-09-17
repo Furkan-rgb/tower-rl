@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import select
 import socket
 import struct
+import threading
 import time
+from contextlib import suppress
 
 import pytest
 
@@ -628,3 +631,150 @@ def test_upgrade_level_above_its_own_maximum_is_rejected() -> None:
     ]
     with pytest.raises(BridgeProtocolError, match="exceeds its own maximum"):
         decode_observation(message)
+
+
+class _IdleStreamBridge:
+    """The bridge's own stream loop, run against a real socket in a thread.
+
+    It mirrors `ServeClient` in `native/tower_bridge/tower_bridge.cpp`: one
+    monotonic sequence, an idle tick that emits state, and the guard that rejects
+    a command bound to anything but the standing sequence as `stale_or_duplicate`.
+    `holds_the_sequence_while_paused` is the behaviour under test - the bridge now
+    emits a heartbeat rather than a fresh observation while the world is paused,
+    because a paused world has nothing new to say.
+    """
+
+    def __init__(
+        self,
+        peer: socket.socket,
+        *,
+        holds_the_sequence_while_paused: bool,
+        idle_interval: float = 0.05,
+    ) -> None:
+        self._peer = peer
+        self._holds = holds_the_sequence_while_paused
+        self._idle_interval = idle_interval
+        self._paused = False
+        self._sequence = 0
+        self._last_request_id = ""
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> _IdleStreamBridge:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+
+    def _send(self, message: dict[str, object]) -> None:
+        with suppress(OSError):
+            self._peer.sendall(encode_frame(message))
+
+    def _result(self, request_id: str, outcome: str, reason: str) -> dict[str, object]:
+        return {
+            "type": "command_result", "protocol_version": 1, "request_id": request_id,
+            "outcome": outcome, "reason": reason, "observation_sequence": self._sequence,
+            "frames": 20, "game_ms": 2000, "round_ms": 2000, "wall_micros": 40_000,
+        }
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            readable, _, _ = select.select([self._peer], [], [], self._idle_interval)
+            if not readable:
+                if self._paused and self._holds:
+                    self._send(
+                        {"type": "heartbeat", "last_observation_sequence": self._sequence}
+                    )
+                else:
+                    self._sequence += 1
+                    self._send(_observation(self._sequence))
+                continue
+            try:
+                command = read_frame(self._peer, timeout=1.0)
+            except (OSError, BridgeProtocolError, BridgeDisconnectedError, BridgeTimeoutError):
+                return
+            request_id = str(command["request_id"])
+            if (
+                command["expected_observation_sequence"] != self._sequence
+                or request_id == self._last_request_id
+            ):
+                self._send(self._result(request_id, "rejected", "stale_or_duplicate"))
+                continue
+            self._last_request_id = request_id
+            self._paused = command["kind"] == "advance"
+            self._sequence += 1
+            self._send(_observation(self._sequence))
+            self._send(self._result(request_id, "confirmed", "budget_exhausted"))
+
+
+def _slow_bridge_client() -> tuple[InstrumentedBridgeClient, socket.socket]:
+    client_socket, peer_socket = socket.socketpair()
+    client = InstrumentedBridgeClient(
+        "127.0.0.1", 47651, expected_compatibility=EXPECTED, read_timeout=2.0
+    )
+    client._socket = client_socket
+    client._handshake = decode_handshake(_handshake(), EXPECTED)
+    client._last_inbound_at = time.monotonic()
+    return client, peer_socket
+
+
+def _advance(request_id: str, sequence: int) -> dict[str, object]:
+    return {
+        "type": "command", "protocol_version": 1, "request_id": request_id,
+        "expected_observation_sequence": sequence, "kind": "advance",
+        "budget_game_ms": 2000, "frame_game_ms": 100.0, "health_change_fraction": 0.05,
+    }
+
+
+def test_a_paused_world_holds_the_sequence_across_a_slow_decision() -> None:
+    """A policy that thinks for longer than the idle interval is still in time.
+
+    A forward pass plus a learning step routinely costs more than the bridge's
+    idle interval. While the world is paused nothing can change, so the sequence
+    the host binds must still stand when the command arrives; a device run where
+    it did not lost 15 of 35 advances to `stale_or_duplicate`.
+    """
+    client, peer = _slow_bridge_client()
+    try:
+        with _IdleStreamBridge(peer, holds_the_sequence_while_paused=True):
+            state = client.read_state()
+            first = client.send_command(_advance("adv-1", state.sequence))
+            assert first.outcome.value == "confirmed"
+
+            # The policy thinking: many idle intervals, and the hot path takes no
+            # further read, because the advance already carried its settled state.
+            time.sleep(0.4)
+            second = client.send_command(_advance("adv-2", first.observation_sequence))
+
+            assert second.outcome.value == "confirmed"
+            # A read at an episode boundary must still answer while paused: the
+            # heartbeat stands for the state the bridge has already sent.
+            standing = client.read_state()
+            assert standing.sequence == second.observation_sequence
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_a_stream_that_ticked_on_while_paused_rejected_that_decision() -> None:
+    """Why the bridge holds the sequence: the failure this replaced.
+
+    With the idle tick emitting fresh state through the pause, every decision
+    slower than one interval bound a sequence the bridge had already left behind.
+    """
+    client, peer = _slow_bridge_client()
+    try:
+        with _IdleStreamBridge(peer, holds_the_sequence_while_paused=False):
+            state = client.read_state()
+            first = client.send_command(_advance("adv-1", state.sequence))
+            assert first.outcome.value == "confirmed"
+            time.sleep(0.4)
+            second = client.send_command(_advance("adv-2", first.observation_sequence))
+
+            assert second.outcome.value == "rejected"
+            assert second.reason == "stale_or_duplicate"
+    finally:
+        client.close()
+        peer.close()

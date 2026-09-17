@@ -1002,6 +1002,23 @@ the next stream tick, which is what actually makes one decision cost one round
 trip; a second read would also risk describing a later world than the result
 does.
 
+**A paused world does not move the sequence.** A command binds the observation
+sequence so the host can never act on a stale view of the world. The idle stream
+used to emit a fresh observation every 250 ms regardless, so the sequence moved
+while the world was paused between decisions and any command composed more than
+one interval earlier was rejected as `stale_or_duplicate` — 15 of 35 advances in
+a device run with a deliberate one-second thinking delay, and the same failure
+once in an ordinary arm, each costing a whole episode as
+`ACTION_PIPELINE_FAILED`. A trained policy's forward pass plus learning step
+routinely exceeds 250 ms, so this had to be fixed at the cause rather than
+retried around. While the world is paused no new information can exist, so the
+bridge holds the sequence and emits a heartbeat instead; liveness is unaffected,
+because any inbound frame proves the bridge alive. The host reads that heartbeat
+as "the state already sent still stands", which is what keeps `read_state` total
+while the world is paused. The world is only paused by this bridge, and a run
+that ends under an advance is never paused, so the episode boundary — home
+screen, result screen, lifecycle transitions — keeps receiving fresh state.
+
 That replaces a loop that ran on the host: a 250 ms slice at a time, roughly eight
 slices per decision, each its own round trip. A frame is 17 ms at the observed
 58.9 fps while a slice cost about 57 ms, so roughly 40 ms of every slice was host

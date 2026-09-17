@@ -45,6 +45,7 @@ from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilde
 from tower_rl.infrastructure.adb_device import AdbDevice  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
+from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
     Checkpoint,
     CheckpointIdentity,
@@ -54,8 +55,11 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 
-BACKBONES = {"recurrent-q": RecurrentQBackbone}
+#: Every backbone in the comparison, addressed identically. Adding one here is
+#: all it takes to put it under the same protocol as the others.
+BACKBONES = ("recurrent-q", "stacked-dqn")
 
 
 def source_revision() -> str:
@@ -68,7 +72,7 @@ def source_revision() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backbone", choices=sorted(BACKBONES), default="recurrent-q")
+    parser.add_argument("--backbone", choices=BACKBONES, default="recurrent-q")
     parser.add_argument("--budget-decisions", type=int, default=20_000)
     parser.add_argument("--speed", type=float, default=64.0)
     parser.add_argument("--seed", type=int, default=0)
@@ -77,6 +81,8 @@ def main() -> int:
     parser.add_argument("--gradient-steps-per-decision", type=float, default=0.5)
     parser.add_argument("--sequence-length", type=int, default=40)
     parser.add_argument("--burn-in", type=int, default=20)
+    #: Read by stacked-dqn only; the recurrent backbone carries time in its state.
+    parser.add_argument("--history-length", type=int, default=8)
     # Evaluation costs device time at the same rate as training, so its period
     # is long and its sample is the 23 episodes M1B-E008 sized for one wave.
     parser.add_argument("--evaluate-every-episodes", type=int, default=100)
@@ -95,6 +101,13 @@ def main() -> int:
 
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
+    if arguments.backbone == "stacked-dqn" and arguments.burn_in < arguments.history_length - 1:
+        # Checked here rather than at the first optimisation step, which is an
+        # hour of collection later.
+        raise SystemExit(
+            f"burn-in {arguments.burn_in} cannot fill a window of "
+            f"{arguments.history_length}"
+        )
 
     run_id = f"{arguments.backbone}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run_dir = arguments.run_dir / run_id
@@ -128,11 +141,21 @@ def main() -> int:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    backbone = BACKBONES[arguments.backbone](
-        config=RecurrentQConfig(seed=arguments.seed),
-        network_config=NetworkConfig(),
-        device=device,
-    )
+    backbone: Backbone
+    if arguments.backbone == "recurrent-q":
+        backbone = RecurrentQBackbone(
+            config=RecurrentQConfig(seed=arguments.seed),
+            network_config=NetworkConfig(),
+            device=device,
+        )
+    else:
+        backbone = StackedDqnBackbone(
+            config=StackedDqnConfig(
+                seed=arguments.seed, history_length=arguments.history_length
+            ),
+            network_config=NetworkConfig(),
+            device=device,
+        )
     replay = PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
     actor = Actor(
         environment=environment,
@@ -170,6 +193,9 @@ def main() -> int:
         "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
         "sequence_length": arguments.sequence_length,
         "burn_in": arguments.burn_in,
+        "history_length": (
+            arguments.history_length if arguments.backbone == "stacked-dqn" else None
+        ),
         "slice_game_ms": arguments.slice_ms,
         "device": str(device),
     }

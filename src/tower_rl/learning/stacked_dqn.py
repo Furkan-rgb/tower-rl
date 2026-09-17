@@ -1,10 +1,16 @@
-"""The recurrent value-based backbone: the contract baseline for the comparison.
+"""The rank-1 candidate from `docs/rl-candidates.md` 3.1.
 
-Double Q-learning, n-step returns, Huber loss, a target network, and burn-in
-before the learning window, per `solution.md` 9.4.  `docs/rl-candidates.md`
-argues that R2D2's published hyperparameters target a budget four orders of
-magnitude larger than ours, so the defaults here come from the data-efficient
-setting; the skeleton is R2D2's, the operating point is not.
+Masked data-efficient DQN on a stacked history: the same masked dueling double-Q
+learning as the recurrent backbone, over the same replay sequences and the same
+targets, but carrying time in a window of recent run scalars instead of in an
+LSTM state.  That single difference is the hypothesis - section 2.3 of the
+candidate study argues this problem is much closer to fully observed than the
+recurrent skeleton assumes, and this backbone is how that gets tested rather than
+asserted.
+
+Three things depart from the recurrent backbone's operating point, all from the
+Atari 100k literature the study cites: an EMA target rather than a periodic hard
+copy, decoupled weight decay, and a replay ratio the training loop supplies.
 """
 
 from __future__ import annotations
@@ -14,48 +20,53 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-from torch import nn
 
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, StateFeatures
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
-from tower_rl.learning.network import (
-    NetworkConfig,
-    RecurrentPolicyNetwork,
-    RecurrentState,
-)
+from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork, StackedState
 from tower_rl.learning.value_learning import n_step_targets, weighted_sequence_loss
 
 
 @dataclass(frozen=True)
-class RecurrentQConfig:
+class StackedDqnConfig:
+    #: How many run-scalar vectors the window holds, the current one included.
+    #: The candidate study treats this as the tuned knob in the range 4 to 16 and
+    #: names k = 1 as the ablation that settles whether history is needed at all.
+    history_length: int = 8
     discount: float = 0.997
     n_step: int = 5
     learning_rate: float = 1e-4
-    #: How often the target network copies the online one, in optimisation steps.
-    target_update_interval: int = 200
+    #: Decoupled weight decay, hence AdamW rather than Adam.
+    weight_decay: float = 1e-5
+    #: A target that follows the online network smoothly. At this replay ratio a
+    #: periodic hard copy moves the target in large infrequent jumps, which is
+    #: what the data-efficient recipe replaces.
+    target_ema_decay: float = 0.995
     gradient_clip: float = 10.0
     huber_delta: float = 1.0
     seed: int | None = None
 
     def __post_init__(self) -> None:
+        if self.history_length < 1:
+            raise ValueError("history length must be at least one step")
         if not 0.0 < self.discount < 1.0:
             raise ValueError("discount must be within (0, 1)")
         if self.n_step < 1:
             raise ValueError("n-step must be positive")
-        if self.target_update_interval < 1:
-            raise ValueError("target update interval must be positive")
+        if not 0.0 < self.target_ema_decay < 1.0:
+            raise ValueError("target EMA decay must be within (0, 1)")
 
 
 @dataclass
-class RecurrentQBackbone:
-    """Masked, dueling, recurrent Double Q-learning."""
+class StackedDqnBackbone:
+    """Masked, dueling, feed-forward Double Q-learning on a stacked history."""
 
-    config: RecurrentQConfig = field(default_factory=RecurrentQConfig)
+    config: StackedDqnConfig = field(default_factory=StackedDqnConfig)
     network_config: NetworkConfig = field(default_factory=NetworkConfig)
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
 
-    online: RecurrentPolicyNetwork = field(init=False)
-    target: RecurrentPolicyNetwork = field(init=False)
+    online: StackedPolicyNetwork = field(init=False)
+    target: StackedPolicyNetwork = field(init=False)
     optimizer: torch.optim.Optimizer = field(init=False)
     _steps: int = field(default=0, init=False)
     _random: random.Random = field(init=False)
@@ -63,12 +74,17 @@ class RecurrentQBackbone:
     def __post_init__(self) -> None:
         if self.config.seed is not None:
             torch.manual_seed(self.config.seed)
-        self.online = RecurrentPolicyNetwork(self.network_config).to(self.device)
-        self.target = RecurrentPolicyNetwork(self.network_config).to(self.device)
+        history = self.config.history_length
+        self.online = StackedPolicyNetwork(self.network_config, history_length=history)
+        self.target = StackedPolicyNetwork(self.network_config, history_length=history)
+        self.online = self.online.to(self.device)
+        self.target = self.target.to(self.device)
         self.target.load_state_dict(self.online.state_dict())
         self.target.eval()
-        self.optimizer = torch.optim.Adam(
-            self.online.parameters(), lr=self.config.learning_rate
+        self.optimizer = torch.optim.AdamW(
+            self.online.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
         )
         self._random = random.Random(self.config.seed)
 
@@ -78,12 +94,12 @@ class RecurrentQBackbone:
     def model_version(self) -> int:
         return self._steps
 
-    def initial_state(self) -> RecurrentState:
+    def initial_state(self) -> StackedState:
         return self.online.initial_state(1, self.device)
 
     def act(
-        self, features: StateFeatures, state: RecurrentState | None, *, epsilon: float
-    ) -> tuple[int, RecurrentState]:
+        self, features: StateFeatures, state: StackedState | None, *, epsilon: float
+    ) -> tuple[int, StackedState]:
         """Choose among valid actions only, exploring within the mask."""
         valid = [index for index, allowed in enumerate(features.mask) if allowed]
         if not valid:
@@ -110,22 +126,19 @@ class RecurrentQBackbone:
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
         """One optimisation step over a batch of equal-length sequences."""
         burn_in = batch.burn_in
-        state = self.online.initial_state(batch.batch_size, self.device)
-        target_state = self.target.initial_state(batch.batch_size, self.device)
+        if burn_in < self.config.history_length - 1:
+            raise ValueError(
+                f"burn-in of {burn_in} cannot fill a window of "
+                f"{self.config.history_length}; the first learning steps would be "
+                "trained on padded history that acting never sees mid-episode"
+            )
 
-        if burn_in:
-            # Burn-in reconstructs the recurrent state without training on it, so
-            # a stored state that has drifted since collection cannot bias the
-            # learning window.
-            with torch.no_grad():
-                _, state = self.online(
-                    batch.scalars[:, :burn_in], batch.rows[:, :burn_in],
-                    batch.mask[:, :burn_in], state,
-                )
-                _, target_state = self.target(
-                    batch.scalars[:, :burn_in], batch.rows[:, :burn_in],
-                    batch.mask[:, :burn_in], target_state,
-                )
+        # Burn-in fills the window here rather than warming a hidden state. It
+        # costs no forward pass: the window is the stored scalars themselves.
+        history = self.online.carry(
+            batch.scalars[:, :burn_in],
+            self.online.initial_state(batch.batch_size, self.device),
+        )
 
         scalars = batch.scalars[:, burn_in:]
         rows = batch.rows[:, burn_in:]
@@ -134,11 +147,11 @@ class RecurrentQBackbone:
         rewards = batch.rewards[:, burn_in:]
         dones = batch.dones[:, burn_in:]
 
-        online_q, _ = self.online(scalars, rows, mask, state)
+        online_q, _ = self.online(scalars, rows, mask, history)
         chosen = online_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
 
         with torch.no_grad():
-            target_q, _ = self.target(scalars, rows, mask, target_state)
+            target_q, _ = self.target(scalars, rows, mask, history)
             targets, learnable = n_step_targets(
                 rewards,
                 dones,
@@ -161,8 +174,7 @@ class RecurrentQBackbone:
         )
         self.optimizer.step()
         self._steps += 1
-        if self._steps % self.config.target_update_interval == 0:
-            self.target.load_state_dict(self.online.state_dict())
+        self._update_target()
 
         absolute = errors.abs().detach()
         return LearnMetrics(
@@ -171,6 +183,22 @@ class RecurrentQBackbone:
             gradient_norm=float(gradient_norm.item()),
             td_errors=tuple(tuple(row.tolist()) for row in absolute.cpu()),
         )
+
+    def _update_target(self) -> None:
+        """Move the target a little way towards the online network, every step."""
+        decay = self.config.target_ema_decay
+        with torch.no_grad():
+            for target, online in zip(
+                self.target.parameters(), self.online.parameters(), strict=True
+            ):
+                target.mul_(decay).add_(online, alpha=1.0 - decay)
+            # Buffers - the LayerNorm statistics here - are copied rather than
+            # averaged; they are not learned parameters and averaging them would
+            # mix two normalisations.
+            for target_buffer, online_buffer in zip(
+                self.target.buffers(), self.online.buffers(), strict=True
+            ):
+                target_buffer.copy_(online_buffer)
 
     # -- persistence -------------------------------------------------------
 
@@ -187,11 +215,3 @@ class RecurrentQBackbone:
         self.target.load_state_dict(state["target"])
         self.optimizer.load_state_dict(state["optimizer"])
         self._steps = int(state["steps"])
-
-
-def parameters_are_equal(left: nn.Module, right: nn.Module) -> bool:
-    """Whether two modules hold identical weights, used by resume verification."""
-    left_state, right_state = left.state_dict(), right.state_dict()
-    if left_state.keys() != right_state.keys():
-        return False
-    return all(torch.equal(left_state[key], right_state[key]) for key in left_state)

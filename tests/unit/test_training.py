@@ -25,7 +25,7 @@ from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
 
-SMALL = NetworkConfig(hidden=16, recurrent_hidden=16, identity_dim=4)
+SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 
 def _run(**overrides: object) -> TrainingRun:

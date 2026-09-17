@@ -24,7 +24,7 @@ from tower_rl.learning.recurrent_q import (
     parameters_are_equal,
 )
 
-SMALL = NetworkConfig(hidden=16, recurrent_hidden=16, identity_dim=4)
+SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 
 def _identity(**overrides: str) -> CheckpointIdentity:

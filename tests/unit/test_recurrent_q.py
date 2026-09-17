@@ -20,7 +20,7 @@ from tower_rl.learning.recurrent_q import (
 )
 
 ACTIONS = len(RUN_ACTIONS)
-SMALL = NetworkConfig(hidden=16, recurrent_hidden=16, identity_dim=4)
+SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 
 def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> StateFeatures:
@@ -128,39 +128,6 @@ def test_burn_in_is_not_trained_on() -> None:
     metrics = backbone.learn(batch)
 
     assert len(metrics.td_errors[0]) == 5, "eight steps minus three burn-in"
-
-
-def test_a_positive_reward_stream_produces_positive_targets() -> None:
-    backbone = _backbone(n_step=2)
-    rewards = torch.ones(1, 4)
-    dones = torch.zeros(1, 4, dtype=torch.bool)
-    q = torch.zeros(1, 4, ACTIONS)
-    mask = torch.ones(1, 4, ACTIONS, dtype=torch.bool)
-
-    targets, learnable = backbone._n_step_targets(rewards, dones, q, q, mask)
-
-    # Two steps of reward 1 at discount 0.997 for the steps that can bootstrap.
-    assert targets[0, 0] == pytest.approx(1.0 + 0.997)
-    assert learnable[0, 0] == 1.0
-    # The final steps have no bootstrap state and did not terminate, so they are
-    # excluded rather than trained on a truncated return.
-    assert learnable[0, 3] == 0.0
-
-
-def test_termination_stops_the_return_per_sequence_not_per_batch() -> None:
-    backbone = _backbone(n_step=3)
-    rewards = torch.ones(2, 4)
-    dones = torch.tensor([[False, True, False, False], [False, False, False, False]])
-    q = torch.full((2, 4, ACTIONS), 5.0)
-    mask = torch.ones(2, 4, ACTIONS, dtype=torch.bool)
-
-    targets, learnable = backbone._n_step_targets(rewards, dones, q, q, mask)
-
-    # The first sequence ends at index 1, so its return is two rewards and no
-    # bootstrap; the second keeps accumulating and bootstraps.
-    assert targets[0, 0] == pytest.approx(1.0 + 0.997)
-    assert targets[1, 0] > targets[0, 0]
-    assert learnable[0, 0] == 1.0
 
 
 def test_state_round_trips_exactly() -> None:

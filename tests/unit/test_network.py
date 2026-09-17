@@ -7,7 +7,7 @@ from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
 from tower_rl.domain.run_actions import RUN_ACTIONS
 from tower_rl.learning.network import (
     NetworkConfig,
-    TowerPolicyNetwork,
+    RecurrentPolicyNetwork,
     greedy_action,
     masked_max,
 )
@@ -26,13 +26,13 @@ def _batch(batch: int = 2, time: int = 3, *, valid: list[int] | None = None):
 
 
 def test_forward_shapes_and_recurrent_state_threading() -> None:
-    network = TowerPolicyNetwork()
+    network = RecurrentPolicyNetwork()
     scalars, rows, mask = _batch()
 
     q, state = network(scalars, rows, mask)
 
     assert q.shape == (2, 3, ACTIONS)
-    assert state[0].shape == (1, 2, network.config.recurrent_hidden)
+    assert state[0].shape == (1, 2, network.config.core_hidden)
 
     # State carried forward must change the output; otherwise the LSTM is inert.
     continued, _ = network(scalars, rows, mask, state)
@@ -40,7 +40,7 @@ def test_forward_shapes_and_recurrent_state_threading() -> None:
 
 
 def test_invalid_actions_are_unselectable_and_never_bootstrap() -> None:
-    network = TowerPolicyNetwork()
+    network = RecurrentPolicyNetwork()
     scalars, rows, mask = _batch(valid=[0, 5, 9])
 
     q, _ = network(scalars, rows, mask)
@@ -52,7 +52,7 @@ def test_invalid_actions_are_unselectable_and_never_bootstrap() -> None:
 
 
 def test_a_terminal_state_bootstraps_zero_rather_than_negative_infinity() -> None:
-    network = TowerPolicyNetwork()
+    network = RecurrentPolicyNetwork()
     scalars, rows, mask = _batch()
     mask[:] = False  # no action is available on a terminal state
 
@@ -64,7 +64,7 @@ def test_a_terminal_state_bootstraps_zero_rather_than_negative_infinity() -> Non
 
 def test_dueling_centre_uses_valid_actions_only() -> None:
     """Adding an always-invalid slot must not move the valid actions' Q-values."""
-    network = TowerPolicyNetwork()
+    network = RecurrentPolicyNetwork()
     scalars, rows, mask = _batch(valid=[0, 1])
 
     narrow, _ = network(scalars, rows, mask)
@@ -77,10 +77,10 @@ def test_dueling_centre_uses_valid_actions_only() -> None:
 
 
 def test_parameter_count_is_independent_of_the_roster_size() -> None:
-    small = TowerPolicyNetwork(NetworkConfig(row_count=10, action_count=11))
-    large = TowerPolicyNetwork(NetworkConfig(row_count=40, action_count=41))
+    small = RecurrentPolicyNetwork(NetworkConfig(row_count=10, action_count=11))
+    large = RecurrentPolicyNetwork(NetworkConfig(row_count=40, action_count=41))
 
-    def weights(model: TowerPolicyNetwork) -> int:
+    def weights(model: RecurrentPolicyNetwork) -> int:
         return sum(p.numel() for name, p in model.named_parameters() if "identity" not in name)
 
     assert weights(small) == weights(large), "shared encoders must not scale with the roster"
@@ -98,12 +98,12 @@ def test_identity_table_is_over_provisioned_for_future_slots() -> None:
 
 
 def test_gradients_reach_the_shared_row_encoder() -> None:
-    network = TowerPolicyNetwork()
+    network = RecurrentPolicyNetwork()
     scalars, rows, mask = _batch()
 
     q, _ = network(scalars, rows, mask)
     q[mask].sum().backward()
 
-    encoder_grad = network.row_encoder[0].weight.grad
+    encoder_grad = network.trunk.row_encoder[0].weight.grad
     assert encoder_grad is not None and encoder_grad.abs().sum() > 0
-    assert network.identity.weight.grad is not None
+    assert network.trunk.identity.weight.grad is not None

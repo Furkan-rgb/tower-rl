@@ -1084,10 +1084,33 @@ against 12.2 at 1x (`M1B-E012`). Any throughput bought that way is paid for in
 the thing the agent is actually learning from.
 
 `infrastructure/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0` and
-`_pin_game_speed` puts the game back to 1x when an episode begins and fails
-explicitly if the game refuses. Speed is no longer a parameter anywhere — not in
-the adapter, not in the cadence, not on any runner's command line — so there is
-nothing left to set it to.
+`_pin_game_speed` puts the game back to 1x and fails explicitly if the game
+refuses. Speed is no longer a parameter anywhere — not in the adapter, not in the
+cadence, not on any runner's command line — so there is nothing left to set it to.
+
+The pin is applied twice per episode: when the episode begins and again after
+its first `advance`. An episode begins on a world the bridge is holding still,
+and whatever the game holds while it is still takes effect when it next moves,
+so a multiplier that survives the boundary would otherwise apply to every frame
+of the episode unnoticed. It is applied unconditionally: it used to be skipped
+when the observed `game_speed` already read 1x, but that field is read from the
+paused world too, where it reads `0.0` whatever the running world would do, so
+the precondition made the pin silently dead.
+
+**And the pin is checked rather than trusted.** Nothing readable in the game
+reports the rate the unpaused world runs at, so `set_speed` can only confirm
+that the request was accepted. What verifies it is the pair of clocks each
+advance already reports: `round_ms`, the game's own round clock, against
+`game_ms`, the game time the advance budgeted. `application/run_environment.py`
+fails an episode whose episode-to-date ratio exceeds `MAX_ROUND_CLOCK_RATIO`
+(1.25, between the 1.069 measured on known-good episodes and the 1.625 measured
+with the world left at this account's 1.5 ceiling, `M1B-E023`), naming
+`GAME_TIME_INFLATED` in the transition's reasons. The episode is then classified
+`OBSERVATION_INVALID` and cannot reach the curve: a world that simulates more
+time than it was asked for reaches higher waves with fewer decisions per wave,
+which is a faster world masquerading as a better policy. The frame's worth is
+never rescaled to compensate, because that would hide the wrong assumption and
+leave the numbers incomparable anyway.
 
 8x free running was briefly adopted as an interim, on the evidence that it
 matches normal-speed decision density (`M1B-E014`). It does — but only because 8x

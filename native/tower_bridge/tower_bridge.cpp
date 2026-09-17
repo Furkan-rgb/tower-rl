@@ -207,13 +207,28 @@ void LogClassMembers(Il2CppClass* klass, const char* label) {
       !Resolve(il2cpp, "il2cpp_field_get_name", &field_get_name)) {
     return;
   }
+  // A field read at the wrong width returns garbage rather than a value, and
+  // the garbage can look plausible: `gameplayTimeThisRound` is a single and read
+  // as a double gave 0.0 for a whole run (M1B-E017). The declared type is the
+  // only thing that settles which width a field must be read at, so the
+  // inventory reports it beside the name. `Il2CppType` is opaque here: these
+  // pointers are only passed back to IL2CPP, never dereferenced.
+  void* (*field_get_type)(FieldInfo*) = nullptr;
+  char* (*type_get_name)(void*) = nullptr;
+  void (*free_string)(void*) = nullptr;
+  const bool types_readable = Resolve(il2cpp, "il2cpp_field_get_type", &field_get_type) &&
+                              Resolve(il2cpp, "il2cpp_type_get_name", &type_get_name) &&
+                              Resolve(il2cpp, "il2cpp_free", &free_string);
   iterator = nullptr;
   for (FieldInfo* field = class_get_fields(klass, &iterator); field != nullptr;
        field = class_get_fields(klass, &iterator)) {
     const char* name = field_get_name(field);
-    if (name != nullptr) {
-      __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s.field %s", label, name);
-    }
+    if (name == nullptr) continue;
+    void* type = types_readable ? field_get_type(field) : nullptr;
+    char* type_name = type == nullptr ? nullptr : type_get_name(type);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s.field %s %s", label, name,
+                        type_name == nullptr ? "type_unavailable" : type_name);
+    if (type_name != nullptr) free_string(type_name);
   }
 }
 #endif
@@ -590,6 +605,11 @@ ObservationResult BuildObservation(const Il2CppApi& api, const MainFields& field
                         static_cast<unsigned>(round_active));
     return ObservationResult::kNoRun;
   }
+  // The multiplier the game holds, at this instant - not a witness of the rate
+  // the world advances at. Every observation the host reads is taken from a
+  // world this bridge has paused, where the field reads 0.0 (M1B-E009), so
+  // nothing may gate on it. The width is right: the game stores the multiplier
+  // as a single, and writing it as one applied 4.0 and 8.0 (M1B-E006).
   float game_speed = 0.0F;
   api.field_static_get_value(fields.game_speed, &game_speed);
   if (!std::isfinite(game_speed) || game_speed < 0.0F) return ObservationResult::kError;
@@ -1439,6 +1459,18 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           return;
         }
       } else if (command.set_speed) {
+        // This confirms that the slot holds the requested value, which is not
+        // the same claim as the world running at it: the loop below reads back
+        // the field it just wrote, so it would confirm even if the game never
+        // acted on `GameSpeedModifier`. Nothing readable here says what the
+        // unpaused world's rate is - `gameSpeed` is the request, `gameMaxSpeed`
+        // its ceiling, and neither is an effect - and the world is standing
+        // still while this runs, so the effect cannot be measured either. What
+        // does verify it is the next advance: `round_millis` against
+        // `game_millis` is the game's own clock measured against the game time
+        // the advance budgeted, and the host fails the episode when the two
+        // disagree (M1B-E023). This is a request that was accepted, not a
+        // verified speed, and the reason says so.
         float applied = 0.0F;
         api.field_static_set_value(fields.game_speed, &command.speed);
         ResolveUnitySendMessage()(TOWER_BRIDGE_MAIN_GAME_OBJECT, "GameSpeedModifier", "");
@@ -1453,7 +1485,7 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           }
         }
         outcome = settled ? "confirmed" : "rejected";
-        reason = settled ? "speed_applied" : "speed_not_applied";
+        reason = settled ? "speed_requested" : "speed_not_applied";
       } else if (command.lifecycle != nullptr) {
         // The game owns the transition; the bridge only presses its own control
         // and then waits for the game's own state to agree.

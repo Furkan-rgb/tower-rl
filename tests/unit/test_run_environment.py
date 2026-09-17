@@ -11,6 +11,7 @@ from fakes.fake_run_port import FakeCommandResult, FakeRunPort  # noqa: E402
 
 from tower_rl.application.run_environment import (  # noqa: E402
     BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_INFLATED,
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
@@ -465,3 +466,44 @@ def test_waiting_all_the_way_to_death_stays_valid_at_the_default_damage_rate() -
 
     summary = environment.summarize(transition.termination)
     assert summary.valid and summary.invalid_transitions == 0
+
+
+def test_a_world_that_outruns_its_budget_fails_the_episode_by_name() -> None:
+    """M1B-E023: a faster world must not be allowed to report a flattering wave.
+
+    The bridge asks each frame to be worth `frame_game_ms` of game time and
+    reports the game's own round clock beside that budget. When the round clock
+    runs away from it the world is simulating time the record never asked for,
+    and every wave it reaches is measured in a different unit from the runs it
+    would be compared with. The episode is failed and counted, never rescaled.
+    """
+    environment, _ = _environment(world_time_scale=1.5)
+    environment.reset()
+
+    for _ in range(20):
+        transition = environment.step(WAIT)
+        if transition.termination is not None:
+            break
+    else:
+        pytest.fail("the inflated clock was never noticed")
+
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+    assert not transition.admissible
+    assert any(GAME_TIME_INFLATED in reason for reason in transition.invalid_reasons)
+    summary = environment.summarize(transition.termination)
+    assert summary.invalid_transitions == 1
+    assert not summary.valid, "an inflated episode may not count towards the curve"
+    assert any(GAME_TIME_INFLATED in reason for reason in summary.termination_detail)
+
+
+def test_a_world_that_keeps_to_its_budget_is_not_accused_of_running_fast() -> None:
+    environment, _ = _environment()
+    environment.reset()
+
+    for _ in range(20):
+        transition = environment.step(WAIT)
+        if transition.terminated:
+            break
+        assert transition.admissible
+        assert not any(GAME_TIME_INFLATED in reason for reason in transition.invalid_reasons)
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).invalid_transitions == 0

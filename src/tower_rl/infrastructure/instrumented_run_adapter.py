@@ -10,7 +10,7 @@ home screen's own BATTLE control - and reads the game's own `round_active` and
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
@@ -35,6 +35,9 @@ class InstrumentedRunAdapter:
 
     client: InstrumentedBridgeClient
     episode_start_timeout: float = 120.0
+    #: Whether this episode still owes the pin it can only apply once the world
+    #: has moved. Set when an episode begins, cleared by the first advance.
+    _pin_after_first_advance: bool = field(default=False, init=False)
 
     # -- reading -----------------------------------------------------------
 
@@ -60,7 +63,7 @@ class InstrumentedRunAdapter:
         while time.monotonic() < deadline:
             state = self.client.read_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
-                self._pin_game_speed(state)
+                self._begin_pinned(state.sequence)
                 return
             if isinstance(state, BridgeObservation):
                 self._press("go_home", state.sequence)
@@ -69,7 +72,7 @@ class InstrumentedRunAdapter:
             self._await_active(deadline)
             state = self.client.read_state()
             if isinstance(state, BridgeObservation) and not state.terminal:
-                self._pin_game_speed(state)
+                self._begin_pinned(state.sequence)
                 return
         raise RunPortError("the instance did not reach an active run in time")
 
@@ -167,7 +170,7 @@ class InstrumentedRunAdapter:
         pause had landed, so the caller needs no further read to see where the
         world stopped.
         """
-        return self.client.send_command(
+        result = self.client.send_command(
             {
                 "type": "command",
                 "protocol_version": 1,
@@ -179,19 +182,45 @@ class InstrumentedRunAdapter:
                 "health_change_fraction": health_change_fraction,
             }
         )
+        # An advance is the first thing in an episode that unpauses the world,
+        # and that is the moment a speed the boundary pin never saw takes hold.
+        # The result carries the settled observation the bridge paused on, so
+        # the pin is bound to a sequence that still stands; an advance that
+        # carries no state leaves the debt for the next one.
+        if self._pin_after_first_advance and result.state is not None:
+            self._pin_after_first_advance = False
+            self._pin_game_speed(result.state.sequence)
+        return result
 
     # -- speed -------------------------------------------------------------
 
-    def _pin_game_speed(self, state: BridgeObservation) -> None:
-        """Hold the game's own multiplier at 1x; it is a pin, not a setting."""
-        if abs(state.game_speed - GAME_SPEED) < 0.01:
-            return
+    def _begin_pinned(self, sequence: int) -> None:
+        """Pin the speed for a starting episode, and owe the pin one more time.
+
+        Starting a round is not the last moment the multiplier can change: the
+        world is standing still when an episode begins, and whatever the game
+        holds while it is still takes effect when it next moves. So the pin is
+        applied here and again after the episode's first advance.
+        """
+        self._pin_game_speed(sequence)
+        self._pin_after_first_advance = True
+
+    def _pin_game_speed(self, sequence: int) -> None:
+        """Hold the game's own multiplier at 1x; it is a pin, not a setting.
+
+        Applied unconditionally. It used to be skipped when the observed
+        `game_speed` already read 1x, which made the pin depend on a field that
+        cannot witness it: every observation the host sees is taken from a world
+        the bridge has paused, and the field reads 0.0 there whatever the
+        unpaused world runs at (M1B-E009). A precondition read from a field that
+        cannot report the truth is a pin that silently never fires.
+        """
         result = self.client.send_command(
             {
                 "type": "command",
                 "protocol_version": 1,
                 "request_id": self._request_id("speed"),
-                "expected_observation_sequence": state.sequence,
+                "expected_observation_sequence": sequence,
                 "kind": "set_speed",
                 "value": GAME_SPEED,
             }

@@ -33,8 +33,13 @@ include `lifecycle`, `wave`, `cash`, `health`, `max_health`, `terminal`,
 ```
 
 Families are `attack`, `defense`, and `utility`; each is capped at 64 entries.
-Each observation also carries the current `game_speed` and `play_time`. The
-latter is the game's own account-lifetime clock: it advances at wall-clock rate
+Each observation also carries the current `game_speed` and `play_time`.
+`game_speed` is the multiplier the game holds at that instant and is reported,
+never gated on: every observation the host reads is taken from a world the
+bridge has paused, where the field reads `0.0` whatever the running world would
+do (M1B-E009). What the world really advanced at is read from `round_ms` against
+`game_ms` on an `advance`, below. The latter is the game's own account-lifetime
+clock: it advances at wall-clock rate
 at every game speed, so it is liveness evidence that the process is still
 running, not an in-run game clock and not a policy feature. The bridge sends a
 heartbeat with the latest observation sequence at least once a second, including
@@ -88,7 +93,10 @@ separate controller-owned kinds and can never become learned actions:
 - `lifecycle` with an allowlisted `action` dispatches one of the game's own
   parameterless entry points and waits for the game's own state to agree;
 - `set_speed` writes the game's `gameSpeed` and dispatches its own
-  `GameSpeedModifier`, confirmed against the observed `game_speed`;
+  `GameSpeedModifier`. Its `speed_requested` confirmation says the slot holds
+  the requested value, not that the world runs at it: the read-back is of the
+  field the bridge just wrote, and no readable field reports the effective rate.
+  The verification is the next `advance`'s `round_ms` against `game_ms`;
 - `advance` runs the world frame by frame and pauses again, returning the settled
   observation. It carries `budget_game_ms`, `frame_game_ms`, and
   `health_change_fraction`.
@@ -136,7 +144,11 @@ frames. `game_ms` is budget accounting - frames times `frame_game_ms` - while
 intended 1:1 mapping between them is checkable rather than assumed. `playTime`
 cannot serve as that witness: it is the account-lifetime clock and advances at
 wall rate whatever `captureDeltaTime` does, so a ratio built on it only
-reproduces one over the speed-up (M1B-E017). `round_ms` is zero when the settled
+reproduces one over the speed-up (M1B-E017). A ratio that runs away from 1 is the
+one report that a world is simulating more time per frame than it was told to -
+the shape a speed multiplier left applied has - and the host fails such an
+episode by name rather than rescaling the frame's worth to match (M1B-E023).
+`round_ms` is zero when the settled
 state could not be read at all, which the outcome and reason on the same result
 already report, and zero when the round clock reset under the advance. `wall_micros` is real
 elapsed `CLOCK_MONOTONIC` time, which is what makes the bridge's 15-second

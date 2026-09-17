@@ -67,6 +67,13 @@ class FakeRunPort:
     #: action pipeline that cannot say what the world did, which the environment
     #: classifies as `ACTION_PIPELINE_FAILED`.
     ambiguous_advance_episodes: frozenset[int] = frozenset()
+    #: How much game time this world really simulates per millisecond of game
+    #: time an advance budgets for. 1.0 is the world the bridge asks for. Setting
+    #: it above 1.0 simulates the defect a speed multiplier left applied
+    #: produces: every frame is worth more than `frame_game_ms`, so the round
+    #: clock outruns the budget and the run progresses faster than the record
+    #: can account for (M1B-E023).
+    world_time_scale: float = 1.0
     #: The wave `begin_episode` starts at. A real fresh run always starts at 1;
     #: setting this above 1 simulates continuing a leftover run, to exercise the
     #: episode-independence check without a second fake port.
@@ -235,8 +242,8 @@ class FakeRunPort:
         )
 
     def _step_one_frame(self, frame_game_ms: float) -> None:
-        seconds = frame_game_ms / 1000.0
-        self.elapsed_ms += frame_game_ms
+        seconds = frame_game_ms * self.world_time_scale / 1000.0
+        self.elapsed_ms += frame_game_ms * self.world_time_scale
         self.cash += self.cash_per_second * seconds
         self.health -= self.damage_per_second * seconds
         self.wave = self.starting_wave + int(self.elapsed_ms / 1000.0 / self.seconds_per_wave)

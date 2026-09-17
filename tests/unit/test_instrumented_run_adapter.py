@@ -50,11 +50,15 @@ class FakeClient:
 
     def send_command(self, message: dict[str, object]) -> BridgeCommandResult:
         self.sent.append(message)
+        # The real bridge binds the settled observation it paused on to every
+        # advance result, and the adapter pins the speed against that sequence.
+        settled = _observation(sequence=7) if message["kind"] == "advance" else None
         return BridgeCommandResult(
             request_id=str(message["request_id"]),
             outcome=CommandOutcome(self.outcome),
             reason="ok",
             observation_sequence=1,
+            state=settled,
         )
 
 
@@ -219,3 +223,66 @@ def test_a_finished_run_is_not_asked_to_resume() -> None:
     _adapter(client).begin_episode()
 
     assert "unpause" not in _actions(client)
+
+
+def _speed_commands(client: FakeClient) -> list[dict[str, object]]:
+    return [message for message in client.sent if message["kind"] == "set_speed"]
+
+
+def _advance(adapter: InstrumentedRunAdapter, sequence: int = 1) -> None:
+    adapter.advance_until_event(
+        expected_sequence=sequence,
+        budget_game_ms=2000,
+        frame_game_ms=1000 / 60,
+        health_change_fraction=0.05,
+    )
+
+
+def test_the_speed_is_pinned_again_once_the_world_has_started_moving() -> None:
+    """M1B-E023: the boundary pin is applied to a world standing still.
+
+    Whatever the game holds while it is paused takes effect when it next moves,
+    so the multiplier is pinned again after the episode's first advance - the
+    first thing in an episode that unpauses the world - and bound to the settled
+    observation that advance came back with.
+    """
+    client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run")])
+    adapter = _adapter(client)
+
+    adapter.begin_episode()
+    pinned_at_the_boundary = len(_speed_commands(client))
+    _advance(adapter)
+
+    commands = _speed_commands(client)
+    assert pinned_at_the_boundary == 1
+    assert len(commands) == 2, "the world moved without the pin being re-applied"
+    assert commands[-1]["value"] == GAME_SPEED
+    assert commands[-1]["expected_observation_sequence"] == 7
+
+
+def test_only_the_first_advance_of_an_episode_re_applies_the_pin() -> None:
+    """It is a boundary pin, not a per-decision command: one extra round trip."""
+    client = FakeClient(states=[BridgeRunUnavailable(1, "no_initialized_run")])
+    adapter = _adapter(client)
+
+    adapter.begin_episode()
+    for _ in range(3):
+        _advance(adapter)
+
+    assert len(_speed_commands(client)) == 2
+
+
+def test_the_pin_is_applied_even_when_the_observed_speed_already_reads_one() -> None:
+    """The observed field is read from a paused world and witnesses nothing.
+
+    Every observation the host sees is taken while the bridge holds the world
+    still, where `game_speed` reads 0.0 whatever the running world would do, so
+    skipping the pin on the strength of that reading is a pin that never fires.
+    """
+    client = FakeClient(
+        states=[BridgeRunUnavailable(1, "no_initialized_run")], default_speed=GAME_SPEED
+    )
+
+    _adapter(client).begin_episode()
+
+    assert _speed_commands(client), "the pin was skipped on a reading that proves nothing"

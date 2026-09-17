@@ -80,6 +80,33 @@ _BRIDGE_EVENT_PREFIX = "event:"
 _BRIDGE_BUDGET_REASON = "budget_exhausted"
 
 
+#: The most the game's own round clock may read per millisecond of game time the
+#: advances budgeted. `captureDeltaTime` makes one rendered frame worth exactly
+#: `frame_game_ms` however fast the game's own multiplier runs, so the two clocks
+#: should agree; measured across six known-good episodes they did, at 1.069 of
+#: round clock per budgeted millisecond (1.011 taken over whole episodes, the
+#: difference being the settle frames' uncounted round time). The same six
+#: episodes with the world left at this account's 1.5 speed ceiling measured
+#: 1.625, an inflation of 1.520. This ceiling sits between the two and nearer the
+#: good value than the bad one: ordinary variation around 1.069 passes, and
+#: nothing running at 1.5x can (M1B-E023).
+MAX_ROUND_CLOCK_RATIO = 1.25
+
+#: One advance is too short a window to judge a clock by, so the ratio is taken
+#: over the episode so far and only once a full backstop budget of game time has
+#: been spent. A world running at 1.5x trips it inside the first few decisions,
+#: which is the point: a faster world must not be allowed to finish an episode
+#: and report a flattering wave.
+MIN_RATIO_EVIDENCE_GAME_MS = 2000.0
+
+#: The episode ran in a world that simulated more time than it was asked for, so
+#: nothing it reports is comparable with anything measured at 1x. Only inflation
+#: is judged: an advance whose run ended reports no round time at all - the
+#: clock resets with the round - so a lower bound would fire on every death
+#: rather than on a defect.
+GAME_TIME_INFLATED = "the game simulated more time than the advance budgeted"
+
+
 class _DeathBoundaryUnresolved(RunPortError):
     """The minimal advance that should have settled the death boundary failed.
 
@@ -301,6 +328,7 @@ class InstrumentedRunEnvironment:
         self._tally.game_ms += result.game_ms
         self._tally.round_ms += result.round_ms
         self._tally.advance_wall_micros += result.wall_micros
+        inflated = self._inflated_game_time()
         if result.reason == _BRIDGE_BUDGET_REASON and result.game_ms < budget:
             # The bridge stopped on its own wall-clock ceiling rather than on the
             # budget. The transition is genuine, so it is counted rather than
@@ -316,7 +344,7 @@ class InstrumentedRunEnvironment:
                 self._read_state(),
                 (),
                 budget,
-                (f"advance was not confirmed: {result.reason}",),
+                (f"advance was not confirmed: {result.reason}",) + inflated,
                 failure=_advance_failure(result.outcome),
             )
 
@@ -329,15 +357,38 @@ class InstrumentedRunEnvironment:
                 None,
                 (DecisionEvent.RUN_ENDED,),
                 budget,
-                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,)),
+                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,)) + inflated,
             )
         events = self._events_between(state, observed)
         return _Advance(
             observed,
             events or (DecisionEvent.SLICE_ELAPSED,),
             budget,
-            validate_transition(state, observed) + self._divergence(result.reason, events),
+            validate_transition(state, observed)
+            + self._divergence(result.reason, events)
+            + inflated,
         )
+
+    def _inflated_game_time(self) -> tuple[str, ...]:
+        """Refuse an episode whose world ran faster than the advances budgeted.
+
+        The bridge reports both clocks per advance: the game time it budgeted
+        (frames times `frame_game_ms`) and the game's own round clock across the
+        same frames. They are supposed to be the same time measured twice. When
+        the round clock runs away from the budget the world is simulating more
+        time per frame than it was told to - the shape a speed multiplier left
+        applied has - and every wave and decision count the episode goes on to
+        report is measured in a different unit from the runs it will be compared
+        with. The episode is failed by name rather than compensated for: scaling
+        the frame's worth to match would hide the wrong assumption and keep the
+        numbers incomparable.
+        """
+        if self._tally.game_ms < MIN_RATIO_EVIDENCE_GAME_MS:
+            return ()
+        ratio = self._tally.round_ms / self._tally.game_ms
+        if ratio <= MAX_ROUND_CLOCK_RATIO:
+            return ()
+        return (f"{GAME_TIME_INFLATED}: round clock ran {ratio:.3f}x the budgeted game time",)
 
     def _divergence(
         self, bridge_reason: str, events: tuple[DecisionEvent, ...]

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fakes.fake_run_port import FakeRunPort  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
+from tower_rl.application.evaluator import EvaluationReport  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.application.run_environment import (  # noqa: E402
     CadenceConfig,
@@ -24,6 +25,7 @@ from tower_rl.application.training import (  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
+from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
@@ -268,3 +270,60 @@ def test_the_loss_window_is_reported_and_empty_before_any_step() -> None:
 
     assert report.optimisation_steps > 0
     assert report.mean_recent_loss is not None and report.mean_recent_loss >= 0.0
+
+
+def _failing_run(**overrides: object) -> TrainingRun:
+    """A run whose port refuses the episodes named in `refuse_episodes`."""
+    port = FakeRunPort(damage_per_second=2.0, refuse_episodes=frozenset({2, 3}))
+    training = _run(**overrides)
+    training.actor.environment = InstrumentedRunEnvironment(
+        port=port,
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+    return training
+
+
+def test_an_episode_the_port_refuses_is_counted_and_the_run_continues() -> None:
+    """A failed episode is an outcome, not the end of hours of collection."""
+    training = _failing_run(budget_decisions=150)
+
+    report = training.run()
+
+    assert report.failed_episodes == 2
+    assert len(report.episode_failures) == 2
+    assert report.decisions >= 150, "the budget is still spent"
+    # Attempts are counted in `episodes`; only the ones that produced a record
+    # leave a summary behind.
+    assert report.episodes == len(report.episode_summaries) + report.failed_episodes
+
+
+def test_an_instance_that_fails_every_episode_stops_the_run() -> None:
+    """Continuing against a broken instance would spin without collecting."""
+    training = _run(budget_decisions=150, max_consecutive_episode_failures=3)
+    training.actor.environment = InstrumentedRunEnvironment(
+        port=FakeRunPort(refuse_to_start=True),
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+
+    with pytest.raises(RunPortError):
+        training.run()
+
+    assert training.report.failed_episodes == 3
+
+
+def test_an_evaluation_that_cannot_be_scored_does_not_lose_the_run() -> None:
+    """Evaluation is measurement; losing a measurement must not lose the run."""
+
+    def refuse() -> EvaluationReport:
+        raise ValueError("no valid episode was produced; the arm cannot be scored")
+
+    training = _run(budget_decisions=100, evaluate_every_episodes=1)
+    training.evaluate = refuse
+
+    report = training.run()
+
+    assert report.decisions >= 100
+    assert report.evaluations == []
+    assert report.evaluation_failures and "cannot be scored" in report.evaluation_failures[0]

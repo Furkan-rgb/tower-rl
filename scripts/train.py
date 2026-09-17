@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -51,7 +51,6 @@ from tower_rl.application.training import (  # noqa: E402
 from tower_rl.domain.episode import REWARD_SCHEMA_VERSION  # noqa: E402
 from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
 from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilder  # noqa: E402
-from tower_rl.infrastructure.adb_device import AdbDevice  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
@@ -59,6 +58,7 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     Checkpoint,
     CheckpointIdentity,
     TrainingProgress,
+    fingerprint,
     save,
     write_manifest,
 )
@@ -69,6 +69,76 @@ from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  
 #: Every backbone in the comparison, addressed identically. Adding one here is
 #: all it takes to put it under the same protocol as the others.
 BACKBONES = ("recurrent-q", "stacked-dqn")
+
+#: The measured floors a learning curve has to be read against, carried in every
+#: report so the curve is legible without a second document. Mean final wave over
+#: 23 valid episodes per arm, `M1B-E021` at commit 86fcf3c.
+REFERENCE_FINAL_WAVES: dict[str, object] = {
+    "metric": "mean final wave",
+    "episodes_per_arm": 23,
+    "source": "M1B-E021 at commit 86fcf3c",
+    "scripted": 5.57,
+    "random": 5.35,
+    "wait": 1.87,
+}
+
+#: The floor a learned arm has to clear to mean anything.
+SCRIPTED_REFERENCE = 5.57
+
+
+@dataclass(frozen=True)
+class LearningCurvePoint:
+    """One exploration-free measurement of an arm, placed on its budget.
+
+    This is the artefact the run is read from: whether the number is going up,
+    how far into the budget it got there, and which checkpoint on disk produced
+    it. Everything here is either a cost already paid or a measurement already
+    taken; nothing is inferred.
+    """
+
+    #: Where on the budget this point sits, and what it cost to get here.
+    decisions: int
+    episodes: int
+    wall_seconds: float
+    #: Optimisation steps applied to the weights that were evaluated.
+    model_version: int
+    #: The evaluation itself, at epsilon 0, never written to replay.
+    mean_final_wave: float
+    #: None for a single-episode sample, which has no spread to report.
+    stdev_final_wave: float | None
+    final_waves: list[int]
+    valid_episodes: int
+    invalid_episodes: int
+    invalid_by_reason: dict[str, int]
+    #: The scripted floor is the bar; the difference is spelled out rather than
+    #: left to the reader to subtract.
+    versus_scripted_reference: float
+    #: The checkpoint holding exactly the weights this point scored.
+    checkpoint_fingerprint: str
+    checkpoint_path: str
+
+    def line(self) -> str:
+        spread = "n/a" if self.stdev_final_wave is None else f"{self.stdev_final_wave:.2f}"
+        return (
+            f"decisions {self.decisions} wall {self.wall_seconds:.0f}s "
+            f"mean final wave {self.mean_final_wave:.2f} sd {spread} "
+            f"vs scripted {SCRIPTED_REFERENCE}: {self.versus_scripted_reference:+.2f} "
+            f"({self.valid_episodes} valid, {self.invalid_episodes} invalid)"
+        )
+
+
+def invalid_episodes_by_reason(report: TrainingProgressReport) -> dict[str, int]:
+    """Why the collected episodes that were not scored ended, counted by name.
+
+    A failed episode is an ordinary event that training survives, but survival
+    without a record would hide a device that is failing steadily, so the reasons
+    are carried in the report beside the waves.
+    """
+    counts: dict[str, int] = {}
+    for summary in report.episode_summaries:
+        if not summary.valid:
+            counts[summary.termination.value] = counts.get(summary.termination.value, 0) + 1
+    return counts
 
 
 def source_revision() -> str:
@@ -90,9 +160,25 @@ class Arm:
     training: TrainingRun
     identity: CheckpointIdentity
     resolved: dict[str, object]
+    #: The monotonic origin every curve point's wall clock is measured from.
+    started: float
+    learning_curve: list[LearningCurvePoint] = field(default_factory=list)
+    #: The weight digest of the checkpoint last written, which is what a curve
+    #: point names when it says which checkpoint it corresponds to.
+    last_checkpoint_fingerprint: str = ""
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.run_dir / "checkpoints" / "latest.pt"
 
     def checkpoint(self, report: TrainingProgressReport) -> None:
+        """The resume point, overwritten in place as the run proceeds."""
+        self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
+
+    def _write(self, report: TrainingProgressReport, path: Path) -> str:
+        """Write one checkpoint atomically and return its weight digest."""
         config = self.training.config
+        digest = fingerprint(self.backbone.state_dict())
         save(
             Checkpoint(
                 identity=self.identity,
@@ -107,8 +193,42 @@ class Arm:
                 resolved_config=self.resolved,
                 replay_provenance={**self.replay.snapshot(), "restored": False},
             ),
-            self.run_dir / "checkpoints" / "latest.pt",
+            path,
         )
+        return digest
+
+    def record_point(self, evaluation: EvaluationReport) -> LearningCurvePoint:
+        """Place one evaluation on the curve, against the checkpoint it scored.
+
+        Each point gets its own checkpoint file rather than sharing the resume
+        point, which is overwritten as the run proceeds: the strongest model of a
+        run is the one a point names, and a fingerprint pointing at a file that
+        has since moved on would name nothing.
+        """
+        progress = self.training.report
+        path = self.run_dir / "checkpoints" / f"decisions-{progress.decisions:07d}.pt"
+        digest = self._write(progress, path)
+        spread = evaluation.distribution
+        point = LearningCurvePoint(
+            decisions=progress.decisions,
+            episodes=progress.episodes,
+            wall_seconds=round(time.monotonic() - self.started, 1),
+            model_version=evaluation.model_version,
+            mean_final_wave=round(spread.mean, 3),
+            # NaN is how `WaveDistribution` says a single episode has no spread.
+            stdev_final_wave=round(spread.stdev, 3) if spread.stdev == spread.stdev else None,
+            final_waves=[
+                summary.final_wave for summary in evaluation.episodes if summary.valid
+            ],
+            valid_episodes=evaluation.valid_episodes,
+            invalid_episodes=evaluation.invalid_episodes,
+            invalid_by_reason=dict(evaluation.invalid_by_reason),
+            versus_scripted_reference=round(spread.mean - SCRIPTED_REFERENCE, 3),
+            checkpoint_fingerprint=digest,
+            checkpoint_path=str(path),
+        )
+        self.learning_curve.append(point)
+        return point
 
     def summary(self) -> dict[str, object]:
         report = self.training.report
@@ -124,6 +244,16 @@ class Arm:
             "sequences_accepted": report.sequences_accepted,
             "wall_seconds": report.wall_seconds,
             "final_waves": report.final_waves,
+            # The curve first: it is what the run is read from, and everything
+            # below it is the detail behind one of its points.
+            "learning_curve": [asdict(point) for point in self.learning_curve],
+            "reference_final_waves": REFERENCE_FINAL_WAVES,
+            "invalid_episodes_by_reason": invalid_episodes_by_reason(report),
+            "failed_episodes": report.failed_episodes,
+            "episode_failures": report.episode_failures,
+            "evaluation_failures": report.evaluation_failures,
+            "checkpoints_written": report.checkpoints_written,
+            "checkpoint_path": str(self.checkpoint_path),
             "evaluations": [to_record(item) for item in report.evaluations],
             "replay": self.replay.snapshot(),
         }
@@ -154,6 +284,7 @@ def build_arm(
     profile_id: str,
     parent: Path,
     revision: str,
+    started: float,
 ) -> Arm:
     run_id = f"{name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run_dir = parent / run_id
@@ -204,6 +335,7 @@ def build_arm(
             backbone=backbone,
             config=config,
         ),
+        started=started,
         identity=CheckpointIdentity(
             run_id=run_id,
             backbone=name,
@@ -225,7 +357,9 @@ def build_arm(
             profile_id=profile_id,
             model_version=backbone.model_version,
         )
+        point = arm.record_point(report)
         print(f"[{name}] {report.summary_line()}", flush=True)
+        print(f"[{name}] curve: {point.line()}", flush=True)
         return report
 
     arm.training.evaluate = run_evaluation
@@ -239,7 +373,8 @@ def build_arm(
     return arm
 
 
-def main() -> int:
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    """Everything the run is configured by, validated before a device is touched."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--backbone",
@@ -276,17 +411,84 @@ def main() -> int:
         default=Path.home() / ".local/state/tower-rl/runs",
         help="outside the repository; checkpoints and reports are never committed",
     )
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
 
-    names = list(dict.fromkeys(arguments.backbone or ["recurrent-q"]))
+    arguments.backbone = list(dict.fromkeys(arguments.backbone or ["recurrent-q"]))
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
-    if "stacked-dqn" in names and arguments.burn_in < arguments.history_length - 1:
+    if "stacked-dqn" in arguments.backbone and arguments.burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
         raise SystemExit(
             f"burn-in {arguments.burn_in} cannot fill a window of {arguments.history_length}"
         )
+    return arguments
+
+
+def train_session(
+    arguments: argparse.Namespace,
+    environment: InstrumentedRunEnvironment,
+    *,
+    profile_id: str,
+    revision: str,
+    device: torch.device,
+) -> dict[str, object]:
+    """Train every named arm to its budget and return the session report.
+
+    The environment is a parameter rather than something built here, so the one
+    place a bridge to the real device is opened is `main`. Nothing else decides
+    what the arms are talking to.
+    """
+    names = list(arguments.backbone)
+    started = time.monotonic()
+    session = arguments.run_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}"
+    arms = {
+        name: build_arm(
+            name,
+            arguments,
+            environment=environment,
+            device=device,
+            profile_id=profile_id,
+            parent=session,
+            revision=revision,
+            started=started,
+        )
+        for name in names
+    }
+
+    blocks_per_arm = -(-arguments.budget_decisions // arguments.block_decisions)
+    schedule = interleave_schedule(tuple(names), blocks_per_arm, block=1, seed=arguments.seed)
+    for name in schedule:
+        arm = arms[name]
+        if arm.training.finished:
+            continue
+        arm.training.advance(arguments.block_decisions)
+
+    for arm in arms.values():
+        arm.checkpoint(arm.training.report)
+
+    summaries = [arm.summary() for arm in arms.values()]
+    report: dict[str, object] = {
+        "session": str(session),
+        "profile_id": profile_id,
+        "source_revision": revision,
+        "budget_decisions_per_arm": arguments.budget_decisions,
+        "block_decisions": arguments.block_decisions,
+        "wall_seconds": round(time.monotonic() - started, 1),
+        # Repeated at the top of the report as well as inside each arm: the
+        # curve is meaningless without the floors it is read against.
+        "reference_final_waves": REFERENCE_FINAL_WAVES,
+        "arms": summaries,
+    }
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
+    for arm, summary in zip(arms.values(), summaries, strict=True):
+        (arm.run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    return report
+
+
+def main() -> int:
+    arguments = parse_arguments()
 
     build_dir = Path(
         os.environ.get("TOWER_BRIDGE_BUILD_DIR")
@@ -302,60 +504,25 @@ def main() -> int:
         heartbeat_timeout=60.0,
     )
     client.connect()
-    adapter = InstrumentedRunAdapter(client=client, device=AdbDevice(arguments.serial))
+    adapter = InstrumentedRunAdapter(client=client)
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
         cadence=cadence_from(arguments),
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    session = arguments.run_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}"
-    revision = source_revision()
-    arms = {
-        name: build_arm(
-            name,
-            arguments,
-            environment=environment,
-            device=device,
-            profile_id=expected.profile_id,
-            parent=session,
-            revision=revision,
-        )
-        for name in names
-    }
-
-    blocks_per_arm = -(-arguments.budget_decisions // arguments.block_decisions)
-    schedule = interleave_schedule(tuple(names), blocks_per_arm, block=1, seed=arguments.seed)
-    started = time.monotonic()
     try:
-        for name in schedule:
-            arm = arms[name]
-            if arm.training.finished:
-                continue
-            arm.training.advance(arguments.block_decisions)
+        report = train_session(
+            arguments,
+            environment,
+            profile_id=expected.profile_id,
+            revision=source_revision(),
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
     finally:
         adapter.release()
         client.close()
 
-    for arm in arms.values():
-        arm.checkpoint(arm.training.report)
-
-    report = {
-        "session": str(session),
-        "profile_id": expected.profile_id,
-        "source_revision": revision,
-        "budget_decisions_per_arm": arguments.budget_decisions,
-        "block_decisions": arguments.block_decisions,
-        "wall_seconds": round(time.monotonic() - started, 1),
-        "arms": [arm.summary() for arm in arms.values()],
-    }
-    session.mkdir(parents=True, exist_ok=True)
-    (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
-    for arm in arms.values():
-        (arm.run_dir / "summary.json").write_text(
-            json.dumps(arm.summary(), indent=2, default=str)
-        )
     print(json.dumps(report, indent=2, default=str), flush=True)
     return 0
 

@@ -59,12 +59,23 @@ class FakeRunPort:
     start_cash: float = 80.0
     #: Set to raise from `begin_episode`, to exercise failure classification.
     refuse_to_start: bool = False
+    #: Episode ordinals, counting from one, whose `begin_episode` fails. Unlike
+    #: `refuse_to_start`, which refuses every episode, this makes one episode in
+    #: the middle of a run fail the way a boundary that will not open does.
+    refuse_episodes: frozenset[int] = frozenset()
+    #: Episode ordinals whose first advance comes back ambiguous: the shape of an
+    #: action pipeline that cannot say what the world did, which the environment
+    #: classifies as `ACTION_PIPELINE_FAILED`.
+    ambiguous_advance_episodes: frozenset[int] = frozenset()
     #: The wave `begin_episode` starts at. A real fresh run always starts at 1;
     #: setting this above 1 simulates continuing a leftover run, to exercise the
     #: episode-independence check without a second fake port.
     starting_wave: int = 1
 
     sequence: int = field(default=0, init=False)
+    #: Episodes begun, the ordinal the two failure sets are matched against.
+    episodes: int = field(default=0, init=False)
+    _ambiguous_seen: set[int] = field(default_factory=set, init=False)
     wave: int = field(default=0, init=False)
     cash: float = field(default=0.0, init=False)
     health: float = field(default=0.0, init=False)
@@ -91,7 +102,8 @@ class FakeRunPort:
     # -- RunPort -----------------------------------------------------------
 
     def begin_episode(self) -> None:
-        if self.refuse_to_start:
+        self.episodes += 1
+        if self.refuse_to_start or self.episodes in self.refuse_episodes:
             raise RunPortError("fake instance refused to start")
         self._build_slots()
         self.wave = self.starting_wave
@@ -175,6 +187,13 @@ class FakeRunPort:
         """
         if expected_sequence != self.sequence:
             return FakeCommandResult("rejected", "stale_or_duplicate")
+        if (
+            self.episodes in self.ambiguous_advance_episodes
+            and self.episodes not in self._ambiguous_seen
+        ):
+            # Once per named episode: the bridge could not say how far it got.
+            self._ambiguous_seen.add(self.episodes)
+            return FakeCommandResult("ambiguous", "no_answer_from_the_bridge")
         self.advances += 1
         if not self.active:
             return FakeCommandResult("confirmed", "event:run_ended", state=self._observe())

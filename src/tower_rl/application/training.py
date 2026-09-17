@@ -17,6 +17,7 @@ from tower_rl.application.evaluator import EvaluationReport
 from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.domain.episode import EpisodeSummary
 from tower_rl.learning.backbone import Backbone, LearnMetrics, collate
+from tower_rl.ports.run_port import RunPortError
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,12 @@ class TrainingConfig:
     #: episodes. Evaluation is exploration-free and never writes to replay.
     evaluate_every_episodes: int = 0
     checkpoint_every_episodes: int = 0
+    #: How many episodes in a row may fail at the port before the run gives up.
+    #: A single failed episode is an ordinary event on a real device and must not
+    #: end a run that has hours of experience in it; a device that fails every
+    #: episode is a broken instance, and continuing would spin without collecting
+    #: anything. The limit is what separates the two.
+    max_consecutive_episode_failures: int = 5
 
     def __post_init__(self) -> None:
         if self.budget_decisions < 1:
@@ -51,6 +58,8 @@ class TrainingConfig:
             raise ValueError("batch size and warm-up must be positive")
         if self.gradient_steps_per_decision <= 0:
             raise ValueError("gradient steps per decision must be positive")
+        if self.max_consecutive_episode_failures < 1:
+            raise ValueError("at least one episode failure must be survivable")
 
     def progress(self, decisions: int) -> float:
         return min(1.0, decisions / self.budget_decisions)
@@ -77,6 +86,15 @@ class TrainingProgressReport:
     recent_losses: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
+    #: Episodes the port could not produce at all - a boundary that would not
+    #: settle, an instance that would not start. They are counted in `episodes`
+    #: like any other attempt, but they leave no summary behind, so the two
+    #: counts differ exactly by this one.
+    failed_episodes: int = 0
+    episode_failures: list[str] = field(default_factory=list)
+    #: Periodic evaluations that could not be scored. Training continues: an
+    #: evaluation is measurement, and losing a measurement must not lose the run.
+    evaluation_failures: list[str] = field(default_factory=list)
 
     @property
     def valid_episodes(self) -> int:
@@ -119,6 +137,10 @@ class TrainingRun:
     report: TrainingProgressReport = field(default_factory=TrainingProgressReport)
     #: Gradient steps earned but not yet taken, carried across blocks.
     _owed: float = field(default=0.0, init=False)
+    #: Episodes the port failed in a row, carried across blocks for the same
+    #: reason: an instance that fails every episode must not look healthy again
+    #: merely because the arms took turns.
+    _consecutive_failures: int = field(default=0, init=False)
 
     @property
     def finished(self) -> bool:
@@ -148,7 +170,24 @@ class TrainingRun:
                 self.actor.config, epsilon=self.config.epsilon(report.decisions)
             )
             self.actor.model_version = self.backbone.model_version
-            result = self.actor.run_episode()
+            try:
+                result = self.actor.run_episode()
+            except RunPortError as failure:
+                # The port could not deliver an episode. That is a counted
+                # outcome, not the end of the run: an episode classified
+                # invalid by the environment already continues, and an episode
+                # the port refused outright must not be treated more harshly.
+                report.episodes += 1
+                report.failed_episodes += 1
+                report.episode_failures.append(str(failure))
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self.config.max_consecutive_episode_failures:
+                    raise
+                self._periodic(report)
+                if self.on_episode is not None:
+                    self.on_episode(report)
+                continue
+            self._consecutive_failures = 0
 
             report.episodes += 1
             report.decisions += result.summary.decisions
@@ -180,7 +219,13 @@ class TrainingRun:
         """Evaluate and checkpoint on their episode periods, if configured."""
         period = self.config.evaluate_every_episodes
         if self.evaluate is not None and period and report.episodes % period == 0:
-            report.evaluations.append(self.evaluate())
+            try:
+                report.evaluations.append(self.evaluate())
+            except (RunPortError, ValueError) as failure:
+                # `evaluate` refuses to score an arm that produced no valid
+                # episode, and the port can fail under it exactly as it can
+                # under collection. Either way the point is lost, not the run.
+                report.evaluation_failures.append(str(failure))
         period = self.config.checkpoint_every_episodes
         if self.checkpoint is not None and period and report.episodes % period == 0:
             self.checkpoint(report)

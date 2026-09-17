@@ -7,6 +7,168 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E028 — Multi-actor scaling is linear to four actors
+
+**Date:** 2026-09-17
+**Status:** Commit `f251dc8`. Source: this session's scratchpad
+`X-SCALING-DETAIL.md` with `X-n{1,2,4}.json`, `X-cpu-n{1,2,4}.log`,
+`X-avd-{before,after}.txt`.
+
+Setup: 32-core host, `--cores 4` per instance, `-gpu host`,
+`--frame-game-ms 100`, scripted policy, 5 episodes per actor, `--cold`.
+
+| N | Valid/attempted | Aggregate episodes/h | Aggregate decisions/h | Per-actor decisions/h | Speedup | Per-qemu CPU mean/max | Total CPU mean/max | Max 1-min load |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 5/5 | 85.6 | 8,850 | 8,850 | 4.63 | 165%/445% | 171%/445% | 1.96 |
+| 2 | 10/10 | 117.4 | 18,704 | 9,435 and 9,270 | 4.70–4.73 | 152%/448% | 276%/884% | 4.84 |
+| 4 | 15/15 across 3 of 4 actors | 206.9 | 27,781 | 9,150–9,416 | 4.69–4.73 | 156%/498% | 563%/1835% | 10.71 |
+
+Fidelity held at every N: all health counters 0, 30/30 valid,
+round/budgeted max 1.014 and mean 1.007–1.011, decisions/wave 20.95–22.0. No
+knee was reached in steady state — per-actor decisions/hour is unchanged
+from N=1 to N=4, against 563% mean CPU of 3,200% available and disk never
+above 2.5%.
+
+What did bind was simultaneous cold bring-up: four concurrent boots peaked
+at 1,835% CPU and load 10.71, and one actor (`emulator-5562`) never left
+`main_unavailable` within its 300 s timeout while its peers reached home in
+60–90 s. Fixed at `f408788` by sequencing bring-ups on readiness.
+
+Verified: several `-read-only` instances co-exist on one AVD, each answering
+on its own forwarded port (47652–47655), offline confirmed per instance by
+interface; one actor failing left the others intact and still able to tear
+down; the base AVD images were byte-identical before and after (qemu opens
+them read-only and writes to a private overlay).
+
+Planning figures: ~9,200 decisions/hour per actor, ~37,000 decisions/hour at
+four actors, so 100,000 decisions in roughly three hours; ~65–70 valid
+episodes/hour per actor.
+
+## M1B-E027 — First RL training run on the real game: flat
+
+**Date:** 2026-09-17
+**Status:** `source_revision` recorded as `cddc6e6`, behaviourally `9cc3a233`
+(the two intervening commits touched only `scripts/clone_session.py`, its
+tests, and the handoff). Source: this session's scratchpad
+`M2-TRAINING-DETAIL.md`, `T-health.json`, `T-train.log`. Artifacts under
+`~/.local/state/tower-rl/runs/session-20260917-201639/`.
+
+Setup: one arm `stacked-dqn`, 20,000 decisions, `--frame-game-ms 100`,
+`-gpu host`, one actor, evaluation every 20 episodes with 5
+exploration-free episodes per point, 2.675 hours, MLflow run
+`cff5a0870e6146cd81a46d753a5a864d`.
+
+Curve (decisions / wall s / optimisation steps / mean wave / sd / final
+waves / valid-invalid / checkpoint):
+
+| Decisions | Wall s | Opt. steps | Mean wave | sd | Final waves | Valid/invalid | Checkpoint |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2,543 | 1,219 | 3,748 | 5.80 | 2.17 | 3,7,7,4,8 | 5–0 | `367ed9e14bcb` |
+| 5,130 | 2,487 | 8,922 | 5.40 | 2.30 | 3,6,8,3,7 | 5–0 | `6e224e5b4a56` |
+| 7,937 | 3,837 | 14,536 | 6.50 | 3.42 | 8,2,10,6 | 4–1 (`action_pipeline_failed`) | `f0ff15fde7ec` |
+| 10,800 | 5,162 | 20,262 | 3.80 | 1.92 | 5,1,4,3,6 | 5–0 | `f36187cb3b2c` |
+| 13,216 | 6,348 | 25,094 | 5.20 | 3.90 | 1,1,9,8,7 | 5–0 | `1b5fb2399405` |
+| 15,967 | 7,708 | 30,596 | 6.00 | 1.87 | 6,9,6,5,4 | 5–0 | `a0a358605b3c` |
+| 18,510 | 8,992 | 35,682 | 6.40 | 1.14 | 5,7,6,6,8 | 5–0 | `39dc3f3330b7` |
+
+References: scripted 5.57, random 5.35, wait 1.87.
+
+Trend: OLS slope +0.021 waves per 1,000 decisions, +0.42 across the budget;
+first three points average 5.90, last three 5.87; with 5 episodes per point
+against a per-episode sd of 2–3, each point carries about ±1 wave of
+standard error, so neither the 3.80 dip nor the closing 6.40 is a trend. The
+honest reading: after 20,000 decisions no learning is demonstrated; the
+learner sits at the scripted/random floor and clearly beats wait, which a
+random policy also does.
+
+Training health: loss 0.0626 → 0.0355, gradient norm 5.37 → 2.088, mean
+|TD| 0.292 → 0.320 (did not fall); 38,810 optimisation steps; replay 430
+sequences of 4,096 capacity, 0 rejected, 0 evicted, 620,960 draws.
+
+Environment health, the entry's other important result: 153/153 collection
+episodes valid, all `game_over`, `invalid_detail` empty,
+`BRIDGE_EVENT_DIVERGENCE` 0, `stale_or_duplicate` 0, `advances_cut_short` 0
+in collection (2 in one evaluation), `episodes_not_started_fresh` 0,
+`GAME_TIME_INFLATED` 0, recovered transients 0, round/budgeted ratio 1.0090
+pooled with worst episode 1.0123; 70.3 episodes/hour overall, 57.2
+collection episodes/hour.
+
+Record the Lead's leading suspects, clearly as hypotheses not conclusions:
+too little data (153 episodes), and a replay ratio badly mismatched to it —
+each of the 430 sequences was drawn about 1,400 times, and with sequence
+length 80, burn-in 40 and n-step 5 each gradient step consumes roughly 560
+learnable transitions, so at 2.0 gradient steps per decision that is on the
+order of a thousand replayed transitions per generated one where R2D2 uses
+roughly 4–8.
+
+## M1B-E026 — Milestone 1 gate: snapshot, renderer equivalence, stability
+
+**Date:** 2026-09-17
+**Status:** Commit `9cc3a233`. Source: this session's scratchpad
+`M1-GATE-DETAIL.md` with `A1-cold.log`, `A2-restore.log`, `A2-iface.log`,
+`A3-episode.json`, `A4-mismatch.log`, `B-host.json`, `B-cpu.log`,
+`C-stability.json`, `Z-cleanup.log`. Three gates.
+
+**Gate A — snapshot bring-up, lavapipe.** Cold `up` 44 s saved the keyed
+snapshot; second `up` restored in **10.48 s**; a once-per-second interface
+poll showed only `lo` with `wifi_on=0`/`mobile_data=0` from the first
+reachable sample, and the restore path never deployed or enabled radios; the
+restored instance's bridge answered on 47652 and ran an episode 1/1 valid; a
+deliberate key mismatch took the cold path. **Defect: under `-gpu host` the
+emulator refuses `snapshot save` with `KO: Snapshot save is skipped. Reason:
+UNSUPPORTED_VK_APP`, and `save_snapshot` printed that line then reported
+success anyway** — the fallback was sound, the success claim was not; fixed
+at `cddc6e6`, and snapshots are now declared lavapipe-only.
+
+**Gate B — `-gpu host` equivalence, 5 episodes each.** Host vs lavapipe:
+ratio 1.0108 vs 1.0118, decisions/wave 21.0 vs 20.73, mean final wave 6.2
+(sd 1.92) vs 6.0 (sd 3.54), 5/5 valid both, `invalid_detail` empty, all
+health counters 0, speedup 4.648 vs 4.62; one qemu process at mean 154% CPU,
+peak 180%. Caveat: n=5 cannot detect a sub-wave fidelity difference
+(M1B-E018 puts that near 97 per arm), so this is consistent equivalence, not
+proven equivalence.
+
+**Gate C — stability, `-gpu host`, 25 consecutive episodes.** 25/25 valid,
+`invalid_detail` empty, ratio 1.0105 (worst episode 1.013), decisions/wave
+21.51, mean final wave 5.8 sd 2.236, **80.6 episodes/hour**, boundary 7.01
+s/episode (sd 2.19), all counters 0, no crash.
+
+Conclusion: `-gpu host` adopted as the mandatory training renderer.
+
+## M1B-E025 — The 1x speed pin made effective
+
+**Date:** 2026-09-17
+**Status:** Commit `9cc3a233`. Source: this session's scratchpad
+`SPEED-PIN-DETAIL.md`, `pin-arm.json`, `pin_probe.py`, `speed_control.py`.
+
+`set_speed` wrote `Main.gameSpeed` and confirmed by reading back the slot it
+had just written. `gameSpeed` is the rate the world is running at NOW — the
+bridge's pause puts it at 0, and the game restores its own remembered speed
+(`Main.gameSpeedMemory`) on unpause, so anything written while the world
+stands still is overwritten before the world next moves. That is why a
+confirmed pin sat beside a 1.5x world.
+
+The game's own controls DO take: live readings (each a fresh connection's
+handshake, taken before the bridge pauses) gave `SpeedChangeUp` 0.0 → 1.0 →
+1.5 and `SpeedChangeDown` 1.5 → 1.0; the ladder on this account is 0 – 1.0 –
+1.5, with 1.5 both default and ceiling. The pin is now `speed_max` then
+exactly one `speed_down`, applied at the episode boundary in `_start_round`.
+
+Hazard, proven accidentally: four presses put the world at 0 and froze the
+round clock (two probe timeouts), and `SpeedChangeMax` pressed FROM 0 did
+not recover it — only `SpeedChangeUp` did.
+
+`game_speed` is truthful rather than broken: 0.0 is the paused speed, and
+read live it tracked every press. The earlier 1.0088 probe at 28d691f could
+not be reproduced and is attributed to the remembered speed left at 1.0 in
+that app process by a crashed run — state, not a property of that build.
+
+Verification arm, production build, 5 scripted episodes at
+`--frame-game-ms 100`: 5/5 valid, ratio **1.0118**, decisions/wave **20.73**,
+mean final wave **6.0** (7,8,1,4,10), zero `GAME_TIME_INFLATED`, empty
+`invalid_detail`, speedup 4.62; same host and session before the fix, 1.5785
+twice.
+
 ## M1B-E024 — Verification of the non-visual bring-up, field types, and the pin: three of five stages pass, the fourth fails on the post-advance re-pin, and the diagnostic isolates the cure
 
 **Date:** 2026-09-17

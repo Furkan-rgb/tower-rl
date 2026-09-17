@@ -373,3 +373,44 @@ pixel, so host rendering becomes admissible again and the `M1B-E003` throughput
 figures taken under it become relevant rather than an unusable upper bound.
 Until then lavapipe stays, because a corrupt frame with a live tap is the
 `M1-E005` failure waiting to happen.
+
+
+## The frame is the floor on decision granularity — 2026-09-17
+
+A constraint worth stating separately, because it bounds what any amount of
+engineering can achieve and it reframes the speed choice.
+
+Unity advances game time per rendered frame. A step shorter than one frame passes
+no world time at all, so the finest decision granularity available at speed `s`
+is one frame, and one frame is worth `frame_wall_seconds x s` of game time. At
+30 fps that is 33 ms of wall clock, so:
+
+| Speed | Game time in one frame |
+| --- | --- |
+| 1x | 0.03 s |
+| 8x | 0.27 s |
+| 16x | 0.53 s |
+| 64x | 2.1 s |
+
+The environment asks for a 250 ms slice. That is achievable up to about 8x and
+impossible above it, and `M1B-E006`'s measured decisions per wave match the
+prediction closely: 63, 79, 69 at 1.5x, 4x and 8x, then 39, 20 and 16 at 16x,
+32x and 64x. Density is flat while a frame is smaller than the slice and
+collapses once it is not.
+
+Two consequences:
+
+1. **There is a speed that satisfies the requirement today, without any native
+   work: about 8x.** It costs throughput — roughly 105 episodes per hour against
+   502 at 64x — but decision moments are preserved, which is the stated
+   requirement.
+2. **Getting both requires decoupling game time per frame from wall time per
+   frame**, which is what `Time.captureDeltaTime` does. The obstacle is not
+   finding the API, it is calling it: the bridge's only main-thread entry point
+   is `UnitySendMessage` to a named GameObject, and a Unity property setter
+   invoked from the socket thread is the pattern that crashed the game twice
+   already. Writing a plain static field from the socket thread is established
+   practice here (`game_speed` is set that way), but `captureDeltaTime` is a
+   native-backed property, not a field. Establishing a main-thread trampoline is
+   therefore a prerequisite for this — the same prerequisite the boundary-tap
+   work needs.

@@ -196,9 +196,6 @@ def evaluate(
         attempted.append(summary)
         (valid if summary.valid else invalid).append(summary)
 
-    if not valid:
-        raise ValueError("no valid episode was produced; the arm cannot be scored")
-
     reasons: dict[str, int] = {}
     detail: dict[str, int] = {}
     for summary in invalid:
@@ -206,6 +203,16 @@ def evaluate(
         reasons[key] = reasons.get(key, 0) + 1
         for text in summary.termination_detail or ("no detail recorded",):
             detail[text] = detail.get(text, 0) + 1
+
+    if not valid:
+        # An arm that scores nothing still knows why every episode failed, and
+        # that is the only thing it has to say. Carrying the reasons into the
+        # error keeps a wholly failed arm from reporting silence.
+        why = ", ".join(f"{text} (x{count})" for text, count in sorted(detail.items()))
+        raise ValueError(
+            "no valid episode was produced; the arm cannot be scored. "
+            f"{len(invalid)} invalid episodes: {why or 'no detail recorded'}"
+        )
 
     return EvaluationReport(
         policy=describe(policy),

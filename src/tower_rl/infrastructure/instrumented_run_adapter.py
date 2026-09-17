@@ -27,7 +27,9 @@ from tower_rl.ports.run_port import RunPortError
 #: game time, which coarsens the agent's decisions in exact proportion to the
 #: speed gained (`M1B-E012`). Speed comes from stepping frames faster instead,
 #: with a fixed amount of game time per frame, so the multiplier no longer buys
-#: anything and is held at 1 so that nothing else silently depends on it.
+#: anything and is held at 1 so that nothing else silently depends on it. This
+#: is the declared target `_pin_game_speed` steps the game's own control onto,
+#: and the speed the budgeted game time in `run_environment` assumes.
 GAME_SPEED = 1.0
 
 
@@ -250,28 +252,34 @@ class InstrumentedRunAdapter:
     # -- speed -------------------------------------------------------------
 
     def _pin_game_speed(self, sequence: int) -> None:
-        """Hold the game's own multiplier at 1x; it is a pin, not a setting.
+        """Hold the game's own multiplier at 1x by pressing the game's own control.
 
-        Applied unconditionally. It used to be skipped when the observed
-        `game_speed` already read 1x, which made the pin depend on a field this
-        host cannot rely on: every observation taken between decisions is taken
-        from a world the bridge has paused, and the field reads 0.0 there
-        whatever the unpaused world runs at (M1B-E009). Read during a live round
-        it does report the running rate, but the host never reads it there, so
-        as a precondition it is a pin that silently never fires.
+        Writing `gameSpeed` does not hold it. The field is the rate the world is
+        running at now, and the game restores its own remembered speed whenever
+        it unpauses, so a value written while the bridge holds the world still
+        is overwritten before the world next moves. The bridge confirmed that
+        write by reading back the slot it had just written, which is how a
+        confirmed 1x pin came to sit beside a world running at this account's
+        1.5x ceiling (`M1B-E025`). It is the same lesson the round-start control
+        taught: press what the game presses, do not write what it reads.
+
+        `SpeedChangeMax` and `SpeedChangeDown` are the game's own speed buttons
+        and they do take. Pressing to the ceiling first makes the landing
+        deterministic whatever the world was left at, and this account's ladder
+        puts 1x exactly one step below its 1.5x ceiling. Exactly one step down
+        is taken and never more: below 1x the ladder reaches 0, which is the
+        game's paused state, and a world standing still credits no game time and
+        ends no episode.
+
+        The effect is still not taken on trust. `application/run_environment.py`
+        fails any episode whose round clock outruns the game time its advances
+        budgeted, which is what actually witnesses the multiplier (`M1B-E023`).
         """
-        result = self._command_between_rounds(
-            {
-                "type": "command",
-                "protocol_version": 1,
-                "request_id": self._request_id("speed"),
-                "expected_observation_sequence": sequence,
-                "kind": "set_speed",
-                "value": GAME_SPEED,
-            }
-        )
-        if result.outcome != "confirmed":
-            raise RunPortError(f"the game refused the pinned 1x speed: {result.reason}")
+        self._press("speed_max", sequence)
+        state = self._latest_state()
+        if not isinstance(state, BridgeObservation):
+            raise RunPortError("the instance stopped reporting a run while the speed was pinned")
+        self._press("speed_down", state.sequence)
 
     def release(self) -> None:
         """Leave the game running, whatever mode this adapter used.

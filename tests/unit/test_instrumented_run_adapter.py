@@ -46,6 +46,8 @@ class FakeClient:
     #: Command kinds the bridge refuses because they do not bind the latest
     #: observation, which is what a stranded expectation looks like on the wire.
     stale_kinds: frozenset[str] = frozenset()
+    #: Lifecycle actions the game does not honour, whatever it does with the rest.
+    unhonoured_actions: frozenset[str] = frozenset()
 
     def read_state(self) -> object:
         if self.states:
@@ -60,9 +62,12 @@ class FakeClient:
         # advance result, which is where the environment learns the sequence its
         # next command must bind.
         settled = _observation(sequence=7) if message["kind"] == "advance" else None
+        outcome = self.outcome
+        if message.get("action") in self.unhonoured_actions:
+            outcome = "rejected"
         return BridgeCommandResult(
             request_id=str(message["request_id"]),
-            outcome=CommandOutcome(self.outcome),
+            outcome=CommandOutcome(outcome),
             reason="ok",
             observation_sequence=1,
             state=settled,
@@ -95,7 +100,7 @@ def test_an_episode_starts_through_the_games_own_control_and_reads_no_pixel() ->
 
     _adapter(client).begin_episode()
 
-    assert _actions(client) == ["start_round"]
+    assert _actions(client) == ["start_round", "speed_max", "speed_down"]
 
 
 def test_a_terminal_run_is_sent_home_before_the_round_is_started() -> None:
@@ -106,7 +111,7 @@ def test_a_terminal_run_is_sent_home_before_the_round_is_started() -> None:
 
     _adapter(client).begin_episode()
 
-    assert _actions(client) == ["go_home", "start_round"]
+    assert _actions(client) == ["go_home", "start_round", "speed_max", "speed_down"]
 
 
 def test_a_control_the_game_does_not_honour_fails_the_boundary() -> None:
@@ -170,8 +175,11 @@ def test_the_game_speed_multiplier_is_pinned_at_one() -> None:
 
     _adapter(client).begin_episode()
 
-    speed_command = next(message for message in client.sent if message["kind"] == "set_speed")
-    assert speed_command["value"] == 1.0
+    # The pin presses the game's own speed buttons: to the ceiling, so the
+    # landing is deterministic, then exactly one step down onto 1x. Writing the
+    # field is confirmed by reading back our own write and does not hold
+    # (M1B-E025); stepping further than one lands on 0, which is paused.
+    assert _speed_commands(client) == ["speed_max", "speed_down"]
 
 
 def test_purchases_bind_the_state_they_were_decided_from() -> None:
@@ -186,14 +194,15 @@ def test_purchases_bind_the_state_they_were_decided_from() -> None:
     assert message["expected_observation_sequence"] == 42
 
 
-def test_a_refused_speed_pin_is_an_explicit_failure() -> None:
+def test_a_speed_control_the_game_does_not_honour_is_an_explicit_failure() -> None:
+    """A press the game does not honour is never assumed to have landed."""
     client = FakeClient(
-        states=[BridgeRunUnavailable(1, "no_initialized_run"), _observation(speed=1.5)],
-        outcome="rejected",
+        states=[BridgeRunUnavailable(1, "no_initialized_run")],
         default_speed=1.5,
+        unhonoured_actions=frozenset({"speed_max"}),
     )
 
-    with pytest.raises(RunPortError, match="refused the pinned 1x speed"):
+    with pytest.raises(RunPortError, match="did not honour speed_max"):
         _adapter(client).begin_episode()
 
 
@@ -232,8 +241,13 @@ def test_a_finished_run_is_not_asked_to_resume() -> None:
     assert "unpause" not in _actions(client)
 
 
-def _speed_commands(client: FakeClient) -> list[dict[str, object]]:
-    return [message for message in client.sent if message["kind"] == "set_speed"]
+def _speed_commands(client: FakeClient) -> list[str]:
+    speeds = {"speed_max", "speed_down"}
+    return [
+        str(message["action"])
+        for message in client.sent
+        if message["kind"] == "lifecycle" and message["action"] in speeds
+    ]
 
 
 def _advance(adapter: InstrumentedRunAdapter, sequence: int = 1) -> None:
@@ -263,9 +277,9 @@ def test_the_speed_is_pinned_once_at_the_episode_boundary() -> None:
     for _ in range(3):
         _advance(adapter)
 
-    assert pinned_at_the_boundary == 1
-    assert len(_speed_commands(client)) == 1, "an advance pinned the speed again"
-    assert len(client.sent) == 4, "an advance cost more than the one command asked for"
+    assert pinned_at_the_boundary == 2, "the pin is a press to the ceiling and one step down"
+    assert len(_speed_commands(client)) == 2, "an advance pinned the speed again"
+    assert len(client.sent) == 5, "an advance cost more than the one command asked for"
 
 
 def test_a_command_the_environment_did_not_ask_for_cannot_be_sent_during_a_round() -> None:
@@ -300,9 +314,9 @@ def test_the_pin_is_applied_even_when_the_observed_speed_already_reads_one() -> 
     """The observed field is not a precondition this host can read.
 
     Every observation taken between decisions comes from a world the bridge is
-    holding still, where `game_speed` reads 0.0 whatever the running world would
-    do, so skipping the pin on the strength of that reading is a pin that never
-    fires.
+    holding still, where `game_speed` reads 0.0 because 0 is the paused speed,
+    whatever the world runs at once it moves again. Skipping the pin on the
+    strength of that reading is a pin that never fires.
     """
     client = FakeClient(
         states=[BridgeRunUnavailable(1, "no_initialized_run")], default_speed=GAME_SPEED

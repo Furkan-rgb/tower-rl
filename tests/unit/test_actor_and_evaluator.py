@@ -146,6 +146,20 @@ def test_an_arm_with_no_valid_episode_cannot_be_scored() -> None:
         )
 
 
+def test_a_wholly_failed_arm_still_says_why_every_episode_failed() -> None:
+    """The reasons are all a fully-failed arm has to report; it must report them."""
+    with pytest.raises(ValueError, match="no_answer_from_the_bridge"):
+        evaluate(
+            _environment(
+                damage_per_second=1.0,
+                ambiguous_advance_episodes=frozenset({1, 2, 3}),
+            ),
+            CheapestFirstPolicy(),
+            episodes=3,
+            profile_id=PROFILE,
+        )
+
+
 def test_records_carry_everything_needed_to_compare_arms_later() -> None:
     report = evaluate(
         _environment(damage_per_second=1.0),

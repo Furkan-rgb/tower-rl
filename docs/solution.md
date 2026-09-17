@@ -1125,6 +1125,17 @@ Interactive only where evidence/confirmation is inherently needed. Produces a ve
 
 ### 11.3 `tower-rl train`
 
+**What exists today.** `tower-rl` implements `doctor` and `probe` only. Training
+runs through `scripts/train.py`, a device runner for the instrumented profile:
+it takes `--backbone` once or repeatedly, interleaves the named arms in decision
+blocks (section 9.2b), checkpoints atomically under
+`~/.local/state/tower-rl/runs`, and evaluates without exploration on a long
+period. Resume is not implemented — see the open question in
+`docs/workstation-handoff.md`; an interrupted run is a shorter run, not a corrupt
+one, because the budget is counted in decisions.
+
+The rest of this section is the V1 target, not a description of the present.
+
 Example behavior:
 
 ```text

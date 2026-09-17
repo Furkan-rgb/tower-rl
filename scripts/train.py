@@ -119,6 +119,7 @@ class Arm:
             "episodes": report.episodes,
             "valid_episodes": report.valid_episodes,
             "optimisation_steps": report.optimisation_steps,
+            "mean_recent_loss": report.mean_recent_loss,
             "sequences_accepted": report.sequences_accepted,
             "wall_seconds": report.wall_seconds,
             "final_waves": report.final_waves,

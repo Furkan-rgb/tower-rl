@@ -5,12 +5,7 @@ import torch
 
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
 from tower_rl.domain.run_actions import RUN_ACTIONS
-from tower_rl.learning.network import (
-    NetworkConfig,
-    RecurrentPolicyNetwork,
-    greedy_action,
-    masked_max,
-)
+from tower_rl.learning.network import NetworkConfig, RecurrentPolicyNetwork, masked_max
 
 ACTIONS = len(RUN_ACTIONS)
 
@@ -47,7 +42,7 @@ def test_invalid_actions_are_unselectable_and_never_bootstrap() -> None:
 
     assert torch.isinf(q[~mask]).all() and (q[~mask] < 0).all()
     assert torch.isfinite(q[mask]).all()
-    chosen = greedy_action(q)
+    chosen = q.argmax(dim=-1)
     assert torch.tensor([value in (0, 5, 9) for value in chosen.flatten()]).all()
 
 

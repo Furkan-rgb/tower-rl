@@ -257,3 +257,14 @@ def test_advancing_never_overruns_the_budget() -> None:
 def test_a_block_must_buy_at_least_one_decision() -> None:
     with pytest.raises(ValueError, match="at least one decision"):
         _run().advance(0)
+
+
+def test_the_loss_window_is_reported_and_empty_before_any_step() -> None:
+    training = _run(budget_decisions=2000)
+
+    assert training.report.mean_recent_loss is None
+
+    report = training.advance(40)
+
+    assert report.optimisation_steps > 0
+    assert report.mean_recent_loss is not None and report.mean_recent_loss >= 0.0

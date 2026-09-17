@@ -241,11 +241,6 @@ def _dueling_masked_q(value: Tensor, advantages: Tensor, mask: Tensor) -> Tensor
     return q.masked_fill(~mask, float("-inf"))
 
 
-def greedy_action(q_values: Tensor) -> Tensor:
-    """Pick the best valid action. Invalid actions are already `-inf`."""
-    return q_values.argmax(dim=-1)
-
-
 def masked_max(q_values: Tensor) -> Tensor:
     """The bootstrapped maximum over valid actions, or zero when none exist.
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from tower_rl.application.policies import Policy, describe
+from tower_rl.application.policies import Policy
 from tower_rl.application.replay import (
     PrioritizedSequenceReplay,
     ReplaySequence,
@@ -131,7 +131,3 @@ class Actor:
             if self.replay.add(ReplaySequence(metadata, window, self.config.burn_in)):
                 accepted += 1
         return offered, accepted
-
-
-def describe_actor(actor: Actor) -> str:
-    return f"{actor.config.actor_id}:{describe(actor.policy)}"

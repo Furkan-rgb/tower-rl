@@ -85,6 +85,18 @@ class TrainingProgressReport:
     def final_waves(self) -> list[int]:
         return [summary.final_wave for summary in self.episode_summaries if summary.valid]
 
+    @property
+    def mean_recent_loss(self) -> float | None:
+        """Mean loss over the last hundred optimisation steps, or None before any.
+
+        Reported beside the outcome because section 9.7 asks for it: a loss that
+        stops moving while episodes keep arriving is a learner problem, and it is
+        invisible in the final-wave distribution alone.
+        """
+        if not self.recent_losses:
+            return None
+        return sum(self.recent_losses) / len(self.recent_losses)
+
 
 @dataclass
 class TrainingRun:

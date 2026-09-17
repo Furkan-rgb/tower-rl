@@ -40,6 +40,11 @@ def _metadata() -> SequenceMetadata:
     )
 
 
+def _zero_state() -> tuple[torch.Tensor, torch.Tensor]:
+    full = torch.zeros(1, 1, SMALL.core_hidden)
+    return full, full.clone()
+
+
 def _sequence(length: int = 8, burn_in: int = 2, *, reward: float = 1.0) -> ReplaySequence:
     steps = tuple(
         ReplayStep(
@@ -51,7 +56,7 @@ def _sequence(length: int = 8, burn_in: int = 2, *, reward: float = 1.0) -> Repl
         )
         for index in range(length)
     )
-    return ReplaySequence(_metadata(), steps, burn_in)
+    return ReplaySequence(_metadata(), steps, burn_in, recurrent_state=_zero_state())
 
 
 def _backbone(**config: object) -> RecurrentQBackbone:

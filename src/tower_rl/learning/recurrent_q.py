@@ -200,12 +200,18 @@ class RecurrentQBackbone:
 
         Batched here rather than in collation because the shape is this network's
         own: an LSTM state is `[layers, batch, hidden]`, so sequences join along
-        dimension one. A batch that carries no stored state - every sequence
-        collected by a policy without one - starts from zeros, which is the only
-        state there is to start from.
+        dimension one. This backbone always stores a state (`stored_recurrent_state`
+        never returns `None`), so a batch that carries none was not produced by
+        this backbone's own actor. Silently starting from zeros there would
+        quietly reintroduce the zero-state burn-in R2D2 section 2.3 argues
+        against, so it is refused rather than guessed; a caller that legitimately
+        wants zero-state burn-in must pass an explicit zeroed state.
         """
         if not batch.recurrent_states:
-            return self.online.initial_state(batch.batch_size, self.device)
+            raise ValueError(
+                "recurrent batch carries no stored recurrent state: every "
+                "sequence's `recurrent_state` was None"
+            )
         hidden = torch.cat([state[0] for state in batch.recurrent_states], dim=1)
         cell = torch.cat([state[1] for state in batch.recurrent_states], dim=1)
         return hidden.to(self.device), cell.to(self.device)

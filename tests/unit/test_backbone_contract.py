@@ -50,6 +50,12 @@ def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> State
     )
 
 
+def _zero_recurrent_state() -> tuple[torch.Tensor, torch.Tensor]:
+    """An explicit zero state, valid across backbones: the stacked arm ignores it."""
+    full = torch.zeros(1, 1, SMALL.core_hidden)
+    return full, full.clone()
+
+
 def _sequence(
     *, length: int = 8, padding: int = 0, padded_reward: float = 0.0
 ) -> ReplaySequence:
@@ -72,6 +78,7 @@ def _sequence(
         ),
         steps,
         BURN_IN,
+        recurrent_state=_zero_recurrent_state(),
     )
 
 

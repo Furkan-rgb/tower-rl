@@ -166,15 +166,16 @@ def test_burn_in_starts_from_the_stored_state_rather_than_from_zeros() -> None:
     """A state far from zero must change what burn-in reconstructs, and so the loss.
 
     Two identically seeded backbones see the same sequence; only the stored state
-    differs. If burn-in ignored it and started from zeros, as it used to, the two
-    losses would be identical.
+    differs - one an explicit zero state, the other far from zero. If burn-in
+    ignored the stored state and started from zeros regardless, as it used to,
+    the two losses would be identical.
     """
-    from_zeros = _loss(None)
+    from_zeros = _loss(_state(0.0))
     from_stored = _loss(_state(1.0))
 
     assert from_stored != pytest.approx(from_zeros)
     # The difference is the state, not nondeterminism: the same state twice gives
-    # the same answer, and a zeroed stored state is the zero-state variant itself.
+    # the same answer.
     assert _loss(_state(1.0)) == pytest.approx(from_stored)
     assert _loss(_state(0.0)) == pytest.approx(from_zeros)
 
@@ -182,6 +183,19 @@ def test_burn_in_starts_from_the_stored_state_rather_than_from_zeros() -> None:
 def test_a_batch_may_not_mix_stored_and_missing_recurrent_states() -> None:
     with pytest.raises(ValueError, match="mix sequences"):
         collate((_sequence(_state(1.0)), _sequence(None)), (1.0, 1.0))
+
+
+def test_a_recurrent_batch_with_no_stored_state_is_refused_rather_than_zeroed() -> None:
+    """A stored state absent for every sequence must not be silently zeroed.
+
+    That silent fallback is exactly the zero-state burn-in R2D2 section 2.3
+    argues against; a caller that legitimately wants it must pass an explicit
+    zeroed state, as `_state(0.0)` does above.
+    """
+    backbone = _recurrent()
+
+    with pytest.raises(ValueError, match="no stored recurrent state"):
+        backbone.learn(collate((_sequence(None),), (1.0,)))
 
 
 def test_a_stored_state_is_detached_and_on_the_cpu() -> None:

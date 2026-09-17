@@ -1238,6 +1238,64 @@ instead of a periodic hard copy, decoupled weight decay (AdamW), and a replay
 ratio the training loop supplies rather than the algorithm. Every such departure
 is a resolved value recorded with the experiment, not a hidden default.
 
+### 9.4b PyTorch directly, not TorchRL (for now)
+
+An independent specialist review of the learning layer against the source
+papers (see 14.5) found four real defects in the bespoke learning code. That
+finding raised the question of whether the learning layer should sit on
+TorchRL instead of directly on PyTorch. Verified against TorchRL v0.14.0
+(released 2026-09-10; not installed in this project, which runs torch
+2.14.0+cu130): the decision is to stay on PyTorch directly and not adopt
+TorchRL, for now.
+
+What TorchRL would provide: `TensorDictPrioritizedReplayBuffer` /
+`PrioritizedSampler` with β/α annealing schedulers; `SliceSampler` /
+`PrioritizedSliceSampler`, which cut sequences at sampling time from flat
+storage rather than at write time; `TensorDictPrimer` + `LSTMModule` +
+`BurnInTransform` for stored recurrent state; `DQNLoss(double_dqn=True)`;
+`SoftUpdate`/`HardUpdate`; and first-class `action_mask_key` support on
+`QValueModule`/`QValueActor`/`EGreedyModule`.
+
+What would remain ours regardless: `TowerTrunk`; `DuelingHeads` with advantage
+centring over valid actions only (TorchRL's `DuelingMlpDQNet` centres over all
+actions, which this project's action mask makes wrong); the R2D2 priority
+mixture η·max+(1−η)·mean; the n-step "window overruns ⇒ unlearnable" rule from
+9.4; schema/profile compatibility gating; and checkpoint identity/fingerprinting.
+
+The honest counterfactual against the four defects the review found: terminal
+transitions never reaching replay is prevented outright, because sample-time
+slicing makes the failure structurally impossible; zero-state burn-in is
+prevented outright, for the same reason 9.4's stored-state-plus-burn-in exists;
+sequence geometry contradicting the design doc is only partially prevented,
+since that is spec discipline rather than a library property; and
+`_max_priority` monotone non-decreasing is not prevented — TorchRL ships this
+as its documented default (`max_priority_within_buffer=False`). Two of four
+prevented outright, one partial, one reproduced as-is.
+
+Reasons for deferring adoption, in order of weight:
+
+1. Neither `torchrl` nor `tensordict` ships `py.typed` at v0.14.0, so adoption
+   would require `ignore_missing_imports` and turn every TensorDict leaf into
+   `Any`, materially weakening the strict-mypy guarantee that has already
+   caught real defects in this project.
+2. Migration cost is roughly 900 of 1,888 test lines plus rewriting both
+   backbones' `learn()` around `DQNLoss`, landing directly between us and
+   training runs.
+3. TorchRL has shipped bugs in exactly these components recently — priorities
+   transformed by alpha twice in `PrioritizedSampler`, and broken persistence
+   dispatch for `PrioritizedSliceSampler` — and at roughly 90 episodes/hour a
+   bug inside a library this project cannot single-step costs device hours.
+4. No R2D2 reference implementation exists in TorchRL's `sota-implementations/`.
+
+The structural lesson is adopted for free regardless of this decision:
+deciding sequence windows at write time is what made terminal-drop possible;
+cutting slices at sample time makes it impossible. That is the redesign to
+reach for if this project's own replay causes further trouble, independent of
+whether TorchRL itself is ever adopted.
+
+Revisit trigger: re-open this decision once the backbone benchmark exists and
+device time is no longer the scarce resource.
+
 ### 9.5 Distributed exploration
 
 Assign each actor a stable epsilon derived from its rank across a configured minimum/maximum range. Include a small number of exploitative actors and more exploratory actors. Evaluation always uses epsilon zero.
@@ -1519,6 +1577,31 @@ Sample stored frames and manually compare the episode summary for a statisticall
 - A recorded environment-contract fixture stream validates ingestion and sequence handling, but is never represented as genuine gameplay training.
 - Real-game smoke training verifies finite loss, changing weights, checkpoint reload, and evaluation.
 - Final comparison evaluates random, heuristic, latest, and best under the same real-game protocol.
+
+Independent specialist review against the source papers, rather than a
+reference-MDP/component-equivalence test harness, is the deliberate
+correctness approach for the learning layer, chosen to keep engineering time
+on the benchmark rather than on a second implementation of the same
+algorithms to check the first against. What the review checked and found
+correct, on record so the coverage itself is not re-litigated: double-Q
+orientation (online selects, target evaluates, online detached at both call
+sites); masking at selection, bootstrap, and loss with true `-inf` rather than
+a finite sentinel; dueling centring over valid actions only; n-step
+discounting with no off-by-one and per-element `alive` handling; truncation
+treated conservatively (`terminated` is GAME_OVER-only); EMA direction and
+cadence; importance-sampling weights equal to `w_i / max_j w_j` with β
+annealed 0.4→1.0; the R2D2 priority mixture with η=0.9; and stacked window
+ordering consistent between `act` and `learn`.
+
+The review found four defects, all now fixed (commits `3c51af6` and
+`1f98a86`): terminal transitions never reaching replay, zero-state burn-in,
+sequence geometry contradicting the design doc, and `_max_priority` monotone
+non-decreasing. See 9.4b for the honest counterfactual on what TorchRL would
+and would not have prevented among these.
+
+One deviation from R2D2 is acknowledged and deliberate rather than a defect:
+invertible value rescaling h(x) is absent; Huber loss is used instead. This is
+defensible at this project's reward scale.
 
 ### 14.6 Progression-contract tests (`M8–M11`)
 

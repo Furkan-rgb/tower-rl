@@ -943,6 +943,15 @@ bounded below by one frame, and a frame advances `real_delta x speed` of game
 time. Sleeping for a wall duration is an indirect and speed-dependent way to ask
 for a game-time quantity, which is why the result depends on speed.
 
+**Speed must come from rendering faster, not from a faster game clock.** This is
+how simulation-based RL is normally done: the simulator advances a fixed logical
+timestep and is stepped as fast as the hardware allows, with the agent acting
+every N steps. Nothing about Atari, MuJoCo or Isaac speeds up by making the
+simulated clock run faster relative to its own timestep, because that would
+change the control problem. Using the game's own speed multiplier is precisely
+that mistake: game time per frame is `frame_wall_seconds x speed`, so a faster
+clock necessarily coarsens every decision.
+
 **The fundamental fix is to make a frame worth a fixed amount of game time.**
 Unity exposes `Time.captureDeltaTime` for exactly this: while it is set, each
 rendered frame advances time by precisely that amount regardless of how long the
@@ -960,12 +969,30 @@ stops being a game setting and becomes *how fast frames render*, which is a host
 concern — and that is what makes the renderer matter again, for frame rate rather
 than for pixels.
 
-**Unverified, and it must be verified before it is relied on.** Three things are
+Two settings go with it, or the engine will still wait for real time between
+frames: `QualitySettings.vSyncCount = 0` and `Application.targetFrameRate = -1`.
+And the game's own speed multiplier must be left at 1x. Running both at once
+multiplies game time per frame again and re-introduces exactly the coarsening
+this removes.
+
+Under this scheme game time per frame is no longer a constraint at all: it stays
+at its normal value whether the host renders 30 frames per second or 600, and the
+speed-up is however many frames the machine can push. That is strictly better
+than the current arrangement, which buys speed by spending decisions —
+`M1B-E012` measures the price at 13.4 decisions per wave at 8x against 4.8 at
+64x, neither of them close to normal-speed play.
+
+**Unverified, and it must be verified before it is relied on.** Four things are
 assumptions: that `Time.captureDeltaTime` is reachable and settable through
-IL2CPP from the bridge; that the game's own speed modifier composes with it
-rather than fighting it (the bridge sets a game-owned `game_speed` field and
-dispatches `GameSpeedModifier`, which is not raw `Time.timeScale`); and that the
-game's fixed-step systems behave under a large `captureDeltaTime`. Until those
+IL2CPP from the bridge, which needs a main-thread trampoline the bridge does not
+yet have and which is the same prerequisite the boundary tap needs; that the
+game's own speed modifier can be left at 1x without other behaviour depending on
+it (the bridge sets a game-owned `game_speed` field and dispatches
+`GameSpeedModifier`, which is not raw `Time.timeScale`); that the game's physics
+and any `FixedUpdate` systems step correctly, which may require scaling
+`Time.fixedDeltaTime` to match; and that nothing important is driven by
+`Time.unscaledDeltaTime` or by wall-clock timestamps, which would keep running at
+real speed while the world does not. Until those
 are checked on the device this is a design intent, not a mechanism.
 
 ### 9.3 Final network

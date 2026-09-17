@@ -132,3 +132,76 @@ def test_each_episode_is_reported_as_it_completes() -> None:
     report = training.run()
 
     assert seen == list(range(1, report.episodes + 1))
+
+
+def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
+    from tower_rl.application.evaluator import EvaluationReport, WaveDistribution
+
+    evaluations = 0
+
+    def evaluate() -> EvaluationReport:
+        nonlocal evaluations
+        evaluations += 1
+        return EvaluationReport(
+            policy="RecurrentQBackbone",
+            profile_id="fake-profile-v1",
+            model_version=0,
+            game_speed=8.0,
+            valid_episodes=2,
+            invalid_episodes=0,
+            distribution=WaveDistribution.of([4, 5]),
+        )
+
+    training = _run(budget_decisions=200)
+    training.config = TrainingConfig(
+        budget_decisions=200,
+        warmup_sequences=2,
+        batch_size=2,
+        gradient_steps_per_decision=0.2,
+        evaluate_every_episodes=2,
+        checkpoint_every_episodes=3,
+    )
+    written: list[int] = []
+    training.evaluate = evaluate
+    training.checkpoint = lambda report: written.append(report.episodes)
+
+    report = training.run()
+
+    assert evaluations == report.episodes // 2
+    assert len(report.evaluations) == evaluations
+    assert written == [episode for episode in range(1, report.episodes + 1) if episode % 3 == 0]
+    assert report.checkpoints_written == len(written)
+
+
+def test_periodic_hooks_are_off_when_their_period_is_zero() -> None:
+    calls: list[str] = []
+    training = _run(budget_decisions=80)
+    training.evaluate = lambda: calls.append("evaluate")  # type: ignore[assignment,return-value]
+    training.checkpoint = lambda report: calls.append("checkpoint")
+
+    training.run()
+
+    assert calls == [], "a zero period must disable the hook entirely"
+
+
+def test_evaluation_does_not_consume_the_decision_budget() -> None:
+    """Evaluation is measurement, not experience."""
+    from tower_rl.application.evaluator import EvaluationReport, WaveDistribution
+
+    training = _run(budget_decisions=120)
+    training.config = TrainingConfig(
+        budget_decisions=120,
+        warmup_sequences=2,
+        batch_size=2,
+        gradient_steps_per_decision=0.2,
+        evaluate_every_episodes=1,
+    )
+    training.evaluate = lambda: EvaluationReport(
+        policy="p", profile_id="fake-profile-v1", model_version=0, game_speed=8.0,
+        valid_episodes=99, invalid_episodes=0, distribution=WaveDistribution.of([9, 10]),
+    )
+
+    report = training.run()
+
+    # The budget counts collected decisions only; evaluation episodes are not in it.
+    assert report.decisions == sum(s.decisions for s in report.episode_summaries)

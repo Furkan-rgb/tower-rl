@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from tower_rl.application.actor import Actor, ActorConfig
+from tower_rl.application.evaluator import EvaluationReport
 from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.domain.episode import EpisodeSummary
 from tower_rl.learning.backbone import Backbone, LearnMetrics, collate
@@ -37,6 +38,8 @@ class TrainingConfig:
     #: Importance-sampling correction anneals the other way, as is conventional.
     beta_start: float = 0.4
     beta_end: float = 1.0
+    #: Zero disables the periodic hook entirely; a positive value is a period in
+    #: episodes. Evaluation is exploration-free and never writes to replay.
     evaluate_every_episodes: int = 0
     checkpoint_every_episodes: int = 0
 
@@ -71,6 +74,8 @@ class TrainingProgressReport:
     wall_seconds: float = 0.0
     episode_summaries: list[EpisodeSummary] = field(default_factory=list)
     recent_losses: list[float] = field(default_factory=list)
+    evaluations: list[EvaluationReport] = field(default_factory=list)
+    checkpoints_written: int = 0
 
     @property
     def valid_episodes(self) -> int:
@@ -90,6 +95,11 @@ class TrainingRun:
     backbone: Backbone
     config: TrainingConfig
     on_episode: Callable[[TrainingProgressReport], None] | None = None
+    #: Runs exploration-free episodes on the same device. Its cost comes out of
+    #: wall-clock time, never out of the decision budget, because evaluation is
+    #: measurement rather than experience.
+    evaluate: Callable[[], EvaluationReport] | None = None
+    checkpoint: Callable[[TrainingProgressReport], None] | None = None
 
     def run(self) -> TrainingProgressReport:
         """Collect and learn until the decision budget is spent."""
@@ -124,11 +134,22 @@ class TrainingRun:
                 # on almost no data.
                 owed = 0.0
 
+            self._periodic(report)
             if self.on_episode is not None:
                 self.on_episode(report)
 
         report.wall_seconds = round(time.monotonic() - started, 2)
         return report
+
+    def _periodic(self, report: TrainingProgressReport) -> None:
+        """Evaluate and checkpoint on their episode periods, if configured."""
+        period = self.config.evaluate_every_episodes
+        if self.evaluate is not None and period and report.episodes % period == 0:
+            report.evaluations.append(self.evaluate())
+        period = self.config.checkpoint_every_episodes
+        if self.checkpoint is not None and period and report.episodes % period == 0:
+            self.checkpoint(report)
+            report.checkpoints_written += 1
 
     def _optimise(self, decisions: int) -> LearnMetrics:
         indices, sequences, weights = self.replay.sample(

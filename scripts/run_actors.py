@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clone_session import (  # noqa: E402
     CloneInstance,
     kill_emulator,
+    launch_game_at_home,
     require_offline,
     restore,
     start,
@@ -207,7 +208,16 @@ class ActorFailure(RuntimeError):
 
 
 def run_bridge(command: str, instance: CloneInstance) -> None:
-    """Deploy or clean up the instrumented bridge on one instance."""
+    """Deploy or clean up the instrumented bridge on one instance.
+
+    What the script prints is the device-safety evidence itself: the `libunity.so`
+    hash it re-verified against the original, the package identity, the number of
+    live mounts, and whether the bridge artifacts are gone. Cleanup that reports
+    nothing is indistinguishable from cleanup that verified nothing, so the output
+    is relayed to the operator's log rather than kept for an error path that a
+    successful cleanup never takes. Every line is tagged, since N actors clean up
+    at once and an unattributed identity report verifies no particular instance.
+    """
     result = subprocess.run(
         [
             str(SCRIPTS / "instrumented_bridge.sh"),
@@ -218,6 +228,9 @@ def run_bridge(command: str, instance: CloneInstance) -> None:
         capture_output=True,
         text=True,
     )
+    for marker, text in (("", result.stdout), ("error: ", result.stderr)):
+        for line in text.splitlines():
+            print(f"{instance.serial} {command}: {marker}{line}", flush=True)
     if result.returncode != 0:
         raise ActorFailure(
             f"instrumented_bridge.sh {command} failed on {instance.serial}: "
@@ -234,6 +247,11 @@ def collect_episodes(instance: CloneInstance, arguments: argparse.Namespace) -> 
     # By interface, per instance, immediately before anything is measured.
     require_offline(instance)
     run_bridge("deploy", instance)
+    # deploy cold-launches the game, and an offline cold launch lands on the
+    # OFFLINE modal rather than home, so the launch has to come back through
+    # the online-then-offline sequence before any episode can start.
+    launch_game_at_home(instance)
+    require_offline(instance)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
     result = subprocess.run(

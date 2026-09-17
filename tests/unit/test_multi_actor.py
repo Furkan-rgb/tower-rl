@@ -7,6 +7,9 @@ the aggregate says, and what happens to the other actors when one dies.
 
 from __future__ import annotations
 
+import argparse
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+import run_actors  # noqa: E402
 from clone_session import (  # noqa: E402
     CANONICAL_AVD,
     CLONE_AVD,
@@ -22,11 +26,14 @@ from clone_session import (  # noqa: E402
     emulator_command,
 )
 from run_actors import (  # noqa: E402
+    ActorFailure,
     ActorOutcome,
     aggregate,
     bridge_host_port,
+    collect_episodes,
     health_counters,
     run_actor,
+    run_bridge,
     run_fleet,
 )
 
@@ -222,3 +229,115 @@ def test_a_teardown_failure_is_reported_without_losing_the_episodes() -> None:
     assert outcome.failure is None
     assert outcome.record is not None
     assert "overlay is still mounted" in (outcome.teardown_failure or "")
+
+
+def bring_up_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, snapshot: str | None = None
+) -> list[str]:
+    """Record the order of one actor's bring-up, with every device step injected."""
+    steps: list[str] = []
+    instance = CloneInstance()
+    output = tmp_path / f"{instance.serial}.json"
+
+    def episode_process(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        steps.append(Path(command[1]).name)
+        output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(run_actors, "start", lambda *_, **__: steps.append("start"))
+    monkeypatch.setattr(run_actors, "restore", lambda *_, **__: steps.append("restore"))
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: steps.append("require_offline"))
+    monkeypatch.setattr(
+        run_actors, "launch_game_at_home", lambda *_: steps.append("launch_game_at_home")
+    )
+    monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
+    monkeypatch.setattr(run_actors.subprocess, "run", episode_process)
+
+    arguments = argparse.Namespace(
+        snapshot=snapshot,
+        renderer="lavapipe",
+        cores=4,
+        episodes=2,
+        policy="scripted",
+        frame_game_ms=100.0,
+        max_quiet_game_ms=2000,
+        max_episode_wall_seconds=600.0,
+        output_directory=tmp_path,
+    )
+    assert collect_episodes(instance, arguments)["valid_episodes"] == 1
+    return steps
+
+
+def test_the_game_is_brought_back_to_home_after_deploy_and_before_any_episode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`deploy` cold-launches the game, which offline lands on the OFFLINE modal.
+
+    So the launch-online-reach-home-cut-radios sequence has to come *after* the
+    deploy, and the driver only afterwards; a driver started between the two would
+    meet the modal, where nothing may be tapped.
+    """
+    assert bring_up_steps(monkeypatch, tmp_path) == [
+        "start",
+        "require_offline",
+        "deploy",
+        "launch_game_at_home",
+        "require_offline",
+        "run_episodes.py",
+    ]
+
+
+def test_a_restored_snapshot_is_brought_up_the_same_way(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    steps = bring_up_steps(monkeypatch, tmp_path, snapshot="home_offline")
+    assert steps[0] == "restore"
+    assert (
+        steps.index("deploy")
+        < steps.index("launch_game_at_home")
+        < steps.index("run_episodes.py")
+    )
+
+
+def bridge_output(
+    monkeypatch: pytest.MonkeyPatch, *, stdout: str, stderr: str = "", status: int = 0
+) -> None:
+    def script(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, status, stdout, stderr)
+
+    monkeypatch.setattr(run_actors.subprocess, "run", script)
+
+
+def test_the_cleanup_identity_report_reaches_the_operators_log(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cleanup verification is a device-safety property, so it must be visible."""
+    bridge_output(
+        monkeypatch,
+        stdout=(
+            "libunity_sha256: ffc1f3ef\nversionCode=1199\n"
+            "libunity_mounts: 0\nbridge_artifacts: removed\n"
+        ),
+    )
+
+    run_bridge("cleanup", CloneInstance(index=1))
+
+    printed = capsys.readouterr().out
+    assert "emulator-5558 cleanup: libunity_sha256: ffc1f3ef" in printed
+    assert "emulator-5558 cleanup: libunity_mounts: 0" in printed
+    assert "emulator-5558 cleanup: bridge_artifacts: removed" in printed
+
+
+def test_a_failing_bridge_step_reports_its_output_as_well_as_failing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bridge_output(
+        monkeypatch, stdout="libunity_mounts: 1\n", stderr="warning: still mounted\n", status=1
+    )
+
+    with pytest.raises(ActorFailure, match="still mounted"):
+        run_bridge("cleanup", CloneInstance())
+
+    printed = capsys.readouterr().out
+    assert "emulator-5556 cleanup: libunity_mounts: 1" in printed
+    assert "emulator-5556 cleanup: error: warning: still mounted" in printed

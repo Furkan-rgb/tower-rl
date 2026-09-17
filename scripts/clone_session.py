@@ -232,6 +232,17 @@ def start(
 ) -> None:
     """Cold start: online only long enough to get the game past its check."""
     launch_emulator(instance, renderer, snapshot=None, read_only=read_only, cores=cores)
+    launch_game_at_home(instance)
+
+
+def launch_game_at_home(instance: CloneInstance) -> None:
+    """Cold-launch the game past its network check and leave it at home, offline.
+
+    The game blocks on a Firebase check and an OFFLINE modal, so a cold launch
+    needs a network however briefly. Anything that cold-launches the game on an
+    offline clone — a start, or `instrumented_bridge.sh deploy` — must come back
+    through here or it lands on that modal.
+    """
     print("enabling radios for the startup check only", flush=True)
     set_radios(instance, True)
     adb(instance, "shell", "am", "force-stop", PACKAGE)

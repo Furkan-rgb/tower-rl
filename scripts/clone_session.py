@@ -121,6 +121,12 @@ SNAPSHOT_PREFIX = "tower_clone_home_offline"
 #: A restored instance has an already-started game, so readiness is a short
 #: confirmation rather than the minutes a cold launch takes.
 RESTORED_READY_TIMEOUT = 60.0
+#: The only renderer this emulator will save or restore a snapshot under. The
+#: game uses Vulkan, and `-gpu host` refuses to snapshot a Vulkan app
+#: (`KO: ... UNSUPPORTED_VK_APP`); a snapshot also carries renderer state, so
+#: restoring one under a different renderer would not be the state it claims
+#: anyway. Bring-up under any other renderer takes the cold path outright.
+SNAPSHOT_CAPABLE_RENDERER = "lavapipe"
 
 
 class CloneError(RuntimeError):
@@ -467,14 +473,34 @@ def restore(
     )
 
 
-def save_snapshot(instance: CloneInstance, name: str) -> None:
-    """Refuse to capture a state that is not the one worth restoring."""
+def save_snapshot(
+    instance: CloneInstance, name: str, *, renderer: str = SNAPSHOT_CAPABLE_RENDERER
+) -> None:
+    """Refuse to capture a state that is not the one worth restoring.
+
+    The emulator's own reply is the only evidence of success: under `-gpu host`
+    it refuses to snapshot a Vulkan app and answers `KO: ... UNSUPPORTED_VK_APP`
+    while still exiting the command normally, so a reply has to be parsed rather
+    than assumed. `OK` is required, and — cheap to check, since the directory is
+    already how `snapshot_exists` decides whether a bring-up can restore — the
+    snapshot directory must now exist too.
+    """
     require_offline(instance)
     reason = why_not_ready(instance)
     if reason is not None:
         raise CloneError(f"refusing to snapshot: {reason}")
-    saved = adb(instance, "emu", "avd", "snapshot", "save", name, timeout=300.0)
-    print(saved or "saved", flush=True)
+    reply = adb(instance, "emu", "avd", "snapshot", "save", name, timeout=300.0)
+    if not reply.startswith("OK"):
+        raise CloneError(
+            f"{instance.serial} refused to save snapshot {name} under renderer "
+            f"'{renderer}': {reply or 'no reply from the emulator'}"
+        )
+    if not snapshot_exists(instance, name):
+        raise CloneError(
+            f"{instance.serial} reported {reply!r} saving {name} but the snapshot "
+            "directory does not exist"
+        )
+    print(reply, flush=True)
     print(f"snapshot {name}: game running, idle at home, offline", flush=True)
 
 
@@ -553,6 +579,19 @@ def bring_up(
     bring-up restores.
     """
     name = keyed_snapshot_name(bridge_key())
+    if renderer != SNAPSHOT_CAPABLE_RENDERER:
+        # `-gpu host` cannot save or usefully restore a snapshot (the emulator
+        # refuses a Vulkan app's snapshot save outright), so there is nothing to
+        # try there: attempting a restore or a save would only fail after paying
+        # for the attempt. This is why host bring-up costs 45-60s instead of the
+        # ~10s a restore takes.
+        print(
+            f"{instance.serial}: renderer '{renderer}' cannot snapshot a Vulkan app "
+            f"(snapshots are {SNAPSHOT_CAPABLE_RENDERER}-only); taking the cold path",
+            flush=True,
+        )
+        cold_bring_up(instance, renderer, deploy=deploy, read_only=read_only, cores=cores)
+        return "cold"
     if not force_cold and snapshot_exists(instance, name):
         try:
             restore(instance, name, renderer=renderer, read_only=read_only, cores=cores)
@@ -569,7 +608,7 @@ def bring_up(
         # snapshot; the pinned one is prepared on a writable instance instead.
         print(f"{instance.serial}: read-only, so {name} was not saved", flush=True)
     else:
-        save_snapshot(instance, name)
+        save_snapshot(instance, name, renderer=renderer)
     return "cold"
 
 

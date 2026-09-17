@@ -107,6 +107,12 @@ measured, not what to do next.
    `no_initialized_run` once it is up and idle at home, so nothing in the
    automated path classifies a screenshot. `visual_profile` stays for the
    review/spectate path, where a human watches and the picture is the point.
+6. **`-gpu host` is the training renderer; snapshots are lavapipe-only.**
+   Verified equivalent to lavapipe on game-time ratio, decisions/wave, mean
+   wave and unattended stability (see "Done: `-gpu host` is the mandatory
+   training renderer" below). The emulator refuses to snapshot a Vulkan app
+   under host GPU, so `clone_session.py` never attempts a save or restore
+   there; host bring-up is cold every time, by design, and says so in its log.
 
 ### Done: the advance loop is inside the bridge
 
@@ -184,6 +190,30 @@ ratio to 1.0088. Commit `cf504b8` ships that fix: the re-pin is removed, the
 errors now cost one episode instead of the run, and the adapter refuses to
 issue any command of its own initiative while a round is in progress.
 
+### Done: `-gpu host` is the mandatory training renderer; snapshots are lavapipe-only
+
+Device-verified at `9cc3a233`. `-gpu host` and `-gpu lavapipe` are equivalent
+on the metrics that matter for training: game-time ratio 1.0108 (host) vs.
+1.0118 (lavapipe), decisions/wave 21.0 vs. 20.73, mean wave 6.2 vs. 6.0, and
+an unattended 25/25-valid-episode run on host at 80.6 episodes/hour with
+every health counter at zero. **Standing decision: `-gpu host` is the
+renderer training runs use.**
+
+Snapshot save is a separate, narrower capability that does **not** carry
+over: the game uses Vulkan, and this emulator refuses to save a snapshot of
+a Vulkan app under `-gpu host`, replying `KO: Snapshot save is skipped.
+Reason: UNSUPPORTED_VK_APP`. `clone_session.py` used to print that reply and
+report success anyway, which meant a later restore would load stale
+renderer state from a different renderer, find no running game, and fall
+back to the cold path silently — the fallback was correct, the false
+success was not. `save_snapshot` now requires the emulator's own `OK` reply
+and, cheaply, that the snapshot directory exists, and raises naming the
+reason and the renderer otherwise. `bring_up` no longer attempts a save (or
+a restore) under any renderer but `lavapipe`; under `-gpu host` it goes
+straight to the cold path and says so in one log line. **Consequence: host
+bring-up is cold every time** (45-60 s, not the ~10 s a restore costs), and
+snapshots remain useful only for lavapipe-driven work such as manual review.
+
 ### The current priority order
 
 Superseded by the GitHub board — see "Task tracking is on GitHub, not in
@@ -192,17 +222,21 @@ comparison-floor work referenced here is tracked as milestone issues; the
 stale-observation reconnect gap and multi-actor scaling are tracked under
 the `deferred` label.
 
-### The boundary deadlock
+### The boundary deadlock — fixed
 
-`M1B-E021` also surfaced a blocking defect: `AdvanceUntilEvent` sets the
-paused flag and dispatches `Pause` before reading the settled snapshot, so a
-tower death inside the pause-settle window emits a terminal observation
-while the bridge believes the world is paused. The bridge then emits only
-heartbeats, the client's `read_state` returns the stale terminal reading
-indefinitely, and `_resume_a_frozen_run` declines to unpause because the
-reading is (wrongly, in this case) terminal. Observed at about 1 failure per
-7 episode boundaries. A fix is in flight in a concurrent commit; check
-`M1B-E021` and recent commits for status before starting new work here.
+`M1B-E021` surfaced a blocking defect: `AdvanceUntilEvent` sets the paused
+flag and dispatches `Pause` before reading the settled snapshot, so a tower
+death inside the pause-settle window emits a terminal observation while the
+bridge believes the world is paused. The bridge then emits only heartbeats,
+the client's `read_state` returns the stale terminal reading indefinitely,
+and `_resume_a_frozen_run` declines to unpause because the reading is
+(wrongly, in this case) terminal. Observed at about 1 failure per 7 episode
+boundaries. **Fixed at `328318e`** ("Hold the sequence for a world standing
+still, not for a pause pressed"): pause is now reported as the settled state
+found it, confirmed once more against the state about to be sent. No
+deadlock has been observed since, across 6 boundaries and 2 arms of
+device-verified running. Do not reopen this as a live risk without new
+evidence.
 
 ### The immediate next slice, before this run
 
@@ -521,9 +555,13 @@ the RETRY button itself, and the adapter settles six seconds before classifying
 because the panel animates in. Only anchor values are recorded, never
 screenshots.
 
-Also open: `M1B-E003` measured throughput under `-gpu host`, which
-`M1B-E004` then rejected for rendering the frame incorrectly. Those numbers are
-an upper bound until re-measured under `-gpu lavapipe`.
+Also historical: `M1B-E003` measured throughput under `-gpu host`, which
+`M1B-E004` then rejected for rendering the frame incorrectly under the
+screen-classification path that existed at the time. Superseded: bring-up and
+the episode boundary are now non-visual (see "Standing decisions" above), and
+`-gpu host` is device-verified equivalent to lavapipe and is the standing
+training renderer (see "Done: `-gpu host` is the mandatory training
+renderer").
 
 ## Experimental no-OCR continuation — 2026-09-15
 

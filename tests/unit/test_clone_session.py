@@ -57,12 +57,26 @@ def running_round(wave: int = 12) -> BridgeObservation:
 class FakeClone:
     """One emulator instance's adb surface, and the radio state it reports."""
 
-    def __init__(self, *, online: bool = True, pid: str = "4242") -> None:
+    def __init__(
+        self,
+        *,
+        online: bool = True,
+        pid: str = "4242",
+        snapshot_reply: str = "OK",
+        create_snapshot_dir: bool = True,
+    ) -> None:
         self.online = online
         self.pid = pid
         self.commands: list[str] = []
+        #: The emulator console's reply to `snapshot save`. Real replies are
+        #: `OK` on success or `KO: <reason>` on refusal (for example
+        #: `KO: Snapshot save is skipped. Reason: UNSUPPORTED_VK_APP`).
+        self.snapshot_reply = snapshot_reply
+        #: Whether a claimed `OK` actually leaves a snapshot directory behind,
+        #: so the false-success path can be exercised on its own.
+        self.create_snapshot_dir = create_snapshot_dir
 
-    def adb(self, _instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
+    def adb(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
         command = " ".join(args)
         self.commands.append(command)
         if command.startswith("shell ip -o -4 addr"):
@@ -77,6 +91,14 @@ class FakeClone:
             return "1"
         if command.startswith("shell pidof"):
             return self.pid
+        if command.startswith("emu avd snapshot save"):
+            if self.snapshot_reply.startswith("OK") and self.create_snapshot_dir:
+                # A real save leaves the snapshot directory on disk; that is
+                # what `snapshot_exists` checks after a reported success.
+                name = args[-1]
+                clone_session.snapshot_directory(instance).mkdir(parents=True, exist_ok=True)
+                (clone_session.snapshot_directory(instance) / name).mkdir(exist_ok=True)
+            return self.snapshot_reply
         return ""
 
     def index_of(self, prefix: str) -> int:
@@ -238,13 +260,43 @@ def test_snapshot_refuses_a_state_that_is_not_worth_restoring(
     assert not [command for command in clone.commands if "snapshot save" in command]
 
 
-def test_snapshot_saves_a_running_idle_offline_game(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_saves_a_running_idle_offline_game(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANDROID_AVD_HOME", str(tmp_path / "avd"))
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
 
     save_snapshot(CloneInstance(), "nonvisual_baseline_home_offline")
 
     assert clone.index_of("emu avd snapshot save nonvisual_baseline_home_offline") > 0
+
+
+def test_snapshot_save_refused_under_the_wrong_renderer_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `KO` reply must fail loudly, naming the reason and the renderer."""
+    monkeypatch.setenv("ANDROID_AVD_HOME", str(tmp_path / "avd"))
+    clone = FakeClone(
+        online=False,
+        snapshot_reply="KO: Snapshot save is skipped. Reason: UNSUPPORTED_VK_APP",
+    )
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="UNSUPPORTED_VK_APP"):
+        save_snapshot(CloneInstance(), "nonvisual_baseline_home_offline", renderer="host")
+
+
+def test_snapshot_save_that_claims_ok_but_leaves_no_directory_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Success is verified positively, not assumed from the reply alone."""
+    monkeypatch.setenv("ANDROID_AVD_HOME", str(tmp_path / "avd"))
+    clone = FakeClone(online=False, snapshot_reply="OK", create_snapshot_dir=False)
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="directory does not exist"):
+        save_snapshot(CloneInstance(), "nonvisual_baseline_home_offline")
 
 
 def test_restore_claims_only_what_a_snapshot_promises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -473,4 +525,29 @@ def test_a_read_only_instance_takes_the_cold_path_without_saving_a_snapshot(
 
     assert path == "cold"
     assert "-read-only" in launches[0]
+    assert not [command for command in clone.commands if "snapshot save" in command]
+
+
+def test_bring_up_under_host_takes_the_cold_path_without_attempting_a_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Snapshots are lavapipe-only; a host bring-up must not even try one.
+
+    A matching snapshot is deliberately held here too, to prove the renderer
+    check is what routes this, not a missing snapshot.
+    """
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    clone = FakeClone()
+    install(monkeypatch, clone, [IDLE])
+    launches = record_launches(monkeypatch)
+    deployed: list[str] = []
+
+    path = clone_session.bring_up(
+        CloneInstance(), "host", deploy=lambda instance: deployed.append(instance.serial)
+    )
+
+    assert path == "cold"
+    assert deployed == ["emulator-5556"]
+    assert "-no-snapshot-load" in launches[0]
     assert not [command for command in clone.commands if "snapshot save" in command]

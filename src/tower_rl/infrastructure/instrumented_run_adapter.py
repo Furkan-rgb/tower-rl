@@ -30,13 +30,21 @@ from tower_rl.infrastructure.visual_profile import (
 from tower_rl.ports.android import ScreenPoint
 from tower_rl.ports.run_port import RunPortError
 
-#: Pausing between decisions is disabled by default. The reasoning that it should
-#: switch on above 16x was sound about decision density and wrong about cost:
-#: every slice pays a host round trip and a wall-clock floor, and `M1B-E006`
-#: measured the same policy at 64x reaching wave 10 in 14.6 s free-running against
-#: wave 3 in 273 s stepped - roughly nineteen times the throughput, and better
-#: play. Set a finite threshold only if decision density is shown to bind.
-PAUSE_STEPPING_SPEED = float("inf")
+#: Always step. The game's own speed multiplier is not a speed-up mechanism for
+#: this project: a faster game clock makes every rendered frame worth more game
+#: time, which coarsens the agent's decisions in exact proportion to the speed
+#: gained (`M1B-E012`). Speed comes from stepping frames faster instead, and
+#: `M1B-E016` measured a frame-exact step costing the same whether the multiplier
+#: is 1 or 16 - it no longer affects anything, so it stays at 1.
+#:
+#: The earlier `inf` here disabled stepping entirely, on `M1B-E006`'s finding that
+#: pause-stepping was nineteen times slower. That measurement was of a step
+#: composed from four separate host commands; fused into one bridge command it
+#: costs about 57 ms, and correctness is not negotiable against throughput.
+PAUSE_STEPPING_SPEED = 0.0
+
+#: The game's own multiplier, pinned. See above: it is not a tuning knob.
+GAME_SPEED = 1.0
 
 #: The only two coordinates this loop may ever touch, each gated on a positive
 #: screen classification immediately before use.
@@ -62,7 +70,7 @@ class InstrumentedRunAdapter:
 
     client: InstrumentedBridgeClient
     device: object  # AdbDevice-shaped: screenshot() and tap() only
-    requested_speed: float = 64.0
+    requested_speed: float = GAME_SPEED
     #: Pause between decisions above this speed. Configurable because the right
     #: value is an empirical question: pausing protects decision density, but
     #: each slice costs a round trip, and M1B-E006 measures which dominates.

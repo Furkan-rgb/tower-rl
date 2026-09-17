@@ -969,22 +969,22 @@ stops being a game setting and becomes *how fast frames render*, which is a host
 concern — and that is what makes the renderer matter again, for frame rate rather
 than for pixels.
 
-**Until this exists, what speed should runs use? 8x.** Measured against a real
-1x reference (`M1B-E014`), 8x delivers 88.5 decisions per episode against 1x's
-89.3 — indistinguishable — while 64x delivers 42.5. The requirement is therefore
-already satisfied at 8x, at 56.7 episodes per hour against 205 at 64x. The
-interim rule is:
+**The game's own multiplier is pinned at 1x and is not a speed-up mechanism.**
+This is a standing decision, not an interim one. A faster game clock makes every
+rendered frame worth more game time, which coarsens the agent's decisions in
+proportion to the speed gained — measured at 4.8 decisions per wave at 64x
+against 12.2 at 1x (`M1B-E012`). Any throughput bought that way is paid for in
+the thing the agent is actually learning from.
 
-- **training runs at 8x**, which costs 3.6 times the wall clock and buys decision
-  moments that match normal-speed play;
-- plumbing, smoke tests and pipeline work may still run at 64x, where throughput
-  matters and decision quality does not;
-- a training result collected at 64x is provisional, because it was gathered on a
-  control problem less than half as fine as normal play.
+`infrastructure/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0`
+is the adapter's default and `PAUSE_STEPPING_SPEED = 0.0` makes stepping
+unconditional, so no speed setting can switch it off. Tests assert both.
 
-This changes the priority of the mechanism below rather than removing it. It is
-no longer blocking training; it is how the 3.6x is recovered, and `speed = slice
-x achieved fps` may reach well beyond 8x.
+8x free running was briefly adopted as an interim, on the evidence that it
+matches normal-speed decision density (`M1B-E014`). It does — but only because 8x
+happens to sit below the point where a frame exceeds the slice, which is a
+coincidence of the current frame rate rather than a property of the design. It is
+withdrawn. Speed comes from stepping frames faster.
 
 Two settings go with it, or the engine will still wait for real time between
 frames: `QualitySettings.vSyncCount = 0` and `Application.targetFrameRate = -1`.

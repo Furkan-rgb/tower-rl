@@ -14,7 +14,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     UpgradeInventoryEntry,
 )
 from tower_rl.infrastructure.instrumented_run_adapter import (
-    PAUSE_STEPPING_SPEED,
+    GAME_SPEED,
     InstrumentedRunAdapter,
 )
 from tower_rl.infrastructure.visual_profile import Screen
@@ -132,15 +132,20 @@ def test_a_terminal_run_taps_retry_from_the_result_screen(monkeypatch) -> None:
     assert device.taps == [module.RETRY_BUTTON]
 
 
-def test_pause_stepping_is_off_by_default_because_it_cost_throughput() -> None:
-    """M1B-E006: stepping at 64x gave wave 3 in 273s against wave 10 in 14.6s."""
-    client = FakeClient(states=[_observation(speed=64.0)])
+def test_the_world_is_stepped_rather_than_left_running() -> None:
+    """M1B-E016: a frame-exact step costs the same at any game speed.
+
+    Free running lets host latency burn game time in proportion to the speed
+    setting, which is what coarsened decisions fourfold at 64x (M1B-E012).
+    """
+    client = FakeClient(states=[_observation(speed=1.0)])
     adapter = _adapter(client, FakeDevice())
     adapter.read_state()
 
     adapter.advance(expected_sequence=1, game_ms=250)
 
-    assert client.sent[-1]["kind"] == "wait"
+    assert client.sent[-1]["kind"] == "step"
+    assert client.sent[-1]["game_ms"] == 250
 
 
 def test_pause_stepping_can_still_be_requested_explicitly() -> None:
@@ -164,15 +169,19 @@ def test_release_leaves_the_game_running_for_the_next_session() -> None:
     assert client.sent[-1]["action"] == "unpause"
 
 
-def test_a_slow_world_free_runs_instead_of_pausing() -> None:
-    client = FakeClient(states=[_observation(speed=1.5)])
-    adapter = _adapter(client, FakeDevice())
-    adapter.read_state()
+def test_the_game_speed_multiplier_is_pinned_and_stepping_is_unconditional() -> None:
+    """The multiplier is not a speed-up mechanism, so no speed may disable stepping."""
+    assert GAME_SPEED == 1.0
+    assert InstrumentedRunAdapter(client=FakeClient(), device=FakeDevice()).requested_speed == 1.0
 
-    adapter.advance(expected_sequence=1, game_ms=250)
+    for speed in (1.0, 8.0, 64.0):
+        client = FakeClient(states=[_observation(speed=speed)])
+        adapter = _adapter(client, FakeDevice())
+        adapter.read_state()
 
-    assert client.sent[-1]["kind"] == "wait"
-    assert PAUSE_STEPPING_SPEED > 1.5
+        adapter.advance(expected_sequence=1, game_ms=250)
+
+        assert client.sent[-1]["kind"] == "step", f"speed {speed} must still step"
 
 
 def test_purchases_bind_the_state_they_were_decided_from() -> None:

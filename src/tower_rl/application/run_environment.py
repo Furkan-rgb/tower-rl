@@ -55,6 +55,10 @@ class _EpisodeTally:
     recovered_transients: int = 0
     started_at: float = 0.0
     peak_wave: int = 0
+    #: The speed the run was seen executing at while it was still running. The
+    #: final state is always terminal and the game has stopped time by then, so
+    #: sampling there reports zero for every episode (M1B-E009).
+    active_game_speed: float = 0.0
 
 
 @dataclass
@@ -79,7 +83,11 @@ class InstrumentedRunEnvironment:
             raise RunPortError("the instance did not reach an active run")
         self._state = state
         self._episode_id = uuid.uuid4().hex
-        self._tally = _EpisodeTally(started_at=time.monotonic(), peak_wave=state.wave)
+        self._tally = _EpisodeTally(
+            started_at=time.monotonic(),
+            peak_wave=state.wave,
+            active_game_speed=state.game_speed,
+        )
         self._last_reasons = ()
         return state
 
@@ -100,7 +108,7 @@ class InstrumentedRunEnvironment:
             purchases=self._tally.purchases,
             termination=termination,
             elapsed_wall_seconds=round(time.monotonic() - self._tally.started_at, 3),
-            game_speed=state.game_speed,
+            game_speed=self._tally.active_game_speed,
             invalid_transitions=self._tally.invalid_transitions,
             termination_detail=self._last_reasons,
         )
@@ -243,6 +251,8 @@ class InstrumentedRunEnvironment:
         if next_state is not None:
             self._state = next_state
             self._tally.peak_wave = max(self._tally.peak_wave, next_state.wave)
+            if next_state.lifecycle == "active":
+                self._tally.active_game_speed = next_state.game_speed
         transition = RunTransition(
             state=state,
             next_state=next_state,

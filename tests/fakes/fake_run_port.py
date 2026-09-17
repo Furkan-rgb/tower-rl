@@ -100,7 +100,10 @@ class FakeRunPort:
             max_health=self.max_health,
             terminal=not self.active,
             round_active=self.active,
-            game_speed=self.game_speed,
+            # The real game stops time on death, so a terminal reading carries
+            # speed zero (M1B-E009). The double has to do the same, or code that
+            # samples speed at the wrong moment looks correct here.
+            game_speed=self.game_speed if self.active else 0.0,
             play_time=100.0 + self.elapsed_ms / 1000.0,
             upgrades=tuple(
                 UpgradeInventoryEntry(

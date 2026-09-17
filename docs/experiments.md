@@ -7,11 +7,121 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E009 — The 1,000-episode M2 reliability gate passes
+
+**Date:** 2026-09-17
+**Status:** Gate passed — 1,000 of 1,000 attempts valid, no invalid attempt to
+classify, no silent corruption
+
+One thousand consecutive scripted episodes ran unattended on the instrumented
+clone at requested speed 64. This is the volume the M2 gate asks for, and it is
+the first sample large enough to say anything about the tail.
+
+| Quantity | Value |
+| --- | --- |
+| Episodes attempted | 1,000 |
+| Valid episodes | 1,000 |
+| Validity | 100 percent |
+| Invalid attempts | 0 |
+| `invalid_by_reason` | `{}` |
+| `invalid_detail` | `{}` |
+| Mean final wave | 9.758 |
+| Median final wave | 10 |
+| Standard deviation | 1.287 |
+| Lower quartile | 10 |
+| Range | 2 to 11 |
+| Decisions | 51,840 |
+| Episode wall time | 7,845 s |
+| Total wall time | 15,168 s (4 h 13 m) |
+| Episodes per hour | 237.3 |
+
+### Does it pass
+
+Yes, on every clause. The gate requires at least 1,000 consecutive attempts at
+99 percent validity or better, every invalid attempt classified, and no silent
+corruption. There were 1,000 attempts, validity was 100 percent, and the
+`invalid_detail` breakdown the gate asks for is empty because there was nothing
+to break down — which is the strongest form the clause can take, not an absence
+of evidence: the same reporting path produced a populated breakdown in
+`M1B-E007` and `M1B-E008`.
+
+Nothing was relaxed to reach it. The validator is the one from `M1B-E008`:
+negative health during a genuinely active run is still invalid, health above
+maximum is still invalid in any lifecycle, and the death-boundary re-read is
+still exactly one retry.
+
+### What this does not pass
+
+M2 in `task.md` is wider than the soak, and two of its exit criteria are still
+open. Calling M2 complete on this evidence would be wrong.
+
+- *"the selected training time scale and actor count pass documented parity,
+  stability, and aggregate-throughput comparisons against normal-speed
+  execution"* — not done. The speed equivalence gate has not been run, so 64 is
+  the speed this soak used, not a speed shown to be equivalent to normal
+  execution. Actor-count scaling is unmeasured entirely.
+- *"recorded episode summaries agree with sampled visual evidence"* — not done
+  in this run. Nothing was screenshot-verified against the bridge's summaries
+  across these 1,000 episodes.
+
+So: the reliability clauses of M2 pass on this evidence. M2 itself does not, and
+training against it may not proceed on this entry alone.
+
+### What changed since 150 episodes
+
+`M1B-E008` measured 99.3 percent over 150 attempts, with its single failure
+attributed to the death-boundary transient and the one-retry recovery added in
+response. Over 1,000 attempts that failure mode did not produce a single invalid
+episode. The recovery is therefore doing what it was built to do rather than
+masking a rate that was about to reappear at volume.
+
+The distribution is stable across the two samples, which is the point of quoting
+it: mean 9.79 then 9.758, standard deviation 1.26 then 1.287. The
+sample-size arithmetic the comparison protocol rests on is unchanged at about 23
+evaluation episodes per arm for a one-wave difference, and it now rests on 1,000
+episodes rather than 150.
+
+The one number that moved is the minimum, from 5 to 2. At 150 episodes the worst
+run reached wave 5; at 1,000 there is a run that died at wave 2. That is what a
+longer tail looks like and not a defect — the episode was valid, classified as a
+game over, and counted.
+
+### Throughput
+
+237.3 episodes per hour, against 236 measured over 150 episodes. Episode wall
+time accounts for 7,845 s of the 15,168 s total, so a little under half the
+run's wall clock is spent *between* episodes: the result panel settling, the
+gated taps, and the restart. That gap is the obvious target if throughput ever
+becomes the binding constraint, and it is device-side rather than model-side.
+
+### A reporting defect this run exposed
+
+The report's `game_speed` field reads `0.0`, and that is wrong in the sense that
+it says nothing. `EpisodeSummary.game_speed` is sampled from the final state of
+the episode, which is always the terminal one, and the game has stopped time by
+then. The run did execute at speed 64 — `requested_speed` records it, and 237
+episodes per hour with 51,840 decisions in four hours corroborates it — but the
+field that claims to report the speed the episode *ran* at samples the one
+instant that is never representative.
+
+This matters for the speed equivalence gate, where the speed an arm actually ran
+at is the entire independent variable. Recorded here and fixed rather than
+worked around.
+
+### Device
+
+The stage closed as required: `scripts/instrumented_bridge.sh cleanup` restored
+the original `libunity.so` (SHA-256 `ffc1f3ef…dd0040`), package identity is
+unchanged (`versionCode 1199`, `versionName 29.0.3`, installer
+`com.android.vending`), zero remaining mounts, bridge artifacts removed,
+airplane mode still on afterwards, and no emulator left running.
+
 ## M1B-E008 — 150-episode reliability sample and the death-boundary transient
 
 **Date:** 2026-09-17
 **Status:** 99.3 percent validity over 150 episodes; residual attributed and
-recovered; the full 1,000-attempt gate is running
+recovered. Superseded on volume by `M1B-E009`, which passed the full
+1,000-attempt gate at 100 percent validity.
 
 With rejection reasons now aggregated into evaluation reports, 150 consecutive
 scripted episodes give the first reliability sample worth quoting.
@@ -66,8 +176,8 @@ silently absorbed.
 The gate requires at least 1,000 consecutive episode attempts at 99 percent
 validity or better with no silent corruption. 150 attempts at 99.3 percent meet
 the threshold but not the volume, so this is evidence toward the gate and not a
-pass. A 1,000-episode run is in progress; at 236 episodes per hour it takes
-about four and a quarter hours.
+pass. The 1,000-episode run that followed is recorded in `M1B-E009` and passed;
+it took 4 h 13 m at 237 episodes per hour.
 
 ## M1B-E007 — The invalid-episode rate was the validator, not the game
 

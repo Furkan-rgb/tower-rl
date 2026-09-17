@@ -205,3 +205,22 @@ def test_a_persistently_contradictory_state_is_still_invalid() -> None:
 
     assert state is not None and not state.valid
     assert "negative health in an active run" in state.invalid_reasons
+
+
+def test_the_summary_reports_the_speed_the_run_actually_executed_at() -> None:
+    """M1B-E009: the terminal state reports zero, because the game stops time."""
+    environment, port = _environment(damage_per_second=4.0)
+    state = environment.reset()
+    running_speed = state.game_speed
+
+    for _ in range(50):
+        transition = environment.step(WAIT)
+        if transition.terminated:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    assert transition.next_state is not None and transition.next_state.terminal
+    summary = environment.summarize(transition.termination)
+    assert summary.game_speed == running_speed
+    assert summary.game_speed > 0.0, "a speed of zero says nothing about the run"

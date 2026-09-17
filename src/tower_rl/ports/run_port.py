@@ -16,10 +16,18 @@ from tower_rl.domain.run_state import ExactRunReadingLike
 
 @runtime_checkable
 class CommandResultLike(Protocol):
-    """The game-owned verdict on one requested command."""
+    """The game-owned verdict on one requested command.
 
-    outcome: str
-    reason: str
+    Read-only, because the environment only ever inspects a verdict. Declaring
+    these as settable attributes would make them invariant, which would reject an
+    adapter that reports a `StrEnum` outcome even though a `StrEnum` is a `str`.
+    """
+
+    @property
+    def outcome(self) -> str: ...
+
+    @property
+    def reason(self) -> str: ...
 
 
 class RunPortError(RuntimeError):

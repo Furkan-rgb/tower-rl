@@ -31,7 +31,8 @@ class CheckResult:
         return asdict(self)
 
 
-def _sdk_roots() -> tuple[Path, ...]:
+def sdk_roots() -> tuple[Path, ...]:
+    """Where an Android SDK may live, configured roots first."""
     configured = [
         Path(value)
         for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT")
@@ -63,7 +64,7 @@ def find_android_tool(name: str) -> Path | None:
         "apkanalyzer": ("cmdline-tools/latest/bin/apkanalyzer",),
         "sdkmanager": ("cmdline-tools/latest/bin/sdkmanager",),
     }
-    for root in _sdk_roots():
+    for root in sdk_roots():
         for relative in relative_candidates.get(name, ()):
             candidate = root / relative
             if candidate.is_file():

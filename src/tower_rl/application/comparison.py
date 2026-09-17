@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import random
 import statistics
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 BOOTSTRAP_ITERATIONS = 10_000
@@ -131,7 +131,7 @@ def cohens_d(left: Sequence[float], right: Sequence[float]) -> float:
 
 
 def compare(
-    arms: dict[str, Sequence[float]], *, confidence: float = 0.95, seed: int | None = 0
+    arms: Mapping[str, Sequence[float]], *, confidence: float = 0.95, seed: int | None = 0
 ) -> tuple[Difference, ...]:
     """Every pairwise comparison, in a stable order."""
     names = sorted(arms)

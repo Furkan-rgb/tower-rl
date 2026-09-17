@@ -42,4 +42,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["tower_rl"]
+# The device runners under scripts/ are checked too: a mistake there costs an
+# hour of device time, which is the most expensive kind of mistake here.
+mypy_path = "src:scripts"
+files = ["src/tower_rl", "scripts"]

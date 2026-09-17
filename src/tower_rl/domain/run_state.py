@@ -32,13 +32,20 @@ MAX_AFFORDABILITY_RATIO = 10.0
 class UpgradeEntryLike(Protocol):
     """One exact upgrade reading, as any source must present it."""
 
-    family: str
-    index: int
-    cost: float
-    level: int
-    max_level: int
-    unlocked: bool
-    maxed: bool
+    @property
+    def family(self) -> str: ...
+    @property
+    def index(self) -> int: ...
+    @property
+    def cost(self) -> float: ...
+    @property
+    def level(self) -> int: ...
+    @property
+    def max_level(self) -> int: ...
+    @property
+    def unlocked(self) -> bool: ...
+    @property
+    def maxed(self) -> bool: ...
 
 
 class ExactRunReadingLike(Protocol):
@@ -46,16 +53,27 @@ class ExactRunReadingLike(Protocol):
 
     Declared structurally so the domain never imports a transport type: the
     dependency runs inward, and any source presenting these readings will do.
+    Every member is read-only, which is both true - the domain never writes back
+    to a reading - and necessary: settable attributes are invariant, so a source
+    reporting a narrower type than the one declared here would be rejected.
     """
 
-    sequence: int
-    lifecycle: str
-    wave: int
-    cash: float
-    health: float
-    max_health: float
-    game_speed: float
-    upgrades: Sequence[UpgradeEntryLike]
+    @property
+    def sequence(self) -> int: ...
+    @property
+    def lifecycle(self) -> str: ...
+    @property
+    def wave(self) -> int: ...
+    @property
+    def cash(self) -> float: ...
+    @property
+    def health(self) -> float: ...
+    @property
+    def max_health(self) -> float: ...
+    @property
+    def game_speed(self) -> float: ...
+    @property
+    def upgrades(self) -> Sequence[UpgradeEntryLike]: ...
 
 
 def _log_scale(value: float) -> float:

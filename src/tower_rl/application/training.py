@@ -20,6 +20,13 @@ from tower_rl.learning.backbone import Backbone, LearnMetrics, collate
 from tower_rl.ports.run_port import RunPortError
 
 
+def _mean(values: list[float]) -> float | None:
+    """The mean of a health window, or None before it holds anything."""
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 @dataclass(frozen=True)
 class TrainingConfig:
     """One arm's budget and schedules, recorded with its result."""
@@ -84,6 +91,11 @@ class TrainingProgressReport:
     wall_seconds: float = 0.0
     episode_summaries: list[EpisodeSummary] = field(default_factory=list)
     recent_losses: list[float] = field(default_factory=list)
+    #: The other two learning-health signals `learn` already returns, kept over
+    #: the same window as the loss and for the same reason: a loss that looks
+    #: steady while TD errors or gradients run away is still a learner problem.
+    recent_td_errors: list[float] = field(default_factory=list)
+    recent_gradient_norms: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
     #: Episodes the port could not produce at all - a boundary that would not
@@ -112,9 +124,17 @@ class TrainingProgressReport:
         stops moving while episodes keep arriving is a learner problem, and it is
         invisible in the final-wave distribution alone.
         """
-        if not self.recent_losses:
-            return None
-        return sum(self.recent_losses) / len(self.recent_losses)
+        return _mean(self.recent_losses)
+
+    @property
+    def mean_recent_absolute_td_error(self) -> float | None:
+        """Mean absolute TD error over the same window, or None before any step."""
+        return _mean(self.recent_td_errors)
+
+    @property
+    def mean_recent_gradient_norm(self) -> float | None:
+        """Mean gradient norm over the same window, or None before any step."""
+        return _mean(self.recent_gradient_norms)
 
 
 @dataclass
@@ -199,7 +219,14 @@ class TrainingRun:
                 metrics = self._optimise(report.decisions)
                 report.optimisation_steps += 1
                 report.recent_losses.append(metrics.loss)
-                del report.recent_losses[:-100]
+                report.recent_td_errors.append(metrics.mean_absolute_td_error)
+                report.recent_gradient_norms.append(metrics.gradient_norm)
+                for window in (
+                    report.recent_losses,
+                    report.recent_td_errors,
+                    report.recent_gradient_norms,
+                ):
+                    del window[:-100]
                 owed -= 1.0
             if len(self.replay) < self.config.warmup_sequences:
                 # Do not bank a debt of gradient steps while the buffer fills, or

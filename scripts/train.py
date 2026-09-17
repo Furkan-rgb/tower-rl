@@ -11,9 +11,13 @@ for the same reason `compare_arms.py` interleaves its episodes: training one arm
 to completion and then the next would confound the backbone with whatever
 drifted on the host, the device or the account in between.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/train.py \\
+    TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
         --backbone recurrent-q --backbone stacked-dqn \\
         --budget-decisions 20000
+
+The run records itself to the local MLflow store under `~/.local/state/tower-rl`;
+`--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
+run without recording, which leaves nothing to compare the run against later.
 """
 
 from __future__ import annotations
@@ -65,6 +69,11 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
+from tower_rl.ports.experiment_tracker import (  # noqa: E402
+    ExperimentTracker,
+    NoExperimentTracker,
+    TrackedRun,
+)
 
 #: Every backbone in the comparison, addressed identically. Adding one here is
 #: all it takes to put it under the same protocol as the others.
@@ -127,6 +136,42 @@ class LearningCurvePoint:
         )
 
 
+def curve_metrics(
+    point: LearningCurvePoint,
+    report: TrainingProgressReport,
+    evaluation: EvaluationReport,
+) -> dict[str, float]:
+    """What one curve point is worth tracking for, keyed by nothing but itself.
+
+    Every number here is already measured; none is instrumented for tracking.
+    The learner health signals are the ones `learn` returns anyway - loss, TD
+    error magnitude, gradient norm - averaged over the last hundred steps.
+    """
+    waves = sum(point.final_waves)
+    metrics: dict[str, float] = {
+        "eval_mean_final_wave": point.mean_final_wave,
+        "eval_valid_episodes": float(point.valid_episodes),
+        "eval_invalid_episodes": float(point.invalid_episodes),
+        "versus_scripted_reference": point.versus_scripted_reference,
+        "episodes": float(point.episodes),
+        "optimisation_steps": float(point.model_version),
+        "wall_seconds": point.wall_seconds,
+    }
+    if point.stdev_final_wave is not None:
+        metrics["eval_stdev_final_wave"] = point.stdev_final_wave
+    if waves:
+        # Device cost per wave reached, measured exploration-free: the density
+        # the budget is actually spent at.
+        metrics["eval_decisions_per_wave"] = evaluation.decisions_in_valid_episodes / waves
+    health = {
+        "mean_recent_loss": report.mean_recent_loss,
+        "mean_recent_absolute_td_error": report.mean_recent_absolute_td_error,
+        "mean_recent_gradient_norm": report.mean_recent_gradient_norm,
+    }
+    metrics.update({key: value for key, value in health.items() if value is not None})
+    return metrics
+
+
 def invalid_episodes_by_reason(report: TrainingProgressReport) -> dict[str, int]:
     """Why the collected episodes that were not scored ended, counted by name.
 
@@ -162,6 +207,9 @@ class Arm:
     resolved: dict[str, object]
     #: The monotonic origin every curve point's wall clock is measured from.
     started: float
+    #: Where this arm records itself. `NoExperimentTracker` hands out a handle
+    #: that keeps nothing, so the code below has no tracked and untracked paths.
+    run: TrackedRun
     learning_curve: list[LearningCurvePoint] = field(default_factory=list)
     #: The weight digest of the checkpoint last written, which is what a curve
     #: point names when it says which checkpoint it corresponds to.
@@ -228,6 +276,13 @@ class Arm:
             checkpoint_path=str(path),
         )
         self.learning_curve.append(point)
+        # Keyed by decisions consumed, because that is the budget unit the
+        # comparison equalises on; the checkpoint goes up under the fingerprint
+        # the point names, so a tracked point resolves to an exact file.
+        self.run.log_metrics(
+            curve_metrics(point, progress, evaluation), decisions=progress.decisions
+        )
+        self.run.log_artifact(path, directory=f"checkpoints/{digest}")
         return point
 
     def summary(self) -> dict[str, object]:
@@ -261,17 +316,31 @@ class Arm:
 
 def build_backbone(
     name: str, arguments: argparse.Namespace, device: torch.device
-) -> Backbone:
+) -> tuple[Backbone, RecurrentQConfig | StackedDqnConfig]:
+    """The backbone and the learner settings it was fixed with.
+
+    The settings come back alongside it because they are part of what the arm
+    is configured by - n-step, discount, learning rate - and a run that does not
+    record them cannot be compared with the next one.
+    """
     if name == "recurrent-q":
-        return RecurrentQBackbone(
-            config=RecurrentQConfig(seed=arguments.seed),
+        recurrent = RecurrentQConfig(seed=arguments.seed)
+        return (
+            RecurrentQBackbone(
+                config=recurrent,
+                network_config=NetworkConfig(),
+                device=device,
+            ),
+            recurrent,
+        )
+    stacked = StackedDqnConfig(seed=arguments.seed, history_length=arguments.history_length)
+    return (
+        StackedDqnBackbone(
+            config=stacked,
             network_config=NetworkConfig(),
             device=device,
-        )
-    return StackedDqnBackbone(
-        config=StackedDqnConfig(seed=arguments.seed, history_length=arguments.history_length),
-        network_config=NetworkConfig(),
-        device=device,
+        ),
+        stacked,
     )
 
 
@@ -285,24 +354,15 @@ def build_arm(
     parent: Path,
     revision: str,
     started: float,
+    tracker: ExperimentTracker,
+    tags: dict[str, str],
 ) -> Arm:
     run_id = f"{name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    backbone = build_backbone(name, arguments, device)
+    backbone, learner = build_backbone(name, arguments, device)
     replay = PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
-    actor = Actor(
-        environment=environment,
-        policy=backbone,
-        config=ActorConfig(
-            actor_id=f"{arguments.serial}:{name}",
-            sequence_length=arguments.sequence_length,
-            burn_in=arguments.burn_in,
-            stride=max(1, arguments.sequence_length // 2),
-        ),
-        replay=replay,
-    )
     config = TrainingConfig(
         budget_decisions=arguments.budget_decisions,
         batch_size=arguments.batch_size,
@@ -310,20 +370,59 @@ def build_arm(
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
     )
+    stride = max(1, arguments.sequence_length // 2)
+    actor = Actor(
+        environment=environment,
+        policy=backbone,
+        config=ActorConfig(
+            actor_id=f"{arguments.serial}:{name}",
+            sequence_length=arguments.sequence_length,
+            burn_in=arguments.burn_in,
+            stride=stride,
+        ),
+        replay=replay,
+    )
+    cadence = environment.cadence
     resolved: dict[str, object] = {
         "backbone": name,
         "budget_decisions": arguments.budget_decisions,
         "seed": arguments.seed,
         "batch_size": arguments.batch_size,
+        "warmup_sequences": config.warmup_sequences,
         "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
         "sequence_length": arguments.sequence_length,
         "burn_in": arguments.burn_in,
+        "stride": stride,
         "history_length": arguments.history_length if name == "stacked-dqn" else None,
-        "frame_game_ms": arguments.frame_game_ms,
-        "max_quiet_game_ms": arguments.max_quiet_game_ms,
+        "n_step": learner.n_step,
+        "discount": learner.discount,
+        "learning_rate": learner.learning_rate,
+        "epsilon_start": config.epsilon_start,
+        "epsilon_end": config.epsilon_end,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "replay_capacity": arguments.replay_capacity,
+        "evaluate_every_episodes": arguments.evaluate_every_episodes,
+        "evaluation_episodes": arguments.evaluation_episodes,
+        "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
+        # The cadence the environment was actually built with, not what was
+        # asked for on the command line.
+        "frame_game_ms": cadence.frame_game_ms,
+        "max_quiet_game_ms": cadence.max_quiet_game_ms,
+        "health_change_fraction": cadence.health_change_fraction,
         "block_decisions": arguments.block_decisions,
         "device": str(device),
     }
+    # The floors the curve is read against travel with the run, so a comparison
+    # opened months later is self-contained.
+    params: dict[str, object] = dict(resolved)
+    params.update(
+        {f"reference_{key}": value for key, value in REFERENCE_FINAL_WAVES.items()}
+    )
+    run = tracker.start_run(
+        name=run_id, params=params, tags={**tags, "backbone": name, "run_id": run_id}
+    )
+    print(f"[{name}] tracking run {run.run_id}", flush=True)
     arm = Arm(
         name=name,
         run_dir=run_dir,
@@ -336,6 +435,7 @@ def build_arm(
             config=config,
         ),
         started=started,
+        run=run,
         identity=CheckpointIdentity(
             run_id=run_id,
             backbone=name,
@@ -369,7 +469,9 @@ def build_arm(
         f"{config.budget_decisions} steps {report.optimisation_steps}",
         flush=True,
     )
-    write_manifest(run_dir / "manifest.json", {"run_id": run_id, **resolved})
+    manifest = run_dir / "manifest.json"
+    write_manifest(manifest, {"run_id": run_id, **resolved})
+    run.log_artifact(manifest)
     return arm
 
 
@@ -411,6 +513,21 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path.home() / ".local/state/tower-rl/runs",
         help="outside the repository; checkpoints and reports are never committed",
     )
+    parser.add_argument(
+        "--experiment",
+        default="tower-rl-training",
+        help="the MLflow experiment runs of this session land in",
+    )
+    # Tracking is on by default and a missing MLflow is an error rather than a
+    # silent fallback: an untracked run is exactly the outcome this exists to
+    # prevent, and device time is too expensive to spend on a run that leaves
+    # nothing comparable behind. `--no-track` is the deliberate way out.
+    parser.add_argument(
+        "--no-track",
+        dest="track",
+        action="store_false",
+        help="run without recording to MLflow; the run leaves no tracked history",
+    )
     arguments = parser.parse_args(argv)
 
     arguments.backbone = list(dict.fromkeys(arguments.backbone or ["recurrent-q"]))
@@ -425,6 +542,47 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return arguments
 
 
+def tracking_uri(arguments: argparse.Namespace) -> str:
+    """Where runs are recorded: beside the run state, never in the repository.
+
+    SQLite rather than a directory of files because MLflow 3 refuses the
+    filesystem backend, and local either way: nothing leaves this machine.
+    """
+    override = os.environ.get("MLFLOW_TRACKING_URI")
+    if override:
+        return override
+    return f"sqlite:///{arguments.run_dir.parent / 'mlflow.db'}"
+
+
+def artifact_root(arguments: argparse.Namespace) -> str:
+    """Where tracked files land, beside the store and outside the repository."""
+    return str(arguments.run_dir.parent / "mlartifacts")
+
+
+def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
+    """The tracker the session records itself through.
+
+    The MLflow adapter is imported here and nowhere else, so a machine without
+    MLflow installed can still run everything that does not ask to be tracked.
+    """
+    if not arguments.track:
+        return NoExperimentTracker()
+    try:
+        from tower_rl.infrastructure.mlflow_tracker import MlflowExperimentTracker
+    except ImportError as missing:
+        raise SystemExit(
+            f"tracking is on but MLflow is not installed ({missing}). "
+            "Install it with `uv sync --extra tracking`, or pass --no-track "
+            "to run untracked."
+        ) from missing
+    arguments.run_dir.parent.mkdir(parents=True, exist_ok=True)
+    return MlflowExperimentTracker(
+        tracking_uri=tracking_uri(arguments),
+        experiment=arguments.experiment,
+        artifact_root=artifact_root(arguments),
+    )
+
+
 def train_session(
     arguments: argparse.Namespace,
     environment: InstrumentedRunEnvironment,
@@ -432,6 +590,8 @@ def train_session(
     profile_id: str,
     revision: str,
     device: torch.device,
+    tracker: ExperimentTracker | None = None,
+    bridge_version: str | None = None,
 ) -> dict[str, object]:
     """Train every named arm to its budget and return the session report.
 
@@ -442,6 +602,18 @@ def train_session(
     names = list(arguments.backbone)
     started = time.monotonic()
     session = arguments.run_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}"
+    recorder = NoExperimentTracker() if tracker is None else tracker
+    tags = {
+        "source_revision": revision,
+        "profile_id": profile_id,
+        "session": session.name,
+        "device_serial": arguments.serial,
+        # One actor per arm: the arms take turns on the one instance rather
+        # than collecting in parallel.
+        "actors": "1",
+    }
+    if bridge_version is not None:
+        tags["bridge_version"] = bridge_version
     arms = {
         name: build_arm(
             name,
@@ -452,43 +624,67 @@ def train_session(
             parent=session,
             revision=revision,
             started=started,
+            tracker=recorder,
+            tags=tags,
         )
         for name in names
     }
 
     blocks_per_arm = -(-arguments.budget_decisions // arguments.block_decisions)
     schedule = interleave_schedule(tuple(names), blocks_per_arm, block=1, seed=arguments.seed)
-    for name in schedule:
-        arm = arms[name]
-        if arm.training.finished:
-            continue
-        arm.training.advance(arguments.block_decisions)
+    try:
+        for name in schedule:
+            arm = arms[name]
+            if arm.training.finished:
+                continue
+            arm.training.advance(arguments.block_decisions)
 
-    for arm in arms.values():
-        arm.checkpoint(arm.training.report)
+        for arm in arms.values():
+            arm.checkpoint(arm.training.report)
 
-    summaries = [arm.summary() for arm in arms.values()]
-    report: dict[str, object] = {
-        "session": str(session),
-        "profile_id": profile_id,
-        "source_revision": revision,
-        "budget_decisions_per_arm": arguments.budget_decisions,
-        "block_decisions": arguments.block_decisions,
-        "wall_seconds": round(time.monotonic() - started, 1),
-        # Repeated at the top of the report as well as inside each arm: the
-        # curve is meaningless without the floors it is read against.
-        "reference_final_waves": REFERENCE_FINAL_WAVES,
-        "arms": summaries,
-    }
-    session.mkdir(parents=True, exist_ok=True)
-    (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
-    for arm, summary in zip(arms.values(), summaries, strict=True):
-        (arm.run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-    return report
+        summaries = [arm.summary() for arm in arms.values()]
+        report: dict[str, object] = {
+            "session": str(session),
+            "profile_id": profile_id,
+            "source_revision": revision,
+            "budget_decisions_per_arm": arguments.budget_decisions,
+            "block_decisions": arguments.block_decisions,
+            "wall_seconds": round(time.monotonic() - started, 1),
+            # Repeated at the top of the report as well as inside each arm: the
+            # curve is meaningless without the floors it is read against.
+            "reference_final_waves": REFERENCE_FINAL_WAVES,
+            "arms": summaries,
+        }
+        session.mkdir(parents=True, exist_ok=True)
+        (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
+        for arm, summary in zip(arms.values(), summaries, strict=True):
+            # The arm's summary holds its learning curve and the per-episode
+            # evaluation records, so it is what a tracked run is read from.
+            path = arm.run_dir / "summary.json"
+            path.write_text(json.dumps(summary, indent=2, default=str))
+            arm.run.log_artifact(path)
+        return report
+    finally:
+        # A run that ended badly is still a run that has to be closed, or it
+        # would sit open in the store forever.
+        for arm in arms.values():
+            arm.run.finish()
 
 
 def main() -> int:
     arguments = parse_arguments()
+
+    # Built before the device is touched: a session that cannot be recorded
+    # should fail now rather than an hour into collection.
+    tracker = build_tracker(arguments)
+    print(f"tracking: {tracker.tracking_uri} experiment {arguments.experiment}", flush=True)
+    if arguments.track:
+        print(
+            "open the UI with: uv run --extra tracking mlflow ui "
+            f"--backend-store-uri {tracker.tracking_uri}",
+            flush=True,
+        )
+        print(f"artifacts: {artifact_root(arguments)}", flush=True)
 
     build_dir = Path(
         os.environ.get("TOWER_BRIDGE_BUILD_DIR")
@@ -518,6 +714,8 @@ def main() -> int:
             profile_id=expected.profile_id,
             revision=source_revision(),
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+            tracker=tracker,
+            bridge_version=expected.bridge_version,
         )
     finally:
         adapter.release()

@@ -11,6 +11,11 @@ dependencies = [
     "typer>=0.17,<1",
 ]
 
+# Tracking is optional so the project installs and tests without a server or an
+# MLflow install; the adapter behind `ExperimentTracker` is imported lazily.
+[project.optional-dependencies]
+tracking = ["mlflow>=3,<4"]
+
 [project.scripts]
 tower-rl = "tower_rl.cli:app"
 
@@ -46,3 +51,9 @@ strict = true
 # hour of device time, which is the most expensive kind of mistake here.
 mypy_path = "src:scripts"
 files = ["src/tower_rl", "scripts"]
+
+# MLflow is an optional extra and only the tracking adapter imports it, so a
+# checkout without it installed must still type-check. Nothing else is relaxed.
+[[tool.mypy.overrides]]
+module = ["mlflow.*"]
+ignore_missing_imports = true

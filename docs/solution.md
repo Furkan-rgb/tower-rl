@@ -1381,6 +1381,46 @@ Retention defaults:
 - bound replay, screenshots, logs, and failure bundles by size/age;
 - never delete the only known-good resume point.
 
+### 10.1 Experiment tracking
+
+Run directories answer "what did this run produce"; they do not answer "how do
+these twenty runs compare". Training therefore records itself through an
+`ExperimentTracker` port (`src/tower_rl/ports/experiment_tracker.py`): a run is
+opened per arm with its resolved configuration as parameters and its provenance
+as tags, reports metrics **keyed by decisions consumed** - the unit the
+comparison protocol equalises on - and logs its manifest, its summary (learning
+curve and per-episode evaluation records) and each curve point's checkpoint,
+stored under the point's weight fingerprint so a tracked point resolves to an
+exact file. The measured reference floors travel with every run as parameters,
+so a comparison opened months later needs no second document.
+
+The default is `NoExperimentTracker`, which keeps nothing: training has one code
+path, tracked or not. The only implementation is
+`infrastructure/mlflow_tracker.py`, and it is the only module in the project
+that imports MLflow.
+
+MLflow was chosen because it is fully local - no account, no cloud service -
+while giving run comparison and model lineage over months of runs. Weights &
+Biases is cloud-first and TensorBoard tracks neither parameters, artifacts nor
+lineage. Aim is the fallback if the UI disappoints; the port makes that a
+one-class change.
+
+Operationally:
+
+- MLflow is an optional extra (`uv sync --extra tracking`) and is imported
+  lazily, so tests and any untracked run work without it installed;
+- `scripts/train.py` tracks by default and refuses to start when MLflow is
+  missing rather than quietly producing an untracked run, so a device run is
+  started as `uv run --extra tracking python scripts/train.py ...`; `--no-track`
+  is the deliberate way out and `--experiment` names the experiment;
+- the store is SQLite at `~/.local/state/tower-rl/mlflow.db` with artifacts
+  under `~/.local/state/tower-rl/mlartifacts` - beside the run state, never
+  inside the repository. MLflow 3 refuses the plain filesystem backend, which is
+  why the backend is SQLite. `MLFLOW_TRACKING_URI` overrides it;
+- the UI is `uv run --extra tracking mlflow ui --backend-store-uri
+  sqlite:///~/.local/state/tower-rl/mlflow.db`, which `train.py` prints at
+  start beside the run ids it opened.
+
 ## 11. Commands and operator flow
 
 Use Typer or an equivalent typed CLI. All commands accept a config file and explicit overrides, print the resolved run/profile identity, and return nonzero on failure.

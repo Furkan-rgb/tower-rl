@@ -38,14 +38,23 @@ starts from the same account:
 Several instances can run at once from the one clone AVD. `--read-only` gives
 each instance its own writable overlay over the untouched base image, so N
 actors need N overlays rather than N copies of a multi-gigabyte AVD. The
-instance is addressed by `--index`: index 0 is today's `emulator-5556`, and each
-further index takes the next even console port. A read-only instance cannot save
-a snapshot; take snapshots on index 0 without `--read-only`.
+instance is addressed by `--index`, a top-level flag that precedes the
+subcommand: index 0 is today's `emulator-5556`, and each further index takes
+the next even console port. A read-only instance cannot save a snapshot; take
+snapshots on index 0 without `--read-only`, run alone.
 
-UNVERIFIED ON THIS HOST: no `-read-only` instance has been launched here yet.
-Everything below index 0 is the same sequence that has run for a year; the
-shared-AVD mechanism itself is verified by the next device stage, not by this
-file.
+The emulator refuses to share one AVD unless *every* instance holding it is
+`-read-only` — including index 0. Bringing up a second instance while index 0
+is running writable is refused outright, so index 0 has to be started
+`--read-only` too before any further index can attach. `launch_emulator` checks
+this itself for any index above 0 and raises before touching the emulator at
+all, because the emulator's own refusal of the second instance says nothing
+about the first one being the cause.
+
+UNVERIFIED ON THIS HOST: an attempt to add a second instance failed here
+because index 0 was running writable, which is the constraint above; whether
+several `-read-only` instances can then share the AVD is still unverified and
+is checked by the next device stage, not by this file.
 
 Nothing here ever taps, and nothing here reads a pixel. Readiness — "the game has
 finished starting up, so it is safe to cut the network and to snapshot" — is the
@@ -62,11 +71,16 @@ instance up and offline, the game not launched), then `deploy`, then `launch` �
 the one short online window, which also covers deploy's own cold launch.
 
     uv run python scripts/clone_session.py start
-    uv run python scripts/clone_session.py --index 1 --read-only start
     ./scripts/instrumented_bridge.sh deploy emulator-5556
     uv run python scripts/clone_session.py launch
     uv run python scripts/clone_session.py snapshot
     uv run python scripts/clone_session.py restore
+
+Adding a second instance to share the AVD needs index 0 read-only too, and
+`--index` precedes the subcommand it applies to:
+
+    uv run python scripts/clone_session.py start --read-only
+    uv run python scripts/clone_session.py --index 1 up --read-only
 """
 
 from __future__ import annotations
@@ -76,6 +90,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -329,13 +344,68 @@ def wait_until_ready(instance: CloneInstance, *, timeout: float) -> None:
     raise CloneError(f"{instance.serial} never became ready: {last}")
 
 
-def wait_for_boot(instance: CloneInstance, *, timeout: float) -> None:
+def _captured_output(log_path: Path | None, *, limit: int = 4000) -> str:
+    """The emulator's own recent output, for an error message to quote.
+
+    Read defensively: the file may not exist yet, or may be gone, or (under
+    test) may never have been written at all.
+    """
+    if log_path is None:
+        return ""
+    try:
+        text = log_path.read_text(errors="replace").strip()
+    except OSError:
+        return ""
+    return text[-limit:] if text else ""
+
+
+def wait_for_boot(
+    instance: CloneInstance,
+    *,
+    timeout: float,
+    process: subprocess.Popen[bytes] | None = None,
+    log_path: Path | None = None,
+) -> None:
+    """Poll for boot, but fail the moment the emulator process itself is gone.
+
+    Waiting out the full timeout against a process that already exited is how
+    a refusal like `Another emulator instance is running` looked like a hang:
+    nothing distinguished "still booting" from "already dead" until now.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            output = _captured_output(log_path)
+            raise CloneError(
+                f"{instance.serial}: the emulator exited before boot completed "
+                f"(code {process.returncode}): {output or 'no output captured'}"
+            )
         if adb(instance, "shell", "getprop", "sys.boot_completed", timeout=10.0) == "1":
             return
         time.sleep(5.0)
-    raise CloneError(f"{instance.serial} did not finish booting")
+    output = _captured_output(log_path)
+    raise CloneError(
+        f"{instance.serial} did not finish booting within {timeout:.0f}s: "
+        f"{output or 'no output captured'}"
+    )
+
+
+def require_shareable(instance: CloneInstance, read_only: bool) -> None:
+    """Refuse, before touching the emulator, what it would refuse anyway.
+
+    The emulator requires every instance of an AVD to be `-read-only` once more
+    than one is running against it. Index 0 may still launch writable on its
+    own — to save a snapshot, most often — but any further index exists only to
+    share that AVD with something else, so a writable one there is always
+    rejected. Checking here means the failure names the instance and the
+    reason instead of the emulator's opaque refusal reaching whichever instance
+    happened to start second.
+    """
+    if instance.index > 0 and not read_only:
+        raise CloneError(
+            f"{instance.serial} shares {instance.avd} with instance 0 and must be "
+            "launched --read-only; only index 0 may run writable, and only alone"
+        )
 
 
 def emulator_command(
@@ -373,6 +443,7 @@ def launch_emulator(
     read_only: bool = False,
     cores: int = 8,
 ) -> None:
+    require_shareable(instance, read_only)
     binary = find_android_tool("emulator")
     if binary is None:
         raise CloneError("emulator not found")
@@ -393,10 +464,18 @@ def launch_emulator(
         f"launching {instance.avd} on {instance.serial} ({', '.join(detail)})",
         flush=True,
     )
-    subprocess.Popen(
-        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
-    )
-    wait_for_boot(instance, timeout=300.0)
+    # Captured rather than discarded: a launch that never boots is otherwise
+    # indistinguishable from one that is merely slow, and the emulator's own
+    # reply is the only account of why (`ERROR | Another emulator instance is
+    # running ...`, for example). Kept on success too, overwritten by the next
+    # launch, so a failure can always be explained without spamming this
+    # process's own console when there is nothing to explain.
+    log_path = Path(tempfile.gettempdir()) / f"tower-rl-emulator-{instance.serial}.log"
+    with log_path.open("wb") as log_file:
+        process = subprocess.Popen(
+            command, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True
+        )
+    wait_for_boot(instance, timeout=300.0, process=process, log_path=log_path)
 
 
 def kill_emulator(instance: CloneInstance) -> None:

@@ -528,6 +528,90 @@ def test_a_read_only_instance_takes_the_cold_path_without_saving_a_snapshot(
     assert not [command for command in clone.commands if "snapshot save" in command]
 
 
+def test_a_second_instance_cannot_be_launched_writable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refused before any adb or emulator call, since the emulator would refuse it too."""
+    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
+    popen_calls: list[object] = []
+    monkeypatch.setattr(
+        clone_session.subprocess, "Popen", lambda *args, **kwargs: popen_calls.append(args)
+    )
+
+    with pytest.raises(CloneError, match="must be launched --read-only"):
+        clone_session.launch_emulator(CloneInstance(index=1), "lavapipe", None, read_only=False)
+
+    assert popen_calls == []
+
+
+def test_a_second_instance_may_launch_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    clone_session.require_shareable(CloneInstance(index=1), True)
+    clone_session.require_shareable(CloneInstance(index=0), False)
+
+
+class ExitedProcess:
+    """A fake `Popen` handle for a process that has already exited."""
+
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+def test_a_launch_failure_surfaces_the_emulators_own_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The emulator refusing to start must not look like a hang."""
+    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
+    monkeypatch.setattr(clone_session.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(clone_session.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(clone_session.time, "sleep", lambda _: None)
+
+    message = "ERROR | Another emulator instance is running. Please close it.\n"
+
+    def fake_popen(command: list[str], *, stdout: Any, stderr: Any, **_: object) -> ExitedProcess:
+        stdout.write(message.encode())
+        stdout.flush()
+        return ExitedProcess(1)
+
+    monkeypatch.setattr(clone_session.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(CloneError, match="Another emulator instance is running"):
+        clone_session.launch_emulator(CloneInstance(), "host", None)
+
+
+def test_a_boot_timeout_includes_the_captured_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow boot that never completes must still explain itself, not just time out."""
+    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
+    monkeypatch.setattr(clone_session.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(clone_session, "adb", lambda *_, **__: "")
+
+    now = [0.0]
+
+    def advance(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(clone_session.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(clone_session.time, "sleep", advance)
+
+    class StillRunning:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(command: list[str], *, stdout: Any, stderr: Any, **_: object) -> StillRunning:
+        stdout.write(b"emulator: INFO: boot still in progress\n")
+        stdout.flush()
+        return StillRunning()
+
+    monkeypatch.setattr(clone_session.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(CloneError, match="boot still in progress"):
+        clone_session.launch_emulator(CloneInstance(), "host", None)
+
+
 def test_bring_up_under_host_takes_the_cold_path_without_attempting_a_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

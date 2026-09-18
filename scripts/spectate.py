@@ -198,7 +198,9 @@ class Panel(Protocol):
         """The key pressed since the last call, or `""` for none."""
         ...
 
-    def wait_for_key(self, timeout: float) -> None: ...
+    def hold(self, timeout: float) -> None:
+        """Keep the final state on screen for at most `timeout` seconds."""
+        ...
 
 
 @dataclass
@@ -213,7 +215,7 @@ class PlainPanel:
     def key(self) -> str:
         return ""
 
-    def wait_for_key(self, timeout: float) -> None:
+    def hold(self, timeout: float) -> None:
         print(f"holding the final state for {timeout:.0f}s", flush=True)
         time.sleep(timeout)
 
@@ -238,34 +240,72 @@ class CursesPanel:
             return ""
         return str(pressed)
 
-    def wait_for_key(self, timeout: float) -> None:
-        self.screen.nodelay(False)
-        self.screen.getch()
+    def hold(self, timeout: float) -> None:
+        """Wait for a key, but not forever: the timeout is honoured either way.
+
+        A session nobody came back to must still put its instance down, and an
+        emulator left running because a panel blocked on a key is the same
+        device-safety failure as one left running by a skipped teardown.
+        """
+        self.screen.nodelay(True)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.screen.getch() != -1:
+                return
+            time.sleep(0.05)
 
 
 # -- the exclusive-device refusal ------------------------------------------
 
 
-def refuse_a_shared_host(devices: str, qemu_processes: str) -> None:
+def running_emulators(proc: Path = Path("/proc")) -> list[str]:
+    """Every live process whose executable is a `qemu-system-*`, by pid.
+
+    Read from `/proc/<pid>/exe`, which is the kernel's own answer to "what is
+    this process running": a symlink to the binary itself. Not `pgrep -f`,
+    which matches a *command line* - it would report this script for having the
+    word in an argument, report an editor with the emulator's log open, and
+    miss a qemu whose argv was rewritten. The link is unreadable for processes
+    this user does not own, and those are skipped rather than guessed at: an
+    emulator started by somebody else is not one this session can stop anyway.
+    """
+    found: list[str] = []
+    try:
+        entries = sorted(proc.iterdir())
+    except OSError:  # no procfs to read; the adb reading below still stands
+        return found
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = os.readlink(entry / "exe")
+        except OSError:  # gone, or not ours to look at
+            continue
+        if Path(executable).name.startswith("qemu-system"):
+            found.append(f"{entry.name} {executable}")
+    return found
+
+
+def refuse_a_shared_host(devices: str, qemu_processes: Sequence[str]) -> None:
     """Refuse to spectate while anything else is on the host. Named, not silent.
 
     A spectated instance runs windowed at 60 Hz for as long as a human watches
     it, which is exactly the cost a measurement or a training run must not be
     asked to share. Both readings are taken because either can be the only one:
     `adb devices` misses an emulator whose adb has not come up, and a qemu
-    process is what the emulator actually is.
+    process is what an emulator actually is however adb sees it.
     """
     attached = [
         line.split("\t")[0]
         for line in devices.splitlines()[1:]
         if line.strip() and not line.startswith("*")
     ]
-    running = [line for line in qemu_processes.splitlines() if line.strip()]
-    if not attached and not running:
+    if not attached and not qemu_processes:
         return
     raise SystemExit(
         "refusing to spectate while an emulator is running "
-        f"(adb: {', '.join(attached) or 'none'}; qemu processes: {len(running)}). "
+        f"(adb: {', '.join(attached) or 'none'}; "
+        f"qemu processes: {', '.join(qemu_processes) or 'none'}). "
         "Spectating takes the host to itself: it runs windowed and in real time, "
         "and a measurement or a training run must never share that. Stop the "
         "other instance first."
@@ -280,13 +320,28 @@ def host_is_free() -> None:
         devices = subprocess.run(
             [str(binary), "devices"], capture_output=True, text=True, timeout=30.0
         ).stdout
-    qemu = subprocess.run(
-        ["pgrep", "-af", "qemu-system"], capture_output=True, text=True, timeout=30.0
-    ).stdout
-    refuse_a_shared_host(devices, qemu)
+    refuse_a_shared_host(devices, running_emulators())
 
 
 # -- recording -------------------------------------------------------------
+
+
+class RunGuestCommand(Protocol):
+    """How a command reaches the guest: `simulation.instance.adb`'s shape."""
+
+    def __call__(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str: ...
+
+
+@dataclass
+class _Chunk:
+    """One `screenrecord` invocation's output, and whether it finished cleanly."""
+
+    guest_path: str
+    #: True when the guest tool did not exit 0 - it was interrupted mid-write,
+    #: or it failed. The file is still pulled, because a partial recording of
+    #: the moment somebody wanted to watch is worth more than no recording, but
+    #: it is named for what it is rather than passed off as a whole chunk.
+    partial: bool = False
 
 
 @dataclass
@@ -299,53 +354,74 @@ class GuestRecording:
     About a second is lost at each seam while the next chunk starts. This is a
     human-facing convenience and no measurement depends on it, which is why a
     lossy seam is acceptable here and would not be anywhere else.
+
+    The lifecycle is the part worth stating. `finish` sets the stop flag
+    *before* it interrupts the guest, and the loop tests that flag before
+    starting a chunk, so no chunk can be started after a stop has begun -
+    which would leave a file on the guest that nothing afterwards pulls or
+    removes. `_chunks` is read only once the recording thread has been joined,
+    so the list is never walked while it is being appended to.
     """
 
     instance: CloneInstance
     destination: Path
+    #: How a guest command is run. `adb` is the only implementation; it is a
+    #: field so the lifecycle above can be tested without a device.
+    run: RunGuestCommand = adb
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
-    _chunks: list[str] = field(default_factory=list, init=False)
+    _chunks: list[_Chunk] = field(default_factory=list, init=False)
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._record, daemon=True)
         self._thread.start()
 
     def _record(self) -> None:
+        """Record chunk after chunk until asked to stop. Never raises."""
         while not self._stop.is_set():
-            guest_path = f"/sdcard/tower-rl-spectate-{len(self._chunks):03d}.mp4"
-            self._chunks.append(guest_path)
+            chunk = _Chunk(f"/sdcard/tower-rl-spectate-{len(self._chunks):03d}.mp4")
+            self._chunks.append(chunk)
             try:
-                adb(
+                # The exit status is asked for rather than assumed: a chunk the
+                # stop below interrupted mid-write is a different file from one
+                # that ran its three minutes out, and only the guest can say
+                # which this was.
+                reply = self.run(
                     self.instance,
                     "shell",
-                    "screenrecord",
-                    "--time-limit",
-                    str(SCREENRECORD_CHUNK_SECONDS),
-                    guest_path,
+                    f"screenrecord --time-limit {SCREENRECORD_CHUNK_SECONDS} "
+                    f"{chunk.guest_path}; echo rc=$?",
                     timeout=SCREENRECORD_CHUNK_SECONDS + 60.0,
                 )
             except Exception as error:  # noqa: BLE001 - a lost recording is not a lost session
+                chunk.partial = True
                 print(f"recording stopped: {error}", flush=True)
                 return
+            chunk.partial = "rc=0" not in reply
 
     def finish(self) -> list[Path]:
         """Stop the guest cleanly and pull every chunk. Never fatal."""
+        # Before the interrupt, always: the loop must see the stop first, or it
+        # starts a chunk nothing below knows to pull.
         self._stop.set()
         pulled: list[Path] = []
         try:
             # SIGINT rather than a kill: the guest tool finalises the file it is
             # writing on an interrupt and leaves an unplayable one on a kill.
-            adb(self.instance, "shell", "pkill", "-INT", "screenrecord", timeout=30.0)
-            if self._thread is not None:
-                self._thread.join(timeout=60.0)
+            self.run(self.instance, "shell", "pkill", "-INT", "screenrecord", timeout=30.0)
+        except Exception as error:  # noqa: BLE001 - reported, never fatal
+            print(f"could not stop the guest recording: {error}", flush=True)
+        if self._thread is not None:
+            self._thread.join(timeout=SCREENRECORD_CHUNK_SECONDS + 60.0)
+        try:
             self.destination.parent.mkdir(parents=True, exist_ok=True)
-            for index, guest_path in enumerate(self._chunks):
+            for index, chunk in enumerate(self._chunks):
+                suffix = "-partial" if chunk.partial else ""
                 local = self.destination.with_name(
-                    f"{self.destination.stem}-{index:03d}{self.destination.suffix}"
+                    f"{self.destination.stem}-{index:03d}{suffix}{self.destination.suffix}"
                 )
-                adb(self.instance, "pull", guest_path, str(local), timeout=300.0)
-                adb(self.instance, "shell", "rm", "-f", guest_path, timeout=30.0)
+                self.run(self.instance, "pull", chunk.guest_path, str(local), timeout=300.0)
+                self.run(self.instance, "shell", "rm", "-f", chunk.guest_path, timeout=30.0)
                 if local.exists():
                     pulled.append(local)
         except Exception as error:  # noqa: BLE001 - reported, never fatal
@@ -361,12 +437,12 @@ def spectate_session(
     policy: Policy,
     panel: Panel,
     spectator: Spectator,
+    summaries: list[EpisodeSummary],
     *,
     episodes: int,
     policy_name: str,
     actor_id: str,
-    started: float | None = None,
-) -> list[EpisodeSummary]:
+) -> None:
     """Play episodes, drawing the panel once per decision, until told to stop.
 
     The environment's decision stream is the whole of what the panel sees, and
@@ -374,12 +450,16 @@ def spectate_session(
     it takes effect at the next decision rather than at the end of an episode
     that may be minutes away. The episode it interrupts has no summary, which is
     correct — it did not finish.
+
+    `summaries` belongs to the caller and is appended to as each episode ends,
+    rather than returned at the end. A Ctrl-C arrives as a `KeyboardInterrupt`
+    inside whichever episode was running, and an episode that finished before
+    it is a real episode: the caller still holds every one of them, so stopping
+    that way keeps exactly what stopping with `q` keeps.
     """
-    begun = time.monotonic() if started is None else started
-    stopping = False
+    begun = time.monotonic()
 
     def observe(view: DecisionView) -> None:
-        nonlocal stopping
         spectator.observe(view)
         panel.draw(
             panel_lines(
@@ -390,7 +470,6 @@ def spectate_session(
             )
         )
         if panel.key().lower() == "q":
-            stopping = True
             raise SpectateStopped
 
     environment.on_decision = observe
@@ -400,32 +479,36 @@ def spectate_session(
         config=ActorConfig(actor_id=actor_id),
         replay=None,
     )
-    summaries: list[EpisodeSummary] = []
     try:
         while episodes == 0 or len(summaries) < episodes:
             try:
                 summaries.append(actor.run_episode().summary)
             except SpectateStopped:
                 break
-            if stopping:
-                break
     finally:
         environment.on_decision = None
-    return summaries
 
 
 def session_record(
-    summaries: Sequence[EpisodeSummary], identity: dict[str, object], *, wall_seconds: float
+    summaries: Sequence[EpisodeSummary],
+    identity: dict[str, object],
+    *,
+    frame_rate_hz: int,
+    wall_seconds: float,
 ) -> dict[str, Any]:
     """The same per-episode rows the fleet writes, for the episodes just played.
 
     `episode_record` is the evaluator's own row, so a spectated episode and a
     collected one are the same record. The panel is a view of these decisions,
     never a second source for them.
+
+    The rate recorded is the rate the session ran at, not the default: a record
+    that named the constant would say 60 for episodes played at 120, and the
+    rate is exactly what makes two records comparable or not.
     """
     return {
         "policy_identity": dict(identity),
-        "frame_rate_hz": SPECTATE_FRAME_RATE_HZ,
+        "frame_rate_hz": frame_rate_hz,
         "wall_seconds": round(wall_seconds, 1),
         "episodes": [episode_record(index, summary) for index, summary in enumerate(summaries)],
     }
@@ -550,11 +633,13 @@ def run(arguments: argparse.Namespace) -> int:
             cadence=cadence_from(arguments),
         )
         try:
-            summaries = watch(environment, policy, spectator, arguments, identity)
+            watch(environment, policy, spectator, summaries, arguments, identity)
         finally:
             adapter.release()
             client.close()
     except KeyboardInterrupt:
+        # Every episode that finished before the interrupt is still an episode,
+        # and `summaries` is owned here rather than returned, so it holds them.
         print("stopped", flush=True)
     finally:
         if recording is not None:
@@ -564,7 +649,12 @@ def run(arguments: argparse.Namespace) -> int:
 
     if arguments.output_directory is not None and summaries:
         arguments.output_directory.mkdir(parents=True, exist_ok=True)
-        record = session_record(summaries, identity, wall_seconds=time.monotonic() - started)
+        record = session_record(
+            summaries,
+            identity,
+            frame_rate_hz=arguments.frame_rate_hz,
+            wall_seconds=time.monotonic() - started,
+        )
         output = arguments.output_directory / f"{instance.serial}.json"
         output.write_text(json.dumps(record, indent=2))
         print(f"episodes: {output}", flush=True)
@@ -577,25 +667,28 @@ def watch(
     environment: InstrumentedRunEnvironment,
     policy: Policy,
     spectator: Spectator,
+    summaries: list[EpisodeSummary],
     arguments: argparse.Namespace,
     identity: dict[str, object],
-) -> list[EpisodeSummary]:
+) -> None:
     """Run the session inside whichever panel was asked for, and hold at the end.
 
     The hold is the point of watching one run: the last thing that happens is
     the tower dying, and tearing the window down on the same instant leaves
-    nothing to look at. The curses panel waits for a keypress; `--no-panel`,
-    which is what an unattended session uses, waits `--hold-seconds`.
+    nothing to look at. The curses panel waits for a key or `--hold-seconds`,
+    whichever comes first; `--no-panel`, which is what an unattended session
+    uses, waits out `--hold-seconds`.
     """
     name = str(identity["name"])
     actor_id = f"spectate:{name}"
 
-    def session(panel: Panel) -> list[EpisodeSummary]:
-        summaries = spectate_session(
+    def session(panel: Panel) -> None:
+        spectate_session(
             environment,
             policy,
             panel,
             spectator,
+            summaries,
             episodes=arguments.episodes,
             policy_name=name,
             actor_id=actor_id,
@@ -609,19 +702,18 @@ def watch(
                 holding=True,
             )
         )
-        panel.wait_for_key(arguments.hold_seconds)
-        return summaries
+        panel.hold(arguments.hold_seconds)
 
     if arguments.no_panel:
-        return session(PlainPanel())
+        session(PlainPanel())
+        return
 
-    def inside_curses(screen: Any) -> list[EpisodeSummary]:
+    def inside_curses(screen: Any) -> None:
         curses.curs_set(0)
         screen.nodelay(True)
-        return session(CursesPanel(screen))
+        session(CursesPanel(screen))
 
-    result: list[EpisodeSummary] = curses.wrapper(inside_curses)
-    return result
+    curses.wrapper(inside_curses)
 
 
 def main() -> int:

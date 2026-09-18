@@ -234,13 +234,16 @@ The panel shows the current episode, wave, cash and health, the last 20 actions
 (each upgrade slot bought, or `wait`), episodes played, the running mean final
 wave, and decisions per minute.
 
-Keys: `q` stops at the next decision; Ctrl-C does the same; any key ends the
-hold at the end. Whatever happens, the bridge and the emulator are put down
-through the same teardown path the fleet uses.
+Keys: `q` stops at the next decision; Ctrl-C does the same, and both keep the
+episodes that had already finished. Any key ends the hold at the end, and the
+hold ends by itself after `--hold-seconds` either way, so a session nobody came
+back to still puts its emulator down. Whatever happens, the bridge and the
+emulator are put down through the same teardown path the fleet uses.
 
-`--no-panel` prints one line per decision instead of drawing a panel, which is
-what an unattended or logged session wants; there `--hold-seconds` (default 10)
-replaces the keypress at the end.
+`--no-panel` is the log-friendly mode: it prints one line per decision instead
+of drawing a terminal panel, which is what you want when the session is
+unattended, redirected to a file, or read afterwards rather than watched. There
+`--hold-seconds` (default 10) simply waits, since there is no key to press.
 
 **60 Hz is real time.** That is the default and it is the point: one game second
 per wall second, the speed the game is actually played at. The fleet runs at 120

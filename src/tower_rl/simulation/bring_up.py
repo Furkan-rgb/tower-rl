@@ -330,6 +330,7 @@ def start(
     read_only: bool = False,
     cores: int = 8,
     frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
+    windowed: bool = False,
 ) -> None:
     """Cold start: the instance up and offline, with the game not yet launched.
 
@@ -344,6 +345,7 @@ def start(
         read_only=read_only,
         cores=cores,
         frame_rate_hz=frame_rate_hz,
+        windowed=windowed,
     )
     set_radios(instance, False)
     require_offline(instance)
@@ -431,6 +433,7 @@ def restore(
     read_only: bool = False,
     cores: int = 8,
     frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
+    windowed: bool = False,
 ) -> None:
     """The point of the snapshot: never connect at all.
 
@@ -444,6 +447,7 @@ def restore(
         read_only=read_only,
         cores=cores,
         frame_rate_hz=frame_rate_hz,
+        windowed=windowed,
     )
     require_offline(instance)
     # The claim a snapshot makes is that the game is already started, so that is
@@ -516,6 +520,7 @@ def cold_bring_up(
     read_only: bool = False,
     cores: int = 8,
     frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
+    windowed: bool = False,
 ) -> None:
     """The full path, and the only one that opens a network window.
 
@@ -526,7 +531,14 @@ def cold_bring_up(
     game's launch to the bridge calling it ready, which is where `M1B-E010` says
     the network is genuinely needed — the Firebase check and the OFFLINE modal.
     """
-    start(instance, renderer, read_only=read_only, cores=cores, frame_rate_hz=frame_rate_hz)
+    start(
+        instance,
+        renderer,
+        read_only=read_only,
+        cores=cores,
+        frame_rate_hz=frame_rate_hz,
+        windowed=windowed,
+    )
     require_offline(instance)
     deploy(instance)
     launch_game_at_home(instance)
@@ -542,6 +554,7 @@ def bring_up(
     cores: int = 8,
     force_cold: bool = False,
     frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
+    windowed: bool = False,
 ) -> str:
     """Bring one instance up ready and offline, and say which path it took.
 
@@ -577,6 +590,7 @@ def bring_up(
             read_only=read_only,
             cores=cores,
             frame_rate_hz=frame_rate_hz,
+            windowed=windowed,
         )
         return "cold"
     if not force_cold and snapshot_exists(instance, name):
@@ -588,6 +602,7 @@ def bring_up(
                 read_only=read_only,
                 cores=cores,
                 frame_rate_hz=frame_rate_hz,
+                windowed=windowed,
             )
             wait_until_ready(instance, timeout=RESTORED_READY_TIMEOUT)
             require_offline(instance)
@@ -603,6 +618,7 @@ def bring_up(
         read_only=read_only,
         cores=cores,
         frame_rate_hz=frame_rate_hz,
+        windowed=windowed,
     )
     if read_only:
         # A `-read-only` instance writes to a throwaway overlay and cannot save a

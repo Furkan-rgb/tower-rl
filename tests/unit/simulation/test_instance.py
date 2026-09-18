@@ -64,3 +64,32 @@ def test_a_writable_instance_is_not_launched_read_only() -> None:
     )
     assert "-read-only" not in command
     assert command[command.index("-snapshot") + 1] == "home_offline"
+
+
+def test_an_instance_is_headless_unless_a_window_is_asked_for() -> None:
+    """Every collecting and measuring path is `-no-window`; spectating is not.
+
+    The flag is the whole difference: a spectated instance is the same
+    read-only clone on the same port, with a window for a human to watch.
+    """
+    headless = emulator_command(
+        CloneInstance(),
+        binary="emulator",
+        renderer="host",
+        snapshot=None,
+        read_only=True,
+        cores=4,
+    )
+    watched = emulator_command(
+        CloneInstance(),
+        binary="emulator",
+        renderer="host",
+        snapshot=None,
+        read_only=True,
+        cores=4,
+        windowed=True,
+    )
+
+    assert "-no-window" in headless, "headless is the default every fleet path takes"
+    assert "-no-window" not in watched
+    assert [part for part in headless if part != "-no-window"] == watched

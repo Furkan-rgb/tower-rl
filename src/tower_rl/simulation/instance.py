@@ -193,6 +193,7 @@ def emulator_command(
     read_only: bool,
     cores: int,
     frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
+    windowed: bool = False,
 ) -> list[str]:
     """The exact invocation for one instance.
 
@@ -207,16 +208,18 @@ def emulator_command(
     collected at another rate without editing the constant: the 60 Hz arm of the
     behavioural equivalence comparison is exactly that run.
 
-    Every instance this builds is `-no-window`, which is why raising the rate
-    here is safe: the emulator warns that exceeding the host display's refresh
-    rate is undefined, and a headless instance is driving no host display at all.
-    The windowed review path (`launch_avd.sh`) keeps default pacing for that
-    reason, and because a human watching a checkpoint play wants the game's own
-    speed, not the fleet's.
+    `windowed` is off by default, so every instance a collecting or measuring
+    path builds is `-no-window` exactly as before. That is also why raising the
+    rate is safe there: the emulator warns that exceeding the host display's
+    refresh rate is undefined, and a headless instance drives no host display at
+    all. One path asks for a window - `scripts/spectate.py`, where a human
+    watches one agent play - and it runs at 60 Hz for the same reason, because
+    what a spectator wants is the game's own speed rather than the fleet's.
     """
     command = [
         binary, f"@{instance.avd}",
-        "-gpu", renderer, "-no-audio", "-no-boot-anim", "-no-window",
+        "-gpu", renderer, "-no-audio", "-no-boot-anim",
+        *([] if windowed else ["-no-window"]),
         "-cores", str(cores), "-port", str(instance.console_port), "-no-snapshot-save",
         "-vsync-rate", str(frame_rate_hz),
     ]
@@ -234,6 +237,7 @@ def launch_emulator(
     read_only: bool = False,
     cores: int = 8,
     frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
+    windowed: bool = False,
 ) -> None:
     require_shareable(instance, read_only)
     binary = find_android_tool("emulator")
@@ -247,12 +251,15 @@ def launch_emulator(
         read_only=read_only,
         cores=cores,
         frame_rate_hz=frame_rate_hz,
+        windowed=windowed,
     )
     detail = [renderer]
     if snapshot:
         detail.append(f"snapshot {snapshot}")
     if read_only:
         detail.append("read-only")
+    if windowed:
+        detail.append("windowed")
     print(
         f"launching {instance.avd} on {instance.serial} ({', '.join(detail)})",
         flush=True,

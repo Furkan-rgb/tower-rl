@@ -14,14 +14,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
-from tower_rl.application.evaluator import EvaluationReport, episode_record
-from tower_rl.application.training import (
-    ActorProgress,
-    CollectionWindow,
-    EpisodeHealth,
-    TrainingProgressReport,
-    episode_health,
-)
 from tower_rl.environment.decision_time import (
     BUCKETS,
     EMPTY_BREAKDOWN,
@@ -29,6 +21,14 @@ from tower_rl.environment.decision_time import (
 )
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
+from tower_rl.learning.evaluator import EvaluationReport, episode_record
+from tower_rl.learning.training import (
+    ActorProgress,
+    CollectionWindow,
+    EpisodeHealth,
+    TrainingProgressReport,
+    episode_health,
+)
 
 
 @dataclass(frozen=True)

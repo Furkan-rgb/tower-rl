@@ -12,10 +12,10 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any
 
-from tower_rl.application.actor import Actor, ActorConfig
-from tower_rl.application.policies import Policy, describe
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
+from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.policies import Policy, describe
 
 
 @dataclass(frozen=True)

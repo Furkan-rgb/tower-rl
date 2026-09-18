@@ -1,6 +1,6 @@
 """What one training run is read from afterwards.
 
-The run itself (`application/training.py`) collects and learns; this is the
+The run itself (`learning/training.py`) collects and learns; this is the
 record it leaves behind - the collection curve, the learning curve and the
 checkpoint each of its points names, where the fleet's decision time went, and
 the summary JSON that carries all of it beside the floors it is read against.
@@ -15,20 +15,9 @@ behind.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from tower_rl.application.evaluator import EvaluationReport, to_record
-from tower_rl.application.replay import PrioritizedSequenceReplay
-from tower_rl.application.training import (
-    CollectionWindow,
-    TrainingProgressReport,
-    TrainingRun,
-    action_distribution,
-    collection_windows,
-    episode_health,
-)
 from tower_rl.environment.decision_time import EMPTY_BREAKDOWN, DecisionTimeBreakdown
 from tower_rl.experiment.metrics import (
     DECISION_TIME_INTERVAL_SECONDS,
@@ -52,6 +41,16 @@ from tower_rl.learning.checkpoint import (
     CheckpointIdentity,
     TrainingProgress,
     write_checkpoint,
+)
+from tower_rl.learning.evaluator import EvaluationReport, to_record
+from tower_rl.learning.replay import PrioritizedSequenceReplay
+from tower_rl.learning.training import (
+    CollectionWindow,
+    TrainingProgressReport,
+    TrainingRun,
+    action_distribution,
+    collection_windows,
+    episode_health,
 )
 
 
@@ -79,12 +78,9 @@ class TrainingReport:
     #: The weight digest of the checkpoint last written, which is what a curve
     #: point names when it says which checkpoint it corresponds to.
     last_checkpoint_fingerprint: str = ""
-    #: Runs one exploration-free evaluation and records it on the curve. Held
-    #: here as well as on the training run because the pre-registered final
-    #: evaluation is taken by the session, after the budget is spent, rather
-    #: than on a period.
-    evaluation: Callable[[bool], EvaluationReport] | None = None
-    #: The point that evaluation produced, which is the headline number.
+    #: The pre-registered final point, set by `record_point` when it records
+    #: one: the headline number, and the only point the run is judged on. The
+    #: report records evaluations; it does not run them.
     final_point: LearningCurvePoint | None = None
     #: The decision-time decomposition, one record per emission interval. Each
     #: record is a delta, so it describes that interval alone rather than the
@@ -105,7 +101,6 @@ class TrainingReport:
 
     def _write(self, report: TrainingProgressReport, path: Path) -> str:
         """Write one checkpoint and return the digest of the weights in it."""
-        config = self.training.config
         return write_checkpoint(
             path,
             identity=self.identity,
@@ -113,8 +108,12 @@ class TrainingReport:
                 optimisation_steps=report.optimisation_steps,
                 environment_decisions=report.decisions,
                 episodes=report.episodes,
-                epsilon=config.epsilon(report.decisions),
-                importance_beta=config.beta(report.decisions),
+                # Read from the run rather than re-evaluated from its
+                # schedules: the exploration rate and the importance exponent
+                # are the run's to publish, and a resume has to restore what was
+                # actually used.
+                epsilon=report.epsilon,
+                importance_beta=report.importance_beta,
             ),
             backbone_state=self.backbone.state_dict(),
             resolved_config=self.resolved,
@@ -167,6 +166,10 @@ class TrainingReport:
             pre_registered_final=pre_registered_final,
         )
         self.learning_curve.append(point)
+        if pre_registered_final:
+            # The headline is named here, where the point is made, rather than
+            # by whoever asked for the evaluation.
+            self.final_point = point
         # Keyed by decisions consumed, because that is the budget unit the
         # comparison equalises on; the checkpoint goes up under the fingerprint
         # the point names, so a tracked point resolves to an exact file.

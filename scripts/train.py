@@ -58,23 +58,13 @@ from run_episodes import (  # noqa: E402
     compatibility,
 )
 
-from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import EvaluationReport, evaluate  # noqa: E402
-from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.training import (  # noqa: E402
-    ActorProgress,
-    TrainingConfig,
-    TrainingProgressReport,
-    TrainingRun,
-)
-from tower_rl.environment.episode import REWARD_SCHEMA_VERSION  # noqa: E402
-from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
-from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilder  # noqa: E402
+from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.experiment.run_identity import (  # noqa: E402
     REFERENCE_FINAL_WAVES,
-    new_run_id,
+    RunIdentity,
+    checkpoint_identity,
     resolved_config,
     source_revision,
     tracked_params,
@@ -91,10 +81,19 @@ from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
     InstrumentedBridgeClient,
 )
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
+from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
-from tower_rl.learning.checkpoint import CheckpointIdentity, write_manifest  # noqa: E402
+from tower_rl.learning.checkpoint import write_manifest  # noqa: E402
+from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
+from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
+from tower_rl.learning.training import (  # noqa: E402
+    ActorProgress,
+    TrainingConfig,
+    TrainingProgressReport,
+    TrainingRun,
+)
 
 #: The one backbone this project trains.
 BACKBONE = "stacked-dqn"
@@ -152,8 +151,12 @@ def build_arm(
     started: float,
     tracker: ExperimentTracker,
     tags: dict[str, str],
-) -> TrainingReport:
-    run_id = new_run_id(name)
+) -> tuple[TrainingReport, Callable[[bool], EvaluationReport]]:
+    # Identity first: the run id every artefact is filed under, and the
+    # compatibility key its checkpoints are written with, derived from it in the
+    # one place that knows which schemas this code is.
+    identity = RunIdentity.started_now(name, profile_id=profile_id, source_revision=revision)
+    run_id = identity.run_id
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
@@ -226,15 +229,7 @@ def build_arm(
         ),
         started=started,
         run=run,
-        identity=CheckpointIdentity(
-            run_id=run_id,
-            backbone=name,
-            profile_id=profile_id,
-            observation_schema=OBSERVATION_SCHEMA_VERSION,
-            action_schema=ACTION_SCHEMA_VERSION,
-            reward_schema=REWARD_SCHEMA_VERSION,
-            source_revision=revision,
-        ),
+        identity=checkpoint_identity(identity),
         resolved=resolved,
     )
 
@@ -251,8 +246,6 @@ def build_arm(
             model_version=backbone.model_version,
         )
         point = arm.record_point(report, pre_registered_final=pre_registered_final)
-        if pre_registered_final:
-            arm.final_point = point
         print(f"[{name}] {report.summary_line()}", flush=True)
         print(f"[{name}] curve: {point.line()}", flush=True)
         return report
@@ -276,7 +269,6 @@ def build_arm(
             flush=True,
         )
 
-    arm.evaluation = run_evaluation
     # The periodic hook takes no argument and is off by default: mid-run
     # evaluation buys points too noisy to read at the price of device time.
     arm.training.evaluate = run_evaluation
@@ -286,7 +278,10 @@ def build_arm(
     manifest = run_dir / "manifest.json"
     write_manifest(manifest, {"run_id": run_id, **resolved})
     run.log_artifact(manifest)
-    return arm
+    # The evaluation comes back beside the report rather than on it: the report
+    # records what an evaluation produced, and the session decides when the one
+    # pre-registered evaluation is taken.
+    return arm, run_evaluation
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -508,7 +503,7 @@ def train_session(
     }
     if bridge_version is not None:
         tags["bridge_version"] = bridge_version
-    arm = build_arm(
+    arm, run_evaluation = build_arm(
         BACKBONE,
         arguments,
         instances=instances,
@@ -534,14 +529,13 @@ def train_session(
         # difference against the scripted floor. Taken after the budget is
         # spent, so it costs no decisions and cannot be chosen after the fact
         # from a series of mid-run points.
-        if arm.evaluation is not None:
-            try:
-                arm.evaluation(True)
-            except (RunPortError, ValueError) as failure:
-                # Losing the headline measurement must not lose the run: the
-                # collection curve and the checkpoints are already on disk.
-                arm.training.report.evaluation_failures.append(str(failure))
-                print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
+        try:
+            run_evaluation(True)
+        except (RunPortError, ValueError) as failure:
+            # Losing the headline measurement must not lose the run: the
+            # collection curve and the checkpoints are already on disk.
+            arm.training.report.evaluation_failures.append(str(failure))
+            print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
         summaries = [arm.summary()]
         report: dict[str, object] = {

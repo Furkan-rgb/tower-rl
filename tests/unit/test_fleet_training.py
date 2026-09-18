@@ -18,13 +18,6 @@ import pytest
 import torch
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.application.actor import Actor, ActorConfig
-from tower_rl.application.replay import PrioritizedSequenceReplay
-from tower_rl.application.training import (
-    TrainingConfig,
-    TrainingRun,
-    collection_windows,
-)
 from tower_rl.environment.features import encode_state
 from tower_rl.environment.run_environment import (
     CadenceConfig,
@@ -36,6 +29,7 @@ from tower_rl.infrastructure.instrumented_bridge import BridgeTimeoutError
 from tower_rl.infrastructure.instrumented_run_adapter import (
     InstrumentedRunAdapter,
 )
+from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.backbone import (
     LearnMetrics,
     SequenceBatch,
@@ -43,9 +37,15 @@ from tower_rl.learning.backbone import (
     parameters_are_equal,
 )
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import (
     StackedDqnBackbone,
     StackedDqnConfig,
+)
+from tower_rl.learning.training import (
+    TrainingConfig,
+    TrainingRun,
+    collection_windows,
 )
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
@@ -371,6 +371,40 @@ def test_two_actors_may_not_share_one_identity() -> None:
 def test_a_run_needs_at_least_one_actor() -> None:
     with pytest.raises(ValueError, match="at least one actor"):
         fleet([])
+
+
+def test_a_fleet_refuses_to_evaluate_on_an_instance_that_is_still_collecting() -> None:
+    """The single-environment invariant, asserted where it would be broken.
+
+    An evaluation borrows an actor's environment. With a fleet, the other actors
+    are still collecting, so the borrowed instance would be driven from two
+    threads at once. The CLI refuses the flag combination, but nothing stops a
+    caller composing a run in Python, so the run refuses it itself - before a
+    thread is started, not halfway through a block.
+    """
+    training = fleet([environment(), environment()], evaluate_every_episodes=1)
+    training.evaluate = lambda: cast(Any, None)
+
+    with pytest.raises(ValueError, match="cannot run while a fleet"):
+        training.advance(50)
+
+    assert training.report.episodes == 0, "nothing was collected before the refusal"
+
+
+def test_a_fleet_of_one_may_evaluate_between_its_own_episodes() -> None:
+    """The same hook is legal for one actor: the hook runs on that actor's thread."""
+    training = fleet([environment()], evaluate_every_episodes=1, budget_decisions=20)
+    evaluations = 0
+
+    def evaluate_now() -> Any:
+        nonlocal evaluations
+        evaluations += 1
+        raise ValueError("no arm to score; the point is that it was called")
+
+    training.evaluate = evaluate_now
+    training.advance(20)
+
+    assert evaluations > 0
 
 
 @dataclass

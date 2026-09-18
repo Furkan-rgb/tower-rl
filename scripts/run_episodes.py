@@ -21,13 +21,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tower_rl.application.actor import ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import evaluate, to_record  # noqa: E402
-from tower_rl.application.policies import (  # noqa: E402
-    CheapestFirstPolicy,
-    RandomPolicy,
-    WaitOnlyPolicy,
-)
 from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -39,6 +32,13 @@ from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
 )
 from tower_rl.infrastructure.instrumented_run_adapter import (  # noqa: E402
     InstrumentedRunAdapter,
+)
+from tower_rl.learning.actor import ActorConfig  # noqa: E402
+from tower_rl.learning.evaluator import evaluate, to_record  # noqa: E402
+from tower_rl.learning.policies import (  # noqa: E402
+    CheapestFirstPolicy,
+    RandomPolicy,
+    WaitOnlyPolicy,
 )
 
 POLICIES = {

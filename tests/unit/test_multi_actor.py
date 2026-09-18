@@ -35,12 +35,12 @@ from run_actors import (
     stagger_bring_up,
 )
 
-from tower_rl.application.evaluator import (
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
+from tower_rl.learning.evaluator import (
     EvaluationReport,
     WaveDistribution,
     to_record,
 )
-from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
 
 
 def summary(

@@ -18,12 +18,17 @@ import subprocess
 import time
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import torch
 
-from tower_rl.application.training import TrainingConfig
+from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
+from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
 from tower_rl.environment.run_environment import CadenceConfig
+from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
+from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
+from tower_rl.learning.training import TrainingConfig
 
 #: The measured floors a learning curve has to be read against, carried in every
 #: report so the curve is legible without a second document. Mean final wave over
@@ -52,6 +57,51 @@ def source_revision() -> str:
 def new_run_id(name: str) -> str:
     """A run id that sorts by when it was started and collides with nothing."""
     return f"{name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+
+
+@dataclass(frozen=True)
+class RunIdentity:
+    """Who produced a run: which arm, on which device profile, at which code.
+
+    Everything a run is named by that a caller actually chooses. The schemas a
+    checkpoint is keyed on are not among them: they are properties of the code
+    this run is, which is why `checkpoint_identity` reads them here rather than
+    taking them from a script.
+    """
+
+    run_id: str
+    backbone: str
+    profile_id: str
+    source_revision: str
+
+    @classmethod
+    def started_now(cls, backbone: str, *, profile_id: str, source_revision: str) -> RunIdentity:
+        """A fresh identity for a run about to start, with a new run id."""
+        return cls(
+            run_id=new_run_id(backbone),
+            backbone=backbone,
+            profile_id=profile_id,
+            source_revision=source_revision,
+        )
+
+
+def checkpoint_identity(identity: RunIdentity) -> CheckpointIdentity:
+    """The compatibility key the run's checkpoints are written under.
+
+    The one place the observation, action and reward schema versions are read
+    into an identity. `CheckpointIdentity.incompatibilities` deliberately
+    ignores `run_id`: a checkpoint from an earlier run may be resumed into this
+    one as long as the arm, the profile and all three schemas match.
+    """
+    return CheckpointIdentity(
+        run_id=identity.run_id,
+        backbone=identity.backbone,
+        profile_id=identity.profile_id,
+        observation_schema=OBSERVATION_SCHEMA_VERSION,
+        action_schema=ACTION_SCHEMA_VERSION,
+        reward_schema=REWARD_SCHEMA_VERSION,
+        source_revision=identity.source_revision,
+    )
 
 
 def resolved_config(
@@ -132,6 +182,8 @@ def tracked_params(resolved: dict[str, object]) -> dict[str, object]:
 __all__ = [
     "REFERENCE_FINAL_WAVES",
     "SCRIPTED_REFERENCE",
+    "RunIdentity",
+    "checkpoint_identity",
     "new_run_id",
     "resolved_config",
     "source_revision",

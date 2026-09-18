@@ -5,19 +5,6 @@ import math
 import pytest
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.application.actor import Actor, ActorConfig
-from tower_rl.application.evaluator import (
-    WaveDistribution,
-    episode_record,
-    evaluate,
-    to_record,
-)
-from tower_rl.application.policies import (
-    CheapestFirstPolicy,
-    RandomPolicy,
-    WaitOnlyPolicy,
-)
-from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
 from tower_rl.environment.run_environment import (
     CadenceConfig,
@@ -25,6 +12,19 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.comparison import bootstrap_difference, cohens_d
+from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.evaluator import (
+    WaveDistribution,
+    episode_record,
+    evaluate,
+    to_record,
+)
+from tower_rl.learning.policies import (
+    CheapestFirstPolicy,
+    RandomPolicy,
+    WaitOnlyPolicy,
+)
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 
 PROFILE = "fake-profile-v1"
 
@@ -230,7 +230,7 @@ def test_decision_density_is_a_mean_over_the_valid_episodes_alone() -> None:
     and charging its decisions to the episodes that survived would flatter
     exactly the arms that failed most.
     """
-    from tower_rl.application.evaluator import EvaluationReport
+    from tower_rl.learning.evaluator import EvaluationReport
 
     report = EvaluationReport(
         policy="p",
@@ -249,7 +249,7 @@ def test_decision_density_is_a_mean_over_the_valid_episodes_alone() -> None:
 
 
 def test_the_new_metrics_are_guarded_against_an_empty_denominator() -> None:
-    from tower_rl.application.evaluator import EvaluationReport
+    from tower_rl.learning.evaluator import EvaluationReport
 
     empty = EvaluationReport(
         policy="p",
@@ -268,7 +268,7 @@ def test_the_new_metrics_are_guarded_against_an_empty_denominator() -> None:
 
 def test_invalid_episodes_carry_their_validator_reason() -> None:
     """A rate without reasons cannot be fixed; M1B-E007 needed the text."""
-    from tower_rl.application.evaluator import EvaluationReport, WaveDistribution, to_record
+    from tower_rl.learning.evaluator import EvaluationReport, WaveDistribution, to_record
 
     report = EvaluationReport(
         policy="CheapestFirstPolicy",
@@ -319,7 +319,7 @@ def test_per_episode_records_cover_valid_and_invalid_episodes_alike() -> None:
     every statistical comparison: the aggregates alone cannot feed a bootstrap
     interval or Cohen's d.
     """
-    from tower_rl.application.evaluator import EvaluationReport
+    from tower_rl.learning.evaluator import EvaluationReport
 
     valid = _summary(episode_id="valid", final_wave=7, starting_wave=1)
     invalid = _summary(

@@ -129,6 +129,34 @@ def save(checkpoint: Checkpoint, path: Path) -> str:
     return checksum
 
 
+def write_checkpoint(
+    path: Path,
+    *,
+    identity: CheckpointIdentity,
+    progress: TrainingProgress,
+    backbone_state: Mapping[str, Any],
+    resolved_config: Mapping[str, Any],
+    replay_provenance: Mapping[str, Any],
+) -> str:
+    """Assemble one checkpoint, write it atomically, return its weight digest.
+
+    The digest is of the weights, not of the file: it is what a measurement names
+    when it says which parameters produced it, and it survives the file being
+    overwritten or copied elsewhere.
+    """
+    save(
+        Checkpoint(
+            identity=identity,
+            progress=progress,
+            backbone_state=backbone_state,
+            resolved_config=resolved_config,
+            replay_provenance=replay_provenance,
+        ),
+        path,
+    )
+    return fingerprint(backbone_state)
+
+
 def load(path: Path, *, expected: CheckpointIdentity | None = None) -> Checkpoint:
     """Read, checksum, and optionally require compatibility with a running job."""
     if not path.exists():

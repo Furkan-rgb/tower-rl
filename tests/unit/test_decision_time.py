@@ -14,9 +14,11 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -24,16 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fakes.fake_run_port import FakeRunPort  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.decision_time import (  # noqa: E402
-    BLOCKED,
-    BRIDGE_ROUND_TRIP,
-    BUCKETS,
-    OBSERVATION_DECODE,
-    POLICY_FORWARD,
-    RESIDUAL,
-    DecisionTimeProfile,
-    pooled,
-)
+from tower_rl.application.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.application.run_environment import (  # noqa: E402
     CadenceConfig,
@@ -44,6 +37,16 @@ from tower_rl.application.training import (  # noqa: E402
     TrainingRun,
 )
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.experiment.decision_time import (  # noqa: E402
+    BLOCKED,
+    BRIDGE_ROUND_TRIP,
+    BUCKETS,
+    OBSERVATION_DECODE,
+    POLICY_FORWARD,
+    RESIDUAL,
+    DecisionTimeProfile,
+    pooled,
+)
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.stacked_dqn import (  # noqa: E402
     StackedDqnBackbone,
@@ -260,3 +263,52 @@ def test_the_record_a_run_serialises_is_json_shaped() -> None:
     assert set(record["buckets"]) == set(BUCKETS)
     assert record["decisions"] == 1
     assert record["buckets"][POLICY_FORWARD]["wall_ms_per_decision"] > 0
+
+
+def test_evaluation_is_not_charged_to_the_actor_whose_instance_it_borrows() -> None:
+    """Evaluation borrows the instance; it must not borrow the accounting too.
+
+    The environment's profile is the collecting actor's own, and an evaluation
+    runs on that environment - periodically inside a block of collection, and
+    once more after the budget is spent, when the actor is collecting nothing at
+    all. Charged there, the evaluation's bridge and decode time is time the
+    actor never spent, which the decomposition can only express as a residual
+    that has gone negative.
+    """
+    training = fleet(1)
+    actor = training.actors[0]
+    evaluations = 0
+
+    def evaluate_now() -> EvaluationReport:
+        nonlocal evaluations
+        evaluations += 1
+        return evaluate(
+            actor.environment,
+            training.backbone,
+            episodes=1,
+            profile_id="fake-profile-v1",
+        )
+
+    training.config = replace(training.config, evaluate_every_episodes=1)
+    training.evaluate = evaluate_now
+    training.run()
+    collected = actor.profile.snapshot()
+    # The pre-registered final evaluation: taken after the budget is spent, with
+    # no block of collection open for it to be charged to.
+    evaluate_now()
+    after = actor.profile.snapshot()
+
+    assert evaluations > 1, "the run evaluated periodically and once at the end"
+    # Not one bridge round trip, decode or decision of the evaluation's landed
+    # in the actor's account.
+    assert {name: after.buckets[name].count for name in BUCKETS} == {
+        name: collected.buckets[name].count for name in BUCKETS
+    }
+    assert after.buckets[BRIDGE_ROUND_TRIP].wall_seconds == pytest.approx(
+        collected.buckets[BRIDGE_ROUND_TRIP].wall_seconds
+    )
+    # Only the actor's own decisions are counted, and the buckets still
+    # decompose exactly the time it spent collecting them.
+    assert after.decisions == training.report.actors[actor.config.actor_id].decisions
+    assert abs(after.accounting_error_seconds) < TOLERANCE_SECONDS
+    assert after.buckets[RESIDUAL].wall_seconds >= -TOLERANCE_SECONDS

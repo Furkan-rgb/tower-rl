@@ -31,15 +31,15 @@ from run_episodes import (  # noqa: E402
 )
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.comparison import (  # noqa: E402
-    compare,
-    interleave_schedule,
-    required_episodes,
-)
 from tower_rl.application.evaluator import WaveDistribution, episode_record  # noqa: E402
 from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.domain.episode import EpisodeSummary  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.experiment.comparison import (  # noqa: E402
+    compare,
+    interleave_schedule,
+    required_episodes,
+)
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 

@@ -36,12 +36,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
-import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -61,253 +59,45 @@ from run_episodes import (  # noqa: E402
 )
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.decision_time import (  # noqa: E402
-    BUCKETS,
-    EMPTY_BREAKDOWN,
-    DecisionTimeBreakdown,
-    pooled,
-)
-from tower_rl.application.evaluator import (  # noqa: E402
-    EvaluationReport,
-    episode_record,
-    evaluate,
-    to_record,
-)
+from tower_rl.application.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.application.training import (  # noqa: E402
     ActorProgress,
-    CollectionWindow,
-    EpisodeHealth,
     TrainingConfig,
     TrainingProgressReport,
     TrainingRun,
-    action_distribution,
-    collection_windows,
-    episode_health,
 )
-from tower_rl.domain.episode import (  # noqa: E402
-    REWARD_SCHEMA_VERSION,
-    EpisodeSummary,
-)
+from tower_rl.domain.episode import REWARD_SCHEMA_VERSION  # noqa: E402
 from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
 from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilder  # noqa: E402
+from tower_rl.experiment.run_identity import (  # noqa: E402
+    REFERENCE_FINAL_WAVES,
+    new_run_id,
+    resolved_config,
+    source_revision,
+    tracked_params,
+)
+from tower_rl.experiment.tracking import (  # noqa: E402
+    ExperimentTracker,
+    NoExperimentTracker,
+    artifact_root,
+    tracking_uri,
+)
+from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
     BridgeCompatibility,
     InstrumentedBridgeClient,
 )
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
-from tower_rl.learning.checkpoint import (  # noqa: E402
-    Checkpoint,
-    CheckpointIdentity,
-    TrainingProgress,
-    fingerprint,
-    save,
-    write_manifest,
-)
+from tower_rl.learning.checkpoint import CheckpointIdentity, write_manifest  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
-from tower_rl.ports.experiment_tracker import (  # noqa: E402
-    ExperimentTracker,
-    NoExperimentTracker,
-    TrackedRun,
-)
 from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 #: The one backbone this project trains.
 BACKBONE = "stacked-dqn"
-
-#: The measured floors a learning curve has to be read against, carried in every
-#: report so the curve is legible without a second document. Mean final wave over
-#: 23 valid episodes per arm, `M1B-E021` at commit 86fcf3c.
-REFERENCE_FINAL_WAVES: dict[str, object] = {
-    "metric": "mean final wave",
-    "episodes_per_arm": 23,
-    "source": "M1B-E021 at commit 86fcf3c",
-    "scripted": 5.57,
-    "random": 5.35,
-    "wait": 1.87,
-}
-
-#: The floor a learned arm has to clear to mean anything.
-SCRIPTED_REFERENCE = 5.57
-
-
-@dataclass(frozen=True)
-class LearningCurvePoint:
-    """One exploration-free measurement of an arm, placed on its budget.
-
-    This is the artefact the run is read from: whether the number is going up,
-    how far into the budget it got there, and which checkpoint on disk produced
-    it. Everything here is either a cost already paid or a measurement already
-    taken; nothing is inferred.
-    """
-
-    #: Where on the budget this point sits, and what it cost to get here.
-    decisions: int
-    episodes: int
-    wall_seconds: float
-    #: Optimisation steps applied to the weights that were evaluated.
-    model_version: int
-    #: The evaluation itself, at epsilon 0, never written to replay.
-    mean_final_wave: float
-    #: None for a single-episode sample, which has no spread to report.
-    stdev_final_wave: float | None
-    final_waves: list[int]
-    valid_episodes: int
-    invalid_episodes: int
-    invalid_by_reason: dict[str, int]
-    #: The scripted floor is the bar; the difference is spelled out rather than
-    #: left to the reader to subtract.
-    versus_scripted_reference: float
-    #: The checkpoint holding exactly the weights this point scored.
-    checkpoint_fingerprint: str
-    checkpoint_path: str
-    #: The learner's health at this point, as the diagnostics name it. The loss
-    #: carries the importance-sampling weights and the TD error does not, which
-    #: is why they are never reported under one name.
-    weighted_loss: float | None
-    unweighted_mean_absolute_td_error: float | None
-    gradient_norm: float | None
-    #: Predicted value against realised discounted return. Near zero with the
-    #: other signals healthy means the learner is not learning the return.
-    value_fit_correlation: float | None
-    #: What the collecting policy did over the last window of episodes. The
-    #: random baseline buys 18.7 upgrades per episode.
-    collection_wait_fraction: float | None
-    collection_purchases_per_episode: float | None
-    #: True for the single pre-registered exploration-free evaluation of the
-    #: final checkpoint, which is the headline number against the scripted
-    #: reference. Every other point is incidental.
-    pre_registered_final: bool = False
-
-    def line(self) -> str:
-        spread = "n/a" if self.stdev_final_wave is None else f"{self.stdev_final_wave:.2f}"
-        return (
-            f"decisions {self.decisions} wall {self.wall_seconds:.0f}s "
-            f"mean final wave {self.mean_final_wave:.2f} sd {spread} "
-            f"vs scripted {SCRIPTED_REFERENCE}: {self.versus_scripted_reference:+.2f} "
-            f"({self.valid_episodes} valid, {self.invalid_episodes} invalid)"
-        )
-
-
-def curve_metrics(
-    point: LearningCurvePoint,
-    evaluation: EvaluationReport,
-) -> dict[str, float]:
-    """What one curve point is worth tracking for, keyed by nothing but itself.
-
-    Every number here is already measured; none is instrumented for tracking.
-    The learner health signals are the ones `learn` returns anyway - the
-    weighted loss, the unweighted TD error magnitude, the gradient norm and the
-    value fit - averaged over the last hundred steps.
-    """
-    waves = sum(point.final_waves)
-    metrics: dict[str, float] = {
-        "eval_mean_final_wave": point.mean_final_wave,
-        "eval_valid_episodes": float(point.valid_episodes),
-        "eval_invalid_episodes": float(point.invalid_episodes),
-        "versus_scripted_reference": point.versus_scripted_reference,
-        "episodes": float(point.episodes),
-        "optimisation_steps": float(point.model_version),
-        "wall_seconds": point.wall_seconds,
-    }
-    if point.stdev_final_wave is not None:
-        metrics["eval_stdev_final_wave"] = point.stdev_final_wave
-    if waves:
-        # Device cost per wave reached, measured exploration-free: the density
-        # the budget is actually spent at.
-        metrics["eval_decisions_per_wave"] = evaluation.decisions_in_valid_episodes / waves
-    health = {
-        # Weighted and unweighted are spelled out in the key itself: reading one
-        # as the other is what made the first run look like it was learning.
-        "learner_weighted_loss_with_is_weights": point.weighted_loss,
-        "learner_unweighted_mean_absolute_td_error": point.unweighted_mean_absolute_td_error,
-        "learner_gradient_norm": point.gradient_norm,
-        "learner_value_fit_correlation": point.value_fit_correlation,
-        "collection_wait_fraction": point.collection_wait_fraction,
-        "collection_purchases_per_episode": point.collection_purchases_per_episode,
-    }
-    metrics.update({key: value for key, value in health.items() if value is not None})
-    return metrics
-
-
-def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
-    """The numeric fields of `EpisodeHealth`, keyed for MLflow.
-
-    MLflow metrics are scalars, so `invalid_by_reason` and `invalid_detail` stay
-    in the JSON report only; everything a health problem is *located* by - not
-    just named - travels to the tracker too.
-    """
-    metrics = {
-        f"{prefix}valid_episodes": float(health.valid_episodes),
-        f"{prefix}invalid_episodes": float(health.invalid_episodes),
-        f"{prefix}advances_cut_short": float(health.advances_cut_short),
-        f"{prefix}episodes_not_started_fresh": float(health.episodes_not_started_fresh),
-        f"{prefix}bridge_event_divergence": float(health.bridge_event_divergence),
-        f"{prefix}stale_or_duplicate": float(health.stale_or_duplicate),
-        f"{prefix}game_time_inflated": float(health.game_time_inflated),
-    }
-    if health.round_budgeted_ratio is not None:
-        metrics[f"{prefix}round_budgeted_ratio"] = health.round_budgeted_ratio
-    if health.worst_round_budgeted_ratio is not None:
-        metrics[f"{prefix}worst_round_budgeted_ratio"] = health.worst_round_budgeted_ratio
-    return metrics
-
-
-def window_metrics(window: CollectionWindow) -> dict[str, float]:
-    """One point of the collection curve, which is what the run is read from."""
-    metrics = {
-        "collection_mean_final_wave": window.mean_final_wave,
-        "collection_versus_scripted_reference": window.mean_final_wave - SCRIPTED_REFERENCE,
-        "collection_episodes": float(window.episodes),
-        "collection_window_wait_fraction": window.wait_fraction,
-        "collection_window_purchases_per_episode": window.purchases_per_episode,
-    }
-    if window.stdev_final_wave is not None and window.standard_error is not None:
-        metrics["collection_stdev_final_wave"] = window.stdev_final_wave
-        metrics["collection_standard_error"] = window.standard_error
-    # The window's own health, so a problem can be placed on the budget axis
-    # rather than only read off the run's total.
-    metrics.update(health_metrics(window.health, prefix="collection_window_"))
-    return metrics
-
-
-def window_line(window: CollectionWindow) -> str:
-    error = "n/a" if window.standard_error is None else f"{window.standard_error:.2f}"
-    health = window.health
-    return (
-        f"window {window.index} decisions {window.decisions_at_end} "
-        f"mean final wave {window.mean_final_wave:.2f} se {error} "
-        f"over {window.episodes} collected episodes, "
-        f"wait {window.wait_fraction:.1%} purchases/episode "
-        f"{window.purchases_per_episode:.1f} "
-        f"(invalid {health.invalid_episodes} cut_short {health.advances_cut_short} "
-        f"divergence {health.bridge_event_divergence})"
-    )
-
-
-def collected_episode_records(report: TrainingProgressReport) -> list[dict[str, object]]:
-    """Every collected episode's record, reusing the evaluator's shape.
-
-    `episode_record` is what `run_episodes.py` and `compare_arms.py` already
-    serialise per-episode records with; this is that same shape, plus the actor
-    id, since a fleet's episodes are one series and a health problem must be
-    traceable back to the instance that produced it.
-    """
-    return [
-        {**episode_record(index, episode.summary), "actor_id": episode.actor_id}
-        for index, episode in enumerate(report.collected)
-    ]
-
-
-def source_revision() -> str:
-    """Bind every artifact to the code that produced it."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False
-    )
-    return result.stdout.strip() or "unknown"
 
 
 @dataclass(frozen=True)
@@ -321,393 +111,6 @@ class ActorInstance:
 
     serial: str
     environment: InstrumentedRunEnvironment
-
-
-def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, object]:
-    """`EpisodeHealth`, as a plain dict for the JSON report.
-
-    One shape shared by the whole run, each actor and each collection window
-    (`training.episode_health`); a fleet is watched by the same counters at
-    every one of those scopes.
-    """
-    return asdict(episode_health(summaries))
-
-
-#: How often the decision-time decomposition is emitted, in seconds of the
-#: run's wall clock, checked at episode boundaries. Deliberately a time cadence
-#: rather than the collection window: a window is a hundred episodes and closes
-#: about once an hour, and the question this measurement exists to answer - is
-#: the host idle on its emulators or contended in Python - has to be readable
-#: from a few minutes of steady state, not from a whole run.
-DECISION_TIME_INTERVAL_SECONDS = 30.0
-
-
-def fleet_decision_time(report: TrainingProgressReport) -> dict[str, DecisionTimeBreakdown]:
-    """Each actor's cumulative time decomposition, as it last published it.
-
-    Read on an actor's thread while it holds the run's progress lock, which is
-    the same lock every actor publishes its own snapshot under.
-    """
-    return {
-        actor_id: progress.decision_time or EMPTY_BREAKDOWN
-        for actor_id, progress in report.actors.items()
-    }
-
-
-def decision_time_metrics(fleet: DecisionTimeBreakdown, actors: int) -> dict[str, float]:
-    """The decomposition as MLflow scalars, in milliseconds per decision.
-
-    `busy_fraction` is the headline: the share of an actor thread's wall time
-    that was executing Python at all. A fleet idle on its emulators sits low
-    and flat as actors are added; a fleet contending for the interpreter does
-    not.
-    """
-    per_decision = 1000.0 / fleet.decisions if fleet.decisions else 0.0
-    metrics = {
-        "decision_wall_ms": round(fleet.elapsed_seconds * per_decision, 3),
-        "decision_cpu_ms": round(fleet.cpu_seconds * per_decision, 3),
-        "decision_busy_fraction": round(fleet.busy_fraction, 4),
-        "decision_accounting_error_ms": round(fleet.accounting_error_seconds * 1000, 6),
-        "decisions_per_hour_per_actor": (
-            round(fleet.decisions_per_hour, 1) if actors else 0.0
-        ),
-    }
-    for name in BUCKETS:
-        bucket = fleet.buckets[name]
-        metrics[f"decision_wall_ms_{name}"] = round(bucket.wall_seconds * per_decision, 3)
-        metrics[f"decision_cpu_ms_{name}"] = round(bucket.cpu_seconds * per_decision, 3)
-    return metrics
-
-
-def decision_time_line(name: str, fleet: DecisionTimeBreakdown, actors: int) -> str:
-    per_decision = 1000.0 / fleet.decisions if fleet.decisions else 0.0
-    parts = " ".join(
-        f"{label} {fleet.buckets[key].wall_seconds * per_decision:.1f}"
-        f"/{fleet.buckets[key].cpu_seconds * per_decision:.1f}"
-        for key, label in (
-            ("bridge_round_trip", "bridge"),
-            ("observation_decode", "observe"),
-            ("policy_forward", "policy"),
-            ("learner_step", "learn"),
-            ("blocked", "blocked"),
-            ("residual", "residual"),
-        )
-    )
-    return (
-        f"[{name}] decision time over {fleet.decisions} decisions on {actors} actors: "
-        f"total {fleet.elapsed_seconds * per_decision:.1f}ms wall "
-        f"{fleet.cpu_seconds * per_decision:.1f}ms cpu, "
-        f"busy {fleet.busy_fraction:.1%}, "
-        f"{fleet.decisions_per_hour:.0f} decisions/hour per actor; "
-        f"wall/cpu ms per decision: {parts}"
-    )
-
-
-def per_hour(count: int, wall_seconds: float) -> float:
-    """A rate over the fleet's wall clock, which is the device time it cost.
-
-    N actors collecting for an hour bought one hour of device time however many
-    of them were alive for it, so the fleet's own clock is the denominator.
-    """
-    return round(count / wall_seconds * 3600, 1) if wall_seconds > 0 else 0.0
-
-
-def actor_summary(
-    progress: ActorProgress,
-    report: TrainingProgressReport,
-) -> dict[str, object]:
-    """What one actor of the fleet contributed, beside the aggregate.
-
-    `episodes` counts every attempt including the ones the port never delivered
-    a summary for; the health counters below are pooled over the summaries that
-    were delivered, which is one episode fewer whenever the port refused one.
-    """
-    summaries = [episode.summary for episode in report.episodes_of(progress.actor_id)]
-    return {
-        # The health counters first, so the identity and attempt-counting keys
-        # below - which count every attempt, not only the ones with a summary -
-        # are what wins where the two would otherwise collide on "episodes".
-        **health_counters(summaries),
-        "actor_id": progress.actor_id,
-        "episodes": progress.episodes,
-        "decisions": progress.decisions,
-        "failed_episodes": progress.failed_episodes,
-        # Set only for an actor whose instance failed every episode the limit
-        # allows; the rest of the fleet kept collecting without it.
-        "withdrawn": progress.withdrawn,
-        "episodes_per_hour": per_hour(progress.episodes, report.wall_seconds),
-        "decisions_per_hour": per_hour(progress.decisions, report.wall_seconds),
-        # This actor's own wall time, decomposed. `decisions_per_hour` above is
-        # taken over the fleet's clock; the one inside this record is taken over
-        # the actor's own collecting time, which is what a per-actor rate means.
-        "decision_time": (
-            progress.decision_time.as_record()
-            if progress.decision_time is not None
-            else EMPTY_BREAKDOWN.as_record()
-        ),
-    }
-
-
-@dataclass
-class Arm:
-    """One backbone under training, with everything that belongs only to it."""
-
-    name: str
-    run_dir: Path
-    backbone: Backbone
-    replay: PrioritizedSequenceReplay
-    training: TrainingRun
-    identity: CheckpointIdentity
-    resolved: dict[str, object]
-    #: The monotonic origin every curve point's wall clock is measured from.
-    started: float
-    #: Where this arm records itself. `NoExperimentTracker` hands out a handle
-    #: that keeps nothing, so the code below has no tracked and untracked paths.
-    run: TrackedRun
-    learning_curve: list[LearningCurvePoint] = field(default_factory=list)
-    #: The collection curve: every window of collected episodes that has closed.
-    #: This is the series the run is read from; the learning curve holds the one
-    #: pre-registered evaluation.
-    collection_curve: list[CollectionWindow] = field(default_factory=list)
-    #: The weight digest of the checkpoint last written, which is what a curve
-    #: point names when it says which checkpoint it corresponds to.
-    last_checkpoint_fingerprint: str = ""
-    #: Runs one exploration-free evaluation and records it on the curve. Held
-    #: here as well as on the training run because the pre-registered final
-    #: evaluation is taken by the session, after the budget is spent, rather
-    #: than on a period.
-    evaluation: Callable[[bool], EvaluationReport] | None = None
-    #: The point that evaluation produced, which is the headline number.
-    final_point: LearningCurvePoint | None = None
-    #: The decision-time decomposition, one record per emission interval. Each
-    #: record is a delta, so it describes that interval alone rather than the
-    #: run's average, which is what makes a short measurement readable.
-    decision_time_curve: list[dict[str, object]] = field(default_factory=list)
-    #: Each actor's cumulative decomposition at the last emission, which the
-    #: next one is measured against.
-    decision_time_baseline: dict[str, DecisionTimeBreakdown] = field(default_factory=dict)
-    decision_time_emitted: float = 0.0
-
-    @property
-    def checkpoint_path(self) -> Path:
-        return self.run_dir / "checkpoints" / "latest.pt"
-
-    def checkpoint(self, report: TrainingProgressReport) -> None:
-        """The resume point, overwritten in place as the run proceeds."""
-        self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
-
-    def _write(self, report: TrainingProgressReport, path: Path) -> str:
-        """Write one checkpoint atomically and return its weight digest."""
-        config = self.training.config
-        digest = fingerprint(self.backbone.state_dict())
-        save(
-            Checkpoint(
-                identity=self.identity,
-                progress=TrainingProgress(
-                    optimisation_steps=report.optimisation_steps,
-                    environment_decisions=report.decisions,
-                    episodes=report.episodes,
-                    epsilon=config.epsilon(report.decisions),
-                    importance_beta=config.beta(report.decisions),
-                ),
-                backbone_state=self.backbone.state_dict(),
-                resolved_config=self.resolved,
-                replay_provenance={**self.replay.snapshot(), "restored": False},
-            ),
-            path,
-        )
-        return digest
-
-    def record_point(
-        self, evaluation: EvaluationReport, *, pre_registered_final: bool = False
-    ) -> LearningCurvePoint:
-        """Place one evaluation on the curve, against the checkpoint it scored.
-
-        Each point gets its own checkpoint file rather than sharing the resume
-        point, which is overwritten as the run proceeds: the strongest model of a
-        run is the one a point names, and a fingerprint pointing at a file that
-        has since moved on would name nothing.
-        """
-        progress = self.training.report
-        window = self.training.config.collection_window_episodes
-        recent = action_distribution(progress.collected[-window:])
-        path = self.run_dir / "checkpoints" / f"decisions-{progress.decisions:07d}.pt"
-        digest = self._write(progress, path)
-        spread = evaluation.distribution
-        point = LearningCurvePoint(
-            decisions=progress.decisions,
-            episodes=progress.episodes,
-            wall_seconds=round(time.monotonic() - self.started, 1),
-            model_version=evaluation.model_version,
-            mean_final_wave=round(spread.mean, 3),
-            # NaN is how `WaveDistribution` says a single episode has no spread.
-            stdev_final_wave=round(spread.stdev, 3) if spread.stdev == spread.stdev else None,
-            final_waves=[
-                summary.final_wave for summary in evaluation.episodes if summary.valid
-            ],
-            valid_episodes=evaluation.valid_episodes,
-            invalid_episodes=evaluation.invalid_episodes,
-            invalid_by_reason=dict(evaluation.invalid_by_reason),
-            versus_scripted_reference=round(spread.mean - SCRIPTED_REFERENCE, 3),
-            checkpoint_fingerprint=digest,
-            checkpoint_path=str(path),
-            weighted_loss=progress.mean_recent_weighted_loss,
-            unweighted_mean_absolute_td_error=(
-                progress.mean_recent_unweighted_absolute_td_error
-            ),
-            gradient_norm=progress.mean_recent_gradient_norm,
-            value_fit_correlation=progress.mean_recent_value_fit_correlation,
-            collection_wait_fraction=None if recent is None else recent.wait_fraction,
-            collection_purchases_per_episode=(
-                None if recent is None else recent.purchases_per_episode
-            ),
-            pre_registered_final=pre_registered_final,
-        )
-        self.learning_curve.append(point)
-        # Keyed by decisions consumed, because that is the budget unit the
-        # comparison equalises on; the checkpoint goes up under the fingerprint
-        # the point names, so a tracked point resolves to an exact file.
-        self.run.log_metrics(curve_metrics(point, evaluation), decisions=progress.decisions)
-        self.run.log_artifact(path, directory=f"checkpoints/{digest}")
-        return point
-
-    def record_collection_windows(self) -> None:
-        """Emit every window of collected episodes that has closed since the last call.
-
-        Called per episode, and cheap: a closed window is never recomputed into a
-        second point, and the series is what both the report and the tracked run
-        carry the curve as.
-        """
-        windows = collection_windows(
-            self.training.report.collected,
-            size=self.training.config.collection_window_episodes,
-        )
-        for window in windows[len(self.collection_curve) :]:
-            self.collection_curve.append(window)
-            self.run.log_metrics(window_metrics(window), decisions=window.decisions_at_end)
-            print(f"[{self.name}] collection: {window_line(window)}", flush=True)
-
-    def record_decision_time(self, *, final: bool = False) -> None:
-        """Emit where the fleet's decision time went since the last emission.
-
-        Called per episode on the collecting thread, under the run's progress
-        lock, and cheap: it reads snapshots the actors have already published
-        and does no timing of its own. `final` flushes the tail so a short run
-        still reports the interval it ended in.
-        """
-        now = time.monotonic()
-        if not final and now - self.decision_time_emitted < DECISION_TIME_INTERVAL_SECONDS:
-            return
-        report = self.training.report
-        current = fleet_decision_time(report)
-        interval = {
-            actor_id: breakdown.since(
-                self.decision_time_baseline.get(actor_id, EMPTY_BREAKDOWN)
-            )
-            for actor_id, breakdown in current.items()
-        }
-        fleet = pooled(list(interval.values()))
-        if fleet.decisions < 1:
-            # Nothing was collected in this interval; an empty decomposition
-            # would divide by zero and say nothing.
-            return
-        self.decision_time_baseline = current
-        self.decision_time_emitted = now
-        self.decision_time_curve.append(
-            {
-                "index": len(self.decision_time_curve),
-                "decisions_at_end": report.decisions,
-                "episodes_at_end": report.episodes,
-                "collection_windows_closed": len(self.collection_curve),
-                "actors": {
-                    actor_id: breakdown.as_record() for actor_id, breakdown in interval.items()
-                },
-                "fleet": fleet.as_record(),
-            }
-        )
-        self.run.log_metrics(
-            decision_time_metrics(fleet, len(interval)), decisions=report.decisions
-        )
-        print(decision_time_line(self.name, fleet, len(interval)), flush=True)
-
-    def summary(self) -> dict[str, object]:
-        report = self.training.report
-        # Flush the interval the run ended in, so a short measurement is not
-        # lost for having finished between emissions.
-        self.record_decision_time(final=True)
-        cumulative = fleet_decision_time(report)
-        distribution = action_distribution(report.collected)
-        # Pooled once over every collected episode and reused for the "health"
-        # key, the legacy by-reason mapping, and the MLflow metrics below: one
-        # count of the run's honesty, not three.
-        health = episode_health(report.episode_summaries)
-        self.run.log_metrics(health_metrics(health, prefix="health_"), decisions=report.decisions)
-        return {
-            "backbone": self.name,
-            "run_id": self.identity.run_id,
-            "resolved_config": self.resolved,
-            "decisions": report.decisions,
-            "episodes": report.episodes,
-            "valid_episodes": report.valid_episodes,
-            "optimisation_steps": report.optimisation_steps,
-            "mean_recent_weighted_loss": report.mean_recent_weighted_loss,
-            "sequences_accepted": report.sequences_accepted,
-            "wall_seconds": report.wall_seconds,
-            "final_waves": report.final_waves,
-            # The collection curve first: it is what the run is read from, and
-            # the learning curve below it holds the pre-registered evaluation of
-            # the final checkpoint, which is the headline against the floors.
-            "collection_curve": [asdict(window) for window in self.collection_curve],
-            "collection_window_episodes": self.training.config.collection_window_episodes,
-            "final_evaluation": (
-                asdict(self.final_point) if self.final_point is not None else None
-            ),
-            "learning_curve": [asdict(point) for point in self.learning_curve],
-            "mean_recent_unweighted_absolute_td_error": (
-                report.mean_recent_unweighted_absolute_td_error
-            ),
-            "mean_recent_gradient_norm": report.mean_recent_gradient_norm,
-            "mean_recent_value_fit_correlation": report.mean_recent_value_fit_correlation,
-            "action_distribution": (
-                asdict(distribution) if distribution is not None else None
-            ),
-            "reference_final_waves": REFERENCE_FINAL_WAVES,
-            # The fleet: what each actor contributed, and the aggregate rate the
-            # run was actually collected at.
-            "actors": [
-                actor_summary(progress, report) for progress in report.actors.values()
-            ],
-            "actors_withdrawn": sum(
-                1 for progress in report.actors.values() if progress.withdrawn is not None
-            ),
-            "health": asdict(health),
-            # Where the fleet's wall time went: one record per emission
-            # interval, and the run's totals per actor and pooled.
-            "decision_time_curve": self.decision_time_curve,
-            "decision_time": {
-                "interval_seconds": DECISION_TIME_INTERVAL_SECONDS,
-                "actors": {
-                    actor_id: breakdown.as_record()
-                    for actor_id, breakdown in cumulative.items()
-                },
-                "fleet": pooled(list(cumulative.values())).as_record(),
-            },
-            "episodes_per_hour": per_hour(report.episodes, report.wall_seconds),
-            "decisions_per_hour": per_hour(report.decisions, report.wall_seconds),
-            # Kept for compatibility with the report's earlier shape; identical
-            # to `health["invalid_by_reason"]`, which is where it is now pooled.
-            "invalid_episodes_by_reason": health.invalid_by_reason,
-            "failed_episodes": report.failed_episodes,
-            "episode_failures": report.episode_failures,
-            "evaluation_failures": report.evaluation_failures,
-            "checkpoints_written": report.checkpoints_written,
-            "checkpoint_path": str(self.checkpoint_path),
-            # Every collected episode's own record - what certifies the run
-            # stayed honest for its whole span, not only in aggregate.
-            "collected_episodes": collected_episode_records(report),
-            "evaluations": [to_record(item) for item in report.evaluations],
-            "replay": self.replay.snapshot(),
-        }
 
 
 def build_backbone(
@@ -749,8 +152,8 @@ def build_arm(
     started: float,
     tracker: ExperimentTracker,
     tags: dict[str, str],
-) -> Arm:
-    run_id = f"{name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+) -> TrainingReport:
+    run_id = new_run_id(name)
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
@@ -793,62 +196,24 @@ def build_arm(
         )
         for instance in instances
     ]
-    cadence = instances[0].environment.cadence
-    resolved: dict[str, object] = {
-        "backbone": name,
-        "budget_decisions": arguments.budget_decisions,
-        # The fleet this arm actually collected with, and the instances it
-        # addressed - one actor per emulator instance.
-        "actors": len(actors),
-        "actor_ids": [actor.config.actor_id for actor in actors],
-        "seed": arguments.seed,
-        "batch_size": arguments.batch_size,
-        "warmup_sequences": config.warmup_sequences,
-        "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
-        "sequence_length": arguments.sequence_length,
-        # The burn-in this arm was built with: exactly what fills the window.
-        "burn_in": burn_in,
-        "stride": stride,
-        "history_length": arguments.history_length if name == "stacked-dqn" else None,
-        "n_step": learner.n_step,
-        "discount": learner.discount,
-        "learning_rate": learner.learning_rate,
-        "target_ema_decay": (
-            arguments.target_ema_decay if name == "stacked-dqn" else None
-        ),
-        "epsilon_start": config.epsilon_start,
-        "epsilon_end": config.epsilon_end,
-        "epsilon_anneal_decisions": config.epsilon_anneal_decisions,
-        "beta_start": config.beta_start,
-        "beta_end": config.beta_end,
-        "priority_alpha": arguments.priority_alpha,
-        "replay_capacity": arguments.replay_capacity,
-        "collection_window_episodes": config.collection_window_episodes,
-        "evaluate_every_episodes": arguments.evaluate_every_episodes,
-        "evaluation_episodes": arguments.evaluation_episodes,
-        "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
-        # The parameter lag the fleet acted under, which a later reading of the
-        # collection curve needs as much as the replay ratio.
-        "parameter_sync_episodes": config.parameter_sync_episodes,
-        # The cadence the environment was actually built with, not what was
-        # asked for on the command line.
-        "frame_game_ms": cadence.frame_game_ms,
-        "max_quiet_game_ms": cadence.max_quiet_game_ms,
-        "health_change_fraction": cadence.health_change_fraction,
-        "block_decisions": arguments.block_decisions,
-        "device": str(device),
-    }
-    # The floors the curve is read against travel with the run, so a comparison
-    # opened months later is self-contained.
-    params: dict[str, object] = dict(resolved)
-    params.update(
-        {f"reference_{key}": value for key, value in REFERENCE_FINAL_WAVES.items()}
+    resolved = resolved_config(
+        name,
+        arguments,
+        actor_ids=[actor.config.actor_id for actor in actors],
+        config=config,
+        learner=learner,
+        cadence=instances[0].environment.cadence,
+        burn_in=burn_in,
+        stride=stride,
+        device=device,
     )
     run = tracker.start_run(
-        name=run_id, params=params, tags={**tags, "backbone": name, "run_id": run_id}
+        name=run_id,
+        params=tracked_params(resolved),
+        tags={**tags, "backbone": name, "run_id": run_id},
     )
     print(f"[{name}] tracking run {run.run_id}", flush=True)
-    arm = Arm(
+    arm = TrainingReport(
         name=name,
         run_dir=run_dir,
         backbone=backbone,
@@ -1088,23 +453,6 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return arguments
 
 
-def tracking_uri(arguments: argparse.Namespace) -> str:
-    """Where runs are recorded: beside the run state, never in the repository.
-
-    SQLite rather than a directory of files because MLflow 3 refuses the
-    filesystem backend, and local either way: nothing leaves this machine.
-    """
-    override = os.environ.get("MLFLOW_TRACKING_URI")
-    if override:
-        return override
-    return f"sqlite:///{arguments.run_dir.parent / 'mlflow.db'}"
-
-
-def artifact_root(arguments: argparse.Namespace) -> str:
-    """Where tracked files land, beside the store and outside the repository."""
-    return str(arguments.run_dir.parent / "mlartifacts")
-
-
 def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
     """The tracker the session records itself through.
 
@@ -1114,7 +462,7 @@ def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
     if not arguments.track:
         return NoExperimentTracker()
     try:
-        from tower_rl.infrastructure.mlflow_tracker import MlflowExperimentTracker
+        from tower_rl.experiment.mlflow_tracking import MlflowExperimentTracker
     except ImportError as missing:
         raise SystemExit(
             f"tracking is on but MLflow is not installed ({missing}). "
@@ -1123,9 +471,9 @@ def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
         ) from missing
     arguments.run_dir.parent.mkdir(parents=True, exist_ok=True)
     return MlflowExperimentTracker(
-        tracking_uri=tracking_uri(arguments),
+        tracking_uri=tracking_uri(arguments.run_dir),
         experiment=arguments.experiment,
-        artifact_root=artifact_root(arguments),
+        artifact_root=artifact_root(arguments.run_dir),
     )
 
 
@@ -1339,7 +687,7 @@ def main() -> int:
             f"--backend-store-uri {tracker.tracking_uri}",
             flush=True,
         )
-        print(f"artifacts: {artifact_root(arguments)}", flush=True)
+        print(f"artifacts: {artifact_root(arguments.run_dir)}", flush=True)
 
     build_dir = Path(
         os.environ.get("TOWER_BRIDGE_BUILD_DIR")

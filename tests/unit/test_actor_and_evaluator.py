@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fakes.fake_run_port import FakeRunPort  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.comparison import bootstrap_difference, cohens_d  # noqa: E402
 from tower_rl.application.evaluator import (  # noqa: E402
     WaveDistribution,
     episode_record,
@@ -30,6 +29,7 @@ from tower_rl.application.run_environment import (  # noqa: E402
 )
 from tower_rl.domain.episode import EpisodeSummary, TerminationOutcome  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.experiment.comparison import bootstrap_difference, cohens_d  # noqa: E402
 
 PROFILE = "fake-profile-v1"
 

@@ -171,6 +171,15 @@ def evaluate(
         max_decisions_per_episode=base.max_decisions_per_episode,
     )
     actor = Actor(environment=environment, policy=policy, config=config, replay=None)
+    # Evaluation borrows an instance a collecting actor owns, and most of a
+    # decision is spent inside that instance. Left alone, the environment would
+    # charge this evaluation's bridge and decode time to that actor's profile,
+    # outside any collecting block of its - time the actor never spent, which
+    # shows up as a negative residual in its decomposition. The environment is
+    # pointed at the evaluation's own throwaway profile for the duration and
+    # handed back exactly as it was found.
+    borrowed = environment.profile
+    environment.profile = actor.profile
 
     valid: list[EpisodeSummary] = []
     invalid: list[EpisodeSummary] = []
@@ -183,19 +192,22 @@ def evaluate(
     advance_wall = 0.0
     cut_short = 0
     speed = 0.0
-    for _ in range(episodes):
-        result = actor.run_episode()
-        summary = result.summary
-        decisions += summary.decisions
-        wall += summary.elapsed_wall_seconds
-        frames += summary.frames
-        game_ms += summary.game_ms
-        round_ms += summary.round_ms
-        advance_wall += summary.advance_wall_seconds
-        cut_short += summary.advances_cut_short
-        speed = summary.game_speed
-        attempted.append(summary)
-        (valid if summary.valid else invalid).append(summary)
+    try:
+        for _ in range(episodes):
+            result = actor.run_episode()
+            summary = result.summary
+            decisions += summary.decisions
+            wall += summary.elapsed_wall_seconds
+            frames += summary.frames
+            game_ms += summary.game_ms
+            round_ms += summary.round_ms
+            advance_wall += summary.advance_wall_seconds
+            cut_short += summary.advances_cut_short
+            speed = summary.game_speed
+            attempted.append(summary)
+            (valid if summary.valid else invalid).append(summary)
+    finally:
+        environment.profile = borrowed
 
     reasons: dict[str, int] = {}
     detail: dict[str, int] = {}

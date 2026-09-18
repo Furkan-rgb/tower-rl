@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tower_rl.ports.experiment_tracker import TrackedRun
+from tower_rl.experiment.tracking import TrackedRun
 
 
 @dataclass

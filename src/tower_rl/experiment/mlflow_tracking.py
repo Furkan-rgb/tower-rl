@@ -25,7 +25,7 @@ from pathlib import Path
 
 from mlflow.tracking import MlflowClient
 
-from tower_rl.ports.experiment_tracker import TrackedRun
+from tower_rl.experiment.tracking import TrackedRun
 
 
 class MlflowTrackedRun:

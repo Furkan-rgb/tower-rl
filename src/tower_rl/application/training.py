@@ -32,15 +32,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from tower_rl.application.actor import Actor, ActorConfig, EpisodeResult
-from tower_rl.application.decision_time import (
-    LEARNER_STEP,
-    DecisionTimeBreakdown,
-    DecisionTimeProfile,
-)
 from tower_rl.application.evaluator import EvaluationReport
 from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.application.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
 from tower_rl.domain.episode import EpisodeSummary
+from tower_rl.experiment.decision_time import (
+    LEARNER_STEP,
+    DecisionTimeBreakdown,
+    DecisionTimeProfile,
+)
 from tower_rl.learning.backbone import (
     Backbone,
     LearnMetrics,
@@ -420,7 +420,7 @@ class ActorProgress:
     consecutive_failures: int = 0
     #: Where this actor's wall time went, cumulative over the run and published
     #: by the actor itself at its own episode boundaries. None until it has
-    #: finished an episode. See `application/decision_time.py`: this is what
+    #: finished an episode. See `experiment/decision_time.py`: this is what
     #: separates an actor idle on its emulator from one contending in Python.
     decision_time: DecisionTimeBreakdown | None = None
     #: Why this actor stopped collecting, or None while it is still collecting.

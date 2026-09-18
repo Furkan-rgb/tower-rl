@@ -905,7 +905,7 @@ If real-game learning time is prohibitive for debugging, unit-test the learner w
 Several candidates are compared, and there is only one clone to run them on.
 Training one arm to its full budget and then the next would confound the
 backbone with whatever drifted in between — the device, the host, the account —
-which is the same trap `application/comparison.py` exists to avoid on the
+which is the same trap `experiment/comparison.py` exists to avoid on the
 evaluation side. Training arms are therefore interleaved as well: each arm holds
 its own backbone, replay buffer and actor, and `scripts/train.py` hands the
 device to the next arm every `block_decisions`, in a shuffled round-robin so no
@@ -1518,7 +1518,7 @@ Retention defaults:
 
 Run directories answer "what did this run produce"; they do not answer "how do
 these twenty runs compare". Training therefore records itself through an
-`ExperimentTracker` port (`src/tower_rl/ports/experiment_tracker.py`): a run is
+`ExperimentTracker` port (`src/tower_rl/experiment/tracking.py`): a run is
 opened per arm with its resolved configuration as parameters and its provenance
 as tags, reports metrics **keyed by decisions consumed** - the unit the
 comparison protocol equalises on - and logs its manifest, its summary (learning
@@ -1529,7 +1529,7 @@ so a comparison opened months later needs no second document.
 
 The default is `NoExperimentTracker`, which keeps nothing: training has one code
 path, tracked or not. The only implementation is
-`infrastructure/mlflow_tracker.py`, and it is the only module in the project
+`experiment/mlflow_tracking.py`, and it is the only module in the project
 that imports MLflow.
 
 MLflow was chosen because it is fully local - no account, no cloud service -

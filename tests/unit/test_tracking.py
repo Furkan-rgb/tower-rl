@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import train  # noqa: E402
 from fakes.recording_tracker import RecordedRun, RecordingTracker  # noqa: E402
+from test_import_contracts import imported_modules  # noqa: E402
 from test_train_entry_point import (  # noqa: E402
     PROFILE,
     SMALL_NETWORK,
@@ -27,10 +28,13 @@ from test_train_entry_point import (  # noqa: E402
     fleet,
 )
 
-from tower_rl.ports.experiment_tracker import (  # noqa: E402
+from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE  # noqa: E402
+from tower_rl.experiment.tracking import (  # noqa: E402
     ExperimentTracker,
     NoExperimentTracker,
     TrackedRun,
+    artifact_root,
+    tracking_uri,
 )
 
 torch.set_num_threads(1)
@@ -92,14 +96,21 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
 
 def test_only_the_adapter_knows_which_tracker_it_is() -> None:
     """Learning and application code may not import MLflow, directly or not."""
-    adapter = Path("src/tower_rl/infrastructure/mlflow_tracker.py")
+    adapter = Path("src/tower_rl/experiment/mlflow_tracking.py")
+    sources = list((REPOSITORY / "src").rglob("*.py"))
     importers = {
         path.relative_to(REPOSITORY)
-        for path in (REPOSITORY / "src").rglob("*.py")
-        if "mlflow" in path.read_text()
+        for path in sources
+        if any(name.split(".")[0] == "mlflow" for name in imported_modules(path))
     }
 
     assert importers == {adapter}
+    # One other module may name MLflow without importing it: the store policy
+    # beside the port, which decides the URI the adapter is handed.
+    assert {path.relative_to(REPOSITORY) for path in sources if "mlflow" in path.read_text()} == {
+        adapter,
+        Path("src/tower_rl/experiment/tracking.py"),
+    }
 
 
 def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
@@ -111,7 +122,7 @@ def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
         patch.setitem(sys.modules, "mlflow", None)
         patch.setitem(sys.modules, "mlflow.tracking", None)
         patch.delitem(
-            sys.modules, "tower_rl.infrastructure.mlflow_tracker", raising=False
+            sys.modules, "tower_rl.experiment.mlflow_tracking", raising=False
         )
         with pytest.raises(SystemExit) as refusal:
             train.build_tracker(tracked)
@@ -167,7 +178,7 @@ def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
             "eval_invalid_episodes"
         ] == pytest.approx(2.0)
         assert point.metrics["versus_scripted_reference"] == pytest.approx(
-            point.metrics["eval_mean_final_wave"] - train.SCRIPTED_REFERENCE, abs=1e-3
+            point.metrics["eval_mean_final_wave"] - SCRIPTED_REFERENCE, abs=1e-3
         )
     # The learning-health signals `learn` already returns, once it has run. The
     # weighted loss and the unweighted TD error are separate keys on purpose:
@@ -258,8 +269,8 @@ def test_tracking_writes_nothing_inside_the_repository(
         assert REPOSITORY not in path.resolve().parents
 
     defaults = train.parse_arguments([])
-    store = train.tracking_uri(defaults)
-    artifacts = Path(train.artifact_root(defaults))
+    store = tracking_uri(defaults.run_dir)
+    artifacts = Path(artifact_root(defaults.run_dir))
 
     assert store == f"sqlite:///{Path.home()}/.local/state/tower-rl/mlflow.db"
     assert REPOSITORY not in Path(store.removeprefix("sqlite:///")).parents
@@ -271,7 +282,7 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     pytest.importorskip("mlflow")
     from mlflow.tracking import MlflowClient
 
-    from tower_rl.infrastructure.mlflow_tracker import MlflowExperimentTracker
+    from tower_rl.experiment.mlflow_tracking import MlflowExperimentTracker
 
     uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
     artifact = tmp_path / "summary.json"

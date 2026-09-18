@@ -9,10 +9,15 @@ or trains may know which one it is talking to.
 A run is addressed by a handle rather than by an id the caller carries around,
 because arms of one comparison are interleaved on the device and their runs are
 therefore open at the same time.
+
+Where the store itself lives is decided here too (`tracking_uri`,
+`artifact_root`): it is a policy about this project's runs - beside the run
+state, never inside the repository - rather than anything MLflow decides.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -104,4 +109,27 @@ class NoExperimentTracker:
         return _UntrackedRun()
 
 
-__all__ = ["ExperimentTracker", "NoExperimentTracker", "TrackedRun"]
+def tracking_uri(run_dir: Path) -> str:
+    """Where runs are recorded: beside the run state, never in the repository.
+
+    SQLite rather than a directory of files because MLflow 3 refuses the
+    filesystem backend, and local either way: nothing leaves this machine.
+    """
+    override = os.environ.get("MLFLOW_TRACKING_URI")
+    if override:
+        return override
+    return f"sqlite:///{run_dir.parent / 'mlflow.db'}"
+
+
+def artifact_root(run_dir: Path) -> str:
+    """Where tracked files land, beside the store and outside the repository."""
+    return str(run_dir.parent / "mlartifacts")
+
+
+__all__ = [
+    "ExperimentTracker",
+    "NoExperimentTracker",
+    "TrackedRun",
+    "artifact_root",
+    "tracking_uri",
+]

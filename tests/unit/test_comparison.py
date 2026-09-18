@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from tower_rl.application.comparison import (
+from tower_rl.experiment.comparison import (
     bootstrap_difference,
     cohens_d,
     compare,

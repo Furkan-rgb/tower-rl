@@ -7,6 +7,62 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E052 — 7/7 at 120 Hz with no install round at all: the kill is absent for this image state
+
+**Date:** 2026-09-18
+**Status:** 7/7. The equivalence gate `#22` is now runnable; board `#21` stays
+open pending it
+**Purpose:** Let the fleet arbitrate whether the Play-update kill is still live,
+after the staged WebView session was consumed and not re-staged (`M1B-E051`).
+
+Exactly the `M1B-E048` recipe: N=7, `-read-only`, cold `-gpu host`, `--cores 4
+--frame-game-ms 100`, 120 Hz, scripted, 2 episodes per instance, boot stagger
+with its per-instance backstop, offline verified by interface per instance,
+per-instance `adb logcat` captured from boot.
+
+**7/7 reporting, 14 valid episodes, 0 invalid.** Every instance: 2 valid
+episodes, `is at home and offline`, `confirmed at 120 Hz` on all three
+SurfaceFlinger readings (7 of 7 confirmations in the log), and the deployed
+bridge SHA-256 read back from the device as
+7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a (7 of 7).
+Per instance (index / serial / wall s / valid per hour): 0 / 5556 / 139.0 /
+51.8; 1 / 5558 / 159.8 / 45.1; 2 / 5560 / 191.5 / 37.6; 3 / 5562 / 213.6 / 33.7;
+4 / 5564 / 288.7 / 24.9; 5 / 5566 / 297.6 / 24.2; 6 / 5568 / 367.0 / 19.6.
+Aggregate 137.3 valid episodes/hour; 18,504-20,476 decisions/hour per actor.
+Fidelity: `bridge_event_divergence` 0, `stale_or_duplicate` 0,
+`advances_cut_short` 0, `episodes_not_started_fresh` 0, `invalid_episodes` 0.
+
+**Install-line count: `installPackageLI` appears ZERO times in all seven
+logcats** — 0, 0, 0, 0, 0, 0, 0 — and `Update system package
+com.google.android.webview` appears in none of them. The only Finsky lines in
+any instance (11-12 each) are `SettingNotFoundException for
+download_manager_*`, i.e. settings lookups, not a download. **Zero relaunches
+fired**, which this time means nothing needed one rather than that the check was
+blind (`M1B-E047`).
+
+Verdict: for this image state the kill is ABSENT, and it is absent at its
+source — no install round runs at all. The mechanism the fleet lost actors to
+needed a WebView session staged in the base image; `M1B-E051` consumed it and
+Play did not stage another. This is a statement about the image as it stands
+today, not a guarantee: if Play stages a component again, the same race returns,
+and the handoff records how to repeat the bake.
+
+`#22` (behavioural equivalence at 120 Hz) is now runnable on a fleet that comes
+up 7/7. The relaunch machinery added for `#21` is a CANDIDATE FOR REMOVAL once
+`#22` has run — `M1B-E049` showed its recovery cannot work after the cut, so
+what it retains is the detection, and the corrected resumed-activity oracle is
+worth keeping either way. Nothing is removed yet.
+
+Teardown: per-serial cleanup before kill on all 7 — override reset, libunity
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040, versionCode
+1199, versionName 29.0.3, installer com.android.vending, libunity_mounts 0,
+bridge_artifacts removed, 7/7 each; then `adb devices` empty, zero qemu in
+/proc/*/exe, samplers and logcat captures reaped. Only 5556-5568 addressed; no
+reference to emulator-5554 or the canonical AVD.
+
+Source: session scratchpad artifacts `J/` (fleet.log, fleet.json, actors/,
+attend.log, seven `emulator-55xx-logcat.txt`).
+
 ## M1B-E051 — The bake does not reach a `-read-only` instance, and one clean run at 120 Hz
 
 **Date:** 2026-09-18

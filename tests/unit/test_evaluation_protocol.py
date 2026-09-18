@@ -430,7 +430,7 @@ def test_train_then_select_then_report(
             device=torch.device("cpu"),
         )
 
-    run = Path(session["session"]) / session["arms"][0]["run_id"]
+    run = Path(session["session"]) / session["arm"]["run_id"]
     checkpoints = sorted((run / "checkpoints").glob("checkpoint-*.pt"))
     assert len(checkpoints) >= 2, "the budget crosses the period more than once"
 

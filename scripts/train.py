@@ -566,7 +566,7 @@ def train_session(
             arm.training.report.evaluation_failures.append(str(failure))
             print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
-        summaries = [arm.summary()]
+        summary = arm.summary()
         report: dict[str, object] = {
             "session": str(session),
             "profile_id": profile_id,
@@ -582,14 +582,18 @@ def train_session(
             # Repeated at the top of the report as well as inside each arm: the
             # curve is meaningless without the floors it is read against.
             "reference_final_waves": REFERENCE_FINAL_WAVES,
-            "arms": summaries,
+            # One arm. The session used to carry a list of them, from a
+            # comparison of several backbones that was retired: this project
+            # trains one backbone and compares it against the non-learned floors
+            # afterwards, through `report_arms.py`, not inside a session.
+            "arm": summary,
         }
         session.mkdir(parents=True, exist_ok=True)
         (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
         # The arm's summary holds its learning curve and the per-episode
         # evaluation records, so it is what a tracked run is read from.
         path = arm.run_dir / "summary.json"
-        path.write_text(json.dumps(summaries[0], indent=2, default=str))
+        path.write_text(json.dumps(summary, indent=2, default=str))
         arm.run.log_artifact(path)
         return report
     finally:

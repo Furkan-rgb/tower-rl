@@ -136,15 +136,14 @@ def trained(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
 
 def test_the_backbone_trains_under_one_budget(trained: dict[str, Any]) -> None:
-    arms = trained["arms"]
+    arm = trained["arm"]
 
-    assert [arm["backbone"] for arm in arms] == ["stacked-dqn"]
-    for arm in arms:
-        assert arm["decisions"] >= int(TRAINING_BUDGET), "the arm spends the budget"
-        assert arm["episodes"] > 0
-        assert arm["optimisation_steps"] > 0
-        assert arm["sequences_accepted"] > 0
-        assert arm["failed_episodes"] == 0
+    assert arm["backbone"] == "stacked-dqn"
+    assert arm["decisions"] >= int(TRAINING_BUDGET), "the arm spends the budget"
+    assert arm["episodes"] > 0
+    assert arm["optimisation_steps"] > 0
+    assert arm["sequences_accepted"] > 0
+    assert arm["failed_episodes"] == 0
 
 
 def test_evaluation_runs_without_exploration(tmp_path: Path) -> None:
@@ -179,7 +178,7 @@ def test_an_episode_the_port_refuses_does_not_abort_the_session(tmp_path: Path) 
 
     # Episode ordinals are consumed by evaluation episodes too, so one refusal
     # lands on collection and one on an evaluation. Neither may end the session.
-    arm = report["arms"][0]
+    arm = report["arm"]
     assert arm["failed_episodes"] >= 1
     assert len(arm["evaluation_failures"]) >= 1
     assert arm["failed_episodes"] + len(arm["evaluation_failures"]) == 2
@@ -195,7 +194,7 @@ def test_an_ambiguous_advance_is_classified_and_the_session_continues(
     # ordinals after it.
     report = session(tmp_path, ambiguous_advance_episodes=frozenset({1}))
 
-    arm = report["arms"][0]
+    arm = report["arm"]
     assert arm["failed_episodes"] == 0, "the port answered; the episode did not"
     assert arm["episodes"] > 1 and arm["decisions"] >= 120
     # The pipeline failure is an invalid episode, counted rather than fatal.
@@ -249,7 +248,7 @@ CHECKPOINT_PERIOD = 100
 
 def numbered_checkpoints(report: dict[str, Any]) -> tuple[dict[str, Any], Path, list[int]]:
     """The arm, its checkpoint directory, and the decisions each file names."""
-    arm = report["arms"][0]
+    arm = report["arm"]
     directory = Path(report["session"]) / arm["run_id"] / "checkpoints"
     files = sorted(directory.glob("checkpoint-*.pt"))
     return arm, directory, [int(path.stem.removeprefix("checkpoint-")) for path in files]
@@ -349,16 +348,16 @@ def test_a_fleet_trains_the_backbone_under_one_budget(
     assert fleet_trained["actor_serials"] == ["fake-0", "fake-1"]
     assert fleet_trained["bring_up_failures"] == []
 
-    for arm in fleet_trained["arms"]:
-        assert arm["decisions"] >= int(FLEET_BUDGET)
-        assert arm["optimisation_steps"] > 0 and arm["sequences_accepted"] > 0
-        assert arm["resolved_config"]["actors"] == 2
-        assert arm["resolved_config"]["actor_ids"] == [
-            f"fake-0:{arm['backbone']}",
-            f"fake-1:{arm['backbone']}",
-        ]
-        # The pre-registered evaluation still lands, taken with the fleet stopped.
-        assert arm["final_evaluation"]["pre_registered_final"] is True
+    arm = fleet_trained["arm"]
+    assert arm["decisions"] >= int(FLEET_BUDGET)
+    assert arm["optimisation_steps"] > 0 and arm["sequences_accepted"] > 0
+    assert arm["resolved_config"]["actors"] == 2
+    assert arm["resolved_config"]["actor_ids"] == [
+        f"fake-0:{arm['backbone']}",
+        f"fake-1:{arm['backbone']}",
+    ]
+    # The pre-registered evaluation still lands, taken with the fleet stopped.
+    assert arm["final_evaluation"]["pre_registered_final"] is True
 
 
 def test_one_dead_instance_does_not_end_a_fleet_run(
@@ -388,7 +387,7 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
             device=torch.device("cpu"),
         )
 
-    arm = report["arms"][0]
+    arm = report["arm"]
     dead = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-1:stacked-dqn")
     alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:stacked-dqn")
     assert dead["withdrawn"] is not None and dead["failed_episodes"] > 0
@@ -410,7 +409,7 @@ def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
     report = session(tmp_path)
 
     assert report["actors"] == 1 and report["actor_serials"] == ["fake-0"]
-    arm = report["arms"][0]
+    arm = report["arm"]
     assert arm["resolved_config"]["actors"] == 1
     assert [actor["actor_id"] for actor in arm["actors"]] == ["fake-0:stacked-dqn"]
     assert arm["actors"][0]["decisions"] == arm["decisions"]

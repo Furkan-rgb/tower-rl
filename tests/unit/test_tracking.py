@@ -84,8 +84,8 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
             device=torch.device("cpu"),
         )
 
-    assert report["arms"][0]["decisions"] >= 120
-    assert report["arms"][0]["learning_curve"]
+    assert report["arm"]["decisions"] >= 120
+    assert report["arm"]["learning_curve"]
 
 
 def test_only_the_adapter_knows_which_tracker_it_is() -> None:

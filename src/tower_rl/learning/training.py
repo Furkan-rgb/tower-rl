@@ -532,12 +532,18 @@ def measured_apart(profile: DecisionTimeProfile) -> Iterator[None]:
     them and reopened after, so the total the buckets decompose is collection
     alone and the residual keeps meaning "Python time this actor could not
     account for".
+
+    Only a block that was open is reopened. Called outside one - which nothing
+    does today - reopening unconditionally would leave a block open that nobody
+    closes, and every later snapshot would charge it the wall time since.
     """
+    collecting = profile.block_open
     profile.close_block()
     try:
         yield
     finally:
-        profile.open_block()
+        if collecting:
+            profile.open_block()
 
 
 @dataclass

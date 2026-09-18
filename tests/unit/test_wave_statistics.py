@@ -224,3 +224,74 @@ def test_every_rendered_and_recorded_result_carries_its_blind_spot() -> None:
         assert item["detectable_difference"] >= 0.0
         assert math.isfinite(item["detectable_difference"])
         assert item["interval"][0] <= item["difference"] <= item["interval"][1]
+
+
+#: The exact per-wave keys `evaluator.episode_record` promises and
+#: `wave_observations` reads. Pinned on both sides so a rename cannot quietly
+#: drop the analysis back onto the `uncaptured` path.
+WAVE_RECORD_KEYS = {"wave", "completed", "game_ms", "decisions", "health_fraction", "cash_log"}
+
+
+def _fake_port_arm(seed: int, episodes: int = 6) -> list[dict[str, object]]:
+    """One arm of real episode records, played end to end against the fake port."""
+    import json
+
+    from fakes.fake_run_port import FakeRunPort
+
+    from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
+    from tower_rl.environment.run_state import RunStateBuilder
+    from tower_rl.learning.evaluator import episode_record, evaluate
+    from tower_rl.learning.policies import RandomPolicy
+
+    report = evaluate(
+        InstrumentedRunEnvironment(
+            port=FakeRunPort(damage_per_second=0.3, seconds_per_wave=4.0),
+            builder=RunStateBuilder(profile_id="fake-profile-v1"),
+            cadence=CadenceConfig(max_quiet_game_ms=1000),
+        ),
+        RandomPolicy(seed=seed),
+        episodes=episodes,
+        profile_id="fake-profile-v1",
+    )
+    # Through JSON, because that is how a device arm reaches the analysis.
+    return [
+        json.loads(json.dumps(episode_record(index, summary)))
+        for index, summary in enumerate(report.episodes)
+    ]
+
+
+def test_the_environments_own_records_reach_the_per_wave_analysis() -> None:
+    """The capture (#24) and the analysis (#22) meet here, not by assumption.
+
+    Two arms are played against the fake port, written through JSON exactly as a
+    device run writes them, and compared by the real analysis. Every per-wave
+    statistic must be captured and produce points; the `uncaptured` path is what
+    this test exists to stay off.
+    """
+    left = _fake_port_arm(seed=1)
+    right = _fake_port_arm(seed=2)
+
+    for record in left + right:
+        assert record["waves"], "every episode entered at least one wave"
+        assert all(set(wave) == WAVE_RECORD_KEYS for wave in record["waves"])
+
+    analysis = analyse(
+        "seed-1",
+        episode_records({"episodes": left}),
+        "seed-2",
+        episode_records({"episodes": right}),
+        iterations=ITERATIONS,
+    )
+
+    assert {comparison.statistic for comparison in analysis.per_wave} == {
+        "game_ms",
+        "decisions",
+        "health_fraction",
+        "cash_log",
+    }
+    for comparison in analysis.per_wave:
+        assert not comparison.uncaptured, f"{comparison.statistic} fell back to uncaptured"
+        assert comparison.points, f"{comparison.statistic} produced no per-wave point"
+        assert comparison.detectable_effect_size is not None
+    # And the report renders the per-wave picture rather than an absence of one.
+    assert "not captured" not in render(analysis)

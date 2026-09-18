@@ -23,6 +23,7 @@ from tower_rl.environment.episode import (
     EpisodeSummary,
     RunTransition,
     TerminationOutcome,
+    WaveRecord,
     wave_progress_reward,
 )
 from tower_rl.environment.run_actions import RunActionId, action_index
@@ -160,6 +161,21 @@ class _DeathBoundaryUnresolved(RunPortError):
 
 
 @dataclass
+class _WaveTally:
+    """One wave index's share of an episode, accumulated while it is current."""
+
+    wave: int
+    #: The state the wave began at, taken from the transition that entered it.
+    health_fraction: float
+    cash_log: float
+    #: The game's own round clock across the advances made while this wave was
+    #: current - measured time, not budget.
+    game_ms: float = 0.0
+    decisions: int = 0
+    completed: bool = False
+
+
+@dataclass
 class _EpisodeTally:
     decisions: int = 0
     purchases: int = 0
@@ -191,6 +207,37 @@ class _EpisodeTally:
     #: final state is always terminal and the game has stopped time by then, so
     #: sampling there reports zero for every episode (M1B-E009).
     active_game_speed: float = 0.0
+    #: One accumulator per wave index the episode entered, in order. The last is
+    #: the current wave; every advance and every decision is charged to it.
+    waves: list[_WaveTally] = field(default_factory=list)
+
+    def enter_wave(self, state: RunState) -> None:
+        """Open the accumulator for the wave `state` is in, closing the previous."""
+        if self.waves:
+            self.waves[-1].completed = True
+        self.waves.append(
+            _WaveTally(
+                wave=state.wave,
+                health_fraction=state.health_fraction,
+                cash_log=state.cash_log,
+            )
+        )
+
+    def charge_advance(self, round_ms: float) -> None:
+        """Charge an advance's measured round time to the wave it started in.
+
+        An advance that crosses a wave boundary is charged whole to the wave
+        that was current when it began: the bridge reports one round-clock delta
+        per advance and cannot say how it split, so the attribution is stated
+        rather than guessed. It is deterministic, and at most one advance's
+        worth of game time sits on either side of each boundary.
+        """
+        if self.waves:
+            self.waves[-1].game_ms += round_ms
+
+    def charge_decision(self) -> None:
+        if self.waves:
+            self.waves[-1].decisions += 1
 
 
 @dataclass(frozen=True)
@@ -240,6 +287,7 @@ class InstrumentedRunEnvironment:
             starting_wave=state.wave,
             active_game_speed=state.game_speed,
         )
+        self._tally.enter_wave(state)
         self._last_reasons = ()
         return state
 
@@ -270,6 +318,17 @@ class InstrumentedRunEnvironment:
             termination_detail=self._last_reasons,
             recovered_transients=self._tally.recovered_transients,
             starting_wave=self._tally.starting_wave,
+            waves=tuple(
+                WaveRecord(
+                    wave=wave.wave,
+                    completed=wave.completed,
+                    game_ms=round(wave.game_ms, 3),
+                    decisions=wave.decisions,
+                    health_fraction=wave.health_fraction,
+                    cash_log=wave.cash_log,
+                )
+                for wave in self._tally.waves
+            ),
         )
 
     # -- stepping ----------------------------------------------------------
@@ -279,6 +338,7 @@ class InstrumentedRunEnvironment:
         state = self.state
         started = time.monotonic()
         self._tally.decisions += 1
+        self._tally.charge_decision()
         mask = state.action_mask
 
         if not mask[action_index(action)]:
@@ -378,6 +438,7 @@ class InstrumentedRunEnvironment:
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
         self._tally.round_ms += result.round_ms
+        self._tally.charge_advance(result.round_ms)
         self._tally.advance_wall_micros += result.wall_micros
         if result.reason == _BRIDGE_BUDGET_REASON and result.game_ms < budget:
             # The loop stopped on a mid-loop reading that the settled snapshot
@@ -543,6 +604,7 @@ class InstrumentedRunEnvironment:
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
         self._tally.round_ms += result.round_ms
+        self._tally.charge_advance(result.round_ms)
         self._tally.advance_wall_micros += result.wall_micros
         if result.outcome != "confirmed" or result.state is None:
             # The same failure an unconfirmed advance is: the record cannot say
@@ -590,6 +652,8 @@ class InstrumentedRunEnvironment:
         if next_state is not None:
             self._state = next_state
             self._tally.peak_wave = max(self._tally.peak_wave, next_state.wave)
+            if self._tally.waves and next_state.wave != self._tally.waves[-1].wave:
+                self._tally.enter_wave(next_state)
             if next_state.lifecycle == "active":
                 self._tally.active_game_speed = next_state.game_speed
         transition = RunTransition(

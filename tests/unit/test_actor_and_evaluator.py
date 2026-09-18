@@ -5,7 +5,7 @@ import math
 import pytest
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome, WaveRecord
 from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -439,3 +439,51 @@ def test_per_episode_records_feed_the_comparison_protocol_directly() -> None:
     assert observed > 0, "buying survives longer, so its waves should lead"
     assert low <= observed <= high
     assert effect_size > 0
+
+
+def test_every_episodes_wave_rows_partition_its_totals() -> None:
+    """Per-wave rows are a partition of the episode, not a second measurement.
+
+    If they ever stopped summing to the episode's own measured round time and
+    decision count, the per-wave gate would be comparing something the episode
+    record does not claim to have spent.
+    """
+    report = evaluate(
+        _environment(damage_per_second=0.4, seconds_per_wave=4.0),
+        CheapestFirstPolicy(),
+        episodes=4,
+        profile_id=PROFILE,
+    )
+
+    assert report.episodes
+    for summary in report.episodes:
+        assert summary.waves
+        assert [wave.wave for wave in summary.waves] == sorted(
+            wave.wave for wave in summary.waves
+        )
+        assert sum(wave.game_ms for wave in summary.waves) == pytest.approx(summary.round_ms)
+        assert sum(wave.decisions for wave in summary.waves) == summary.decisions
+        # Only the wave the episode ended in is a fragment.
+        assert [wave.completed for wave in summary.waves] == [True] * (len(summary.waves) - 1) + [
+            False
+        ]
+
+
+def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
+    """The keys are `experiment.wave_statistics.wave_observations` reads, exactly."""
+    wave = WaveRecord(
+        wave=2, completed=True, game_ms=30_000.0, decisions=9, health_fraction=0.8, cash_log=4.1
+    )
+
+    record = episode_record(0, _summary(waves=(wave,)))
+
+    assert record["waves"] == [
+        {
+            "wave": 2,
+            "completed": True,
+            "game_ms": 30_000.0,
+            "decisions": 9,
+            "health_fraction": 0.8,
+            "cash_log": 4.1,
+        }
+    ]

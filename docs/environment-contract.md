@@ -95,6 +95,19 @@ semantic action, action mask, typed outcome, scalar reward, termination flags,
 termination reason, and elapsed real seconds. No transition enters replay until
 the next observation is valid.
 
+The episode record additionally carries `waves`: one row per wave index the
+episode entered, each holding the wave number, whether the episode went on past
+it (`completed`, false only for the wave it ended in), the measured game time it
+took on the game's own round clock, the decisions taken while it was current,
+and the health fraction and log-scaled cash the run held when it began. An
+advance that crosses a wave boundary is charged whole to the wave that was
+current when it started: the bridge reports one round-clock delta per advance
+and cannot say how it split, so the attribution is stated rather than guessed.
+The rows partition the episode - their game time and decisions sum to the
+episode's own - and exist so behavioural equivalence between two arms can be
+judged per wave index rather than on a final wave, whose variance is dominated
+by how many waves an episode survived.
+
 V1 reward is aligned to the objective of maximizing final Tier-1 wave. The
 environment may emit wave-progress and terminal survival reward according to the
 versioned reward configuration; any shaping must be separately identified in

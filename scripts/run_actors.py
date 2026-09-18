@@ -189,6 +189,8 @@ def aggregate(outcomes: list[ActorOutcome], wall_seconds: float) -> dict[str, An
             invalid += int(record["invalid_episodes"])
             entry.update(
                 {
+                    # Which arm this actor collected for, when a fleet holds two.
+                    "frame_rate_hz": record.get("frame_rate_hz"),
                     "valid_episodes": record["valid_episodes"],
                     "invalid_episodes": record["invalid_episodes"],
                     "invalid_rate": record["invalid_rate"],
@@ -218,6 +220,41 @@ def aggregate(outcomes: list[ActorOutcome], wall_seconds: float) -> dict[str, An
         "health": health,
         "actors": actors,
     }
+
+
+def frame_rates(text: str, actors: int) -> list[int]:
+    """The guest rate each instance runs at, one per instance index.
+
+    One value is every instance's rate. A comma-separated list is one rate per
+    index, which is what lets a behavioural comparison of two rates be a single
+    fleet: both levers are per emulator, so instances at different rates run in
+    the same window against the same host, and the arms are interleaved rather
+    than sequential. A list of the wrong length is refused by name — a
+    comparison that silently ran six of its seven instances at one rate would
+    look exactly like one that ran seven.
+    """
+    values = [part.strip() for part in text.split(",")]
+    try:
+        rates = [int(value) for value in values]
+    except ValueError:
+        raise SystemExit(f"--frame-rate-hz must be whole numbers of Hz, not {text!r}") from None
+    if len(rates) == 1:
+        rates = rates * actors
+    if len(rates) != actors:
+        raise SystemExit(
+            f"--frame-rate-hz lists {len(values)} rates for {actors} actors; "
+            "give one rate for the whole fleet or exactly one per instance"
+        )
+    for rate in rates:
+        # The same measured ceiling the module constant is held to: above it the
+        # guest reports a rate it is not delivering, so the confirmation would
+        # pass on an instance collecting at some other rate entirely.
+        if not 1 <= rate <= MAX_GUEST_FRAME_RATE_HZ:
+            raise SystemExit(
+                f"--frame-rate-hz {rate} is outside 1..{MAX_GUEST_FRAME_RATE_HZ}; "
+                "no measured fps supports a guest rate above that"
+            )
+    return rates
 
 
 class ActorFailure(RuntimeError):
@@ -290,6 +327,9 @@ def collect_episodes(
     update it had downloaded, over a game no step was watching. Two 7-actor runs
     lost actors exactly there.
     """
+    # This instance's own rate, not the fleet's: a comparison of two rates runs
+    # them side by side in one fleet, so the rate belongs to the index.
+    frame_rate_hz = arguments.frame_rates[instance.index]
     try:
         bring_up(
             instance,
@@ -298,7 +338,7 @@ def collect_episodes(
             read_only=True,
             cores=arguments.cores,
             force_cold=arguments.cold,
-            frame_rate_hz=arguments.frame_rate_hz,
+            frame_rate_hz=frame_rate_hz,
         )
     finally:
         signal_ready()
@@ -315,7 +355,7 @@ def collect_episodes(
     # name instead: `M1B-E049` measured that a relaunch this side of the network
     # cut sits at the OFFLINE modal, so the instance is lost, not recoverable.
     require_game_activity(instance)
-    raise_frame_rate(instance, arguments.frame_rate_hz)
+    raise_frame_rate(instance, frame_rate_hz)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
     result = subprocess.run(
@@ -340,6 +380,12 @@ def collect_episodes(
             f"{result.stderr.strip()[-500:] or result.stdout.strip()[-500:]}"
         )
     record: dict[str, Any] = json.loads(output.read_text())
+    # The arm this actor belongs to, written back into the durable record: the
+    # analysis groups episodes by the rate they were collected at, and a record
+    # that does not carry its own rate can only be attributed by the directory
+    # it happens to sit in.
+    record["frame_rate_hz"] = frame_rate_hz
+    output.write_text(json.dumps(record, indent=2))
     return record
 
 
@@ -473,10 +519,10 @@ def main() -> int:
     parser.add_argument("--renderer", default="lavapipe")
     parser.add_argument(
         "--frame-rate-hz",
-        type=int,
-        default=GUEST_FRAME_RATE_HZ,
-        help="guest frame rate for every instance this fleet measures; "
-        f"default {GUEST_FRAME_RATE_HZ}, the fleet operating rate",
+        default=str(GUEST_FRAME_RATE_HZ),
+        help="guest frame rate for the whole fleet, or one rate per instance "
+        "index as a comma-separated list (60,120,60,...); default "
+        f"{GUEST_FRAME_RATE_HZ}, the fleet operating rate",
     )
     parser.add_argument("--cores", type=int, default=4, help="emulator cores per instance")
     parser.add_argument(
@@ -496,14 +542,7 @@ def main() -> int:
 
     if arguments.actors < 1:
         raise SystemExit("a fleet needs at least one actor")
-    # The same measured ceiling the module constant is held to: above it the
-    # guest reports a rate it is not delivering, so the confirmation would pass
-    # on a fleet collecting at some other rate entirely.
-    if not 1 <= arguments.frame_rate_hz <= MAX_GUEST_FRAME_RATE_HZ:
-        raise SystemExit(
-            f"--frame-rate-hz must be between 1 and {MAX_GUEST_FRAME_RATE_HZ}; "
-            "no measured fps supports a guest rate above that"
-        )
+    arguments.frame_rates = frame_rates(arguments.frame_rate_hz, arguments.actors)
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
     instances = [CloneInstance(index=index) for index in range(arguments.actors)]
     if not arguments.cold:
@@ -520,9 +559,9 @@ def main() -> int:
     report["episodes_per_actor"] = arguments.episodes
     report["frame_game_ms"] = arguments.frame_game_ms
     report["cores_per_instance"] = arguments.cores
-    # The arm's identity: a report read months later must say which rate it was
-    # collected at, not leave it to the directory it happens to sit in.
-    report["frame_rate_hz"] = arguments.frame_rate_hz
+    # Per instance index, because one fleet may hold two arms; each actor's
+    # entry and each actor's own record carry the rate it collected at.
+    report["frame_rates_hz"] = arguments.frame_rates
 
     arguments.output.write_text(json.dumps(report, indent=2))
     for actor in report["actors"]:

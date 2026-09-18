@@ -514,6 +514,21 @@ One GPU learner samples replay sequences, reconstructs recurrent state, computes
 
 Only the learner mutates model and optimizer state. Weight publication is atomic: actors see either the previous complete version or the next complete version, never a partial write.
 
+In the single-process fleet this is realised by giving every actor its own copy
+of the network to act from, as Ape-X and R2D2 do, and publishing the learner's
+parameters into that copy between the actor's episodes. A forward pass then
+contends with nothing: at the fleet sizes a shrunken render target allows, every
+actor reading the one live network would have put tens of decisions and a dozen
+gradient steps a second through a single lock. A publication is the only shared
+moment left. It is taken under the lock the learner's optimisation step holds, so
+it can never read half a step, and it is performed on the actor's own thread
+between its episodes, so it can never land inside one — which is also what keeps
+the recurrent state an actor carries through an episode consistent with the
+parameters that produced it. The lag is `--parameter-sync-episodes`, counted in
+that actor's own episodes and defaulting to 1: refreshing every episode is
+exactly what a single actor acting from the learner's own network always did, so
+`--actors 1` is unchanged against the runs already measured.
+
 ### 6.11 Evaluator and promoter
 
 The evaluator owns a dedicated device and receives immutable candidate checkpoints. It runs complete episodes with `epsilon=0`, learning disabled, and replay disabled.

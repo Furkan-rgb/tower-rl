@@ -10,11 +10,16 @@ fleet's: N actors, each on its own emulator instance, collect concurrently into
 one replay buffer and one learner, so the gradient steps a run takes track the
 decisions the whole fleet collected.  Collection scales linearly to four
 instances on this host (M1B-E028), and an actor spends nearly all of its time
-waiting on a socket, so the actors are threads: they share the replay buffer and
-the network directly, and nothing has to be serialised between processes.  What
+waiting on a socket, so the actors are threads: they share the replay buffer
+directly and nothing has to be serialised between processes.  What they do not
+share is the network they act from.  Each actor holds its own copy of it and the
+learner publishes into that copy between the actor's episodes, which is the
+actor-learner arrangement of Ape-X and R2D2: a forward pass then contends with
+nothing, where every actor reading the one live network would have put fifty
+decisions a second and a dozen gradient steps a second through one lock.  What
 that costs is the discipline in this file - the run's progress is mutated only
-under `_lock`, the buffer only under the replay's own lock, and the network is
-read through `SharedPolicy`.
+under `_lock`, the buffer only under the replay's own lock, and the learner's
+parameters are read only through `Learner.publish_to`.
 """
 
 from __future__ import annotations
@@ -25,15 +30,19 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Any
 
 from tower_rl.application.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.application.evaluator import EvaluationReport
 from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.application.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
 from tower_rl.domain.episode import EpisodeSummary
-from tower_rl.domain.features import StateFeatures
-from tower_rl.learning.backbone import Backbone, LearnMetrics, SequenceBatch, collate
+from tower_rl.learning.backbone import (
+    Backbone,
+    LearnMetrics,
+    SequenceBatch,
+    acting_copy,
+    collate,
+)
 from tower_rl.ports.run_port import RunPortError
 
 #: The device's own rejection reason for a stale or duplicate command, carried
@@ -129,37 +138,34 @@ def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
 
 
 @dataclass
-class SharedPolicy:
-    """The learner's network as every actor reads it, guarded against torn reads.
+class Learner:
+    """The one training copy of the network, and how its parameters reach actors.
 
-    N actors choose actions from the same parameters the learner is updating in
-    place. Acting on parameters a few steps old is ordinary and harmless - it is
-    the staleness every distributed actor-learner accepts - but a forward pass
-    that overlapped an optimisation step would read some tensors from before the
-    step and some from after, which is not any policy the run ever held. So both
-    the reads and the update go through one lock: `act` holds it for a single
-    forward pass, `learn` for a single optimisation step, and nothing holds it
-    for longer than that, so actors keep collecting while the learner works.
+    No actor acts through this. Each acts from its own copy (`acting_copy`), so
+    a forward pass contends with neither the learner nor another actor - the
+    whole reason a fleet of twenty can act at all. What is left shared is the
+    moment a copy is refreshed, and that is what the lock is still for: an
+    optimisation step and a publication never overlap, so what an actor copies
+    out is always the parameters of some completed step and never half of one.
     """
 
     backbone: Backbone
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def initial_state(self) -> Any:
-        return self.backbone.initial_state()
-
-    def stored_recurrent_state(self, state: Any) -> Any:
-        return self.backbone.stored_recurrent_state(state)
-
-    def act(
-        self, features: StateFeatures, state: Any, *, epsilon: float
-    ) -> tuple[int, Any]:
-        with self.lock:
-            return self.backbone.act(features, state, epsilon=epsilon)
-
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
         with self.lock:
             return self.backbone.learn(batch)
+
+    def publish_to(self, acting: Backbone) -> None:
+        """Copy the learner's parameters into one actor's acting copy.
+
+        Called on that actor's own thread between its episodes, which is the
+        other half of the no-torn-read guarantee: the lock keeps the source
+        still while it is read, and an actor that is copying is by construction
+        not acting, so no forward pass can see the copy half written.
+        """
+        with self.lock:
+            acting.load_state_dict(self.backbone.state_dict())
 
 
 @dataclass(frozen=True)
@@ -209,6 +215,17 @@ class TrainingConfig:
     #: actor: one dead emulator out of four is one withdrawn actor, not a dead
     #: environment, and the run ends only when every actor has withdrawn.
     max_consecutive_episode_failures: int = 5
+    #: Episodes one actor plays between refreshes of the copy it acts from, its
+    #: parameter lag. One means every actor starts each episode from the
+    #: learner's current parameters, which is exactly what a single actor did
+    #: when it acted from the learner's network directly - the reason it is the
+    #: default is that it leaves `--actors 1` unchanged against the runs already
+    #: measured. It is also well inside published practice: Ape-X and R2D2
+    #: actors refresh every few hundred environment steps, and an episode here
+    #: is about 121 decisions. Raising it trades freshness for fewer
+    #: publications; the lag it buys is bounded by this many of the actor's own
+    #: episodes, never by the fleet's rate.
+    parameter_sync_episodes: int = 1
 
     def __post_init__(self) -> None:
         if self.budget_decisions < 1:
@@ -223,6 +240,8 @@ class TrainingConfig:
             raise ValueError("a collection window needs at least one episode")
         if self.max_consecutive_episode_failures < 1:
             raise ValueError("at least one episode failure must be survivable")
+        if self.parameter_sync_episodes < 1:
+            raise ValueError("actors must be synchronised at least every episode")
 
     def progress(self, decisions: int) -> float:
         return min(1.0, decisions / self.budget_decisions)
@@ -516,9 +535,13 @@ class TrainingRun:
     #: can be advanced in blocks: several arms sharing one device take turns, so
     #: whatever drifts on the device lands on all of them equally.
     report: TrainingProgressReport = field(default_factory=TrainingProgressReport)
-    #: The network as the actors read it, built here and handed to every actor
-    #: so that no caller can forget to guard a forward pass against an update.
-    policy: SharedPolicy = field(init=False)
+    #: The training copy of the network, and the only thing that updates it.
+    learner: Learner = field(init=False)
+    #: One acting copy per actor, keyed by actor id: what that actor actually
+    #: chooses its actions from, refreshed from the learner on the configured
+    #: cadence. Built here and handed to the actors so that no caller can put an
+    #: actor back on the learner's own network.
+    acting: dict[str, Backbone] = field(init=False)
     #: Guards everything the fleet shares except the buffer and the network: the
     #: progress report, the gradient debt and the hooks. An actor holds it
     #: between episodes and never while it is collecting, so at the cadence a
@@ -526,6 +549,12 @@ class TrainingRun:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     #: Gradient steps earned but not yet taken, carried across blocks.
     _owed: float = field(default=0.0, init=False)
+    #: Episodes each actor has played since its copy was last refreshed. Starts
+    #: at the cadence so every actor publishes before its first episode, which
+    #: is also what picks up a checkpoint loaded into the backbone after the run
+    #: was built. Each actor touches only its own entry of a dict whose keys are
+    #: all present from construction, so it needs no lock of its own.
+    _since_sync: dict[str, int] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if not self.actors:
@@ -535,12 +564,21 @@ class TrainingRun:
             # Per-actor reporting is keyed by identity; two actors under one
             # name would report as one instance and hide a dead one.
             raise ValueError("every actor of a fleet needs an id of its own")
-        self.policy = SharedPolicy(self.backbone)
-        for actor in self.actors:
-            actor.policy = self.policy
-            self.report.actors.setdefault(
-                actor.config.actor_id, ActorProgress(actor.config.actor_id)
+        self.learner = Learner(self.backbone)
+        self.acting = {}
+        for index, actor in enumerate(self.actors):
+            actor_id = actor.config.actor_id
+            # The first actor carries on the learner's own exploration stream,
+            # so a fleet of one draws the epsilon sequence it has always drawn;
+            # the rest are seeded from their identities, or every copy would
+            # explore in lockstep from the one stream they were copied from.
+            copy = acting_copy(
+                self.backbone, exploration_seed=None if index == 0 else actor_id
             )
+            self.acting[actor_id] = copy
+            actor.policy = copy
+            self._since_sync[actor_id] = self.config.parameter_sync_episodes
+            self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
     @property
     def finished(self) -> bool:
@@ -609,17 +647,31 @@ class TrainingRun:
         single actor takes its own gradient steps between its own episodes, in
         the same order, against a lock nothing else ever holds.
         """
-        progress = self.report.actors[actor.config.actor_id]
+        actor_id = actor.config.actor_id
+        progress = self.report.actors[actor_id]
+        acting = self.acting[actor_id]
         while True:
             with self._lock:
                 if self.report.decisions >= target:
                     return
                 epsilon = self.config.epsilon(self.report.decisions)
-                model_version = self.backbone.model_version
+            # Refreshed between episodes and never inside one: the copy's
+            # parameters hold still for a whole episode, and the recurrent state
+            # the actor carries through that episode was produced by exactly the
+            # parameters it is still acting from. `_lock` is released first, so
+            # the only order locks are ever taken in is progress, then replay,
+            # then learner.
+            if self._since_sync[actor_id] >= self.config.parameter_sync_episodes:
+                self.learner.publish_to(acting)
+                self._since_sync[actor_id] = 0
             # Exploration is set per episode rather than per step, so a stored
             # sequence has one epsilon and its provenance stays meaningful.
             actor.config = replace(actor.config, epsilon=epsilon)
-            actor.model_version = model_version
+            # The version of the parameters this episode is actually played
+            # with, which is the copy's rather than the learner's: a sequence
+            # must be stamped with the policy that produced it.
+            actor.model_version = acting.model_version
+            self._since_sync[actor_id] += 1
             try:
                 result = actor.run_episode()
             except RunPortError as failure:
@@ -754,7 +806,7 @@ class TrainingRun:
             # Built where the parameters are: a CPU batch handed to a CUDA model
             # fails on the first optimisation step, which is the worst place to
             # discover it after an hour of collection.
-            metrics = self.policy.learn(
+            metrics = self.learner.learn(
                 collate(sequences, weights, device=self.backbone.device)
             )
             self.replay.update_priorities(indices, metrics.td_errors)
@@ -783,7 +835,7 @@ __all__ = [
     "action_distribution",
     "collection_windows",
     "episode_health",
-    "SharedPolicy",
+    "Learner",
     "TrainingConfig",
     "TrainingProgressReport",
     "TrainingRun",

@@ -23,7 +23,6 @@ from tower_rl.application.run_environment import (  # noqa: E402
 from tower_rl.application.training import (  # noqa: E402
     STALE_OR_DUPLICATE,
     CollectedEpisode,
-    SharedPolicy,
     TrainingConfig,
     TrainingRun,
     action_distribution,
@@ -43,13 +42,17 @@ from tower_rl.ports.run_port import RunPortError  # noqa: E402
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 
-def _run(**overrides: object) -> TrainingRun:
+def _run(*, device: torch.device | None = None, **overrides: object) -> TrainingRun:
     environment = InstrumentedRunEnvironment(
         port=FakeRunPort(damage_per_second=2.0),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
-    backbone = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    backbone = RecurrentQBackbone(
+        config=RecurrentQConfig(seed=0),
+        network_config=SMALL,
+        device=device or torch.device("cpu"),
+    )
     replay = PrioritizedSequenceReplay(capacity=64, seed=0)
     actor = Actor(
         environment=environment,
@@ -254,18 +257,15 @@ def test_evaluation_does_not_consume_the_decision_budget() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 def test_a_run_on_an_accelerator_builds_its_batches_there() -> None:
     """A CPU batch handed to a CUDA model fails on the first optimisation step."""
-    training = _run()
-    training.backbone = RecurrentQBackbone(
-        config=RecurrentQConfig(seed=0),
-        network_config=SMALL,
-        device=torch.device("cuda"),
-    )
-    training.policy = SharedPolicy(training.backbone)
-    training.actors[0].policy = training.policy
+    training = _run(device=torch.device("cuda"))
 
     report = training.run()
 
     assert report.optimisation_steps > 0
+    # And the copy the actor acts from is on the device the learner is on; a
+    # copy left on the host would fail its first forward pass instead.
+    acting = training.acting[training.actors[0].config.actor_id]
+    assert acting.device == training.backbone.device
 
 
 def test_a_run_advances_in_blocks_and_carries_its_progress() -> None:

@@ -644,12 +644,14 @@ def build_arm(
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
+        parameter_sync_episodes=arguments.parameter_sync_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
     burn_in = burn_in_for(name, arguments)
     # One actor per instance, all of them writing into the one buffer above and
-    # acting from the one backbone. `TrainingRun` is what hands them the guarded
-    # view of it; what is passed here is the network they are to act from.
+    # all of them learned from by the one backbone. `TrainingRun` gives each its
+    # own copy of that backbone to act from and refreshes it on the configured
+    # cadence; the network passed here is only what those copies are made of.
     actors = [
         Actor(
             environment=instance.environment,
@@ -699,6 +701,9 @@ def build_arm(
         "evaluate_every_episodes": arguments.evaluate_every_episodes,
         "evaluation_episodes": arguments.evaluation_episodes,
         "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
+        # The parameter lag the fleet acted under, which a later reading of the
+        # collection curve needs as much as the replay ratio.
+        "parameter_sync_episodes": config.parameter_sync_episodes,
         # The cadence the environment was actually built with, not what was
         # asked for on the command line.
         "frame_game_ms": cadence.frame_game_ms,
@@ -880,6 +885,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="the pre-registered exploration-free evaluation of the final checkpoint",
     )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
+    parser.add_argument(
+        "--parameter-sync-episodes",
+        type=int,
+        default=1,
+        help=(
+            "episodes one actor plays between refreshes of the copy of the "
+            "network it acts from; 1 starts every episode from the learner's "
+            "current parameters, which is what a single actor has always done"
+        ),
+    )
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     parser.add_argument(

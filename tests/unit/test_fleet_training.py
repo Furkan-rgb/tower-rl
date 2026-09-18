@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -34,14 +34,23 @@ from tower_rl.application.training import (  # noqa: E402
     TrainingRun,
     collection_windows,
 )
+from tower_rl.domain.features import encode_state  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import BridgeTimeoutError  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import (  # noqa: E402
     InstrumentedRunAdapter,
 )
-from tower_rl.learning.backbone import LearnMetrics, SequenceBatch  # noqa: E402
+from tower_rl.learning.backbone import (  # noqa: E402
+    LearnMetrics,
+    SequenceBatch,
+    acting_copy,
+)
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
+from tower_rl.learning.recurrent_q import (  # noqa: E402
+    RecurrentQBackbone,
+    RecurrentQConfig,
+    parameters_are_equal,
+)
 from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 torch.set_num_threads(1)
@@ -52,6 +61,11 @@ SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 #: stays fast. A real decision costs hundreds of milliseconds on device.
 DECISION_SECONDS = 0.002
 
+#: An optimisation step wide enough to contain a whole decision, which is what
+#: makes "the actor did not wait for the learner" an assertion rather than a
+#: hope. On the GPU a real step is about 20 ms, so this is the real ratio.
+LEARN_SECONDS = 0.02
+
 
 @dataclass
 class Overlap:
@@ -60,9 +74,13 @@ class Overlap:
     lock: threading.Lock = field(default_factory=threading.Lock)
     active: int = 0
     peak: int = 0
+    #: When each decision started and finished, so it can be placed against an
+    #: optimisation step.
+    spans: list[tuple[float, float]] = field(default_factory=list)
 
     @contextmanager
     def deciding(self) -> Any:
+        started = time.monotonic()
         with self.lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
@@ -71,6 +89,7 @@ class Overlap:
         finally:
             with self.lock:
                 self.active -= 1
+                self.spans.append((started, time.monotonic()))
 
 
 class PacedEnvironment(InstrumentedRunEnvironment):
@@ -363,13 +382,29 @@ def test_a_run_needs_at_least_one_actor() -> None:
 
 @dataclass
 class WatchedBackbone:
-    """A backbone that says when it is mid-update, and who read it during one."""
+    """A backbone that records who touched it and when, so the sharing is visible.
+
+    One of these stands in for the learner's own network. The copies the actors
+    act from are deepcopies of it and keep records of their own, so what this
+    instance records is exactly what reached the learner itself.
+    """
 
     inner: RecurrentQBackbone
-    torn_reads: list[str] = field(default_factory=list)
-    #: Model versions observed by `act`, and where episodes ended in that series.
+    #: Breaches of the one rule the learner's lock is still there for.
+    torn: list[str] = field(default_factory=list)
+    #: Model versions observed by `act`, in order.
     versions: list[int] = field(default_factory=list)
+    #: Publications received, and where in this copy's own series of decisions
+    #: each of them landed - which is how a publication inside an episode would
+    #: be caught.
+    publications: int = 0
+    publish_positions: list[int] = field(default_factory=list)
     updating: bool = False
+    publishing: bool = False
+
+    @property
+    def acts(self) -> int:
+        return len(self.versions)
 
     @property
     def model_version(self) -> int:
@@ -381,7 +416,7 @@ class WatchedBackbone:
 
     def act(self, features: Any, state: Any, *, epsilon: float) -> tuple[int, Any]:
         if self.updating:
-            self.torn_reads.append("an actor read the network mid-update")
+            self.torn.append("an actor read the network mid-update")
         self.versions.append(self.inner.model_version)
         return self.inner.act(features, state, epsilon=epsilon)
 
@@ -392,57 +427,254 @@ class WatchedBackbone:
         return self.inner.stored_recurrent_state(state)
 
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
+        if self.publishing:
+            self.torn.append("the learner stepped while its parameters were being read")
         self.updating = True
         try:
-            # Wide enough that an unguarded actor would land inside it.
+            # Wide enough that an unguarded publication would land inside it.
             time.sleep(DECISION_SECONDS)
             return self.inner.learn(batch)
         finally:
             self.updating = False
 
     def state_dict(self) -> dict[str, Any]:
-        return self.inner.state_dict()
+        if self.updating:
+            self.torn.append("a publication read the network mid-update")
+        self.publishing = True
+        try:
+            time.sleep(DECISION_SECONDS)
+            return self.inner.state_dict()
+        finally:
+            self.publishing = False
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.publications += 1
+        self.publish_positions.append(self.acts)
         self.inner.load_state_dict(state)
 
 
-def test_no_actor_reads_the_network_while_the_learner_updates_it() -> None:
-    """Stale parameters are fine; half-updated ones are no policy at all."""
+def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, WatchedBackbone]:
+    """A fleet whose learner and acting copies both keep a record of themselves."""
     watched = WatchedBackbone(
         RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
     )
+    training = fleet([environment() for _ in range(instances)], backbone=watched, **overrides)
+    return training, watched
+
+
+def copies(training: TrainingRun) -> list[WatchedBackbone]:
+    """The acting copies, which are deepcopies of the watched learner."""
+    return [cast(WatchedBackbone, copy) for copy in training.acting.values()]
+
+
+def test_every_actor_acts_from_a_copy_of_its_own_and_not_from_the_learner() -> None:
+    """The point of the whole arrangement: no forward pass touches shared state."""
+    training, watched = watched_fleet(3, budget_decisions=200)
+
+    report = training.run()
+
+    assert report.optimisation_steps > 0
+    # Nothing ever asked the learner's own network for an action.
+    assert watched.acts == 0
+    acting = copies(training)
+    assert len({id(copy) for copy in acting}) == 3
+    assert all(copy is not training.backbone for copy in acting)
+    assert all(copy.acts > 0 for copy in acting)
+    # Every decision the fleet spent was taken on some actor's own copy.
+    assert sum(copy.acts for copy in acting) == report.decisions
+
+
+def test_an_actor_does_not_wait_for_the_learner_to_finish_a_step() -> None:
+    """A decision now runs inside an optimisation step; it used to queue behind it.
+
+    The learner's step is deliberately slow here, and a decision is timed. Under
+    the single shared network a decision could never be contained by an update -
+    the lock held both - and this is the assertion that says so.
+    """
+    overlap = Overlap()
+    watched = WatchedBackbone(
+        RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    )
+    updates: list[tuple[float, float]] = []
+    inner_learn = watched.learn
+
+    def timed(batch: SequenceBatch) -> LearnMetrics:
+        started = time.monotonic()
+        try:
+            time.sleep(LEARN_SECONDS)
+            return inner_learn(batch)
+        finally:
+            updates.append((started, time.monotonic()))
+
+    watched.learn = timed  # type: ignore[method-assign]
     training = fleet(
-        [environment() for _ in range(3)], backbone=watched, budget_decisions=200
+        [environment(overlap) for _ in range(3)], backbone=watched, budget_decisions=200
     )
 
     report = training.run()
 
+    assert report.optimisation_steps > 0 and updates
+    assert any(
+        start <= decided and finished <= end
+        for start, end in updates
+        for decided, finished in overlap.spans
+    ), "no decision was taken while the learner was inside a step"
+
+
+def test_a_publication_gives_an_actor_the_learner_s_current_parameters() -> None:
+    """Synchronisation is the whole contract: afterwards the copy is the learner."""
+    training, _ = watched_fleet(1, budget_decisions=200)
+    acting = copies(training)[0]
+
+    report = training.run()
+
+    assert report.optimisation_steps > 0
+    # The run ends with learning after the last episode, so the copy is behind.
+    assert not parameters_are_equal(acting.inner.online, training.backbone.inner.online)
+
+    training.learner.publish_to(acting)
+
+    assert parameters_are_equal(acting.inner.online, training.backbone.inner.online)
+    assert parameters_are_equal(acting.inner.target, training.backbone.inner.target)
+    assert acting.model_version == training.backbone.model_version
+
+
+def test_no_actor_is_ever_given_half_of_an_optimisation_step() -> None:
+    """Stale parameters are fine; half-updated ones are no policy at all."""
+    training, watched = watched_fleet(3, budget_decisions=200)
+
+    report = training.run()
+
     assert report.optimisation_steps > 0, "nothing would be guarded without updates"
-    assert watched.torn_reads == []
+    assert watched.publications == 0, "the learner is published from, never into"
+    assert sum(copy.publications for copy in copies(training)) > 0
+    assert watched.torn == []
+
+
+def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> None:
+    """`--actors 1` must be the run it always was, or the references move.
+
+    A single actor used to act from the learner's own network, which only ever
+    moved between its episodes. At the default cadence of one episode its copy
+    is refreshed at exactly those moments, so what it acts from at every episode
+    is what it would have acted from before.
+    """
+    watched = WatchedBackbone(
+        RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    )
+    matched: list[bool] = []
+    instance = environment()
+    training = fleet([instance], backbone=watched, budget_decisions=200)
+    acting = copies(training)[0]
+    opened = instance.reset
+
+    def reset_and_witness() -> Any:
+        matched.append(
+            parameters_are_equal(acting.inner.online, watched.inner.online)
+            and acting.model_version == watched.model_version
+        )
+        return opened()
+
+    instance.reset = reset_and_witness  # type: ignore[method-assign]
+
+    report = training.run()
+
+    assert report.optimisation_steps > 0 and len(matched) > 1
+    assert all(matched), "an episode began on parameters the learner had moved past"
 
 
 def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
     """The single-actor path is the loop it always was: collect, then learn.
 
     One actor takes its own gradient steps between its own episodes, so the
-    parameters never move while it is inside an episode. That is not true of a
+    parameters it acts from never move inside an episode. That is not true of a
     fleet, where another actor's learning lands mid-episode, and it is what
     keeps a run configured with `--actors 1` reproducible.
     """
-    watched = WatchedBackbone(
-        RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
-    )
+    training, watched = watched_fleet(1, budget_decisions=200)
+    acting = copies(training)[0]
     boundaries: list[int] = []
-    training = fleet([environment()], backbone=watched, budget_decisions=200)
-    training.on_episode = lambda _: boundaries.append(len(watched.versions))
+    training.on_episode = lambda _: boundaries.append(acting.acts)
 
     report = training.run()
 
     assert report.optimisation_steps > 0 and len(boundaries) > 1
     start = 0
     for end in boundaries:
-        within = set(watched.versions[start:end])
+        within = set(acting.versions[start:end])
         assert len(within) <= 1, "the parameters moved inside a single episode"
         start = end
-    assert len(set(watched.versions)) > 1, "and they did move between episodes"
+    assert len(set(acting.versions)) > 1, "and they did move between episodes"
+    # And no refresh ever landed inside an episode, so the recurrent state the
+    # actor carries through one was produced by the parameters it still holds.
+    assert acting.publish_positions
+    assert set(acting.publish_positions) <= {0, *boundaries}
+
+
+def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_episodes() -> None:
+    """A bounded lag, set explicitly: one refresh every three episodes, not more."""
+    training, _ = watched_fleet(1, budget_decisions=900, parameter_sync_episodes=3)
+    acting = copies(training)[0]
+
+    report = training.run()
+
+    assert report.episodes >= 4
+    assert acting.publications == 1 + (report.episodes - 1) // 3
+    assert acting.publications < report.episodes
+
+
+def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alone() -> None:
+    """The recurrent state is the actor's, not the network's, and outlives a refresh."""
+    training, _ = watched_fleet(1, budget_decisions=200)
+    acting = copies(training)[0]
+    instance = training.actors[0].environment
+
+    training.run()
+
+    features = encode_state(instance.reset())
+    _, carried = acting.act(features, acting.initial_state(), epsilon=0.0)
+    before = tuple(part.clone() for part in carried)
+
+    training.learner.publish_to(acting)
+
+    assert all(
+        torch.equal(part, kept) for part, kept in zip(carried, before, strict=True)
+    ), "a refresh of the parameters disturbed the state the episode was carrying"
+    action, resumed = acting.act(features, carried, epsilon=0.0)
+    assert features.mask[action]
+    assert all(part.shape == kept.shape for part, kept in zip(resumed, before, strict=True))
+
+
+def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
+    """Copies of one backbone would otherwise share the stream they were copied from."""
+    learner = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    first = acting_copy(learner)
+    second = acting_copy(learner, exploration_seed="fake-1:recurrent-q")
+    third = acting_copy(learner, exploration_seed="fake-2:recurrent-q")
+
+    draws = [
+        [copy._random.random() for _ in range(8)]  # type: ignore[attr-defined]
+        for copy in (first, second, third)
+    ]
+
+    assert draws[0] != draws[1] and draws[1] != draws[2] and draws[0] != draws[2]
+    # The first actor carries on the learner's own stream, so a fleet of one
+    # explores exactly as a single actor acting from the learner did.
+    assert draws[0] == [learner._random.random() for _ in range(8)]
+
+
+def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> None:
+    learner = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+
+    acting = acting_copy(learner)
+
+    assert acting is not learner
+    assert acting.device == learner.device
+    assert parameters_are_equal(acting.online, learner.online)
+    assert not any(parameter.requires_grad for parameter in acting.online.parameters())
+    assert not acting.online.training
+    with torch.no_grad():
+        learner.online.state_dict()["core.weight_ih_l0"].add_(1.0)
+    assert not parameters_are_equal(acting.online, learner.online), (
+        "the copy moved with the learner, so it shares its storage"
+    )

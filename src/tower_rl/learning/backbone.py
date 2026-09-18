@@ -8,11 +8,13 @@ across the comparison lives outside it.
 
 from __future__ import annotations
 
+import copy as copying
+import random
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 from tower_rl.application.replay import ReplaySequence
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, StateFeatures
@@ -112,6 +114,47 @@ class Backbone(Protocol):
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         ...
+
+
+def acting_copy(backbone: Backbone, *, exploration_seed: int | str | None = None) -> Backbone:
+    """One actor's own copy of a backbone, to act from without touching the learner.
+
+    This is the actor-learner arrangement of Ape-X (Horgan et al. 2018) and R2D2
+    (Kapturowski et al. 2019): actors act from copies of the network and the
+    learner publishes its parameters into them periodically. Acting on
+    parameters a few optimisation steps old is the accepted, intended cost of
+    it. The alternative - every actor reading the one live network - serialises
+    every forward pass against every gradient step, which caps a fleet's
+    throughput as soon as the fleet is large.
+
+    The copy lives on the same device as the original and shares no tensor with
+    it, so a publication into it (`Learner.publish_to`) is invisible to the
+    learner and its acting is invisible to every other actor. Its modules are
+    put in evaluation mode with gradients switched off: nothing here is ever
+    trained, and the acting path must build no graph.
+
+    `exploration_seed` reseeds the copy's epsilon-greedy stream, if it keeps one
+    in a `random.Random` as both learned backbones do. Left `None` the copy
+    carries on the stream it was copied with, which is what keeps a fleet of one
+    drawing exactly the exploration a single actor draws today; a fleet gives
+    every actor after the first a seed of its own, or they would all explore in
+    lockstep from the same copied stream.
+    """
+    acting = copying.deepcopy(backbone)
+    for value in vars(acting).values():
+        if isinstance(value, nn.Module):
+            value.eval()
+            value.requires_grad_(False)
+            for module in value.modules():
+                if isinstance(module, nn.RNNBase):
+                    # A copied recurrent core no longer holds its weights in one
+                    # chunk, and cuDNN would then compact them on every single
+                    # forward pass - on the acting path, fifty times a second.
+                    module.flatten_parameters()
+    stream = getattr(acting, "_random", None)
+    if exploration_seed is not None and isinstance(stream, random.Random):
+        stream.seed(exploration_seed)
+    return acting
 
 
 def collate(

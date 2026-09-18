@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from collections import defaultdict
@@ -35,7 +34,7 @@ from tower_rl.experiment.comparison import (  # noqa: E402
 )
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.evaluator import WaveDistribution, episode_record  # noqa: E402
-from tower_rl.simulation.bridge import compatibility  # noqa: E402
+from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
 from tower_rl.simulation.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
@@ -72,11 +71,7 @@ def main() -> int:
     if len(arms) < 2:
         raise SystemExit("a comparison needs at least two distinct arms")
 
-    build_dir = Path(
-        os.environ.get("TOWER_BRIDGE_BUILD_DIR")
-        or Path("/tmp/tower-bridge-live.latest").read_text().strip()
-    )
-    expected = compatibility(build_dir)
+    expected = compatibility(bridge_build_directory())
     client = InstrumentedBridgeClient(
         "127.0.0.1",
         arguments.port,

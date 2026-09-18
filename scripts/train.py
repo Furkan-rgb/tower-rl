@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -81,7 +80,11 @@ from tower_rl.learning.training import (  # noqa: E402
     TrainingProgressReport,
     TrainingRun,
 )
-from tower_rl.simulation.bridge import compatibility, deploy_bridge  # noqa: E402
+from tower_rl.simulation.bridge import (  # noqa: E402
+    bridge_build_directory,
+    compatibility,
+    deploy_bridge,
+)
 from tower_rl.simulation.bring_up import bring_up, require_offline  # noqa: E402
 from tower_rl.simulation.fleet import (  # noqa: E402
     bring_up_fleet,
@@ -660,11 +663,7 @@ def main() -> int:
         )
         print(f"artifacts: {artifact_root(arguments.run_dir)}", flush=True)
 
-    build_dir = Path(
-        os.environ.get("TOWER_BRIDGE_BUILD_DIR")
-        or Path("/tmp/tower-bridge-live.latest").read_text().strip()
-    )
-    expected = compatibility(build_dir)
+    expected = compatibility(bridge_build_directory())
     opened: list[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]] = []
     started: list[CloneInstance] = []
 

@@ -57,7 +57,7 @@ from tower_rl.learning.policies import (  # noqa: E402
     WaitOnlyPolicy,
     checkpoint_policy,
 )
-from tower_rl.simulation.bridge import compatibility  # noqa: E402
+from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
     InstrumentedBridgeClient,
 )
@@ -198,11 +198,7 @@ def main() -> int:
     # fail now, not after an emulator has been brought up for it.
     policy, identity = policy_from(arguments.policy)
 
-    build_dir = Path(
-        os.environ.get("TOWER_BRIDGE_BUILD_DIR")
-        or Path("/tmp/tower-bridge-live.latest").read_text().strip()
-    )
-    expected = compatibility(build_dir)
+    expected = compatibility(bridge_build_directory())
 
     client = InstrumentedBridgeClient(
         "127.0.0.1",

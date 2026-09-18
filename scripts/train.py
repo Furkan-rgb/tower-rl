@@ -269,6 +269,9 @@ def build_arm(
         )
 
     def on_episode(report: TrainingProgressReport) -> None:
+        # The episode first: it is the tracked unit, and the window below it is
+        # the smoothed view of the same series.
+        arm.record_episodes()
         arm.record_collection_windows()
         arm.record_decision_time()
         print(

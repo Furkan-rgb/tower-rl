@@ -34,7 +34,7 @@ available CPU, so the contention is entirely in the simultaneous boot.
 previous instance has signalled ready, so boots do not pile up, while episode
 collection afterwards is exactly as concurrent as before.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/run_actors.py \\
+    uv run python scripts/run_actors.py \\
         --actors 2 --episodes 20
 """
 
@@ -54,7 +54,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_episodes import POLICIES, add_cadence_arguments  # noqa: E402
+from run_episodes import CHECKPOINT_SELECTOR, POLICIES, add_cadence_arguments  # noqa: E402
 
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
 from tower_rl.simulation.bridge import ActorFailure, deploy_bridge  # noqa: E402
@@ -193,6 +193,7 @@ def aggregate(outcomes: list[ActorOutcome], wall_seconds: float) -> dict[str, An
                 {
                     # Which arm this actor collected for, when a fleet holds two.
                     "frame_rate_hz": record.get("frame_rate_hz"),
+                    "policy_identity": record.get("policy_identity"),
                     "valid_episodes": record["valid_episodes"],
                     "invalid_episodes": record["invalid_episodes"],
                     "invalid_rate": record["invalid_rate"],
@@ -210,6 +211,17 @@ def aggregate(outcomes: list[ActorOutcome], wall_seconds: float) -> dict[str, An
     attempted = valid + invalid
     return {
         "actors_requested": len(outcomes),
+        # Resolved by the actors rather than by this process, which never loads
+        # a checkpoint: the arm in the fleet report is the one the episodes were
+        # actually played under, not the one the command line asked for.
+        "policy_identity": next(
+            (
+                outcome.record["policy_identity"]
+                for outcome in outcomes
+                if outcome.record is not None and "policy_identity" in outcome.record
+            ),
+            None,
+        ),
         "actors_reporting": sum(1 for outcome in outcomes if outcome.record is not None),
         "actors_failed": sum(1 for outcome in outcomes if outcome.failure is not None),
         "wall_seconds": round(wall_seconds, 1),
@@ -257,6 +269,27 @@ def frame_rates(text: str, actors: int) -> list[int]:
                 "no measured fps supports a guest rate above that"
             )
     return rates
+
+
+def checkpoint_arm(selector: str) -> Path | None:
+    """Check the arm every actor will play, before any emulator is started.
+
+    The selector is resolved into a policy by each actor's own process, which is
+    where the checkpoint is loaded - this one never loads one. What is worth
+    checking here is only what would otherwise be discovered N bring-ups later:
+    a name that is not an arm at all, or a checkpoint file that is not there.
+    """
+    if selector in POLICIES:
+        return None
+    if not selector.startswith(CHECKPOINT_SELECTOR):
+        raise SystemExit(
+            f"unknown policy {selector!r}; choose from {sorted(POLICIES)} "
+            f"or {CHECKPOINT_SELECTOR}<path>"
+        )
+    path = Path(selector[len(CHECKPOINT_SELECTOR) :]).expanduser()
+    if not path.is_file():
+        raise SystemExit(f"no checkpoint at {path}")
+    return path
 
 
 def collect_episodes(
@@ -355,8 +388,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--actors", type=int, default=2, help="concurrent instances to run")
     parser.add_argument("--episodes", type=int, default=20, help="episodes per actor")
-    parser.add_argument("--policy", choices=sorted(POLICIES), default="scripted")
-    parser.add_argument("--renderer", default="lavapipe")
+    parser.add_argument(
+        "--policy",
+        default="scripted",
+        help=(
+            f"the arm every actor plays: one of {sorted(POLICIES)}, or "
+            f"{CHECKPOINT_SELECTOR}<path> for a checkpoint a training run left"
+        ),
+    )
+    # The standing training renderer, as in `train.py`. Snapshots are
+    # lavapipe-only, so under `host` `prepare_pinned_snapshot` has nothing to
+    # pin and every actor takes the cold path.
+    parser.add_argument("--renderer", default="host")
     parser.add_argument(
         "--frame-rate-hz",
         default=str(GUEST_FRAME_RATE_HZ),
@@ -382,6 +425,7 @@ def main() -> int:
 
     if arguments.actors < 1:
         raise SystemExit("a fleet needs at least one actor")
+    checkpoint_arm(arguments.policy)
     arguments.frame_rates = frame_rates(arguments.frame_rate_hz, arguments.actors)
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
     instances = [CloneInstance(index=index) for index in range(arguments.actors)]

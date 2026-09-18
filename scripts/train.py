@@ -3,13 +3,15 @@
 
 Private device runner for the instrumented-training profile. Everything it
 produces - checkpoints, reports, replay metadata - is written outside the
-repository, and every tap it can make is gated inside the adapter on a positive
-screen classification.
+repository. Nothing in this path reads a pixel or touches the screen: the round
+boundary lives in the bridge, and an action is a semantic upgrade purchase the
+bridge performs in the game, so there is no screen classification and no tap for
+one to gate.
 
 Collection runs in decision blocks (`--block-decisions`), each landing on an
 episode boundary, until the budget is spent.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
+    uv run --extra tracking python scripts/train.py \\
         --budget-decisions 20000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
@@ -23,7 +25,7 @@ its instances instead: it takes them from `CloneInstance` by index exactly as
 four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
+    uv run --extra tracking python scripts/train.py \\
         --actors 4 --budget-decisions 100000
 
 The run records itself to the local MLflow store under `~/.local/state/tower-rl`;
@@ -35,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -79,7 +80,11 @@ from tower_rl.learning.training import (  # noqa: E402
     TrainingProgressReport,
     TrainingRun,
 )
-from tower_rl.simulation.bridge import compatibility, deploy_bridge  # noqa: E402
+from tower_rl.simulation.bridge import (  # noqa: E402
+    bridge_build_directory,
+    compatibility,
+    deploy_bridge,
+)
 from tower_rl.simulation.bring_up import bring_up, require_offline  # noqa: E402
 from tower_rl.simulation.fleet import (  # noqa: E402
     bring_up_fleet,
@@ -112,12 +117,13 @@ class ActorInstance:
 
 def build_backbone(
     arguments: argparse.Namespace, device: torch.device
-) -> tuple[Backbone, StackedDqnConfig]:
-    """The backbone and the learner settings it was fixed with.
+) -> tuple[Backbone, StackedDqnConfig, NetworkConfig]:
+    """The backbone and the two settings objects it was fixed with.
 
     The settings come back alongside it because they are part of what the arm
-    is configured by - n-step, discount, learning rate - and a run that does not
-    record them cannot be compared with the next one.
+    is configured by - n-step, discount, learning rate, the width of the network
+    - and a run that does not record them cannot be compared with the next one,
+    nor can one of its checkpoints be rebuilt into the policy that wrote it.
     """
     stacked = StackedDqnConfig(
         seed=arguments.seed,
@@ -127,13 +133,15 @@ def build_backbone(
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
     )
+    network = NetworkConfig()
     return (
         StackedDqnBackbone(
             config=stacked,
-            network_config=NetworkConfig(),
+            network_config=network,
             device=device,
         ),
         stacked,
+        network,
     )
 
 
@@ -158,7 +166,7 @@ def build_arm(
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    backbone, learner = build_backbone(arguments, device)
+    backbone, learner, network = build_backbone(arguments, device)
     replay = PrioritizedSequenceReplay(
         capacity=arguments.replay_capacity,
         alpha=arguments.priority_alpha,
@@ -175,6 +183,7 @@ def build_arm(
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
+        checkpoint_every_decisions=arguments.checkpoint_every_decisions,
         parameter_sync_episodes=arguments.parameter_sync_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
@@ -203,6 +212,7 @@ def build_arm(
         actor_ids=[actor.config.actor_id for actor in actors],
         config=config,
         learner=learner,
+        network=network,
         cadence=instances[0].environment.cadence,
         burn_in=burn_in,
         stride=stride,
@@ -259,6 +269,9 @@ def build_arm(
         )
 
     def on_episode(report: TrainingProgressReport) -> None:
+        # The episode first: it is the tracked unit, and the window below it is
+        # the smoothed view of the same series.
+        arm.record_episodes()
         arm.record_collection_windows()
         arm.record_decision_time()
         print(
@@ -271,6 +284,8 @@ def build_arm(
     # evaluation buys points too noisy to read at the price of device time.
     arm.training.evaluate = run_evaluation
     arm.training.checkpoint = arm.checkpoint
+    # The candidates a post-hoc selection chooses among, beside the resume point.
+    arm.training.numbered_checkpoint = arm.numbered_checkpoint
     arm.training.on_episode = on_episode
     arm.training.on_withdrawal = on_withdrawal
     manifest = run_dir / "manifest.json"
@@ -358,6 +373,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument(
+        "--checkpoint-every-decisions",
+        type=int,
+        default=0,
+        help=(
+            "decisions between numbered checkpoints, each written beside "
+            "latest.pt under its own name and evaluable afterwards as an arm; "
+            "0 writes none, and any value must be a multiple of --block-decisions"
+        ),
+    )
+    parser.add_argument(
         "--parameter-sync-episodes",
         type=int,
         default=1,
@@ -381,7 +406,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     # Read on the fleet path only: a single actor collects on the instance the
     # operator brought up, and nothing here starts or stops it.
-    parser.add_argument("--renderer", default="lavapipe", help="fleet bring-up only")
+    # `-gpu host` is the standing training renderer (M1B-E052 and the handoff's
+    # renderer decision): equivalent to lavapipe on game-time ratio,
+    # decisions/wave and mean wave, and the one the measured runs were taken
+    # under. It cannot snapshot a Vulkan app, so a fleet under it cold-starts
+    # every instance instead of restoring the pinned snapshot; `bring_up` says
+    # so by name and takes the cold path.
+    parser.add_argument("--renderer", default="host", help="fleet bring-up only")
     parser.add_argument(
         "--cores", type=int, default=4, help="emulator cores per instance; fleet only"
     )
@@ -431,6 +462,20 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
                 "mid-run evaluation needs an instance to itself and cannot run "
                 "while a fleet is collecting; leave --evaluate-every-episodes at 0"
             )
+    if arguments.checkpoint_every_decisions < 0:
+        raise SystemExit("--checkpoint-every-decisions cannot be negative")
+    if (
+        arguments.checkpoint_every_decisions
+        and arguments.checkpoint_every_decisions % arguments.block_decisions
+    ):
+        # The budget is spent a block at a time, so a period that is not a whole
+        # number of blocks would put its checkpoints at the block boundaries
+        # nearest to it rather than where it asked for them - a selection made
+        # over candidates the operator did not choose.
+        raise SystemExit(
+            f"--checkpoint-every-decisions {arguments.checkpoint_every_decisions} is "
+            f"not a multiple of --block-decisions {arguments.block_decisions}"
+        )
     if arguments.stacked_burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
@@ -535,7 +580,7 @@ def train_session(
             arm.training.report.evaluation_failures.append(str(failure))
             print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
-        summaries = [arm.summary()]
+        summary = arm.summary()
         report: dict[str, object] = {
             "session": str(session),
             "profile_id": profile_id,
@@ -551,14 +596,18 @@ def train_session(
             # Repeated at the top of the report as well as inside each arm: the
             # curve is meaningless without the floors it is read against.
             "reference_final_waves": REFERENCE_FINAL_WAVES,
-            "arms": summaries,
+            # One arm. The session used to carry a list of them, from a
+            # comparison of several backbones that was retired: this project
+            # trains one backbone and compares it against the non-learned floors
+            # afterwards, through `report_arms.py`, not inside a session.
+            "arm": summary,
         }
         session.mkdir(parents=True, exist_ok=True)
         (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
         # The arm's summary holds its learning curve and the per-episode
         # evaluation records, so it is what a tracked run is read from.
         path = arm.run_dir / "summary.json"
-        path.write_text(json.dumps(summaries[0], indent=2, default=str))
+        path.write_text(json.dumps(summary, indent=2, default=str))
         arm.run.log_artifact(path)
         return report
     finally:
@@ -617,11 +666,7 @@ def main() -> int:
         )
         print(f"artifacts: {artifact_root(arguments.run_dir)}", flush=True)
 
-    build_dir = Path(
-        os.environ.get("TOWER_BRIDGE_BUILD_DIR")
-        or Path("/tmp/tower-bridge-live.latest").read_text().strip()
-    )
-    expected = compatibility(build_dir)
+    expected = compatibility(bridge_build_directory())
     opened: list[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]] = []
     started: list[CloneInstance] = []
 

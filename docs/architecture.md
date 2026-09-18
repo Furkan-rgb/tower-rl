@@ -275,3 +275,35 @@ neither is part of a run:
 6. The session report and the arm summary are written to the run directory, the
    tracked run is finished in a `finally`, and `tear_down_fleet` puts down every
    bridge and every emulator.
+
+Every collected episode is reported to the tracked run as its own point, keyed
+by the decisions spent when it ended, beside the learner's trailing summaries
+and the collection windows that smooth them.
+
+### The post-hoc selection path
+
+Choosing the strongest checkpoint of a run and reporting it are separate from
+training and from each other, because selecting on the episodes a model is then
+reported on turns selection noise into a result. `--checkpoint-every-decisions`
+makes `train.py` leave `checkpoint-<decisions>.pt` beside `latest.pt` on every
+crossing of that period, each one a candidate that survives the next write.
+`run_actors.py --policy checkpoint:<path>` then plays a candidate as an ordinary
+arm: `learning.policies.checkpoint_policy` rebuilds the backbone from the
+checkpoint's own resolved config on the CPU, and the episodes go through the
+same actor, evaluator and per-episode records the scripted and random floors go
+through, with the arm's identity written into every actor record.
+
+`scripts/select_checkpoint.py` reads one evaluation directory per candidate —
+set A — and names the highest interquartile mean of the final wave, with
+`experiment.comparison.stratified_bootstrap` resampling within each actor. A
+candidate is identified by the run id and identity hash its records carry, not
+by its file name, because two runs at the same period leave identically named
+files. What it chose is written to `<run>/selection.json`. Reporting the
+selection is another `run_actors.py` run of that one checkpoint into an empty
+directory, set B, which `scripts/report_arms.py` reads beside the floors —
+given `--selection`, it refuses a set B whose records did not play the model
+that was chosen: IQM with intervals per arm, pairwise bootstrap differences, and the
+per-wave comparison handed to `experiment.wave_statistics`. Neither script
+starts an emulator, and neither decides a verdict. Given `--mlflow-run`, both
+log their results onto the training run they are about, so the greedy curve
+lands above the exploring one.

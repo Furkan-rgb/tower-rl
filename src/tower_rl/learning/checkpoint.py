@@ -54,6 +54,19 @@ class CheckpointIdentity:
         return tuple(reasons)
 
 
+def identity_hash(identity: CheckpointIdentity) -> str:
+    """A short stable token naming one checkpoint identity.
+
+    What a measurement cites when it says which run and which schemas the
+    episodes behind it came from. The run id alone would not do: two runs of the
+    same code and profile are legitimately interchangeable for a resume, and a
+    record that only carried a path would stop meaning anything the moment the
+    file was copied.
+    """
+    payload = json.dumps(asdict(identity), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass(frozen=True)
 class TrainingProgress:
     """Counters and schedules that must survive a restart to resume honestly."""

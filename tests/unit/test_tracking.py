@@ -36,11 +36,16 @@ from tower_rl.experiment.tracking import (
 REPOSITORY = Path(train.__file__).resolve().parents[1]
 
 
-def tracked_session(run_dir: Path, tracker: RecordingTracker) -> dict[str, Any]:
+def tracked_session(
+    run_dir: Path,
+    tracker: RecordingTracker,
+    **overrides: str,
+) -> dict[str, Any]:
+    settings = {"--budget-decisions": "120", **overrides}
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
-            arguments(run_dir, **{"--budget-decisions": "120"}),
+            arguments(run_dir, **settings),
             fleet(),
             profile_id=PROFILE,
             revision="test-revision",
@@ -70,6 +75,9 @@ def test_the_default_tracker_satisfies_the_port_and_keeps_nothing() -> None:
     run.log_artifact(Path("/nowhere/checkpoint.pt"), directory="checkpoints/abc")
     run.finish()
     assert run.run_id == "untracked"
+    # Attaching to an existing run - what a post-hoc selection does - answers
+    # the same handle, so a script that was given no run id takes no other path.
+    assert tracker.open_run("whatever").run_id == "untracked"
 
 
 def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
@@ -84,8 +92,8 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
             device=torch.device("cpu"),
         )
 
-    assert report["arms"][0]["decisions"] >= 120
-    assert report["arms"][0]["learning_curve"]
+    assert report["arm"]["decisions"] >= 120
+    assert report["arm"]["learning_curve"]
 
 
 def test_only_the_adapter_knows_which_tracker_it_is() -> None:
@@ -307,3 +315,186 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     # Files land under the root the adapter was given, not under the caller's
     # working directory, which for a run started from a checkout is the repository.
     assert (tmp_path / "mlartifacts").is_dir()
+
+
+def test_the_mlflow_adapter_reopens_a_run_that_already_exists(tmp_path: Path) -> None:
+    """What a post-hoc selection does: attach to a finished run and add to it.
+
+    The greedy score of a checkpoint is taken hours after the run that produced
+    it, so `open_run` is the only way those numbers reach the page they are
+    about. Exercised against a real store rather than a double, because the one
+    thing it does beyond handing out a handle - reading the run back so a
+    mistyped id is refused rather than silently swallowed - is the store's
+    behaviour, not this project's.
+    """
+    pytest.importorskip("mlflow")
+    from mlflow.exceptions import MlflowException
+    from mlflow.tracking import MlflowClient
+
+    from tower_rl.experiment.mlflow_tracking import MlflowExperimentTracker
+
+    uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    tracker = MlflowExperimentTracker(
+        tracking_uri=uri,
+        experiment="reopen-experiment",
+        artifact_root=str(tmp_path / "mlartifacts"),
+    )
+    training = tracker.start_run(name="stacked-dqn-test", params={"seed": 0}, tags={})
+    training.log_metrics({"episode_final_wave": 6.0}, decisions=1000)
+    training.finish()
+
+    # Hours later, from another process: the run is addressed by its id alone.
+    reopened = MlflowExperimentTracker(
+        tracking_uri=uri,
+        experiment="reopen-experiment",
+        artifact_root=str(tmp_path / "mlartifacts"),
+    ).open_run(training.run_id)
+    reopened.log_metrics({"greedy_final_wave_iqm": 8.5}, decisions=1000)
+
+    assert reopened.run_id == training.run_id
+    client = MlflowClient(tracking_uri=uri)
+    greedy = client.get_metric_history(training.run_id, "greedy_final_wave_iqm")
+    assert [(item.step, item.value) for item in greedy] == [(1000, 8.5)]
+    # On the same run and the same axis as what training reported, which is the
+    # whole point: the greedy curve sits above the exploring one.
+    exploring = client.get_metric_history(training.run_id, "episode_final_wave")
+    assert [(item.step, item.value) for item in exploring] == [(1000, 6.0)]
+    # Terminated by training and left terminated: attaching is not restarting.
+    assert client.get_run(training.run_id).info.status == "FINISHED"
+
+    # A run id that names nothing is refused where it is typed, not by a metric
+    # disappearing into a store nobody reads again.
+    with pytest.raises(MlflowException):
+        MlflowExperimentTracker(
+            tracking_uri=uri,
+            experiment="reopen-experiment",
+            artifact_root=str(tmp_path / "mlartifacts"),
+        ).open_run("0123456789abcdef0123456789abcdef")
+
+
+#: Every key one collected episode reports. An episode is the tracked unit, so
+#: a run is readable at this resolution or it is readable only in aggregate.
+EPISODE_KEYS = {
+    "episode_final_wave",
+    "episode_decisions",
+    "episode_game_ms",
+    "episode_wait_fraction",
+    "episode_purchases",
+    "episode_valid",
+    "episode_actor",
+    "episode_epsilon",
+}
+
+#: What the learner reports on the same key, so its curve exists between
+#: evaluations rather than only at them.
+LEARNER_KEYS = {
+    "learner_optimisation_steps",
+    "learner_importance_beta",
+    "learner_weighted_loss",
+    "learner_unweighted_mean_absolute_td_error",
+    "learner_gradient_norm",
+}
+
+#: Long enough for the arm to play about ten episodes against the fake port.
+EPISODE_BUDGET = "1200"
+
+
+@pytest.fixture(scope="module")
+def per_episode(tmp_path_factory: pytest.TempPathFactory) -> tuple[RecordedRun, Any]:
+    """A run long enough to have an episode series, with its numbered checkpoints."""
+    tracker = RecordingTracker()
+    report = tracked_session(
+        tmp_path_factory.mktemp("episodes"),
+        tracker,
+        **{
+            "--budget-decisions": EPISODE_BUDGET,
+            # Numbered checkpoints on, so the artifacts and the metrics can be
+            # checked to land on the one run.
+            "--checkpoint-every-decisions": "400",
+            # The episode series is the point here; mid-run evaluation only adds
+            # episodes that are not collection.
+            "--evaluate-every-episodes": "0",
+        },
+    )
+    assert len(tracker.runs) == 1, "one tracked run per arm"
+    return tracker.runs[0], report
+
+
+def test_every_collected_episode_is_one_tracked_point(
+    per_episode: tuple[RecordedRun, Any],
+) -> None:
+    """The episode is the tracked unit, not only the window that smooths it."""
+    recorded, report = per_episode
+    collected = report["arm"]["collected_episodes"]
+    points = [point for point in recorded.points if set(point.metrics) >= EPISODE_KEYS]
+
+    assert len(collected) >= 5, "the budget buys an episode series worth reading"
+    assert len(points) == len(collected), "one point per episode, none repeated"
+    for point, episode in zip(points, collected, strict=True):
+        assert point.metrics["episode_final_wave"] == float(episode["final_wave"])
+        assert point.metrics["episode_decisions"] == float(episode["decisions"])
+        assert point.metrics["episode_game_ms"] == pytest.approx(episode["round_ms"])
+        assert point.metrics["episode_purchases"] == float(episode["purchases"])
+        assert point.metrics["episode_valid"] in (0.0, 1.0)
+        assert 0.0 <= point.metrics["episode_wait_fraction"] <= 1.0
+        # One actor, so index zero; a fleet's episodes are one series and this
+        # is what places each of them on an instance.
+        assert point.metrics["episode_actor"] == 0.0
+        assert 0.0 <= point.metrics["episode_epsilon"] <= 1.0
+
+
+def test_an_episode_point_sits_where_that_episode_ended(
+    per_episode: tuple[RecordedRun, Any],
+) -> None:
+    """Keyed by the decisions spent at its own end, so it shares the checkpoints' axis."""
+    recorded, report = per_episode
+    points = [point for point in recorded.points if set(point.metrics) >= EPISODE_KEYS]
+
+    spent = 0
+    expected = []
+    for episode in report["arm"]["collected_episodes"]:
+        spent += int(episode["decisions"])
+        expected.append(spent)
+
+    assert [point.decisions for point in points] == expected
+
+
+def test_the_learner_reports_between_evaluations_and_not_only_at_them(
+    per_episode: tuple[RecordedRun, Any],
+) -> None:
+    """With no mid-run evaluation the learner would otherwise report once, at the end."""
+    recorded, _ = per_episode
+    learning = [
+        point
+        for point in recorded.points
+        if set(point.metrics) >= EPISODE_KEYS and set(point.metrics) >= LEARNER_KEYS
+    ]
+
+    assert len(learning) >= 2, "a curve, not a point"
+    for point in learning:
+        assert point.metrics["learner_weighted_loss"] >= 0.0
+        assert point.metrics["learner_unweighted_mean_absolute_td_error"] >= 0.0
+        assert point.metrics["learner_gradient_norm"] >= 0.0
+        assert point.metrics["learner_optimisation_steps"] > 0
+    steps = [point.metrics["learner_optimisation_steps"] for point in learning]
+    assert steps == sorted(steps)
+
+
+def test_the_numbered_checkpoints_land_on_the_run_that_reported_the_episodes(
+    per_episode: tuple[RecordedRun, Any],
+) -> None:
+    """One run id carries both, or the candidate cannot be found from the curve."""
+    recorded, report = per_episode
+    run_dir = Path(report["session"]) / report["arm"]["run_id"]
+    numbered = sorted((run_dir / "checkpoints").glob("checkpoint-*.pt"))
+    uploaded = [path for path, _ in recorded.artifacts if path.name.startswith("checkpoint-")]
+
+    assert numbered, "the budget crosses the checkpoint period"
+    assert uploaded == numbered
+    # Filed under the digest of the weights in them, which is what a later
+    # reading names a model by.
+    directories = [directory for path, directory in recorded.artifacts if path in numbered]
+    assert directories and all(
+        directory is not None and directory.startswith("checkpoints/")
+        for directory in directories
+    )

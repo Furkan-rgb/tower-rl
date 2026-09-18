@@ -24,6 +24,7 @@ from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.evaluator import EvaluationReport, episode_record
 from tower_rl.learning.training import (
     ActorProgress,
+    CollectedEpisode,
     CollectionWindow,
     EpisodeHealth,
     TrainingProgressReport,
@@ -151,6 +152,64 @@ def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
     if health.worst_round_budgeted_ratio is not None:
         metrics[f"{prefix}worst_round_budgeted_ratio"] = health.worst_round_budgeted_ratio
     return metrics
+
+
+def episode_metrics(
+    episode: CollectedEpisode, *, actor_index: int, epsilon: float
+) -> dict[str, float]:
+    """One collected episode, as the tracked unit it is.
+
+    The collection window beside this is the smoothed view - a hundred episodes
+    averaged - and it closes about once an hour, which is far too coarse to see
+    where a run turned. This is the raw series under it: one point per episode,
+    keyed by the decisions spent when that episode ended, so it lines up with
+    the checkpoint points on the same axis.
+
+    `episode_valid` is a number rather than a flag because a metric store holds
+    numbers; read as a rate over a window it is the run's honesty, which is
+    exactly what an unattended overnight run has to be readable on.
+    """
+    summary = episode.summary
+    return {
+        "episode_final_wave": float(summary.final_wave),
+        "episode_decisions": float(summary.decisions),
+        # The game's own round clock, not frames times `frame_game_ms`: the
+        # latter is what the advances asked for, which is not evidence.
+        "episode_game_ms": float(summary.round_ms),
+        "episode_wait_fraction": episode.wait_fraction,
+        "episode_purchases": float(summary.purchases),
+        "episode_valid": 1.0 if summary.valid else 0.0,
+        # Which instance played it, as a number: a fleet's episodes are one
+        # series, and an actor that starts trailing the others is invisible in
+        # the aggregate until it withdraws.
+        "episode_actor": float(actor_index),
+        "episode_epsilon": epsilon,
+    }
+
+
+def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
+    """What the learner has been doing lately, on the episode's key.
+
+    These are the learner's own trailing summaries over its last hundred
+    optimisation steps - it already keeps them - sampled here rather than
+    computed. Until now they reached the store only through a curve point, and
+    a run with no mid-run evaluation therefore reported them exactly once, at
+    the end, which is not a curve.
+    """
+    # A quantity the learner has not measured yet is absent rather than zero: a
+    # zero loss before the first optimisation step would read as a solved
+    # problem, and a zero correlation as a learner predicting nothing.
+    measured: dict[str, float | None] = {
+        "learner_optimisation_steps": float(report.optimisation_steps),
+        "learner_importance_beta": report.importance_beta,
+        "learner_weighted_loss": report.mean_recent_weighted_loss,
+        "learner_unweighted_mean_absolute_td_error": (
+            report.mean_recent_unweighted_absolute_td_error
+        ),
+        "learner_gradient_norm": report.mean_recent_gradient_norm,
+        "learner_value_fit_correlation": report.mean_recent_value_fit_correlation,
+    }
+    return {name: value for name, value in measured.items() if value is not None}
 
 
 def window_metrics(window: CollectionWindow) -> dict[str, float]:

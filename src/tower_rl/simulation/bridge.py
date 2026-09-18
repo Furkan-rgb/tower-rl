@@ -100,6 +100,11 @@ def bridge_build_directory() -> Path:
     building it and deploying it straight out of the build tree. Everything
     else — every fleet run, every `clone_session.py up` — takes the installed
     one, which survives a reboot and says what it is.
+
+    The override is therefore optional, and no command in this repository's
+    documentation sets it: a runner with no `TOWER_BRIDGE_BUILD_DIR` in its
+    environment finds the installed bridge, which is what an ordinary run
+    wants. Set it only to run against a bridge you are building.
     """
     configured = os.environ.get("TOWER_BRIDGE_BUILD_DIR")
     if configured:

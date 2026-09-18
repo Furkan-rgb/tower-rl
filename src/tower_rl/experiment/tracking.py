@@ -69,6 +69,16 @@ class ExperimentTracker(Protocol):
         """Open a run for one arm, with everything fixed about it up front."""
         ...
 
+    def open_run(self, run_id: str) -> TrackedRun:
+        """Attach to a run that already exists, to add results taken after it.
+
+        The exploration-free measurements of a run's checkpoints are taken hours
+        or days after the run itself finished, on a device the run no longer
+        owns. They belong on the run they are about - the greedy curve above the
+        exploring one - and not on a second run nothing links to it.
+        """
+        ...
+
 
 class _UntrackedRun:
     """The handle `NoExperimentTracker` hands out; it keeps nothing."""
@@ -108,6 +118,27 @@ class NoExperimentTracker:
     ) -> TrackedRun:
         return _UntrackedRun()
 
+    def open_run(self, run_id: str) -> TrackedRun:
+        return _UntrackedRun()
+
+
+def open_tracked_run(run_id: str, *, run_dir: Path, experiment: str) -> TrackedRun:
+    """A handle on an existing run, for results taken after it finished.
+
+    The MLflow adapter is imported here rather than at module scope, exactly as
+    a training session imports it: a machine with no MLflow can still run
+    everything that does not ask to record itself, and the `ImportError` is the
+    caller's to turn into whatever a command line should say about it.
+    """
+    from tower_rl.experiment.mlflow_tracking import MlflowExperimentTracker
+
+    tracker = MlflowExperimentTracker(
+        tracking_uri=tracking_uri(run_dir),
+        experiment=experiment,
+        artifact_root=artifact_root(run_dir),
+    )
+    return tracker.open_run(run_id)
+
 
 def tracking_uri(run_dir: Path) -> str:
     """Where runs are recorded: beside the run state, never in the repository.
@@ -131,5 +162,6 @@ __all__ = [
     "NoExperimentTracker",
     "TrackedRun",
     "artifact_root",
+    "open_tracked_run",
     "tracking_uri",
 ]

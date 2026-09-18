@@ -27,8 +27,10 @@ from tower_rl.experiment.metrics import (
     curve_metrics,
     decision_time_line,
     decision_time_metrics,
+    episode_metrics,
     fleet_decision_time,
     health_metrics,
+    learner_metrics,
     per_hour,
     pooled,
     window_line,
@@ -90,6 +92,21 @@ class TrainingReport:
     #: next one is measured against.
     decision_time_baseline: dict[str, DecisionTimeBreakdown] = field(default_factory=dict)
     decision_time_emitted: float = 0.0
+    #: Collected episodes already reported to the tracker, and the decisions
+    #: spent by the end of the last of them. The episode is the tracked unit, so
+    #: both are carried rather than recomputed: an episode joins the series when
+    #: it ends, and is never reported twice. A running sum rather than a prefix
+    #: sum over `collected`, which would re-add the whole list once per episode
+    #: over the thousands a multi-hour run collects.
+    #:
+    #: This tracks `TrainingProgressReport.decisions` exactly today - that
+    #: counter has one writer, `_record_episode`, which appends to `collected`
+    #: in the same breath, and nothing restores it. A resume that restored it
+    #: from a checkpoint would break that: this would start at zero against a
+    #: non-zero total and key the whole episode series onto the wrong part of
+    #: the budget. Initialise it from `report.decisions` when resume lands.
+    episodes_logged: int = 0
+    decisions_logged: int = 0
 
     @property
     def checkpoint_path(self) -> Path:
@@ -98,6 +115,26 @@ class TrainingReport:
     def checkpoint(self, report: TrainingProgressReport) -> None:
         """The resume point, overwritten in place as the run proceeds."""
         self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
+
+    def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
+        """One candidate model of the run, named by the decisions behind it.
+
+        Beside `latest.pt` rather than instead of it: the resume point is
+        overwritten as the run proceeds and therefore names no particular model,
+        while these are the arms a later evaluation chooses among. The name
+        carries the decisions actually spent when it was written - the counter
+        lands past its period, not on it, because an episode is played to its
+        classified end - so a file says what it cost rather than what it was
+        aimed at.
+        """
+        path = self.run_dir / "checkpoints" / f"checkpoint-{report.decisions:07d}.pt"
+        digest = self._write(report, path)
+        # Under the same tracked run as every metric this report logs, and under
+        # the weight digest a later reading names it by: a candidate the run's
+        # own page could not reach would have to be found by hand, months later,
+        # from a path in a JSON file.
+        self.run.log_artifact(path, directory=f"checkpoints/{digest}")
+        print(f"[{self.name}] checkpoint {path.name}", flush=True)
 
     def _write(self, report: TrainingProgressReport, path: Path) -> str:
         """Write one checkpoint and return the digest of the weights in it."""
@@ -176,6 +213,46 @@ class TrainingReport:
         self.run.log_metrics(curve_metrics(point, evaluation), decisions=progress.decisions)
         self.run.log_artifact(path, directory=f"checkpoints/{digest}")
         return point
+
+    def record_episodes(self) -> None:
+        """Report every collected episode that has not been reported yet.
+
+        The episode is the tracked unit. The collection curve beside this is the
+        smoothed view and closes about once an hour, which is far too coarse to
+        show where a run turned; this is the series under it, one point per
+        episode, keyed by the decisions spent when that episode ended so it
+        shares an axis with the checkpoints. The learner's own trailing
+        summaries go up on the same key, because a run with no mid-run
+        evaluation would otherwise report them exactly once, at the end.
+
+        Called per episode, on the collecting thread, under the run's progress
+        lock. It reads what has already been measured and measures nothing.
+        """
+        report = self.training.report
+        actors = {
+            actor.config.actor_id: index for index, actor in enumerate(self.training.actors)
+        }
+        learner = learner_metrics(report)
+        for episode in report.collected[self.episodes_logged :]:
+            # The decisions at the end of this episode, not the run's current
+            # total: the two differ whenever more than one episode has arrived
+            # since the last call, and a point on the wrong key is a point on
+            # the wrong part of the curve.
+            self.decisions_logged += episode.summary.decisions
+            self.episodes_logged += 1
+            self.run.log_metrics(
+                {
+                    **episode_metrics(
+                        episode,
+                        actor_index=actors.get(episode.actor_id, -1),
+                        # The run's exploration rate as this episode ended,
+                        # which is when this hook runs.
+                        epsilon=report.epsilon,
+                    ),
+                    **learner,
+                },
+                decisions=self.decisions_logged,
+            )
 
     def record_collection_windows(self) -> None:
         """Emit every window of collected episodes that has closed since the last call.

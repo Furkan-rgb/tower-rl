@@ -7,6 +7,167 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E053 — Behavioural equivalence, 60 Hz against 120 Hz, one interleaved fleet: the pre-registered rule says REJECT on cash at two of seven wave indices
+
+**Date:** 2026-09-18
+**Status:** REJECT, provisional — the rule's own replication clause is unmet, so
+120 Hz is NOT cleared for training (board #22 stays open)
+**Purpose:** Decide whether the fleet operating rate (120 Hz, `M1B-E045`) changes
+how the *game* behaves relative to the stock 60 Hz. The game is not
+deterministic, so equivalence is distributional on the low-variance per-wave
+statistics (`experiment/wave_statistics.py`), never on mean final wave (pooled sd
+2.27 waves needs ~324 episodes/arm for half a wave).
+
+**Design.** One fleet, two rates, interleaved by instance — not two fleets one
+after the other. Both levers that set the rate are per emulator (`-vsync-rate` at
+launch, the per-uid `cmd game set --fps` override), so `--frame-rate-hz` now
+takes one rate per instance index and the arms share a window, a host, a bridge
+and an account state. That removes the order confound a sequential pair could not
+have excluded, at the price of a contention limitation stated below.
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 9 --policy scripted \
+        --renderer host --cold --cores 4 --frame-game-ms 100 \
+        --frame-rate-hz 60,60,60,60,120,120,120 \
+        --output-directory ~/.local/state/tower-rl/equivalence-2026-09-18
+
+N=7, `-read-only`, cold `-gpu host`, offline by interface per instance, scripted,
+9 episodes per actor, one deployable bridge (host artifact SHA-256
+`7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a`, verified on
+the host before the fleet). Fleet wall 605.9 s, inside the 45-minute timebox with
+34 minutes to spare.
+
+**Per-instance fate**, each confirmed on all three SurfaceFlinger readings
+(display vsync mode, per-uid game mode override, per-uid applied frame rate) at
+the rate its index was assigned:
+
+| index | serial | rate | confirmed | valid/attempted | fate |
+| --- | --- | --- | --- | --- | --- |
+| 0 | emulator-5556 | 60 | yes, 60.00/60/60.00 | 0/9 | **lost** at its first `reset`: `RunPortError: the instance did not reach an active run`, after reaching home, offline and confirmed |
+| 1 | emulator-5558 | 60 | yes | 9/9 | clean |
+| 2 | emulator-5560 | 60 | yes | 9/9 | clean |
+| 3 | emulator-5562 | 60 | yes | 9/9 | clean |
+| 4 | emulator-5564 | 120 | yes, 120.00/120/120.00 | 9/9 | clean |
+| 5 | emulator-5566 | 120 | yes | 9/9 | clean |
+| 6 | emulator-5568 | 120 | yes | 8/9 | one invalid: `advance was not confirmed: stale_or_duplicate` |
+
+**Arms: 27 valid at 60 Hz, 26 valid at 120 Hz**, both above the pre-registered
+floor of 25 despite the lost instance, which cost the 60 Hz arm 9 episodes and no
+partial data — it died before its first episode. One failure, not three
+consecutive, so the abort rule was not reached. The cause is **unexplained**: its
+logcat shows no kill of the game before teardown's own force-stop, and the
+`applied frame rate absent` signature of `M1B-E046`/`M1B-E049` is absent — this
+instance was confirmed at its rate and then failed to start a run.
+
+**Fidelity, per arm, and the contention question.** Zero in both arms:
+`GAME_TIME_INFLATED`, `GAME_TIME_DEFLATED`, `ADVANCE_TRUNCATED_BY_WALL`,
+`advances_cut_short`, `bridge_event_divergence`, `episodes_not_started_fresh`.
+Round/budgeted game-time ratio 0.9962–1.0133 (60 Hz) and 0.9892–1.0125 (120 Hz),
+both inside the 1.25 guard. One `stale_or_duplicate` in the whole fleet. So the
+shared host did not reach the game clock in either arm — which is the only way
+contention could have reached these statistics.
+
+**Throughput is not a result here and is not reported as one:** the arms shared a
+host, so no ms/frame or episodes/hour figure from this run is comparable with
+`M1B-E045` or between the arms. For the record only, median episode wall clock
+was 41.6 s at 60 Hz against 26.2 s at 120 Hz.
+
+**Analysis**, exactly as pre-registered — records grouped by the `frame_rate_hz`
+each actor's own record carries, then
+`wave_statistics.analyse_reports('60hz.json', '120hz.json')`. 27/26 valid
+episodes, 95% bootstrap intervals, 80% power; **seven wave indices** were reached
+by ≥2 completed episodes in both arms (waves 8 and 9 named as underpowered, 4/1
+and 0/1). A single wave index at this n could detect **d ≥ 0.785**.
+
+| statistic | wave indices compared | separated | pooled d |
+| --- | --- | --- | --- |
+| `game_ms` | 7 | none | −0.027 |
+| `decisions` | 7 | none | +0.104 |
+| `health_fraction` | 7 | none | −0.173 |
+| `cash_log` | 7 | **waves 5 and 6**, both 60 Hz higher | +0.206 |
+
+Per-wave `game_ms` differences ran −28.6 to +128.1 ms against per-wave detectable
+differences of 62.8 to 283.5 ms; every interval covered zero. `cash_log`
+separated at wave 5 (+0.34 [+0.02, +0.64], d=+0.73, detectable ≥ 0.447) and wave
+6 (+0.46 [+0.08, +0.86], d=+0.84, detectable ≥ 0.623), and reversed sign at wave
+7 (−0.26, interval covering zero). Per episode, `final_wave` 5.85 vs 5.96
+(detectable ≥ 1.664) and `decisions` 127.4 vs 128.4 (detectable ≥ 33.7), both
+indistinguishable — the blunt instrument saw nothing, as designed. Raw output:
+session scratchpad `EQUIVALENCE-ANALYSIS.txt`.
+
+**The decision rule, pre-registered in writing before the fleet ran, quoted
+verbatim:**
+
+> REJECT if **either** trigger fires:
+>
+> - **(a) Timing.** `game_ms` differs by more than **100 ms** — one decision
+>   frame at `--frame-game-ms 100` — in the **same direction** at **≥2 wave
+>   indices whose 95% intervals exclude zero**. Game time per rendered frame is
+>   fixed by `Time.captureDeltaTime`, so by construction the guest rate must not
+>   move the game's own clock *at all*; one frame's worth is a tolerance on the
+>   instrument, not a difference we are willing to accept.
+> - **(b) State.** `health_fraction` or `cash_log` separates (interval excludes
+>   zero) in the **same direction** at **more than 20% of the wave indices
+>   compared for that statistic**. 20%, not "any wave": at 95% intervals ~5% of
+>   indices separate by chance, the indices are not independent (the same
+>   episodes are seen again at each depth), and the fake-port null separated at
+>   1 of 62 on `health_fraction` and 7 of 62 on `cash_log`. A handful of
+>   separated wave indices is what a null looks like here.
+>
+> Otherwise the result is **"no difference detectable at this n"** — never "no
+> difference" — and is published with the detectable-difference figures beside
+> it. `decisions` per wave is reported and interpreted but triggers nothing on
+> its own: it is a function of `game_ms` and the cadence, so a decisions shift
+> without a timing shift is evidence about the cadence, not about the game.
+>
+> **Any REJECT is replicated once**, from this written recipe, in a fresh
+> session, before it is acted on.
+
+**VERDICT, applied mechanically: REJECT.** Trigger (a) did not fire — `game_ms`
+separated at no wave index at all. Trigger (b) did: `cash_log` separated in the
+same direction (60 Hz higher) at 2 of 7 compared wave indices, 28.6% against the
+20% criterion. The rule does not permit reading that as a null after the fact,
+and it is recorded as the rule's answer.
+
+**What is honestly uncertain about that verdict, without changing it.** The 20%
+criterion was calibrated on a fake-port null with 62 comparable wave indices,
+where one separation is 1.6%. This run reached only 7, where a *single*
+separation is already 14.3% and two are 28.6% — the criterion has no resolution
+between "a null's usual stray index" and a real effect at this depth. The
+separation is also not monotone (wave 7 reverses sign), and `health_fraction`,
+the other state statistic and the one a real physics change would move alongside
+cash, separated nowhere. This is exactly why the rule carries a replication
+clause, and the clause is unmet: **the REJECT is provisional and must not be
+acted on until one replication from the written recipe in a fresh session
+reproduces it on the same statistic in the same direction.**
+
+**What this sample could not detect.** Per-wave effects below d ≈ 0.785 (and
+below the per-wave figures printed beside each line); anything at wave indices 8
+and above, which too few episodes reached; anything about the wave an episode
+died in, excluded as a fragment; anything visible only in episode length
+(`final_wave` could detect ~1.66 waves here); anything about throughput, since
+the arms shared a host; anything about a rate other than 60 and 120, a learner
+attached, an N other than 7, a 4/3 split other than this one, or a renderer other
+than `-gpu host`; and anything about stability, which is `M1B-E046`–`M1B-E052`'s
+subject and here only cost the 60 Hz arm one instance.
+
+**Unconfirmed, not passed:** the per-instance read-back of the *deployed* bridge
+digest. `adb shell su 0 sha256sum` returned no digest on any of the seven
+instances within the run, the same failure `M1B-E046` recorded; the host artifact
+was verified before the fleet and is the only digest evidence this run holds.
+
+**Teardown:** complete on all seven serials — original `libunity.so` SHA-256
+`ffc1f3ef…dd0040` re-verified ×7, `versionCode 1199` / `29.0.3` / installer
+`com.android.vending` ×7, `libunity_mounts: 0` ×7, `bridge_artifacts: removed`
+×7, `game_frame_rate_override: reset` ×7, no qemu process left (checked through
+`/proc/*/exe`), `adb devices` empty, device offline. 5554 and the canonical AVD
+were never addressed.
+
+**Correction to the planning figures.** The recipe sized this run at ~45 minutes
+from `M1B-E046`'s per-actor rate; it took 10. Cold `-gpu host` bring-up was
+~50–90 s per instance rather than ~165 s (the `M1B-E046` figure predates the
+rendezvous removal), and an episode cost 26–42 s rather than 90–165 s. Future
+sizing should use these.
+
 ## M1B-E052 — 7/7 at 120 Hz with no install round at all: the kill is absent for this image state
 
 **Date:** 2026-09-18

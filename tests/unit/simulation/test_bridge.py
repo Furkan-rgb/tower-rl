@@ -134,3 +134,91 @@ def test_a_missing_deployment_script_fails_by_name_not_as_a_subprocess_error(
 
     with pytest.raises(ActorFailure, match="bridge deployment script is missing"):
         run_bridge("deploy", CloneInstance())
+
+
+def device_digest(monkeypatch: pytest.MonkeyPatch, output: str) -> list[str]:
+    """Whatever the device says to the one read-back, and what was asked of it."""
+    asked: list[str] = []
+
+    def shell(instance: CloneInstance, *args: str, **_: object) -> str:
+        asked.extend(args)
+        return output
+
+    monkeypatch.setattr(bridge, "adb", shell)
+    return asked
+
+
+def test_the_read_back_asks_for_root_the_way_that_answers_on_this_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`su 0 sha256sum` returned nothing on 14 instances; `su -c` is the form."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    digest = install_bridge(tmp_path)
+    asked = device_digest(monkeypatch, f"{digest}  {bridge.DEPLOYED_BRIDGE_PATH}\n")
+
+    assert bridge.confirm_deployed_bridge(CloneInstance()) == digest
+    assert asked == ["shell", f"su -c 'sha256sum {bridge.DEPLOYED_BRIDGE_PATH}'"]
+
+
+def test_a_confirmed_bridge_is_named_in_the_operators_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    digest = install_bridge(tmp_path)
+    device_digest(monkeypatch, f"{digest}  {bridge.DEPLOYED_BRIDGE_PATH}\r\n")
+
+    bridge.confirm_deployed_bridge(CloneInstance(index=1))
+
+    assert f"emulator-5558 deploy: deployed bridge confirmed {digest}" in capsys.readouterr().out
+
+
+def test_a_read_back_that_produced_nothing_fails_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two seven-actor fleets recorded "unconfirmed"; it is now a failure."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    install_bridge(tmp_path)
+    device_digest(monkeypatch, "")
+
+    with pytest.raises(ActorFailure, match="no digest came back"):
+        bridge.confirm_deployed_bridge(CloneInstance())
+
+
+def test_sha256sums_own_error_text_is_not_read_as_a_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The `M1B-E047` misfire: the first word of a failure is not a reading."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    install_bridge(tmp_path)
+    device_digest(
+        monkeypatch, f"sha256sum: {bridge.DEPLOYED_BRIDGE_PATH}: No such file or directory\n"
+    )
+
+    with pytest.raises(ActorFailure, match="no digest came back"):
+        bridge.confirm_deployed_bridge(CloneInstance())
+
+
+def test_a_bridge_that_is_not_the_one_this_host_deployed_fails_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    install_bridge(tmp_path)
+    device_digest(monkeypatch, f"{'a' * 64}  {bridge.DEPLOYED_BRIDGE_PATH}\n")
+
+    with pytest.raises(ActorFailure, match="the deployed bridge is aaa"):
+        bridge.confirm_deployed_bridge(CloneInstance())
+
+
+def test_deploying_reads_the_bridge_back_before_it_returns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One read-back, on the one path the CLI and the fleet both deploy through."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    install_bridge(tmp_path)
+    bridge_output(monkeypatch, stdout="deployed: overlay mounted\n")
+    device_digest(monkeypatch, "")
+
+    with pytest.raises(ActorFailure, match="no digest came back"):
+        bridge.deploy_bridge(CloneInstance())
+
+    assert "emulator-5556 deploy: deployed: overlay mounted" in capsys.readouterr().out

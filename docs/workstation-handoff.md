@@ -351,6 +351,15 @@ Resolving the artifact refuses by name if `current` is missing or dangles, or
 if `libtower_bridge.so` does not hash to the directory name it is filed under —
 an installed build cannot pass as a digest it is not.
 
+**Every deploy reads the deployed bridge back off the device**, through
+`adb shell "su -c 'sha256sum /data/user/0/<package>/files/libtower_bridge.so'"`,
+and holds it to the host artifact: a deploy either prints
+`deployed bridge confirmed <sha256>` or fails by name, on an empty read-back as
+well as on a mismatch. The CLI and the fleet share that one form. `su 0
+sha256sum` is not it — it returned nothing on all seven instances of two
+seven-actor fleets (`M1B-E046`, `M1B-E053`), which is why both had to record the
+deployed bridge as unconfirmed; "unconfirmed" is no longer a silent outcome.
+
 The logcat tag is
 `tower_bridge`. Always finish with `cleanup`.
 

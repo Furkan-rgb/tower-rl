@@ -12,16 +12,28 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 
-from tower_rl.simulation.instance import CloneError, CloneInstance
+from tower_rl.simulation.instance import PACKAGE, CloneError, CloneInstance, adb
 from tower_rl.simulation.instrumented_bridge import BridgeCompatibility
 
 #: The script that owns bridge deployment. It is a shell script beside the
 #: entry points rather than package data because it is also run by hand, and
 #: because the device-safety checks in it are meant to be read.
 BRIDGE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "instrumented_bridge.sh"
+
+#: Where `instrumented_bridge.sh deploy` leaves the bridge on the device. It is
+#: the app-private copy that the mounted overlay loads, so it is the one file
+#: whose digest says which bridge the game is actually running.
+DEPLOYED_BRIDGE_PATH = f"/data/user/0/{PACKAGE}/files/libtower_bridge.so"
+
+#: A read-back is a digest or it is nothing. `sha256sum` writes its own failures
+#: to the same stream (`sha256sum: ...: No such file or directory`), and a
+#: sampler that took the first word of whatever came back read that text as a
+#: reading once already (`M1B-E047`).
+DIGEST = re.compile("[0-9a-f]{64}")
 
 #: Where this host keeps the bridge builds it can deploy. The artifact is never
 #: committed and is far too large to be, but it also cannot live in a build
@@ -38,6 +50,14 @@ BRIDGE_STATE_DIRECTORY = (
     / "bridge"
 )
 
+
+
+def artifact_digest(binary: Path) -> str:
+    """The SHA-256 of one bridge artifact on this host."""
+    try:
+        return hashlib.sha256(binary.read_bytes()).hexdigest()
+    except OSError as error:
+        raise CloneError(f"cannot read the bridge artifact {binary}: {error}") from error
 
 
 def installed_bridge_directory() -> Path:
@@ -65,10 +85,7 @@ def installed_bridge_directory() -> Path:
             "which is not a directory"
         )
     binary = resolved / "libtower_bridge.so"
-    try:
-        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    except OSError as error:
-        raise CloneError(f"cannot read the installed bridge {binary}: {error}") from error
+    digest = artifact_digest(binary)
     if digest != resolved.name:
         raise CloneError(
             f"the installed bridge {binary} hashes to {digest}, not to the "
@@ -156,6 +173,60 @@ def run_bridge(command: str, instance: CloneInstance) -> None:
         )
 
 
+def deployed_bridge_digest(instance: CloneInstance) -> str:
+    """The SHA-256 of the bridge on this instance, or "" if it gave no digest.
+
+    One form, and the only one: `adb shell "su -c 'sha256sum <path>'"`. The
+    deployed bridge is app-private — mode 0555 under the package's own `files`
+    directory, below a `/data/user/0/<package>` that only the app and root may
+    traverse — so the read needs root. Which form of root is not a detail:
+    `adb shell su 0 sha256sum <path>` returned nothing on every instance of two
+    seven-actor fleets (`M1B-E046`, `M1B-E053`), and both had to record the
+    deployed bridge as unconfirmed; the `su -c` form answered on all seven
+    (`M1B-E048`) and is the form `instrumented_bridge.sh` has always used for
+    its own `libunity.so` read-backs. Plain `adb shell sha256sum` answered once
+    (`M1B-E056`) because that instance's adbd happened to be running as root,
+    which is a property of how the emulator came up rather than of the check.
+
+    Anything that is not a digest is no reading at all, and is returned as one.
+    """
+    output = adb(instance, "shell", f"su -c 'sha256sum {DEPLOYED_BRIDGE_PATH}'")
+    words = output.replace("\r", "").strip().split()
+    return words[0] if words and DIGEST.fullmatch(words[0]) else ""
+
+
+def confirm_deployed_bridge(instance: CloneInstance) -> str:
+    """Read the deployed bridge back and hold it to the artifact this host sent.
+
+    The bridge on the device is what produced every observation a run records,
+    so a run that cannot name it has no evidence about which bridge it measured.
+    That is why both outcomes below are failures rather than warnings: a digest
+    that never arrived and a digest that disagrees are equally unable to say the
+    device is running the artifact this host deployed.
+    """
+    expected = artifact_digest(bridge_build_directory() / "libtower_bridge.so")
+    digest = deployed_bridge_digest(instance)
+    if not digest:
+        raise ActorFailure(
+            f"{instance.serial}: no digest came back for {DEPLOYED_BRIDGE_PATH}, "
+            f"so the deployed bridge cannot be confirmed as {expected}"
+        )
+    if digest != expected:
+        raise ActorFailure(
+            f"{instance.serial}: the deployed bridge is {digest}, "
+            f"not the {expected} this host deployed"
+        )
+    print(f"{instance.serial} deploy: deployed bridge confirmed {digest}", flush=True)
+    return digest
+
+
 def deploy_bridge(instance: CloneInstance) -> None:
-    """The bridge deployment step of the cold path, tagged into the fleet's log."""
+    """The bridge deployment step of the cold path, tagged into the fleet's log.
+
+    Deployment and its confirmation are one step, not two a caller may take
+    separately: the CLI and the fleet both reach the device through here, so
+    there is one read-back and no path on which a bridge is deployed and never
+    read back.
+    """
     run_bridge("deploy", instance)
+    confirm_deployed_bridge(instance)

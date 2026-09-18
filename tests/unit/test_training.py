@@ -1,26 +1,15 @@
 from __future__ import annotations
 
 import statistics
-import sys
-from pathlib import Path
 
 import pytest
 import torch
+from fakes.fake_run_port import FakeRunPort
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from fakes.fake_run_port import FakeRunPort  # noqa: E402
-
-from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import EvaluationReport  # noqa: E402
-from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
-    BRIDGE_EVENT_DIVERGENCE,
-    GAME_TIME_INFLATED,
-    CadenceConfig,
-    InstrumentedRunEnvironment,
-)
-from tower_rl.application.training import (  # noqa: E402
+from tower_rl.application.actor import Actor, ActorConfig
+from tower_rl.application.evaluator import EvaluationReport
+from tower_rl.application.replay import PrioritizedSequenceReplay
+from tower_rl.application.training import (
     STALE_OR_DUPLICATE,
     CollectedEpisode,
     TrainingConfig,
@@ -30,14 +19,20 @@ from tower_rl.application.training import (  # noqa: E402
     episode_budget,
     episode_health,
 )
-from tower_rl.domain.episode import (  # noqa: E402
+from tower_rl.environment.episode import (
     EpisodeSummary,
     TerminationOutcome,
 )
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
-from tower_rl.ports.run_port import RunPortError  # noqa: E402
+from tower_rl.environment.run_environment import (
+    BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_INFLATED,
+    CadenceConfig,
+    InstrumentedRunEnvironment,
+)
+from tower_rl.environment.run_port import RunPortError
+from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
+from fakes.fake_run_port import FakeCommandResult, FakeRunPort
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from fakes.fake_run_port import FakeCommandResult, FakeRunPort  # noqa: E402
-
-from tower_rl.application.run_environment import (  # noqa: E402
+from tower_rl.environment.episode import (
+    ActionOutcome,
+    DecisionEvent,
+    TerminationOutcome,
+)
+from tower_rl.environment.run_actions import WAIT, upgrade_action
+from tower_rl.environment.run_environment import (
     ADVANCE_TRUNCATED_BY_WALL,
     BRIDGE_EVENT_DIVERGENCE,
     GAME_TIME_DEFLATED,
@@ -17,14 +17,8 @@ from tower_rl.application.run_environment import (  # noqa: E402
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
-from tower_rl.domain.episode import (  # noqa: E402
-    ActionOutcome,
-    DecisionEvent,
-    TerminationOutcome,
-)
-from tower_rl.domain.run_actions import WAIT, upgrade_action  # noqa: E402
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.ports.run_port import RunPortError  # noqa: E402
+from tower_rl.environment.run_port import RunPortError
+from tower_rl.environment.run_state import RunStateBuilder
 
 
 def _environment(**port_kwargs: object) -> tuple[InstrumentedRunEnvironment, FakeRunPort]:

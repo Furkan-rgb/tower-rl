@@ -11,8 +11,8 @@ import pytest
 import torch
 
 from tower_rl.application.replay import ReplaySequence, ReplayStep, SequenceMetadata
-from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.backbone import Backbone, collate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig

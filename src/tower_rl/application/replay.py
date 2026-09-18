@@ -13,8 +13,8 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 
-from tower_rl.domain.features import StateFeatures
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.features import StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 
 DEFAULT_PRIORITY_EXPONENT = 0.9
 """R2D2 mixes the maximum and mean absolute TD error of a sequence, so one

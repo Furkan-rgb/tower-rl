@@ -10,24 +10,20 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
-import run_actors  # noqa: E402
-from clone_session import (  # noqa: E402
+import run_actors
+from clone_session import (
     CANONICAL_AVD,
     CLONE_AVD,
     CloneError,
     CloneInstance,
     emulator_command,
 )
-from run_actors import (  # noqa: E402
+from run_actors import (
     ActorFailure,
     ActorOutcome,
     aggregate,
@@ -39,12 +35,12 @@ from run_actors import (  # noqa: E402
     stagger_bring_up,
 )
 
-from tower_rl.application.evaluator import (  # noqa: E402
+from tower_rl.application.evaluator import (
     EvaluationReport,
     WaveDistribution,
     to_record,
 )
-from tower_rl.domain.episode import EpisodeSummary, TerminationOutcome  # noqa: E402
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
 
 
 def summary(

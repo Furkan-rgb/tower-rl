@@ -1,35 +1,30 @@
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
 
 import pytest
+from fakes.fake_run_port import FakeRunPort
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from fakes.fake_run_port import FakeRunPort  # noqa: E402
-
-from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import (  # noqa: E402
+from tower_rl.application.actor import Actor, ActorConfig
+from tower_rl.application.evaluator import (
     WaveDistribution,
     episode_record,
     evaluate,
     to_record,
 )
-from tower_rl.application.policies import (  # noqa: E402
+from tower_rl.application.policies import (
     CheapestFirstPolicy,
     RandomPolicy,
     WaitOnlyPolicy,
 )
-from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
+from tower_rl.application.replay import PrioritizedSequenceReplay
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
+from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
-from tower_rl.domain.episode import EpisodeSummary, TerminationOutcome  # noqa: E402
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.experiment.comparison import bootstrap_difference, cohens_d  # noqa: E402
+from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.comparison import bootstrap_difference, cohens_d
 
 PROFILE = "fake-profile-v1"
 

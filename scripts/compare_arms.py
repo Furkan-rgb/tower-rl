@@ -32,9 +32,9 @@ from run_episodes import (  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.evaluator import WaveDistribution, episode_record  # noqa: E402
-from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
-from tower_rl.domain.episode import EpisodeSummary  # noqa: E402
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.environment.episode import EpisodeSummary  # noqa: E402
+from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
+from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.experiment.comparison import (  # noqa: E402
     compare,
     interleave_schedule,

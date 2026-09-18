@@ -12,7 +12,12 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace
 
-from tower_rl.domain.episode import (
+from tower_rl.environment.decision_time import (
+    BRIDGE_ROUND_TRIP,
+    OBSERVATION_DECODE,
+    DecisionTimeProfile,
+)
+from tower_rl.environment.episode import (
     ActionOutcome,
     DecisionEvent,
     EpisodeSummary,
@@ -20,19 +25,14 @@ from tower_rl.domain.episode import (
     TerminationOutcome,
     wave_progress_reward,
 )
-from tower_rl.domain.run_actions import RunActionId, action_index
-from tower_rl.domain.run_state import (
+from tower_rl.environment.run_actions import RunActionId, action_index
+from tower_rl.environment.run_port import AdvanceResultLike, RunPort, RunPortError
+from tower_rl.environment.run_state import (
     ExactRunReadingLike,
     RunState,
     RunStateBuilder,
     validate_transition,
 )
-from tower_rl.experiment.decision_time import (
-    BRIDGE_ROUND_TRIP,
-    OBSERVATION_DECODE,
-    DecisionTimeProfile,
-)
-from tower_rl.ports.run_port import AdvanceResultLike, RunPort, RunPortError
 
 
 @dataclass(frozen=True)
@@ -216,7 +216,7 @@ class InstrumentedRunEnvironment:
     cadence: CadenceConfig = field(default_factory=CadenceConfig)
     #: Where this instance's decision time goes. One profile per instance,
     #: mutated only by the actor thread that drives it (see
-    #: `experiment/decision_time.py`); a run publishes snapshots of it.
+    #: `environment/decision_time.py`); a run publishes snapshots of it.
     profile: DecisionTimeProfile = field(default_factory=DecisionTimeProfile)
     _state: RunState | None = field(default=None, init=False)
     _episode_id: str = field(default="", init=False)

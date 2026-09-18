@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tower_rl.domain.run_actions import RUN_ACTIONS
-from tower_rl.domain.run_state import RunState
+from tower_rl.environment.run_actions import RUN_ACTIONS
+from tower_rl.environment.run_state import RunState
 
 #: Run-level features, in order.
 SCALAR_FEATURES: tuple[str, ...] = (

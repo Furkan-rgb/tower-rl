@@ -180,14 +180,6 @@ EMPTY_BREAKDOWN = DecisionTimeBreakdown(
 )
 
 
-def pooled(breakdowns: list[DecisionTimeBreakdown]) -> DecisionTimeBreakdown:
-    """Every actor's decomposition added into one, the fleet's."""
-    total = EMPTY_BREAKDOWN
-    for item in breakdowns:
-        total = total + item
-    return total
-
-
 class _Span:
     """Charges one region of the owning thread's time to one bucket."""
 
@@ -364,5 +356,4 @@ __all__ = [
     "BucketTime",
     "DecisionTimeBreakdown",
     "DecisionTimeProfile",
-    "pooled",
 ]

@@ -11,24 +11,16 @@ per-actor account a fleet is read by.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
+import train
+from test_train_entry_point import session
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
-import train  # noqa: E402
-from test_train_entry_point import session  # noqa: E402
-
-from tower_rl.experiment.metrics import health_counters  # noqa: E402
-from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE  # noqa: E402
-from tower_rl.learning.checkpoint import fingerprint, load  # noqa: E402
-
-torch.set_num_threads(1)
+from tower_rl.experiment.metrics import health_counters
+from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
+from tower_rl.learning.checkpoint import fingerprint, load
 
 #: Long enough that the run plays more than one episode, which is what closes a
 #: window of the collection curve.

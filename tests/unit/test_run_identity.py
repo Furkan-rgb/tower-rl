@@ -9,27 +9,20 @@ arguments but that the settings the run was built with are the ones it records.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
+import train
+from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environment
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
-import train  # noqa: E402
-from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environment  # noqa: E402
-
-from tower_rl.experiment.run_identity import (  # noqa: E402
+from tower_rl.experiment.run_identity import (
     REFERENCE_FINAL_WAVES,
     new_run_id,
     source_revision,
     tracked_params,
 )
-
-torch.set_num_threads(1)
 
 
 def _arm(run_dir: Path, **overrides: str) -> Any:

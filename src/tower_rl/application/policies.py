@@ -11,8 +11,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from tower_rl.domain.features import ROW_WIDTH, StateFeatures
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.features import ROW_WIDTH, StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 
 
 class Policy(Protocol):

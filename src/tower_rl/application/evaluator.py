@@ -14,8 +14,8 @@ from typing import Any
 
 from tower_rl.application.actor import Actor, ActorConfig
 from tower_rl.application.policies import Policy, describe
-from tower_rl.application.run_environment import InstrumentedRunEnvironment
-from tower_rl.domain.episode import EpisodeSummary
+from tower_rl.environment.episode import EpisodeSummary
+from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 
 
 @dataclass(frozen=True)

@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork
 from tower_rl.learning.value_learning import evaluated_next_values
 

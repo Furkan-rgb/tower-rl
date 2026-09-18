@@ -21,9 +21,9 @@ from tower_rl.application.replay import (
     ReplaySequence,
     ReplayStep,
 )
-from tower_rl.application.run_environment import InstrumentedRunEnvironment
-from tower_rl.domain.episode import EpisodeSummary, TerminationOutcome
-from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 
 LENGTH, BURN_IN, STRIDE = 8, 4, 4
 

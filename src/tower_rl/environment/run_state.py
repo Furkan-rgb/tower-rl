@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from tower_rl.domain.run_actions import (
+from tower_rl.environment.run_actions import (
     RUN_ACTIONS,
     SLOTS_PER_FAMILY,
     RunActionId,

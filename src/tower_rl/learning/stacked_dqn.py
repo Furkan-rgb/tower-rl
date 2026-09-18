@@ -18,7 +18,7 @@ from typing import Any
 
 import torch
 
-from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, StateFeatures
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, StateFeatures
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork, StackedState
 from tower_rl.learning.value_learning import (

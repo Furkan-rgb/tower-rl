@@ -71,6 +71,11 @@ SCRIPT_MODULES = ("train", "run_episodes", "run_actors", "clone_session", "compa
 #: `run_actors.py` - and because an entry point picking up a new test reader
 #: should be a deliberate line here rather than a rename nobody noticed.
 #:
+#: A script absent from this mapping is forbidden to every test, which is the
+#: direction the default has to point: `run_episodes` and `compare_arms` have no
+#: tests today, and listing a name for the file that would test them would be
+#: writing down permission for a file nobody has read.
+#:
 #: `train` has four because the entry point is where a run is composed, and each
 #: tests one thing that composition owns: its argument parsing and resolved run
 #: identity, its tracker wiring, its report writing, and the session itself.
@@ -84,10 +89,8 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             "test_training_report",
         }
     ),
-    "run_episodes": frozenset({"test_run_episodes"}),
     "run_actors": frozenset({"test_multi_actor"}),
     "clone_session": frozenset({"test_clone_session_cli"}),
-    "compare_arms": frozenset({"test_compare_arms"}),
 }
 
 def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:
@@ -159,7 +162,11 @@ def offences(
             offence = f"{path.relative_to(root)} imports {name}"
             script = name.split(".")[0]
             if script in SCRIPT_MODULES:
-                if path.stem not in SCRIPT_TESTS[script]:
+                # A script with no entry at all is forbidden to everything: the
+                # default has to be refusal, or adding an entry point would
+                # quietly open it to the whole suite until somebody remembered
+                # to write its rule down.
+                if path.stem not in SCRIPT_TESTS.get(script, frozenset()):
                     found.append(offence)
                 continue
             if name.startswith(forbidden):
@@ -204,6 +211,25 @@ def test_no_test_imports_an_entry_point_it_is_not_the_test_of() -> None:
     composition root instead of through the package that owns it.
     """
     assert offences(TESTS, FORBIDDEN_TO_TESTS, root=REPOSITORY) == []
+
+
+def test_a_script_nobody_wrote_a_rule_for_is_refused_rather_than_admitted(
+    tmp_path: Path,
+) -> None:
+    """The default for an unlisted entry point is refusal, not permission.
+
+    `run_episodes` and `compare_arms` are in `SCRIPT_MODULES` and absent from
+    `SCRIPT_TESTS`, which is the case that decides which way the default points.
+    Read from a probe rather than from the real suite, because the property has
+    to hold for the entry point somebody adds next, which no file imports yet.
+    """
+    directory = tmp_path / "tests" / "unit"
+    directory.mkdir(parents=True)
+    (directory / "test_run_episodes.py").write_text("import run_episodes\n")
+
+    assert offences(tmp_path / "tests", FORBIDDEN_TO_TESTS, root=tmp_path) == [
+        "tests/unit/test_run_episodes.py imports run_episodes"
+    ], "a script with no rule written for it is open to nobody, not to everybody"
 
 
 def test_the_walker_sees_every_spelling_an_import_can_take(tmp_path: Path) -> None:

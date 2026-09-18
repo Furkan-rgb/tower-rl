@@ -69,6 +69,10 @@ constexpr useconds_t kLifecyclePollMicros = 250000;
 // starves the policy of decisions per game second: at 20 ms it bound above 12.5x
 // and cut decisions per episode from 528 to 162 between 1.5x and 32x.
 constexpr useconds_t kMinIntervalMicros = 4000;
+// The frame rate the engine is asked to produce once vsync is detached. Frames
+// are the cost of an advance, so this is set well above what the host can render
+// and lets the machine, not the display, decide the rate.
+constexpr int32_t kUncappedFrameRate = 240;
 // How often to look for the next rendered frame. Well under one frame at any
 // plausible rate, so an advance notices each frame rather than overshooting it.
 constexpr useconds_t kFramePollMicros = 2000;
@@ -867,6 +871,8 @@ int OpenLoopbackServer() {
 struct EngineClock {
   int32_t (*get_frame_count)() = nullptr;
   void (*set_capture_delta)(float) = nullptr;
+  void (*set_target_frame_rate)(int32_t) = nullptr;
+  void (*set_vsync_count)(int32_t) = nullptr;
   bool resolved = false;
 };
 
@@ -893,11 +899,33 @@ const EngineClock& Clock() {
         reinterpret_cast<int32_t (*)()>(ResolveEngineIcall("UnityEngine.Time::get_frameCount()"));
     clock.set_capture_delta = reinterpret_cast<void (*)(float)>(
         ResolveEngineIcall("UnityEngine.Time::set_captureDeltaTime(System.Single)"));
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock frames=%p set_capture=%p",
+    clock.set_target_frame_rate = reinterpret_cast<void (*)(int32_t)>(
+        ResolveEngineIcall("UnityEngine.Application::set_targetFrameRate(System.Int32)"));
+    clock.set_vsync_count = reinterpret_cast<void (*)(int32_t)>(
+        ResolveEngineIcall("UnityEngine.QualitySettings::set_vSyncCount(System.Int32)"));
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "clock frames=%p set_capture=%p set_target_fps=%p set_vsync=%p",
                         reinterpret_cast<void*>(clock.get_frame_count),
-                        reinterpret_cast<void*>(clock.set_capture_delta));
+                        reinterpret_cast<void*>(clock.set_capture_delta),
+                        reinterpret_cast<void*>(clock.set_target_frame_rate),
+                        reinterpret_cast<void*>(clock.set_vsync_count));
   }
   return clock;
+}
+
+// Frames are what an advance costs, so the display's refresh rate must not be
+// what decides how many of them the engine will produce. Detaching the loop from
+// vsync and asking for an explicit high target is the whole of it; `-1` means
+// "platform default", which on Android is 30 fps, so the number is explicit.
+// Session scope, not per advance: the setting is a property of how this process
+// renders, and nothing in a decision changes it.
+void UncapFramePacing() {
+  const EngineClock& clock = Clock();
+  if (clock.set_vsync_count != nullptr) clock.set_vsync_count(0);
+  if (clock.set_target_frame_rate != nullptr) clock.set_target_frame_rate(kUncappedFrameRate);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "pacing vsync=%s target=%d",
+                      clock.set_vsync_count == nullptr ? "unavailable" : "0",
+                      clock.set_target_frame_rate == nullptr ? -1 : kUncappedFrameRate);
 }
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
@@ -1443,6 +1471,7 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
     return;
   }
   if (!SendFrame(client, Handshake(api, fields))) return;
+  UncapFramePacing();
   uint64_t sequence = 0;
   char last_request_id[65] = "";
   useconds_t heartbeat_elapsed = 0;

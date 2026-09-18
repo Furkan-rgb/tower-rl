@@ -7,6 +7,82 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E045 — 120 Hz fleet at N=7: the fleet-safe rate, and the mechanism behind the one recurring loss
+
+**Date:** 2026-09-18
+**Status:** 120 Hz established as the fleet operating rate; NOT cleared for
+training pending board #22 (behavioural equivalence)
+**Purpose:** Run the 120 Hz fallback cell left open by `M1B-E044`, and diagnose
+the one instance that failed identically in both runs.
+
+N=7, cold `-gpu host`, `--cores 4 --frame-game-ms 100`, `GUEST_FRAME_RATE_HZ =
+120`, run twice. Both runs: 6/7 up, and both runs lost exactly the same
+instance the same way — emulator-5558 (index 1), `CloneError: emulator-5558
+never became ready: the bridge is not answering: bridge closed the stream`,
+preceded by `the game is not running` / `the game is still starting:
+main_unavailable`, hanging ~260 s, at game start, before the network cut.
+Boot serialisation was shown NOT to decide survival: 5558's hang both times let
+the 360 s per-instance backstop lapse for three later instances, which then
+launched within 3 s of each other and overlapped further boots — every
+overlapping cold `-gpu host` boot at 120 Hz still succeeded.
+
+Survivors (six each run, all `confirmed at 120 Hz`): run A 8.32 / 8.397 / 8.499
+/ 8.281 / 8.396 / 8.384 ms/frame (median 8.396); run B 8.44 / 8.488 / 8.437 /
+8.429 / 8.484 / 8.410 (median 8.440) — against 8.187 ms solo, a 2–4% fleet
+penalty (versus 35–43% at 240 Hz, `M1B-E044`). Per-actor decisions/hour: A
+18,236–19,444 (median 19,110), B 18,117–19,056 (median 18,645) — SCRIPTED with
+no learner attached, so not directly comparable to the 8,904 60 Hz reference
+(`M1B-E031`), which had a learner attached. Fidelity clean both runs:
+round/budgeted 1.0083–1.0118 (A) / 1.0092–1.0111 (B); decisions/wave
+20.6–23.3; zero `advances_cut_short`, `invalid_episodes`,
+`episodes_not_started_fresh`, `bridge_event_divergence`, `stale_or_duplicate`,
+`GAME_TIME_INFLATED`/`DEFLATED`, `ADVANCE_TRUNCATED_BY_WALL`. Host: peak VRAM
+14,531–14,581 MiB with at most 6 qemu alive; per-qemu CPU max 399–401% of a
+3,200% ceiling.
+
+**Diagnosis of the 5558 loss (measured, live reproduction with logcat):**
+hypotheses H1 (ports/locks) and H4 (per-slot difference) are refuted by
+inspection — no per-serial locks exist pre-run, nothing is bound to
+5556–5569, and `CloneInstance` derives only ports and `bridge_host_port` from
+index while `emulator_command` is index-identical. Index 1 run ALONE at
+120 Hz came up clean, confirmed at 120 Hz. Index 0 then index 1 (two instances
+only) reproduced the failure exactly, with full logcat captured while it hung.
+Mechanism: the game launches fine (`Displayed +594 ms`, `Fully drawn +4.0 s`),
+and at +20 s the guest's Google Play installs a WebView update —
+`ActivityManager: Killing ...TheTower (adj 0): stop
+com.google.android.webview due to installPackageLI`, `Force removing
+ActivityRecord{...UnityPlayerActivity}: app died, no saved state`, followed
+by a storm of `installPackageLI` force-stops across system apps. The game
+restarts ten seconds later only as a service (`JobInfoSchedulerService`), with
+no activity; the launcher stays top-resumed and Android freezes the game
+process, so the in-process bridge never answers. The fault is
+RATE-INDEPENDENT and lands inside the instance's one online window in the cold
+`-gpu host` bring-up path; the snapshot path has no online window and is
+therefore not exposed. Game identity is untouched (versionCode 1199, 29.0.3,
+installer com.android.vending). Why index 1 is always the victim is explained
+but not proven: its online window is the second of a session, landing when
+Play's freshly-woken update round installs; a different session timing could
+move the victim to a different index.
+
+The 0-byte emulator log that misled two earlier readings of this failure is
+TEST POLLUTION, not evidence: `launch_emulator` opens
+`/tmp/tower-rl-emulator-<serial>.log` with `"wb"` before `Popen`; unit tests
+that patch only `subprocess.Popen` (not the temp directory) exercise
+`CloneInstance` indices 0 and 1, so every `uv run pytest` invocation truncates
+the real 5556 and 5558 logs to 0 bytes. Demonstrated directly: both files were
+backdated, the two unit-test files were run, and both logs came back 0 bytes
+with a fresh mtime.
+
+**DECISION: 120 Hz is the fleet operating rate**, chosen on fleet efficiency
+(2–4% penalty) and survival evidence, not on the 300 Hz solo peak
+(`M1B-E042`). The reading of the fleet result is "7/7 minus a pre-existing,
+rate-independent instance fault," not a rate-dependent ceiling. A fix is in
+progress: relaunch-on-detection and a shortened online window (board #21). Not
+cleared for training until board #22 (behavioural equivalence) runs.
+
+Source: session scratchpad `FLEET-120HZ-CELL1-DETAIL.md`,
+`FLEET-5558-DIAGNOSIS-DETAIL.md`.
+
 ## M1B-E044 — Fleet stagger-backstop defect fixed; 4/7 at 240 Hz persists regardless
 
 **Date:** 2026-09-18
@@ -68,6 +144,24 @@ test was committed — the frame-rate wiring itself does not reach a 7/7 gate.
 
 Source: session scratchpad `FLEET-SERIALISED-BOOT-DETAIL.md`.
 
+**Correction (2026-09-18):** The attribution of these three deaths to
+`Failed to find ColorBuffer` / `Your GPU cannot be used for hardware
+rendering` is REFUTED: both messages also appear 3–4 times each in the
+emulator logs of every healthy 120 Hz survivor (5560/5562/5564/5566/5568) in
+`M1B-E045` — they are boot noise common to healthy and failed instances
+alike, not a fatal signature, and they diagnose nothing here. What is now
+known: 5558's death in this run is most likely the same Play-Store
+WebView-update fault characterised in `M1B-E045` — the identical
+pre-network-cut, game-not-running signature (`main_unavailable`/`the game is
+not running`/`bridge closed the stream`) seen there. 5560's and 5562's
+deaths ("the game did not survive the network being cut") remain genuinely
+UNEXPLAINED; they are not GPU-diagnosed by this entry's evidence. Separately,
+`M1B-E045`'s two 120 Hz runs show that overlapping cold `-gpu host` boots are
+not themselves fatal — every overlapping boot in those runs succeeded — so the
+boot-overlap serialisation this entry fixed does not decide survival either.
+Source: session scratchpad `FLEET-5558-DIAGNOSIS-DETAIL.md`,
+`FLEET-120HZ-CELL1-DETAIL.md`.
+
 ## M1B-E043 — Fleet N=7 at a raised game rate loses 3/7 instances to a cause that is not a raised peer
 
 **Date:** 2026-09-18
@@ -123,6 +217,24 @@ SHA-256 match, `bridge_artifacts: removed`) before kill; `adb devices` empty
 afterward. Not committed — the fleet gate was not met.
 
 Source: session scratchpad `FLEET-FRAME-RATE-DETAIL.md`.
+
+**Correction (2026-09-18):** The attribution of these three deaths to
+`Failed to find ColorBuffer` / `Your GPU cannot be used for hardware
+rendering` is REFUTED: both messages also appear 3–4 times each in the
+emulator logs of every healthy 120 Hz survivor (5560/5562/5564/5566/5568) in
+`M1B-E045` — they are boot noise common to healthy and failed instances
+alike, not a fatal signature, and they diagnose nothing here. What is now
+known: 5558's death in this run is most likely the same Play-Store
+WebView-update fault characterised in `M1B-E045` — the identical
+pre-network-cut, game-not-running signature (`main_unavailable`/`the game is
+not running`/`bridge closed the stream`) seen there. 5562's and 5568's
+deaths remain genuinely UNEXPLAINED; they are not GPU-diagnosed by this
+entry's evidence. Separately, `M1B-E045`'s two 120 Hz runs show that
+overlapping cold `-gpu host` boots are not themselves fatal — every
+overlapping boot in those runs succeeded — so this entry's confound (1),
+uncontrolled boot overlap under the then-unfixed backstop, is now known not to
+explain these deaths either. Source: session scratchpad
+`FLEET-5558-DIAGNOSIS-DETAIL.md`, `FLEET-120HZ-CELL1-DETAIL.md`.
 
 ## M1B-E042 — Solo frame-rate ladder to 300 Hz, then a cliff at 360
 

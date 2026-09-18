@@ -117,7 +117,14 @@ knows nothing about the run being driven on it.
 
 **State.** A `CloneInstance` is frozen identity, not a live handle; the live
 state is the emulator process and the socket inside an `InstrumentedBridgeClient`.
-`stagger_bring_up` owns one `threading.Event` per instance and nothing else.
+`stagger_bring_up` owns three parallel lists, one entry per instance: `gates`
+(readiness, set when that instance's bring-up concludes), `begun` (set when it
+starts) and `begun_at` (when it started). The `begun`/`begun_at` pair exists
+because every actor's thread starts at fleet start, so the backstop has to be
+timed from the predecessor's *own* launch rather than from fleet start — timing
+it from fleet start let a 7-instance cold fleet expire instances 3–6's windows
+before their predecessors had launched, and four emulators booted at once, the
+exact defect the function exists to prevent.
 
 **The one rule in `fleet.py`:** emulators must not boot at the same instant.
 Four cold-booting together pushed host load to 10.71 and left the last unable to
@@ -153,10 +160,21 @@ environment and nothing that observes or drives it.
 **State.** `TrainingRun` owns everything the fleet shares: one
 `PrioritizedSequenceReplay` all actors write into, one `Backbone` inside
 `Learner`, one acting copy per actor in `acting`, the `TrainingProgressReport`,
-the gradient debt `_owed`, and `_since_sync`. Two locks and no more:
-`Learner.lock` keeps an optimisation step and a parameter publication from
-overlapping, and `TrainingRun._lock` guards the report and the hooks. An actor
-holds neither while it is collecting. The replay buffer has its own lock.
+the gradient debt `_owed`, and `_since_sync`. Three locks, each guarding one
+thing:
+
+- `Learner.lock` guards the training network. It is what keeps an optimisation
+  step and a parameter publication from overlapping, so what an actor copies out
+  is always some completed step and never half of one.
+- `TrainingRun._lock` guards the progress report, the gradient debt and the
+  hooks. An actor holds it between its episodes and never while collecting.
+- `PrioritizedSequenceReplay.lock` guards the buffer, and is the one taken by
+  the *caller* rather than inside the methods: `update_priorities` refuses
+  indices an eviction has shifted, so the learner must hold it across `sample`,
+  `learn` and `update_priorities` together.
+
+`_since_sync` needs no lock: each actor touches only its own entry of a dict
+whose keys are all present from construction.
 
 ## 5. `experiment` — observing a run
 
@@ -179,6 +197,24 @@ and no script.
 **State.** Run identity is immutable and is stamped into every checkpoint and
 every record. Durable state is files under the run directory plus whatever the
 tracker holds; nothing here is mutated in place.
+
+## 5a. The two loose modules
+
+Two modules sit at the top level of `tower_rl` rather than in a package, because
+neither is part of a run:
+
+- `doctor.py` — read-only host, package and Android-device diagnostics, returning
+  `CheckResult` rows with a `pass`/`warn`/`fail` status. It reads the SDK through
+  `simulation.android_sdk` and the archive through `xapk`, so it sits *above*
+  `simulation`; that is why `experiment` is forbidden to import it. Its callers
+  are the operator and `tests/unit/test_doctor.py` — nothing in a run imports it.
+- `xapk.py` — metadata-only inspection of a locally supplied XAPK archive
+  (manifest, splits, checksums), used by `doctor` and by `tests/unit/test_xapk.py`.
+  It never extracts or copies proprietary bytes. The XAPK is reference material;
+  the validated runtime is Play-installed.
+
+`scripts/workstation_preflight.py` is the host-only check and uses
+`simulation.android_sdk` directly.
 
 ## 6. Flow: a fleet collection run
 
@@ -209,10 +245,20 @@ tracker holds; nothing here is mutated in place.
 `scripts/train.py` trains one arm on the fleet. `BACKBONE` is the constant
 `"stacked-dqn"`: one backbone, not a selectable arm.
 
-1. `main` builds the instances, then `simulation.fleet.bring_up_fleet` brings
-   each up in sequence — training starts only once the fleet is up, so the
-   stagger needs no gate. An instance that fails is reported as a
-   `bring_up_failure` and costs one actor, not the run.
+1. `main` builds the tracker and reads the bridge's expected compatibility, then
+   takes one of two paths:
+   - `--actors 1` (the default) brings nothing up. It `connect`s to the instance
+     the operator already has running, addressed by `--serial` and `--port`, and
+     leaves it running afterwards — exactly as it worked before there were
+     fleets.
+   - `--actors N` calls `simulation.fleet.prepare_pinned_snapshot` first, because
+     a `-read-only` fleet cannot save one, then
+     `simulation.fleet.bring_up_fleet` over `open_instance`, which brings each
+     instance up in sequence and connects it. Training starts only once the
+     fleet is up, so the stagger needs no gate. Each instance is appended to
+     `started` *before* its bring-up is attempted, so one that fails partway is
+     still torn down. A failed bring-up is reported as a `bring_up_failure` and
+     costs one actor, not the run.
 2. `connect` opens one `InstrumentedBridgeClient` per instance and wraps it as
    `InstrumentedRunAdapter` → `InstrumentedRunEnvironment`, appending each to the
    list `tear_down_fleet` will release.

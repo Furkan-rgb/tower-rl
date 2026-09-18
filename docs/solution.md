@@ -175,22 +175,15 @@ Tower-RL/
 `docs/architecture.md` states the dependency rule between those packages;
 `tests/unit/test_import_contracts.py` enforces it.
 
-Keep proprietary and generated material out of Git. `.gitignore` must cover the APK, Android device data, user/account state, golden snapshots, screenshots containing user data, replay storage, checkpoints, logs, and local runtime configuration. Provide `.example` configuration files where useful.
+Keep proprietary and generated material out of Git. `.gitignore` must cover the APK, Android device data, user/account state, golden snapshots, screenshots containing user data, replay storage, checkpoints, logs, and local runtime configuration.
 
 Use Python 3.12 unless the selected PyTorch/Android integration on the target host requires a different supported version. Manage dependencies and reproducible commands with `uv`. Use PyTorch for the model and learner. Prefer small, explicit internal abstractions over adopting a large distributed-RL framework before the environment is proven. TorchRL components may be used where they reduce risk, but the stored data contracts and orchestration must remain project-owned and testable.
 
-The package is four feature packages in one direction, not layers.
-`tower_rl.environment` is the root — what a run is, what it is driven through,
-and what a decision costs — and imports nothing else in the package.
-`tower_rl.simulation` (reaching a device) and `tower_rl.learning` (policies,
-replay, actors, learner) each import only the environment and never each other;
-their join is the `RunPort` protocol. `tower_rl.experiment` imports the
-environment and learning and neither an adapter nor a script. `scripts/` is the
-composition root: scripts import packages, and no package imports a script.
-`tests/unit/test_import_contracts.py` enforces this from the source. The earlier
+The package is four feature packages in one direction, not layers; the rule is
+stated once in `docs/architecture.md` section 1 and enforced by
+`tests/unit/test_import_contracts.py`. The earlier
 `domain`/`ports`/`application`/`infrastructure` layering and the `tower-rl` CLI
-composition root no longer exist (`M0-E010` is superseded; see `M1B-E056` and
-`docs/architecture.md`).
+composition root no longer exist (`M0-E010` is superseded).
 
 The M0 `probe` uses Pillow only for deterministic PNG decoding and conservative
 profile-anchor checks. It is a transport and navigation smoke tool, not the
@@ -890,9 +883,9 @@ The multi-backbone goal is retired (`#7`): the project commits to one backbone,
 the `BACKBONE` constant in `scripts/train.py`, and `train.py` trains a single
 arm. The equal-budget machinery below is built and is what any arm comparison
 still runs on — it has been used for an equal-budget comparison that was not
-about backbones, the 60 Hz against 120 Hz equivalence fleet (`M1B-E053`,
-replicated in `M1B-E054`). Read "arm" below as "the thing being compared", not
-necessarily as a backbone.
+about backbones: the 60 Hz against 120 Hz equivalence fleet, where `M1B-E053`'s
+provisional reject did not replicate in `M1B-E054` and 120 Hz cleared. Read
+"arm" below as "the thing being compared", not necessarily as a backbone.
 
 Several candidates are compared, and there is only one clone to run them on.
 Training one arm to its full budget and then the next would confound the
@@ -1640,6 +1633,12 @@ Defaults to `best.pt`, one visible device, epsilon zero, no replay, and no learn
 The UI must not obscure controls needed by the automation. Prefer a separate terminal/dashboard initially; add an on-video overlay only if it is reliable and non-invasive.
 
 ## 12. Configuration
+
+**What exists today.** There are no configuration files and no layering. Every
+entry point under `scripts/` is configured by its own `argparse` arguments and
+by `TOWER_BRIDGE_BUILD_DIR`; the resolved values are recorded in the run
+manifest by `experiment/run_identity.py`. The rest of this section is the V1
+target, like section 11.
 
 Use layered configuration:
 

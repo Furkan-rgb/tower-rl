@@ -103,11 +103,11 @@ Wait for `adb shell getprop sys.boot_completed` to return `1`.
 ### Which renderer
 
 `-gpu host` is the standing renderer for every fleet, training and collection
-run. It is device-verified equivalent to lavapipe on game-time ratio
-(1.0130 against 1.0118), decisions per wave (21.0 against 20.73), mean wave (6.2
-against 6.0) and unattended stability, with every health counter at zero, and it
-is the faster of the two; the last device run of the moved simulation code used
-it throughout (`M1B-E056`, read back from `/proc/<pid>/cmdline` in `M1B-E055`).
+run. Renderer equivalence is `M1B-E026` Gate B, five episodes each: game-time
+ratio 1.0108 (host) against 1.0118 (lavapipe), decisions per wave 21.0 against
+20.73, mean final wave 6.2 against 6.0; Gate C then ran 25/25 valid episodes
+unattended on host with every health counter at zero, and the conclusion there
+was to adopt `-gpu host` as the mandatory training renderer.
 
 The cost is that it cannot snapshot. The emulator refuses to save a snapshot of
 a Vulkan app under `-gpu host` (`KO: Snapshot save is skipped. Reason:

@@ -16,7 +16,8 @@ The multi-backbone comparison is retired (`#7`, 2026-09-18): the project commits
 to one backbone, the `BACKBONE` constant in `scripts/train.py`. The equal-budget
 interleaving and the bootstrap/per-wave statistics remain and are what any arm
 comparison runs on — they were used for the 60 Hz against 120 Hz equivalence
-fleet (`M1B-E053`, replicated in `M1B-E054`).
+fleet, where `M1B-E053`'s provisional reject did not replicate in `M1B-E054` and
+120 Hz cleared.
 
 ### Task tracking is on GitHub, not in this file
 

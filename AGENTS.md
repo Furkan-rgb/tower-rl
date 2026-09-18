@@ -31,7 +31,7 @@ Task state is not prose. It lives on the GitHub board (see Board discipline belo
 
 ## Module rule
 
-`src/tower_rl/` is four packages in one direction. `environment` is the root — what a run is, what it is driven through, and what a decision costs — and imports nothing else in `tower_rl`. `simulation` (reaching a device) and `learning` (policies, replay, actors, learner) each import only `environment` and never each other; their join is the `RunPort` protocol, which is what lets a learner run against a fake port and keeps emulator detail out of everything that is not device-facing. `experiment` imports `environment` and `learning` and neither an adapter nor a script. `scripts/` is the composition root: scripts import packages, and no package imports a script module. `tests/unit/test_import_contracts.py` enforces all of this by parsing the source, so a module nobody imports is still held to it; to change a rule, change the constant there and say why beside it — a rule relaxed to make one import compile is the failure this test exists to expose.
+`src/tower_rl/` is four packages in one direction — `environment` is the root, `simulation` and `learning` each import only it and never each other, `experiment` imports `environment` and `learning`, and `scripts/` is the composition root — stated in full in [`docs/architecture.md`](docs/architecture.md) section 1 and enforced by `tests/unit/test_import_contracts.py`. To change a rule, change the constant there and say why beside it; a rule relaxed to make one import compile is the failure that test exists to expose.
 
 ## Execution rules
 

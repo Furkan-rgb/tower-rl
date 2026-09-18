@@ -35,6 +35,10 @@ from tower_rl.application.training import (  # noqa: E402
     collection_windows,
 )
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.infrastructure.instrumented_bridge import BridgeTimeoutError  # noqa: E402
+from tower_rl.infrastructure.instrumented_run_adapter import (  # noqa: E402
+    InstrumentedRunAdapter,
+)
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
@@ -140,6 +144,73 @@ def fleet(
         replay=replay,
         backbone=learner,
         config=TrainingConfig(**settings),
+    )
+
+
+class _SilentBridgeClient:
+    """A bridge that has stopped answering, exactly as a dead emulator's does.
+
+    The adapter in front of it is the real one, so what is under test is the
+    path a bridge failure actually takes out of the client and into the fleet.
+    """
+
+    def read_state(self) -> Any:
+        raise BridgeTimeoutError("bridge liveness expired: silent for 60s")
+
+    def send_command(self, message: Any) -> Any:
+        raise BridgeTimeoutError("bridge liveness expired: silent for 60s")
+
+
+def dead_bridge_environment() -> InstrumentedRunEnvironment:
+    return InstrumentedRunEnvironment(
+        port=InstrumentedRunAdapter(client=_SilentBridgeClient()),  # type: ignore[arg-type]
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+
+
+def test_a_bridge_that_stops_answering_withdraws_its_actor_and_not_the_run() -> None:
+    """The likeliest failure of all, and the one that used to end the whole run.
+
+    A bridge error was not a `RunPortError`, so it bypassed the withdrawal path
+    entirely and re-raised out of `advance` - a 100,000-decision fleet run died
+    with three healthy actors still collecting.
+    """
+    withdrawn: list[tuple[str, str]] = []
+    training = fleet(
+        [environment(), dead_bridge_environment(), environment()],
+        budget_decisions=200,
+        max_consecutive_episode_failures=3,
+    )
+    training.on_withdrawal = lambda progress: withdrawn.append(
+        (progress.actor_id, progress.withdrawn or "")
+    )
+
+    report = training.run()
+
+    dead = report.actors["fake-1:recurrent-q"]
+    assert dead.withdrawn is not None and "liveness expired" in dead.withdrawn
+    assert dead.failed_episodes == 3 and dead.decisions == 0
+    # Named as it happened, with the instance it names and why it left.
+    assert withdrawn == [("fake-1:recurrent-q", dead.withdrawn)]
+    alive = [progress for progress in report.actors.values() if progress.withdrawn is None]
+    assert len(alive) == 2 and all(progress.valid_episodes > 0 for progress in alive)
+    assert report.decisions >= 200
+
+
+def test_a_fleet_whose_bridges_have_all_died_still_ends_the_run() -> None:
+    """Nothing left collecting is a dead environment however it died."""
+    training = fleet(
+        [dead_bridge_environment() for _ in range(2)],
+        budget_decisions=200,
+        max_consecutive_episode_failures=2,
+    )
+
+    with pytest.raises(RunPortError, match="liveness expired"):
+        training.run()
+
+    assert all(
+        progress.withdrawn is not None for progress in training.report.actors.values()
     )
 
 

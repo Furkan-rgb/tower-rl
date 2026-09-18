@@ -38,6 +38,7 @@ from tower_rl.domain.features import StateFeatures  # noqa: E402
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.checkpoint import fingerprint, load  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
+from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 #: Tensors this small spend their time handing work between threads rather than
 #: computing: one thread runs the whole file about fifteen times faster.
@@ -688,7 +689,9 @@ def test_a_fleet_attributes_collected_episodes_to_their_actor(
             assert len(attributed) == actor["episodes"] - actor["failed_episodes"]
 
 
-def test_one_dead_instance_does_not_end_a_fleet_run(tmp_path: Path) -> None:
+def test_one_dead_instance_does_not_end_a_fleet_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """One emulator refusing every episode costs an actor, not the run."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
@@ -721,6 +724,12 @@ def test_one_dead_instance_does_not_end_a_fleet_run(tmp_path: Path) -> None:
     assert arm["actors_withdrawn"] == 1
     assert alive["decisions"] == arm["decisions"] >= 150
     assert arm["final_evaluation"] is not None, "the run was still measured"
+    # A withdrawal is invisible in the aggregate, so it is announced when it
+    # happens, naming the instance that left and what took it out.
+    announcement = next(
+        line for line in capsys.readouterr().out.splitlines() if "withdrawn" in line
+    )
+    assert "fake-1:recurrent-q" in announcement and dead["withdrawn"] in announcement
 
 
 def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
@@ -796,6 +805,59 @@ def test_an_instance_that_will_not_come_up_costs_one_actor(tmp_path: Path) -> No
 
     assert [item.serial for item in ready] == ["emulator-5556", "emulator-5560"]
     assert len(failures) == 1 and "emulator-5558" in failures[0]
+
+
+class _FailingAdapter:
+    """An adapter whose release reads a bridge that has stopped answering."""
+
+    def release(self) -> None:
+        raise RunPortError("the bridge could not report the run state")
+
+
+class _RecordingAdapter:
+    def __init__(self) -> None:
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _RecordingClient:
+    def __init__(self, port: int) -> None:
+        self.port = port
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_teardown_continues_past_a_failing_release_and_puts_every_instance_down(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Leaving an emulator running is a safety failure, not an inconvenience.
+
+    The release reads the bridge, so on a client that had stopped answering it
+    raised inside the teardown's own `finally` and skipped every later release
+    and every instance teardown: four emulators were left running, twice.
+    """
+    clients = [_RecordingClient(5555 + index) for index in range(2)]
+    surviving = _RecordingAdapter()
+    opened = [(_FailingAdapter(), clients[0]), (surviving, clients[1])]
+    instances = [CloneInstance(index=index) for index in range(3)]
+    torn: list[str] = []
+
+    def tear_down(instance: CloneInstance) -> None:
+        torn.append(instance.serial)
+        if instance.index == 0:
+            raise RuntimeError("adb would not stop this one")
+
+    train.tear_down_fleet(opened, instances, tear_down)  # type: ignore[arg-type]
+
+    # Neither the failing release nor the failing teardown stopped the rest.
+    assert surviving.released and all(client.closed for client in clients)
+    assert torn == [instance.serial for instance in instances]
+    printed = capsys.readouterr().out
+    assert "release failed" in printed and "teardown failed" in printed
 
 
 def test_a_fleet_that_will_not_come_up_at_all_is_refused(tmp_path: Path) -> None:

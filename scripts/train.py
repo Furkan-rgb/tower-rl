@@ -761,6 +761,16 @@ def build_arm(
         print(f"[{name}] curve: {point.line()}", flush=True)
         return report
 
+    def on_withdrawal(progress: ActorProgress) -> None:
+        # One instance stopping is invisible in the aggregate - the fleet simply
+        # collects slower - so the actor and what killed it are named as it
+        # happens, for an operator reading a log hours later.
+        print(
+            f"[{name}] actor {progress.actor_id} withdrawn after "
+            f"{progress.consecutive_failures} failed episodes: {progress.withdrawn}",
+            flush=True,
+        )
+
     def on_episode(report: TrainingProgressReport) -> None:
         arm.record_collection_windows()
         print(
@@ -775,6 +785,7 @@ def build_arm(
     arm.training.evaluate = run_evaluation
     arm.training.checkpoint = arm.checkpoint
     arm.training.on_episode = on_episode
+    arm.training.on_withdrawal = on_withdrawal
     manifest = run_dir / "manifest.json"
     write_manifest(manifest, {"run_id": run_id, **resolved})
     run.log_artifact(manifest)
@@ -1188,6 +1199,36 @@ def bring_up_fleet(
     return ready, failures
 
 
+def tear_down_fleet(
+    opened: Sequence[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]],
+    started: Sequence[CloneInstance],
+    tear_down: Callable[[CloneInstance], None] = tear_down_instance,
+) -> None:
+    """Put down every bridge and every instance this run brought up.
+
+    Leaving an emulator running is a safety failure rather than an
+    inconvenience, so each step here is independent and best-effort: releasing
+    reads the bridge, and on a client that had stopped answering that read
+    raised inside the caller's `finally`, skipping every remaining release and
+    every teardown and leaving four emulators running with the overlay mounted.
+    A failure is reported and the next instance is put down anyway.
+    """
+    for adapter, client in opened:
+        try:
+            adapter.release()
+        except Exception as error:  # noqa: BLE001 - reported, never fatal
+            print(f"bridge on port {client.port}: release failed: {error}", flush=True)
+        finally:
+            client.close()
+    for instance in started:
+        # Only instances this run brought up are torn down, and one that
+        # refuses to clean up must not leave the others running.
+        try:
+            tear_down(instance)
+        except Exception as error:  # noqa: BLE001 - reported, never fatal
+            print(f"{instance.serial}: teardown failed: {error}", flush=True)
+
+
 def main() -> int:
     arguments = parse_arguments()
 
@@ -1251,16 +1292,7 @@ def main() -> int:
             bring_up_failures=failures,
         )
     finally:
-        for adapter, client in opened:
-            adapter.release()
-            client.close()
-        for instance in started:
-            # Only instances this run brought up are torn down, and one that
-            # refuses to clean up must not leave the others running.
-            try:
-                tear_down_instance(instance)
-            except Exception as error:  # noqa: BLE001 - reported, never fatal
-                print(f"{instance.serial}: teardown failed: {error}", flush=True)
+        tear_down_fleet(opened, started)
 
     print(json.dumps(report, indent=2, default=str), flush=True)
     return 0

@@ -54,7 +54,6 @@ LIFECYCLE_ACTIONS = frozenset(
 )
 DEFAULT_MAX_FRAME_SIZE = 65_536
 DEFAULT_MAX_UPGRADE_ENTRIES = 192
-MAX_DRAINED_OBSERVATIONS = 64
 
 
 class InstrumentedBridgeError(RuntimeError):
@@ -456,8 +455,9 @@ class InstrumentedBridgeClient:
         self.expected_compatibility = expected_compatibility
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
-        # The liveness deadline: how long the host tolerates hearing nothing at
-        # all from the bridge. Any inbound frame renews it, not heartbeats alone.
+        # The liveness deadline: how long the host waits on a silent stream
+        # before calling the bridge dead. It is spent waiting, never counted
+        # while the host is busy elsewhere - see `_await_bridge_frame`.
         self.heartbeat_timeout = heartbeat_timeout
         self.max_frame_size = max_frame_size
         self.max_upgrade_entries = max_upgrade_entries
@@ -465,7 +465,6 @@ class InstrumentedBridgeClient:
         self._handshake: BridgeHandshake | None = None
         self._last_observation_sequence = 0
         self._last_state: BridgeObservation | BridgeRunUnavailable | None = None
-        self._last_inbound_at: float | None = None
 
     @property
     def handshake(self) -> BridgeHandshake:
@@ -514,17 +513,33 @@ class InstrumentedBridgeClient:
         already sent, and that is what this returns.
         """
         try:
-            state = self._read_state()
-            for _ in range(MAX_DRAINED_OBSERVATIONS):
-                if not self._has_buffered_frame():
-                    break
-                buffered = self._consume_message(self._read_message(self.read_timeout))
-                if buffered is not None:
-                    state = buffered
-            return state
+            return self._drain_to_newest(self._read_state())
         except InstrumentedBridgeError:
             self.close()
             raise
+
+    def _drain_to_newest(
+        self, state: BridgeObservation | BridgeRunUnavailable
+    ) -> BridgeObservation | BridgeRunUnavailable:
+        """Consume every frame already buffered, so the state returned is the present.
+
+        A client that has not read for a while has a whole stream's worth of
+        frames waiting for it, and stopping short of the end would leave it
+        acting on a sequence the bridge has already left behind - which the
+        bridge then refuses as `stale_or_duplicate`. The drain is bounded by the
+        read timeout rather than by a frame count, because the backlog is
+        whatever the bridge sent while nobody was reading: only a bridge
+        producing frames faster than the host can consume them could keep this
+        from ending, and that is what the deadline is for.
+        """
+        deadline = time.monotonic() + self.read_timeout
+        while self._has_buffered_frame():
+            if time.monotonic() > deadline:
+                raise BridgeTimeoutError("the bridge stream never paused long enough to catch up")
+            buffered = self._consume_message(self._read_message(self.read_timeout))
+            if buffered is not None:
+                state = buffered
+        return state
 
     def _has_buffered_frame(self) -> bool:
         if self._socket is None:
@@ -535,12 +550,12 @@ class InstrumentedBridgeClient:
     def _read_state(self) -> BridgeObservation | BridgeRunUnavailable:
         if self._socket is None or self._handshake is None:
             raise BridgeDisconnectedError("bridge is not connected")
-        self._check_liveness()
         deadline = time.monotonic() + self.read_timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise BridgeTimeoutError("timed out waiting for bridge state")
+            self._await_bridge_frame(remaining)
             message = self._read_message(remaining)
             state = self._consume_message(message)
             if state is not None:
@@ -645,7 +660,6 @@ class InstrumentedBridgeClient:
         # starts a fresh one, and keeping the old high-water mark would reject
         # the new stream's first observations as not newer.
         self._last_observation_sequence = 0
-        self._last_inbound_at = None
         if stream is not None:
             with suppress(OSError):
                 stream.shutdown(socket.SHUT_RDWR)
@@ -654,14 +668,12 @@ class InstrumentedBridgeClient:
     def _read_message(self, timeout: float) -> dict[str, Any]:
         if self._socket is None:
             raise BridgeDisconnectedError("bridge is not connected")
-        message = read_frame(self._socket, timeout=timeout, max_frame_size=self.max_frame_size)
         # A heartbeat only exists to prove the bridge is alive, and any frame it
         # decodes to is strictly stronger proof, so every inbound frame - an
-        # observation, a command result, a heartbeat - renews liveness. Under one
-        # command in flight per decision the bridge has no idle moment in which
-        # to emit a heartbeat, and requiring one would kill a healthy run.
-        self._last_inbound_at = time.monotonic()
-        return message
+        # observation, a command result, a heartbeat - is proof of life. Under
+        # one command in flight per decision the bridge has no idle moment in
+        # which to emit a heartbeat, and requiring one would kill a healthy run.
+        return read_frame(self._socket, timeout=timeout, max_frame_size=self.max_frame_size)
 
     def _write_message(self, message: Mapping[str, object]) -> None:
         if self._socket is None:
@@ -682,13 +694,30 @@ class InstrumentedBridgeClient:
             )
         self._last_observation_sequence = sequence
 
-    def _check_liveness(self) -> None:
-        """Fail when nothing at all has arrived from the bridge for too long."""
-        if (
-            self._last_inbound_at is not None
-            and time.monotonic() - self._last_inbound_at > self.heartbeat_timeout
-        ):
-            raise BridgeTimeoutError("bridge liveness expired")
+    def _await_bridge_frame(self, timeout: float) -> None:
+        """Wait for the bridge to speak, judging its silence rather than the host's.
+
+        Liveness belongs to the bridge: it expires when nothing arrives while
+        the host is actually waiting to hear something. Measured instead from
+        the host's own last read it reported an idle *client* as a dead bridge,
+        which killed the first actors of a fleet - each one connected at its own
+        bring-up and then left unread while the remaining instances cold-booted,
+        with the bridge's frames sitting in the socket the whole time.
+        Anything already buffered is therefore proof of life and answers at once,
+        and a bridge that has genuinely stopped is still caught one
+        `heartbeat_timeout` after the host first waits on it.
+        """
+        if self._socket is None:
+            raise BridgeDisconnectedError("bridge is not connected")
+        wait = min(timeout, self.heartbeat_timeout)
+        readable, _, _ = select.select([self._socket], [], [], wait)
+        if readable:
+            return
+        if wait >= self.heartbeat_timeout:
+            raise BridgeTimeoutError(
+                f"bridge liveness expired: silent for {self.heartbeat_timeout:g}s"
+            )
+        raise BridgeTimeoutError("timed out waiting for bridge state")
 
 
 def _read_exact(stream: socket.socket, size: int, timeout: float) -> bytes:

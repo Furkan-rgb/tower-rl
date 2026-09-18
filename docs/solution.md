@@ -1026,6 +1026,20 @@ settle window, which is where the last advance before a death always sits, left 
 terminal observation with the stream held behind it, and `begin_episode` polled
 that single reading to its timeout about once in every seven boundaries.
 
+**Liveness is the bridge's silence, not the host's inattention.** The deadline
+only runs while the host is actually waiting on the socket: anything already
+buffered is proof of life and answers at once, and a bridge that has genuinely
+stopped is still caught one `heartbeat_timeout` after the host first waits on
+it. Measured instead from the host's own last read it condemned a healthy bridge
+for a client nobody had looked at. A fleet connects each actor as its instance
+comes up and then leaves it idle for the 40–90 s each remaining instance takes to
+cold-boot, so on the first four-actor training run two actors died on their first
+episode — 115.8 s and 81.5 s since their own last read — against bridges whose
+frames were sitting unread in their sockets, and the run aborted twice at about
+2,200 of 100,000 decisions. A read now consumes the whole backlog, so the state
+it returns is the bridge's present rather than a superseded sequence the bridge
+would refuse.
+
 Two consequences follow from a world that can stand still. An episode that ends
 host-side while the run is still going leaves it paused, so `begin_episode`
 unpauses before it reads: otherwise the next episode would begin on a cached
@@ -1113,7 +1127,15 @@ progress, so the hazard is closed by construction rather than for the pin alone.
 A sequence the bridge does refuse arrives at the run as a `RunPortError` and
 costs one classified, counted episode, the way an unconfirmed advance does;
 before that it escaped the environment as an `InstrumentedBridgeError` and ended
-the whole training run.
+the whole training run. Every bridge failure now reaches the run that way, for
+the same reason: as anything but a `RunPortError` a dead bridge bypassed the
+fleet's withdrawal path entirely and ended a run that still had three live
+actors collecting. One instance that has died costs its actor, which is
+withdrawn after the failure limit and named with its serial as it leaves; a
+fleet with nothing left collecting still ends the run. Putting the fleet down is
+best-effort and independent per instance for the same reason — releasing a
+bridge reads it, and that read raising inside the teardown left four emulators
+running, twice.
 
 **And the pin is checked rather than trusted.** Nothing the host reads reports
 the rate the unpaused world runs at — its observations are all taken paused — so

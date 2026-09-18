@@ -501,6 +501,11 @@ class TrainingRun:
     backbone: Backbone
     config: TrainingConfig
     on_episode: Callable[[TrainingProgressReport], None] | None = None
+    #: Called once for the actor that has just left the fleet, with the progress
+    #: naming it and the failure that withdrew it. A withdrawal is silent in the
+    #: aggregate - the fleet simply collects a little slower - so an unattended
+    #: run has to be told about it when it happens, not only in the summary.
+    on_withdrawal: Callable[[ActorProgress], None] | None = None
     #: Runs exploration-free episodes on the same device. Its cost comes out of
     #: wall-clock time, never out of the decision budget, because evaluation is
     #: measurement rather than experience. It borrows an instance, so it may only
@@ -625,7 +630,10 @@ class TrainingRun:
                 with self._lock:
                     self._record_failure(progress, failure)
                     withdrawn = progress.withdrawn is not None
-                    if not withdrawn:
+                    if withdrawn:
+                        if self.on_withdrawal is not None:
+                            self.on_withdrawal(progress)
+                    else:
                         self._after_episode()
                 if withdrawn:
                     raise

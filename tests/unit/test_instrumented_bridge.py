@@ -9,6 +9,9 @@ from contextlib import suppress
 
 import pytest
 
+from tower_rl.application.evaluator import evaluate
+from tower_rl.application.run_environment import CadenceConfig, InstrumentedRunEnvironment
+from tower_rl.domain.run_state import RunStateBuilder
 from tower_rl.infrastructure.instrumented_bridge import (
     ADVANCE_WALL_CEILING_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
@@ -67,9 +70,30 @@ def _handshake(**overrides: object) -> dict[str, object]:
     return message
 
 
+#: The inventory the domain requires of a real reading: every family, every slot.
+#: Most of this file decodes one entry and says so; anything driving the whole
+#: pipeline - the environment, the evaluator - needs the real shape.
+FULL_INVENTORY = [
+    {
+        "family": family, "index": index, "cost": 5.0, "level": 2, "max_level": 10,
+        "unlocked": True, "tier_unlocked": True, "maxed": False,
+    }
+    for family in ("attack", "defense", "utility")
+    for index in range(20)
+]
+
+
 def _observation(
-    sequence: int = 1, wave: int = 7, *, terminal: bool = False, speed: float = 1.5
+    sequence: int = 1,
+    wave: int = 7,
+    *,
+    terminal: bool = False,
+    speed: float = 1.5,
+    full_inventory: bool = False,
 ) -> dict[str, object]:
+    if full_inventory:
+        return {**_observation(sequence, wave, terminal=terminal, speed=speed),
+                "upgrades": FULL_INVENTORY}
     return {
         "type": "observation",
         "sequence": sequence,
@@ -580,8 +604,6 @@ def test_any_inbound_frame_proves_the_bridge_is_alive() -> None:
     )
     client._socket = client_socket
     client._handshake = decode_handshake(_handshake(), EXPECTED)
-    # What a real `connect` leaves behind: the handshake frame started the clock.
-    client._last_inbound_at = time.monotonic()
     try:
         for sequence in range(1, 8):
             # Each gap is inside the deadline; the whole exchange is well past it.
@@ -655,10 +677,14 @@ class _IdleStreamBridge:
         idle_interval: float = 0.05,
         run_ends_under_advance: bool = False,
         run_ends_in_pause_settle: bool = False,
+        full_inventory: bool = False,
     ) -> None:
         self._peer = peer
         self._holds = holds_the_sequence_while_paused
         self._idle_interval = idle_interval
+        # Only a test that drives the domain pipeline needs the real inventory
+        # shape; the protocol tests are clearer with one entry.
+        self._full_inventory = full_inventory
         self._run_ends_under_advance = run_ends_under_advance
         self._run_ends_in_pause_settle = run_ends_in_pause_settle
         self._run_active = True
@@ -687,6 +713,14 @@ class _IdleStreamBridge:
         """
         self._run_active = True
 
+    def _state(self) -> dict[str, object]:
+        return _observation(
+            self._sequence,
+            terminal=not self._run_active,
+            speed=1.0,
+            full_inventory=self._full_inventory,
+        )
+
     def _send(self, message: dict[str, object]) -> None:
         with suppress(OSError):
             self._peer.sendall(encode_frame(message))
@@ -708,11 +742,7 @@ class _IdleStreamBridge:
                     )
                 else:
                     self._sequence += 1
-                    self._send(
-                        _observation(
-                            self._sequence, terminal=not self._run_active, speed=1.0
-                        )
-                    )
+                    self._send(self._state())
                 continue
             try:
                 command = read_frame(self._peer, timeout=1.0)
@@ -726,10 +756,21 @@ class _IdleStreamBridge:
                 self._send(self._result(request_id, "rejected", "stale_or_duplicate"))
                 continue
             self._last_request_id = request_id
+            was_active = self._run_active
             self._apply_pause_rule(command)
             self._sequence += 1
-            self._send(_observation(self._sequence, terminal=not self._run_active, speed=1.0))
-            self._send(self._result(request_id, "confirmed", "budget_exhausted"))
+            self._send(self._state())
+            # A real bridge names the decision event it stopped on, and the
+            # environment fails a transition where the two disagree: a run that
+            # ended under this advance stopped on the health that ended it.
+            ended = was_active and not self._run_active
+            self._send(
+                self._result(
+                    request_id,
+                    "confirmed",
+                    "event:health_changed" if ended else "budget_exhausted",
+                )
+            )
 
     def _apply_pause_rule(self, command: dict[str, object]) -> None:
         """Exactly the rule `ServeClient` applies to `world_paused`.
@@ -765,7 +806,6 @@ def _slow_bridge_client() -> tuple[InstrumentedBridgeClient, socket.socket]:
     )
     client._socket = client_socket
     client._handshake = decode_handshake(_handshake(), EXPECTED)
-    client._last_inbound_at = time.monotonic()
     return client, peer_socket
 
 
@@ -963,6 +1003,125 @@ def test_a_stream_that_ticked_on_while_paused_rejected_that_decision() -> None:
 
             assert second.outcome.value == "rejected"
             assert second.reason == "stale_or_duplicate"
+    finally:
+        client.close()
+        peer.close()
+
+
+def _idle_tolerant_client(
+    *, heartbeat_timeout: float, read_timeout: float = 2.0
+) -> tuple[InstrumentedBridgeClient, socket.socket]:
+    client_socket, peer_socket = socket.socketpair()
+    client = InstrumentedBridgeClient(
+        "127.0.0.1",
+        47651,
+        expected_compatibility=EXPECTED,
+        read_timeout=read_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+    )
+    client._socket = client_socket
+    client._handshake = decode_handshake(_handshake(), EXPECTED)
+    return client, peer_socket
+
+
+def test_a_client_left_idle_against_a_live_bridge_does_not_expire() -> None:
+    """Liveness is the bridge's silence, never the host's inattention.
+
+    A fleet connects each actor's client as its own instance comes up and then
+    leaves it unread while the remaining instances cold-boot. Measured from the
+    client's own last read, that idleness looked exactly like a dead bridge and
+    killed two actors of four on their first episode - while the bridge's frames
+    were sitting unread in the socket the whole time.
+    """
+    client, peer = _idle_tolerant_client(heartbeat_timeout=0.05)
+    try:
+        with _IdleStreamBridge(peer, holds_the_sequence_while_paused=True, idle_interval=0.01):
+            # What a bring-up leaves behind: a client that has heard from its
+            # bridge once and is then left alone while the fleet comes up.
+            client.read_state()
+            # Ten times the liveness window, and a stream's worth of frames
+            # waiting in the socket by the end of it.
+            time.sleep(0.5)
+
+            state = client.read_state()
+
+            # The read caught up to the bridge's present rather than answering
+            # from the backlog: a command bound to what it returned is accepted,
+            # which is the only thing that makes the state usable.
+            accepted = client.send_command(_advance("adv-after-idle", state.sequence))
+            assert accepted.outcome.value == "confirmed"
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_a_bridge_that_has_gone_silent_still_expires_promptly() -> None:
+    """The deadline must still catch a bridge that has genuinely stopped.
+
+    Nothing is served on the peer, so the stream is silent from the first read:
+    the client waits one liveness window and no longer, well inside the much
+    larger read timeout a device run is configured with.
+    """
+    client, peer = _idle_tolerant_client(heartbeat_timeout=0.2, read_timeout=10.0)
+    try:
+        started = time.monotonic()
+        with pytest.raises(BridgeTimeoutError, match="liveness expired"):
+            client.read_state()
+        elapsed = time.monotonic() - started
+
+        assert 0.2 <= elapsed < 2.0, "a dead bridge must not be waited out for the read timeout"
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_the_final_evaluation_survives_a_client_left_idle_by_the_rest_of_the_fleet() -> None:
+    """The run's headline number is taken on instance 0 after the fleet stops.
+
+    By then that client has been idle for as long as the slowest actor took to
+    finish, which killed the pre-registered evaluation of a diagnostic run
+    outright. The whole path is exercised here - a real client, a
+    real adapter and the real evaluator - across an idle gap several times the
+    liveness window.
+    """
+
+    class FirstAllowed:
+        def initial_state(self) -> None:
+            return None
+
+        def stored_recurrent_state(self, state: None) -> None:
+            return None
+
+        def act(
+            self, features: object, state: None, *, epsilon: float
+        ) -> tuple[int, None]:
+            mask = features.mask  # type: ignore[attr-defined]
+            return next(index for index, allowed in enumerate(mask) if allowed), None
+
+    client, peer = _idle_tolerant_client(heartbeat_timeout=0.05, read_timeout=5.0)
+    try:
+        with _IdleStreamBridge(
+            peer,
+            holds_the_sequence_while_paused=True,
+            idle_interval=0.01,
+            run_ends_under_advance=True,
+            full_inventory=True,
+        ):
+            environment = InstrumentedRunEnvironment(
+                port=InstrumentedRunAdapter(client=client, episode_start_timeout=10.0),
+                builder=RunStateBuilder(profile_id=EXPECTED.profile_id),
+                cadence=CadenceConfig(frame_game_ms=100.0, max_quiet_game_ms=2000),
+            )
+            # This instance's own last collection episode, and then the fleet
+            # finishing without it.
+            client.read_state()
+            time.sleep(0.4)
+
+            report = evaluate(
+                environment, FirstAllowed(), episodes=2, profile_id=EXPECTED.profile_id
+            )
+
+            assert report.valid_episodes == 2
     finally:
         client.close()
         peer.close()

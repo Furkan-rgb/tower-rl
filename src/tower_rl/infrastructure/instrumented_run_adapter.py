@@ -19,6 +19,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     BridgeRunUnavailable,
     BridgeStaleObservationError,
     InstrumentedBridgeClient,
+    InstrumentedBridgeError,
 )
 from tower_rl.ports.run_port import RunPortError
 
@@ -53,16 +54,24 @@ class InstrumentedRunAdapter:
         return state
 
     def _latest_state(self) -> BridgeObservation | BridgeRunUnavailable:
-        """The bridge's freshest state, with a lost sequence reported as a failure.
+        """The bridge's freshest state, with any bridge failure reported as one.
 
         A stream whose sequence moved backwards is the same kind of event a
         refused command is: this episode cannot be trusted, and saying so as a
-        port failure costs the episode rather than the process.
+        port failure costs the episode rather than the process. So is a bridge
+        that has stopped answering at all, which is the likeliest failure of the
+        lot: as anything but a `RunPortError` it bypassed the fleet's withdrawal
+        path and ended a run that still had live actors in it.
         """
         try:
             return self.client.read_state()
         except BridgeStaleObservationError as stale:
             raise RunPortError(f"the bridge stream lost its sequence: {stale}") from stale
+        except InstrumentedBridgeError as failure:
+            raise RunPortError(
+                f"the bridge could not report the run state: "
+                f"{type(failure).__name__}: {failure}"
+            ) from failure
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -224,12 +233,19 @@ class InstrumentedRunAdapter:
         and counted like any other and the next one starts from a fresh
         observation. Left as an `InstrumentedBridgeError` it escaped the
         environment entirely and killed the process, which on an unattended run
-        is the difference between losing an episode and losing the night.
+        is the difference between losing an episode and losing the night. Every
+        other bridge failure is reported the same way and for the same reason:
+        an instance that has stopped answering costs its actor, not the fleet.
         """
         try:
             return self.client.send_command(command)
         except BridgeStaleObservationError as stale:
             raise RunPortError(f"the bridge refused a stale command: {stale}") from stale
+        except InstrumentedBridgeError as failure:
+            raise RunPortError(
+                f"the bridge did not carry out a command: "
+                f"{type(failure).__name__}: {failure}"
+            ) from failure
 
     def _command_between_rounds(self, command: Mapping[str, object]) -> BridgeCommandResult:
         """Send a command of the adapter's own initiative, only between rounds.

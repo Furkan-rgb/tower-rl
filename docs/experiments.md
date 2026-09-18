@@ -7,6 +7,92 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E056 — The simulation module drives the device exactly as the scripts did
+
+**Date:** 2026-09-18
+**Status:** Passed, all three steps; no behaviour change observed on device
+
+**Purpose:** `#16` moved emulator lifecycle out of `clone_session.py`,
+`run_actors.py` and `train.py` into `tower_rl.simulation`, and collapsed the two
+`deploy_bridge` wrappers and the two fleet loops to one each. The move was
+argued to be behaviour-preserving. That is a claim about a device, and the unit
+suite cannot settle it: every emulator, every adb call and every bridge in it is
+a double. This is the one run that puts the moved code against the real clone.
+
+Solo run on the free host, branch `worktree-agent-a34563d23c6c7196e` at
+`574c6ea`, one instance, `-gpu host`, cold, `-read-only`, 4 cores, 120 Hz.
+
+**1. Cold bring-up through the moved code.** `scripts/clone_session.py up
+--read-only --cold --renderer host --cores 4` reached home and exited 0. The
+cold path was chosen by name (`renderer 'host' cannot snapshot a Vulkan app`),
+which is the pre-existing rule, not a new one. Three read-backs, all as the
+scripts produced them before the move:
+
+- Offline by interface: `ip -o -4 addr show` returned `lo` alone. This remains
+  the only offline oracle in the tree.
+- Guest rate: `confirmed at 120 Hz: display vsync mode 120.00, uid 10218 game
+  mode override 120, uid 10218 applied frame rate 120.00` — both levers and the
+  applied surface rate agreeing, which is what `confirm_frame_rate` exists to
+  refuse an instance for.
+- Bridge identity: the deployed artifact read back as
+  `7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a`, matching
+  `libtower_bridge.so` in the private build directory. The plain
+  `adb shell sha256sum` form answered; the `su -c` form was not needed on this
+  image.
+
+Every deploy line arrived tagged with its serial (`emulator-5556 deploy: ...`),
+which is the surviving `deploy_bridge` — the fleet's capturing variant, now used
+by the single-instance CLI too. `adb push` writes its progress to stderr, so
+those lines relay under the `error:` marker; that is the wrapper reporting
+faithfully, not a failure.
+
+**2. One scripted episode through the normal fleet path.**
+`scripts/run_actors.py --actors 1 --episodes 1 --renderer host --cores 4
+--frame-rate-hz 120`, exercising `stagger_bring_up` → `collect_episodes` →
+`run_episodes.py`, with the sequencer now taking the per-actor step as an
+argument rather than closing over the runner's `Namespace`.
+
+1 valid episode, 0 invalid, final wave 8, 17.4 valid episodes/hour at N=1 — a
+one-episode rate that carries a whole cold bring-up, so it is not comparable to
+the steady-state figures in `M1B-E028` and is recorded only as evidence the path
+completed. All four fidelity counters zero: `bridge_event_divergence`,
+`stale_or_duplicate`, `advances_cut_short`, `episodes_not_started_fresh`.
+
+The arm key survived the move in both places it is written: the fleet report
+carries `frame_rates_hz: [120]` and the actor entry `frame_rate_hz: 120`, and
+the actor's own durable record (`emulator-5556.json`) carries
+`frame_rate_hz: 120`. That key is what a two-rate comparison groups by, so a
+record that lost it could only be attributed by the directory it sat in.
+
+**3. Teardown through `tear_down_instance`.** Run twice — once to put step 1's
+instance down, once by the fleet at the end of step 2 — and identical both
+times. The per-serial cleanup report verified the instance it names:
+
+    game_frame_rate_override: reset
+    libunity_sha256: ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040
+    versionCode=1199 minSdk=27 targetSdk=36
+    versionName=29.0.3
+    installerPackageName=com.android.vending
+    libunity_mounts: 0
+    bridge_artifacts: removed
+
+The `libunity.so` hash matches the untouched original, so the overlay was
+removed rather than left mounted; the installer and version confirm the Play
+build was not replaced. After the run: no qemu process under `/proc/*/exe`, and
+`adb devices` empty.
+
+**Device safety.** Only `emulator-5556` and only `tower_rl_instrumented_api36`
+appear anywhere in either log. `emulator-5554` and the canonical evaluation AVD
+were never addressed. Neither log contains `screencap`, `screenshot`,
+`uiautomator` or `input tap`; nothing in this path reads a pixel or touches the
+screen, which the static guard added with `#16` now holds from source rather
+than from a fixture.
+
+**What this does not establish.** One actor, one episode, one image state. It
+says the moved code reaches a real device and comes back with the same readings
+the scripts produced; it is not a throughput measurement, not a multi-actor
+result, and not a substitute for the equivalence gate in `#22`.
+
 ## M1B-E055 — Guest resolution does not move host CPU per frame: the render-cost hypothesis is falsified at 120 Hz
 
 **Date:** 2026-09-18

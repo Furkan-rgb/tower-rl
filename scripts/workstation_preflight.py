@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tower_rl.doctor import find_android_tool, sdk_roots  # noqa: E402
+from tower_rl.simulation.android_sdk import find_android_tool, sdk_roots  # noqa: E402
 
 TOOLS = ("adb", "emulator", "sdkmanager", "apkanalyzer")
 

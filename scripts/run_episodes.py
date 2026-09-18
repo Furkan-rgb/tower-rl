@@ -26,13 +26,6 @@ from tower_rl.environment.run_environment import (  # noqa: E402
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
-    BridgeCompatibility,
-    InstrumentedBridgeClient,
-)
-from tower_rl.infrastructure.instrumented_run_adapter import (  # noqa: E402
-    InstrumentedRunAdapter,
-)
 from tower_rl.learning.actor import ActorConfig  # noqa: E402
 from tower_rl.learning.evaluator import evaluate, to_record  # noqa: E402
 from tower_rl.learning.policies import (  # noqa: E402
@@ -40,33 +33,19 @@ from tower_rl.learning.policies import (  # noqa: E402
     RandomPolicy,
     WaitOnlyPolicy,
 )
+from tower_rl.simulation.bridge import compatibility  # noqa: E402
+from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    InstrumentedBridgeClient,
+)
+from tower_rl.simulation.instrumented_run_adapter import (  # noqa: E402
+    InstrumentedRunAdapter,
+)
 
 POLICIES = {
     "scripted": CheapestFirstPolicy,
     "random": RandomPolicy,
     "wait": WaitOnlyPolicy,
 }
-
-
-def compatibility(build_dir: Path) -> BridgeCompatibility:
-    """Read the private build's configured identity; never hard-coded here."""
-    cache = {
-        key: value
-        for line in (build_dir / "CMakeCache.txt").read_text().splitlines()
-        if ":STRING=" in line
-        for key, value in [line.split(":STRING=", 1)]
-    }
-    return BridgeCompatibility(
-        package_version=cache["TOWER_BRIDGE_PACKAGE_VERSION"],
-        package_version_code=int(cache["TOWER_BRIDGE_PACKAGE_VERSION_CODE"]),
-        official_signer_sha256=cache["TOWER_BRIDGE_OFFICIAL_SIGNER_SHA256"],
-        original_libunity_sha256=cache["TOWER_BRIDGE_ORIGINAL_LIBUNITY_SHA256"],
-        libil2cpp_sha256=cache["TOWER_BRIDGE_LIBIL2CPP_SHA256"],
-        unity_version=cache["TOWER_BRIDGE_UNITY_VERSION"],
-        il2cpp_metadata_version=int(cache["TOWER_BRIDGE_METADATA_VERSION"]),
-        bridge_version=cache["TOWER_BRIDGE_VERSION"],
-        profile_id=cache["TOWER_BRIDGE_PROFILE_ID"],
-    )
 
 
 def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:

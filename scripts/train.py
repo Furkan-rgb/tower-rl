@@ -46,17 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import torch  # noqa: E402
-from clone_session import CloneInstance, bring_up, require_offline  # noqa: E402
-from run_actors import (  # noqa: E402
-    deploy_bridge,
-    prepare_pinned_snapshot,
-    tear_down_instance,
-)
-from run_episodes import (  # noqa: E402
-    add_cadence_arguments,
-    cadence_from,
-    compatibility,
-)
+from run_episodes import add_cadence_arguments, cadence_from  # noqa: E402
 
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
@@ -76,11 +66,6 @@ from tower_rl.experiment.tracking import (  # noqa: E402
     tracking_uri,
 )
 from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
-from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
-    BridgeCompatibility,
-    InstrumentedBridgeClient,
-)
-from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import write_manifest  # noqa: E402
@@ -94,6 +79,19 @@ from tower_rl.learning.training import (  # noqa: E402
     TrainingProgressReport,
     TrainingRun,
 )
+from tower_rl.simulation.bridge import compatibility, deploy_bridge  # noqa: E402
+from tower_rl.simulation.bring_up import bring_up, require_offline  # noqa: E402
+from tower_rl.simulation.fleet import (  # noqa: E402
+    bring_up_fleet,
+    prepare_pinned_snapshot,
+    tear_down_fleet,
+)
+from tower_rl.simulation.instance import CloneInstance  # noqa: E402
+from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    BridgeCompatibility,
+    InstrumentedBridgeClient,
+)
+from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
 #: The one backbone this project trains.
 BACKBONE = "stacked-dqn"
@@ -602,70 +600,6 @@ def connect(
         ),
     )
 
-
-def bring_up_fleet(
-    instances: Sequence[CloneInstance],
-    open_instance: Callable[[CloneInstance], ActorInstance],
-) -> tuple[list[ActorInstance], list[str]]:
-    """Bring each instance up only after the previous one's bring-up concludes.
-
-    This is `run_actors.stagger_bring_up`'s rule with nothing left to gate.
-    Four emulators cold-booting at the same instant pushed host load to 10.71
-    and left the last of them unable to reach home inside its timeout, while
-    steady-state collection uses 563% of 3,200% available CPU (M1B-E028): the
-    contention is entirely in the boot, so a bring-up must not begin until the
-    previous one has concluded. There it is an event each actor waits on,
-    because collection starts as soon as an instance is ready; here training
-    starts only once the fleet is up, so sequencing the bring-ups is the same
-    rule and needs no gate at all.
-
-    A bring-up that fails costs that actor and not the fleet, exactly as a
-    failed bring-up there still releases the next actor: it is reported, and the
-    next instance is brought up regardless.
-    """
-    ready: list[ActorInstance] = []
-    failures: list[str] = []
-    for instance in instances:
-        try:
-            ready.append(open_instance(instance))
-        except Exception as error:  # noqa: BLE001 - one actor's failure, not the fleet's
-            failures.append(f"{instance.serial}: {type(error).__name__}: {error}")
-            print(f"{instance.serial}: bring-up failed: {error}", flush=True)
-            continue
-        print(f"{instance.serial}: ready", flush=True)
-    if not ready:
-        raise SystemExit(f"no instance of the fleet came up: {'; '.join(failures)}")
-    return ready, failures
-
-
-def tear_down_fleet(
-    opened: Sequence[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]],
-    started: Sequence[CloneInstance],
-    tear_down: Callable[[CloneInstance], None] = tear_down_instance,
-) -> None:
-    """Put down every bridge and every instance this run brought up.
-
-    Leaving an emulator running is a safety failure rather than an
-    inconvenience, so each step here is independent and best-effort: releasing
-    reads the bridge, and on a client that had stopped answering that read
-    raised inside the caller's `finally`, skipping every remaining release and
-    every teardown and leaving four emulators running with the overlay mounted.
-    A failure is reported and the next instance is put down anyway.
-    """
-    for adapter, client in opened:
-        try:
-            adapter.release()
-        except Exception as error:  # noqa: BLE001 - reported, never fatal
-            print(f"bridge on port {client.port}: release failed: {error}", flush=True)
-        finally:
-            client.close()
-    for instance in started:
-        # Only instances this run brought up are torn down, and one that
-        # refuses to clean up must not leave the others running.
-        try:
-            tear_down(instance)
-        except Exception as error:  # noqa: BLE001 - reported, never fatal
-            print(f"{instance.serial}: teardown failed: {error}", flush=True)
 
 
 def main() -> int:

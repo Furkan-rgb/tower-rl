@@ -80,7 +80,7 @@ constexpr useconds_t kFramePollMicros = 2000;
 // it is a real ceiling. Game time is bounded by the requested budget, but a
 // stalled renderer would otherwise never end the loop. The host's read timeout
 // must cover this plus the settle below: `DEFAULT_READ_TIMEOUT_SECONDS` in
-// `src/tower_rl/infrastructure/instrumented_bridge.py` is derived from these two.
+// `src/tower_rl/simulation/instrumented_bridge.py` is derived from these two.
 constexpr useconds_t kAdvanceWallBudgetMicros = 15000000;
 // `Pause` is dispatched to Unity's main thread and lands a frame or two later.
 // `MainFields` resolves no game-owned pause flag, so the landing is observed

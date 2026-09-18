@@ -44,7 +44,6 @@ import argparse
 import json
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -55,23 +54,26 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from clone_session import (  # noqa: E402
-    GUEST_FRAME_RATE_HZ,
-    MAX_GUEST_FRAME_RATE_HZ,
-    SNAPSHOT_CAPABLE_RENDERER,
-    CloneInstance,
-    bridge_key,
-    bring_up,
-    keyed_snapshot_name,
-    kill_emulator,
-    raise_frame_rate,
-    require_game_activity,
-    require_offline,
-    snapshot_exists,
-)
 from run_episodes import POLICIES, add_cadence_arguments  # noqa: E402
 
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
+from tower_rl.simulation.bridge import ActorFailure, deploy_bridge  # noqa: E402
+from tower_rl.simulation.bring_up import (  # noqa: E402
+    bring_up,
+    require_game_activity,
+    require_offline,
+)
+from tower_rl.simulation.fleet import (  # noqa: E402
+    prepare_pinned_snapshot,
+    stagger_bring_up,
+    tear_down_instance,
+)
+from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
+from tower_rl.simulation.instance import (  # noqa: E402
+    GUEST_FRAME_RATE_HZ,
+    MAX_GUEST_FRAME_RATE_HZ,
+    CloneInstance,
+)
 
 #: A rejected command the bridge reports by name; the environment carries the
 #: name through into the episode's termination detail.
@@ -257,46 +259,6 @@ def frame_rates(text: str, actors: int) -> list[int]:
     return rates
 
 
-class ActorFailure(RuntimeError):
-    """A step of one actor's lifecycle failed; only that actor is affected."""
-
-
-def run_bridge(command: str, instance: CloneInstance) -> None:
-    """Deploy or clean up the instrumented bridge on one instance.
-
-    What the script prints is the device-safety evidence itself: the `libunity.so`
-    hash it re-verified against the original, the package identity, the number of
-    live mounts, and whether the bridge artifacts are gone. Cleanup that reports
-    nothing is indistinguishable from cleanup that verified nothing, so the output
-    is relayed to the operator's log rather than kept for an error path that a
-    successful cleanup never takes. Every line is tagged, since N actors clean up
-    at once and an unattributed identity report verifies no particular instance.
-    """
-    result = subprocess.run(
-        [
-            str(SCRIPTS / "instrumented_bridge.sh"),
-            command,
-            instance.serial,
-            str(instance.bridge_host_port),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    for marker, text in (("", result.stdout), ("error: ", result.stderr)):
-        for line in text.splitlines():
-            print(f"{instance.serial} {command}: {marker}{line}", flush=True)
-    if result.returncode != 0:
-        raise ActorFailure(
-            f"instrumented_bridge.sh {command} failed on {instance.serial}: "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
-
-
-def deploy_bridge(instance: CloneInstance) -> None:
-    """The bridge deployment step of the cold path, tagged into the fleet's log."""
-    run_bridge("deploy", instance)
-
-
 def collect_episodes(
     instance: CloneInstance,
     arguments: argparse.Namespace,
@@ -389,128 +351,6 @@ def collect_episodes(
     return record
 
 
-#: A backstop against a readiness signal that never arrives, not the
-#: sequencing mechanism itself, and measured from the previous instance's own
-#: bring-up rather than from fleet start. `collect_episodes` always signals in a
-#: `finally`, and bring_up's own internal waits (`wait_for_boot`,
-#: `wait_until_ready`) are already bounded at 300s, so in the ordinary case —
-#: including a failed bring-up — this is never reached; it exists only so a
-#: bug that skipped the signal could not stall the rest of the fleet forever.
-BRING_UP_STAGGER_BACKSTOP = 360.0
-
-
-def stagger_bring_up(
-    instances: list[CloneInstance], arguments: argparse.Namespace
-) -> Callable[[CloneInstance], dict[str, Any]]:
-    """Sequence each instance's bring-up after the previous instance's readiness.
-
-    This is the fix for the one failure a fleet of 4 hit on device: booting all
-    four emulators at the same instant peaked host load at 10.71 and total CPU
-    at 1,835%, and the last of the four never left `main_unavailable` within its
-    cold-launch timeout while its peers each reached home alone in 60-90s.
-    Steady-state collection uses only 563% of 3,200% available CPU, so the
-    contention is entirely in the simultaneous boot, not in running — which is
-    why only bring-up is gated here. Once an instance is up, its episode
-    collection runs exactly as concurrently as it always has.
-
-    Only bring-up is sequenced. The gates once carried a second, fleet-wide
-    rendezvous — no instance raised its rate or began collecting until every
-    instance was up — on the reading that a raised peer killed a booting one.
-    `M1B-E043` refuted that reading, and the rendezvous was actively harmful: it
-    left a ready instance idle for the rest of the fleet's boots, which is when
-    the guest's Play installs what it downloaded and kills the game. An actor now
-    raises its own instance and collects as soon as its own bring-up returns.
-
-    Sequencing on readiness rather than a fixed sleep means instance i+1 starts
-    its bring-up the moment instance i's bring-up actually concludes, not after
-    a guessed duration — whether instance i succeeded or failed, since one dead
-    actor must not block the rest of the fleet from starting.
-
-    Every actor's thread starts at fleet start, so the backstop has to be timed
-    from the previous instance's *own* bring-up, not from when this thread began
-    waiting. Timing it from fleet start is what let a 7-instance cold host fleet
-    overlap its boots on device: bring-up took ~165s each, so one 360s window
-    measured from fleet start had already expired for instances 3-6 before their
-    predecessors had even launched, and four emulators booted at once — exactly
-    the defect this function exists to prevent.
-    """
-    gates = [threading.Event() for _ in instances]
-    begun = [threading.Event() for _ in instances]
-    begun_at = [0.0 for _ in instances]
-
-    def await_previous(instance: CloneInstance) -> None:
-        previous = instance.index - 1
-        if not begun[previous].wait(BRING_UP_STAGGER_BACKSTOP):
-            print(
-                f"{instance.serial}: instance {previous} never began its bring-up within "
-                f"{BRING_UP_STAGGER_BACKSTOP:.0f}s; starting anyway",
-                flush=True,
-            )
-            return
-        remaining = begun_at[previous] + BRING_UP_STAGGER_BACKSTOP - time.monotonic()
-        if not gates[previous].wait(max(remaining, 0.0)):
-            print(
-                f"{instance.serial}: instance {previous} never signalled ready within "
-                f"{BRING_UP_STAGGER_BACKSTOP:.0f}s of its own launch; starting anyway",
-                flush=True,
-            )
-
-    def collect(instance: CloneInstance) -> dict[str, Any]:
-        if instance.index > 0:
-            await_previous(instance)
-        begun_at[instance.index] = time.monotonic()
-        begun[instance.index].set()
-        return collect_episodes(
-            instance, arguments, signal_ready=gates[instance.index].set
-        )
-
-    return collect
-
-
-def tear_down_instance(instance: CloneInstance) -> None:
-    """Remove the bridge and stop the emulator, whatever the actor did.
-
-    Leaving an emulator running is a device-safety failure, so killing it happens
-    even when the bridge refuses to clean up, and the bridge's failure is what is
-    reported afterwards.
-    """
-    bridge_error: Exception | None = None
-    try:
-        run_bridge("cleanup", instance)
-    except Exception as error:
-        bridge_error = error
-    finally:
-        kill_emulator(instance)
-    if bridge_error is not None:
-        raise bridge_error
-
-
-def prepare_pinned_snapshot(renderer: str, cores: int) -> str:
-    """Make sure the fleet has a snapshot to restore, by taking the cold path once.
-
-    A `-read-only` actor cannot save a snapshot, so without this every actor
-    would cold-start and the fleet would open N network windows instead of none.
-    The preparation runs alone on index 0, writable, before any actor starts —
-    two instances must not write the one AVD at the same time — and its instance
-    is torn down again whether it succeeded or not.
-    """
-    instance = CloneInstance()
-    name = keyed_snapshot_name(bridge_key())
-    if renderer != SNAPSHOT_CAPABLE_RENDERER:
-        # A renderer that cannot snapshot has no pinned snapshot to prepare, and
-        # `bring_up` would take the cold path on a writable instance for nothing.
-        print(f"renderer '{renderer}' cannot snapshot; nothing to pin", flush=True)
-        return name
-    if snapshot_exists(instance, name):
-        return name
-    print(f"no snapshot for the current bridge; preparing {name} once", flush=True)
-    try:
-        bring_up(instance, renderer, deploy=deploy_bridge, cores=cores)
-    finally:
-        tear_down_instance(instance)
-    return name
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--actors", type=int, default=2, help="concurrent instances to run")
@@ -551,7 +391,12 @@ def main() -> int:
     started = time.monotonic()
     outcomes = run_fleet(
         instances,
-        stagger_bring_up(instances, arguments),
+        stagger_bring_up(
+            instances,
+            lambda instance, signal_ready: collect_episodes(
+                instance, arguments, signal_ready=signal_ready
+            ),
+        ),
         tear_down_instance,
     )
     report = aggregate(outcomes, time.monotonic() - started)

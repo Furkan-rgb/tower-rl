@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.infrastructure.instrumented_bridge import (
+from tower_rl.simulation.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
     BridgeRunUnavailable,
@@ -13,7 +13,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     CommandOutcome,
     UpgradeInventoryEntry,
 )
-from tower_rl.infrastructure.instrumented_run_adapter import (
+from tower_rl.simulation.instrumented_run_adapter import (
     GAME_SPEED,
     InstrumentedRunAdapter,
 )

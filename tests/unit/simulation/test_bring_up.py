@@ -10,26 +10,21 @@ and the device-safety properties that hang off it.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
-import clone_session  # noqa: E402
-from clone_session import (  # noqa: E402
-    CloneError,
-    CloneInstance,
+from tower_rl.simulation import bring_up, frame_rate, instance
+from tower_rl.simulation.bridge import BRIDGE_SCRIPT
+from tower_rl.simulation.bring_up import (
     launch_game_at_home,
     restore,
     save_snapshot,
     start,
 )
-
-from tower_rl.infrastructure import adb_device, visual_profile  # noqa: E402
-from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
+from tower_rl.simulation.instance import CloneError, CloneInstance
+from tower_rl.simulation.instrumented_bridge import (
     BridgeDisconnectedError,
     BridgeObservation,
     BridgeRunUnavailable,
@@ -52,7 +47,7 @@ def emulator_log_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     """
     directory = tmp_path / "emulator-logs"
     directory.mkdir()
-    monkeypatch.setattr(clone_session, "EMULATOR_LOG_DIRECTORY", directory)
+    monkeypatch.setattr(instance, "EMULATOR_LOG_DIRECTORY", directory)
     return directory
 
 
@@ -103,7 +98,7 @@ class FakeClone:
         #: override cannot exceed. Separate from `pinned_rate` because the two
         #: levers fail silently and independently, and a run collecting at 60
         #: under a 120 override is exactly the failure being refused.
-        self.display_rate = clone_session.GUEST_FRAME_RATE_HZ
+        self.display_rate = instance.GUEST_FRAME_RATE_HZ
         #: Whether `dumpsys activity activities` lists the game's activity, one
         #: reading per call, the last repeating. A Play update kills the
         #: activity while leaving the process, so this is scripted apart from
@@ -159,8 +154,8 @@ class FakeClone:
                 # A real save leaves the snapshot directory on disk; that is
                 # what `snapshot_exists` checks after a reported success.
                 name = args[-1]
-                clone_session.snapshot_directory(instance).mkdir(parents=True, exist_ok=True)
-                (clone_session.snapshot_directory(instance) / name).mkdir(exist_ok=True)
+                bring_up.snapshot_directory(instance).mkdir(parents=True, exist_ok=True)
+                (bring_up.snapshot_directory(instance) / name).mkdir(exist_ok=True)
             return self.snapshot_reply
         return ""
 
@@ -171,6 +166,20 @@ class FakeClone:
         raise AssertionError(f"no command starting with {prefix!r} in {self.commands}")
 
 
+ADB_CALLERS = (instance, bring_up, frame_rate)
+
+
+def patch_adb(monkeypatch: pytest.MonkeyPatch, answer: Any) -> None:
+    """Replace `adb` everywhere it is bound.
+
+    Every module that speaks to an instance imports `adb` by name, so a fake
+    installed only on the module it is defined in would leave the copies the
+    others hold pointing at the real one — and a test would reach a device.
+    """
+    for module in ADB_CALLERS:
+        monkeypatch.setattr(module, "adb", answer)
+
+
 def install(
     monkeypatch: pytest.MonkeyPatch,
     clone: FakeClone,
@@ -178,28 +187,22 @@ def install(
 ) -> list[int]:
     """Wire the fake clone, the fake bridge and a clock that only sleeps forward.
 
-    Every screen-reading route is replaced by a double that fails if it is used
-    at all: readiness must be decided without a screenshot and without the visual
-    profile, whatever else changes.
+    No screen-reading route is installed at all, because none exists: readiness
+    is the bridge's own reading, and `test_no_screen_reading.py` holds the
+    simulation to never reaching for one.
     """
-    monkeypatch.setattr(clone_session, "adb", clone.adb)
-    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
-    monkeypatch.setattr(clone_session.subprocess, "Popen", lambda *_, **__: None)
-    monkeypatch.setattr(clone_session, "expected_compatibility", lambda: None)
-
-    def refuse_screenshot(*_: object, **__: object) -> None:
-        raise AssertionError("readiness must not read the screen")
-
-    monkeypatch.setattr(adb_device.AdbDevice, "screenshot", refuse_screenshot)
-    monkeypatch.setattr(visual_profile, "classify", refuse_screenshot)
+    patch_adb(monkeypatch, clone.adb)
+    monkeypatch.setattr(instance, "find_android_tool", lambda name: Path(name))
+    monkeypatch.setattr(instance.subprocess, "Popen", lambda *_, **__: None)
+    monkeypatch.setattr(bring_up, "expected_compatibility", lambda: None)
 
     now = [0.0]
 
     def advance(seconds: float) -> None:
         now[0] += seconds
 
-    monkeypatch.setattr(clone_session.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(clone_session.time, "sleep", advance)
+    monkeypatch.setattr(instance.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(instance.time, "sleep", advance)
 
     ports: list[int] = []
     queue = list(readings or [])
@@ -220,7 +223,7 @@ def install(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(clone_session, "InstrumentedBridgeClient", FakeBridgeClient)
+    monkeypatch.setattr(bring_up, "InstrumentedBridgeClient", FakeBridgeClient)
     return ports
 
 
@@ -389,7 +392,7 @@ def test_restore_refuses_a_snapshot_whose_game_is_not_running(
 
 def test_the_canonical_evaluation_avd_is_still_refused() -> None:
     with pytest.raises(CloneError, match="canonical evaluation AVD"):
-        CloneInstance(avd=clone_session.CANONICAL_AVD)
+        CloneInstance(avd=instance.CANONICAL_AVD)
 
 
 def bridge_build(
@@ -401,19 +404,19 @@ def bridge_build(
     (build / "libtower_bridge.so").write_bytes(contents)
     monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(build))
     monkeypatch.setenv("ANDROID_AVD_HOME", str(tmp_path / "avd"))
-    return clone_session.bridge_key()
+    return bring_up.bridge_key()
 
 
 def hold_snapshot(tmp_path: Path, name: str) -> None:
     """Put a snapshot of that name into the clone AVD, as the emulator would."""
-    directory = tmp_path / "avd" / f"{clone_session.CLONE_AVD}.avd" / "snapshots" / name
+    directory = tmp_path / "avd" / f"{instance.CLONE_AVD}.avd" / "snapshots" / name
     directory.mkdir(parents=True)
 
 
 def record_launches(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     launches: list[list[str]] = []
     monkeypatch.setattr(
-        clone_session.subprocess, "Popen", lambda command, **_: launches.append(command)
+        instance.subprocess, "Popen", lambda command, **_: launches.append(command)
     )
     return launches
 
@@ -428,22 +431,22 @@ def test_the_snapshot_key_is_the_bridge_binary_itself(
 
     assert first == again
     assert first != other
-    assert clone_session.keyed_snapshot_name(first).endswith(first)
-    assert clone_session.keyed_snapshot_name(first).startswith(clone_session.SNAPSHOT_PREFIX)
+    assert bring_up.keyed_snapshot_name(first).endswith(first)
+    assert bring_up.keyed_snapshot_name(first).startswith(bring_up.SNAPSHOT_PREFIX)
 
 
 def test_a_snapshot_taken_for_another_bridge_does_not_match(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stale = bridge_build(tmp_path, monkeypatch, contents=b"bridge-two")
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(stale))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(stale))
     current = bridge_build(tmp_path, monkeypatch)
 
-    assert not clone_session.snapshot_exists(
-        CloneInstance(), clone_session.keyed_snapshot_name(current)
+    assert not bring_up.snapshot_exists(
+        CloneInstance(), bring_up.keyed_snapshot_name(current)
     )
-    assert clone_session.snapshot_exists(
-        CloneInstance(), clone_session.keyed_snapshot_name(stale)
+    assert bring_up.snapshot_exists(
+        CloneInstance(), bring_up.keyed_snapshot_name(stale)
     )
 
 
@@ -452,13 +455,13 @@ def test_a_matching_snapshot_is_restored_without_a_deploy_or_a_network_window(
 ) -> None:
     """This is the whole point: no radios, no cold launch, ten seconds."""
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
     launches = record_launches(monkeypatch)
     deployed: list[str] = []
 
-    path = clone_session.bring_up(
+    path = bring_up.bring_up(
         CloneInstance(), "lavapipe", deploy=lambda instance: deployed.append(instance.serial)
     )
 
@@ -468,7 +471,7 @@ def test_a_matching_snapshot_is_restored_without_a_deploy_or_a_network_window(
     assert not [command for command in clone.commands if "monkey" in command]
     assert not [command for command in clone.commands if "snapshot save" in command]
     assert launches[0][launches[0].index("-snapshot") + 1] == (
-        clone_session.keyed_snapshot_name(key)
+        bring_up.keyed_snapshot_name(key)
     )
 
 
@@ -478,14 +481,14 @@ def test_a_missing_or_mismatched_snapshot_takes_the_cold_path_and_saves_one(
 ) -> None:
     if stale_key_present:
         stale = bridge_build(tmp_path, monkeypatch, contents=b"bridge-two")
-        hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(stale))
+        hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(stale))
     key = bridge_build(tmp_path, monkeypatch)
     clone = FakeClone()
     install(monkeypatch, clone, [IDLE])
     launches = record_launches(monkeypatch)
     deployed: list[str] = []
 
-    path = clone_session.bring_up(
+    path = bring_up.bring_up(
         CloneInstance(), "lavapipe", deploy=lambda instance: deployed.append(instance.serial)
     )
 
@@ -497,7 +500,7 @@ def test_a_missing_or_mismatched_snapshot_takes_the_cold_path_and_saves_one(
     assert enabled < clone.index_of("shell monkey")
     assert any("svc wifi disable" in command for command in clone.commands[enabled:])
     assert not clone.online
-    saved = f"emu avd snapshot save {clone_session.keyed_snapshot_name(key)}"
+    saved = f"emu avd snapshot save {bring_up.keyed_snapshot_name(key)}"
     assert clone.index_of(saved) > clone.index_of("shell monkey")
 
 
@@ -505,12 +508,12 @@ def test_the_cold_path_can_be_forced_over_a_matching_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
     clone = FakeClone()
     install(monkeypatch, clone, [IDLE])
     launches = record_launches(monkeypatch)
 
-    path = clone_session.bring_up(
+    path = bring_up.bring_up(
         CloneInstance(), "lavapipe", deploy=lambda _: None, force_cold=True
     )
 
@@ -533,17 +536,17 @@ def test_a_restored_instance_whose_game_is_gone_falls_back_to_the_cold_path(
 ) -> None:
     """A snapshot that does not verify is not used, and is not left running."""
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
     clone = RestoredWithoutItsGame(online=False, pid="")
     install(monkeypatch, clone, [IDLE])
     record_launches(monkeypatch)
 
-    path = clone_session.bring_up(CloneInstance(), "lavapipe", deploy=lambda _: None)
+    path = bring_up.bring_up(CloneInstance(), "lavapipe", deploy=lambda _: None)
 
     assert path == "cold"
     killed = clone.index_of("emu kill")
     assert killed < clone.index_of("shell monkey")
-    saved = f"emu avd snapshot save {clone_session.keyed_snapshot_name(key)}"
+    saved = f"emu avd snapshot save {bring_up.keyed_snapshot_name(key)}"
     assert clone.index_of(saved) > killed
 
 
@@ -557,14 +560,14 @@ def test_a_restored_instance_that_never_reads_ready_falls_back_to_the_cold_path(
     then let the cold path reach home.
     """
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
     clone = FakeClone(online=False)
-    starting = int(clone_session.RESTORED_READY_TIMEOUT // 5.0)
+    starting = int(bring_up.RESTORED_READY_TIMEOUT // 5.0)
     install(monkeypatch, clone, [STARTING] * starting + [IDLE])
     record_launches(monkeypatch)
     deployed: list[str] = []
 
-    path = clone_session.bring_up(
+    path = bring_up.bring_up(
         CloneInstance(), "lavapipe", deploy=lambda instance: deployed.append(instance.serial)
     )
 
@@ -582,7 +585,7 @@ def test_a_read_only_instance_takes_the_cold_path_without_saving_a_snapshot(
     install(monkeypatch, clone, [IDLE])
     launches = record_launches(monkeypatch)
 
-    path = clone_session.bring_up(
+    path = bring_up.bring_up(
         CloneInstance(index=1), "lavapipe", deploy=lambda _: None, read_only=True
     )
 
@@ -593,21 +596,21 @@ def test_a_read_only_instance_takes_the_cold_path_without_saving_a_snapshot(
 
 def test_a_second_instance_cannot_be_launched_writable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Refused before any adb or emulator call, since the emulator would refuse it too."""
-    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
+    monkeypatch.setattr(instance, "find_android_tool", lambda name: Path(name))
     popen_calls: list[object] = []
     monkeypatch.setattr(
-        clone_session.subprocess, "Popen", lambda *args, **kwargs: popen_calls.append(args)
+        instance.subprocess, "Popen", lambda *args, **kwargs: popen_calls.append(args)
     )
 
     with pytest.raises(CloneError, match="must be launched --read-only"):
-        clone_session.launch_emulator(CloneInstance(index=1), "lavapipe", None, read_only=False)
+        instance.launch_emulator(CloneInstance(index=1), "lavapipe", None, read_only=False)
 
     assert popen_calls == []
 
 
 def test_a_second_instance_may_launch_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    clone_session.require_shareable(CloneInstance(index=1), True)
-    clone_session.require_shareable(CloneInstance(index=0), False)
+    instance.require_shareable(CloneInstance(index=1), True)
+    instance.require_shareable(CloneInstance(index=0), False)
 
 
 class ExitedProcess:
@@ -624,9 +627,9 @@ def test_a_launch_failure_surfaces_the_emulators_own_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The emulator refusing to start must not look like a hang."""
-    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
-    monkeypatch.setattr(clone_session.time, "monotonic", lambda: 0.0)
-    monkeypatch.setattr(clone_session.time, "sleep", lambda _: None)
+    monkeypatch.setattr(instance, "find_android_tool", lambda name: Path(name))
+    monkeypatch.setattr(instance.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(instance.time, "sleep", lambda _: None)
 
     message = "ERROR | Another emulator instance is running. Please close it.\n"
 
@@ -635,26 +638,26 @@ def test_a_launch_failure_surfaces_the_emulators_own_message(
         stdout.flush()
         return ExitedProcess(1)
 
-    monkeypatch.setattr(clone_session.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(instance.subprocess, "Popen", fake_popen)
 
     with pytest.raises(CloneError, match="Another emulator instance is running"):
-        clone_session.launch_emulator(CloneInstance(), "host", None)
+        instance.launch_emulator(CloneInstance(), "host", None)
 
 
 def test_a_boot_timeout_includes_the_captured_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A slow boot that never completes must still explain itself, not just time out."""
-    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
-    monkeypatch.setattr(clone_session, "adb", lambda *_, **__: "")
+    monkeypatch.setattr(instance, "find_android_tool", lambda name: Path(name))
+    patch_adb(monkeypatch, lambda *_, **__: "")
 
     now = [0.0]
 
     def advance(seconds: float) -> None:
         now[0] += seconds
 
-    monkeypatch.setattr(clone_session.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(clone_session.time, "sleep", advance)
+    monkeypatch.setattr(instance.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(instance.time, "sleep", advance)
 
     class StillRunning:
         returncode = None
@@ -667,10 +670,10 @@ def test_a_boot_timeout_includes_the_captured_output(
         stdout.flush()
         return StillRunning()
 
-    monkeypatch.setattr(clone_session.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(instance.subprocess, "Popen", fake_popen)
 
     with pytest.raises(CloneError, match="boot still in progress"):
-        clone_session.launch_emulator(CloneInstance(), "host", None)
+        instance.launch_emulator(CloneInstance(), "host", None)
 
 
 def test_bring_up_under_host_takes_the_cold_path_without_attempting_a_save(
@@ -682,13 +685,13 @@ def test_bring_up_under_host_takes_the_cold_path_without_attempting_a_save(
     check is what routes this, not a missing snapshot.
     """
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
     clone = FakeClone()
     install(monkeypatch, clone, [IDLE])
     launches = record_launches(monkeypatch)
     deployed: list[str] = []
 
-    path = clone_session.bring_up(
+    path = bring_up.bring_up(
         CloneInstance(), "host", deploy=lambda instance: deployed.append(instance.serial)
     )
 
@@ -709,15 +712,15 @@ def test_the_display_mode_is_launched_at_the_rate_but_the_game_is_not_raised_yet
     surface to 60. So every instance boots at the stock rate, on both paths.
     """
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
-    rate = str(clone_session.GUEST_FRAME_RATE_HZ)
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
+    rate = str(instance.GUEST_FRAME_RATE_HZ)
 
     for renderer, path in (("lavapipe", "restored"), ("host", "cold")):
         clone = FakeClone(online=renderer == "host")
         install(monkeypatch, clone, [IDLE])
         launches = record_launches(monkeypatch)
 
-        assert clone_session.bring_up(CloneInstance(), renderer, deploy=lambda _: None) == path
+        assert bring_up.bring_up(CloneInstance(), renderer, deploy=lambda _: None) == path
 
         assert launches[0][launches[0].index("-vsync-rate") + 1] == rate
         assert not [command for command in clone.commands if "cmd game set" in command]
@@ -736,11 +739,11 @@ def test_raising_the_rate_pins_the_game_to_the_rate_the_display_was_launched_at(
     """
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
-    rate = clone_session.GUEST_FRAME_RATE_HZ
+    rate = instance.GUEST_FRAME_RATE_HZ
 
-    clone_session.raise_frame_rate(CloneInstance())
+    frame_rate.raise_frame_rate(CloneInstance())
 
-    assert f"shell cmd game set --fps {rate} {clone_session.PACKAGE}" in clone.commands
+    assert f"shell cmd game set --fps {rate} {instance.PACKAGE}" in clone.commands
     assert clone.pinned_rate == rate
 
 
@@ -754,17 +757,17 @@ def test_a_run_may_choose_its_rate_and_both_levers_follow_it(
     confirmation has to read that number back rather than the constant.
     """
     key = bridge_build(tmp_path, monkeypatch)
-    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    hold_snapshot(tmp_path, bring_up.keyed_snapshot_name(key))
     clone = FakeClone(online=False)
     clone.display_rate = 60
     install(monkeypatch, clone, [IDLE])
     launches = record_launches(monkeypatch)
 
-    clone_session.bring_up(CloneInstance(), "lavapipe", deploy=lambda _: None, frame_rate_hz=60)
-    clone_session.raise_frame_rate(CloneInstance(), 60)
+    bring_up.bring_up(CloneInstance(), "lavapipe", deploy=lambda _: None, frame_rate_hz=60)
+    frame_rate.raise_frame_rate(CloneInstance(), 60)
 
     assert launches[0][launches[0].index("-vsync-rate") + 1] == "60"
-    assert f"shell cmd game set --fps 60 {clone_session.PACKAGE}" in clone.commands
+    assert f"shell cmd game set --fps 60 {instance.PACKAGE}" in clone.commands
     assert clone.pinned_rate == 60
 
 
@@ -776,7 +779,7 @@ def test_a_rate_the_display_was_not_launched_at_is_refused(
     install(monkeypatch, clone, [IDLE])
 
     with pytest.raises(CloneError, match="the guest is not at 60 Hz"):
-        clone_session.raise_frame_rate(CloneInstance(), 60)
+        frame_rate.raise_frame_rate(CloneInstance(), 60)
 
 
 def test_a_guest_still_at_sixty_is_refused_rather_than_collected_from(
@@ -787,7 +790,7 @@ def test_a_guest_still_at_sixty_is_refused_rather_than_collected_from(
     install(monkeypatch, clone, [IDLE])
 
     with pytest.raises(CloneError, match="the guest is not at"):
-        clone_session.confirm_frame_rate(CloneInstance())
+        frame_rate.confirm_frame_rate(CloneInstance())
 
 
 def test_teardown_resets_the_frame_rate_override_it_pinned() -> None:
@@ -799,8 +802,7 @@ def test_teardown_resets_the_frame_rate_override_it_pinned() -> None:
     get wrong — the reset is issued, a nonzero return does not abort the rest of
     cleanup under `set -e`, and the restore is read back rather than announced.
     """
-    script = Path(__file__).resolve().parents[2] / "scripts" / "instrumented_bridge.sh"
-    cleanup = script.read_text()
+    cleanup = BRIDGE_SCRIPT.read_text()
     assert 'device shell cmd game reset "$package" > /dev/null 2>&1 ||' in cleanup
     assert "game_frame_rate_override: reset-issued (unverified)" in cleanup
     assert "game_frame_rate_override: NOT-reset" in cleanup
@@ -832,7 +834,7 @@ def test_a_game_that_keeps_being_killed_is_relaunched_at_most_twice(
     with pytest.raises(CloneError, match="never became ready"):
         launch_game_at_home(CloneInstance())
 
-    assert clone.launches == 1 + clone_session.MAX_RELAUNCHES
+    assert clone.launches == 1 + bring_up.MAX_RELAUNCHES
 
 
 def test_a_relaunch_never_turns_a_radio_back_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -842,11 +844,11 @@ def test_a_relaunch_never_turns_a_radio_back_on(monkeypatch: pytest.MonkeyPatch)
     instance = CloneInstance()
     install(monkeypatch, clone, [STARTING, STARTING, STARTING, IDLE])
 
-    clone_session.wait_until_ready(
+    bring_up.wait_until_ready(
         instance,
         timeout=300.0,
-        poll=clone_session.ONLINE_POLL_SECONDS,
-        relaunch=lambda: clone_session.launch_game(instance),
+        poll=bring_up.ONLINE_POLL_SECONDS,
+        relaunch=lambda: bring_up.launch_game(instance),
     )
 
     assert clone.launches == 1
@@ -858,14 +860,14 @@ def test_an_emulator_log_under_test_never_touches_the_directory_the_live_ones_us
     emulator_log_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A test that fakes only `Popen` still opens this file `"wb"` for writing."""
-    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
-    monkeypatch.setattr(clone_session, "adb", lambda *_, **__: "1")
+    monkeypatch.setattr(instance, "find_android_tool", lambda name: Path(name))
+    patch_adb(monkeypatch, lambda *_, **__: "1")
     record_launches(monkeypatch)
 
-    clone_session.launch_emulator(CloneInstance(index=1), "host", None, read_only=True)
+    instance.launch_emulator(CloneInstance(index=1), "host", None, read_only=True)
 
     assert (emulator_log_directory / "tower-rl-emulator-emulator-5558.log").is_file()
-    assert emulator_log_directory == clone_session.EMULATOR_LOG_DIRECTORY
+    assert emulator_log_directory == instance.EMULATOR_LOG_DIRECTORY
 
 
 def test_an_override_the_display_mode_cannot_honour_is_refused(
@@ -877,10 +879,10 @@ def test_an_override_the_display_mode_cannot_honour_is_refused(
     install(monkeypatch, clone, [IDLE])
 
     with pytest.raises(CloneError, match="display vsync mode 60"):
-        clone_session.raise_frame_rate(CloneInstance())
+        frame_rate.raise_frame_rate(CloneInstance())
 
     # The override itself was taken; it is the display that cannot honour it.
-    assert clone.pinned_rate == clone_session.GUEST_FRAME_RATE_HZ
+    assert clone.pinned_rate == instance.GUEST_FRAME_RATE_HZ
 
 
 def test_a_reading_a_hair_off_the_rate_is_still_the_rate(
@@ -889,15 +891,14 @@ def test_a_reading_a_hair_off_the_rate_is_still_the_rate(
     """SurfaceFlinger computes the applied rate from a vsync period; 120.000004 is 120."""
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
-    monkeypatch.setattr(
-        clone_session,
-        "adb",
+    patch_adb(
+        monkeypatch,
         lambda instance, *args, **kwargs: (
             clone.adb(instance, *args, **kwargs).replace(".00 Hz}", ".000004 Hz}")
         ),
     )
 
-    clone_session.raise_frame_rate(CloneInstance())
+    frame_rate.raise_frame_rate(CloneInstance())
 
 
 def test_a_game_killed_as_the_network_is_cut_fails_by_name_and_stays_offline(
@@ -920,7 +921,7 @@ def test_a_game_killed_as_the_network_is_cut_fails_by_name_and_stays_offline(
     with pytest.raises(CloneError, match="did not survive the network being cut") as error:
         launch_game_at_home(CloneInstance())
 
-    assert clone_session.GAME_ACTIVITY_LOST in str(error.value)
+    assert bring_up.GAME_ACTIVITY_LOST in str(error.value)
     # The launcher intent that started it, and nothing after it.
     assert clone.launches == 1
     assert not clone.online
@@ -939,8 +940,8 @@ def test_a_game_that_survived_the_cut_is_not_blamed_for_a_lost_activity(
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
 
-    assert clone_session.lost_activity_cause(CloneInstance()) == ""
-    clone_session.require_game_activity(CloneInstance())
+    assert bring_up.lost_activity_cause(CloneInstance()) == ""
+    bring_up.require_game_activity(CloneInstance())
 
 
 def test_a_lost_activity_before_the_rate_is_raised_is_refused_by_name(
@@ -957,7 +958,7 @@ def test_a_lost_activity_before_the_rate_is_raised_is_refused_by_name(
     install(monkeypatch, clone, [IDLE])
 
     with pytest.raises(CloneError, match="lost its activity"):
-        clone_session.require_game_activity(CloneInstance())
+        bring_up.require_game_activity(CloneInstance())
 
     assert clone.launches == 0
 
@@ -968,9 +969,8 @@ def test_an_absent_applied_rate_names_the_missing_game_surface(
     """A bare `applied frame rate absent` cost a fleet run its diagnosis."""
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
-    monkeypatch.setattr(
-        clone_session,
-        "adb",
+    patch_adb(
+        monkeypatch,
         lambda instance, *args, **kwargs: re.sub(
             r"\(uid, frameRate\)=\{10218, [\d.]+ Hz\}",
             "",
@@ -979,7 +979,7 @@ def test_an_absent_applied_rate_names_the_missing_game_surface(
     )
 
     with pytest.raises(CloneError, match="lost its activity"):
-        clone_session.raise_frame_rate(CloneInstance())
+        frame_rate.raise_frame_rate(CloneInstance())
 
 
 def test_the_activity_a_kill_left_in_the_task_history_is_not_a_present_activity(
@@ -996,9 +996,8 @@ def test_the_activity_a_kill_left_in_the_task_history_is_not_a_present_activity(
     """
     clone = FakeClone(online=False)
     install(monkeypatch, clone, [IDLE])
-    monkeypatch.setattr(
-        clone_session,
-        "adb",
+    patch_adb(
+        monkeypatch,
         lambda instance, *args, **kwargs: (
             "  topResumedActivity=ActivityRecord{NexusLauncher}\n"
             "  * Hist #0: ActivityRecord{u0 com.TechTreeGames.TheTower/"
@@ -1008,4 +1007,4 @@ def test_the_activity_a_kill_left_in_the_task_history_is_not_a_present_activity(
         ),
     )
 
-    assert not clone_session.game_activity_present(CloneInstance())
+    assert not bring_up.game_activity_present(CloneInstance())

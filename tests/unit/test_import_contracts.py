@@ -30,10 +30,20 @@ FORBIDDEN_TO_ENVIRONMENT = ("tower_rl",)
 FORBIDDEN_TO_LEARNING = ("tower_rl",)
 ALLOWED_TO_LEARNING = ("tower_rl.environment",)
 
+#: What `tower_rl.simulation` may not reach for: everything in the package except
+#: the environment. Stated as an allowance for the same reason learning's is —
+#: the rule decided is "simulation imports only the environment", so a package
+#: added later is forbidden by default rather than by somebody remembering it.
+#: This is what keeps host checks and the learner out of the one place that
+#: reaches a device: `find_android_tool` moved down here from `doctor` because
+#: of this rule, rather than the rule being widened to let it stay.
+FORBIDDEN_TO_SIMULATION = ("tower_rl",)
+ALLOWED_TO_SIMULATION = ("tower_rl.environment",)
+
 #: What `tower_rl.experiment` may not reach for. Device adapters and host checks
 #: are the simulation side, and a script is where a run is composed: an
 #: experiment that imported either could not be run from anywhere else.
-FORBIDDEN_TO_EXPERIMENT = ("tower_rl.infrastructure", "tower_rl.doctor")
+FORBIDDEN_TO_EXPERIMENT = ("tower_rl.simulation", "tower_rl.doctor")
 
 #: Modules that only exist beside an entry point. No package module may import
 #: them at all, by any name.
@@ -116,6 +126,16 @@ def test_learning_reads_back_from_nothing_that_observes_or_drives_it() -> None:
     assert offences("learning", FORBIDDEN_TO_LEARNING, allowed=ALLOWED_TO_LEARNING) == []
 
 
+def test_simulation_knows_how_to_reach_a_device_and_nothing_about_the_run_on_it() -> None:
+    """Everything device-facing lives here, and it knows only the environment.
+
+    Not the learner, not the experiment observing it, and not a script: the
+    adapter here is a `RunPort`, so a run can be driven without the simulation
+    ever learning what is driving it.
+    """
+    assert offences("simulation", FORBIDDEN_TO_SIMULATION, allowed=ALLOWED_TO_SIMULATION) == []
+
+
 def test_the_experiment_package_reaches_for_no_adapter_and_no_script() -> None:
     assert offences("experiment", FORBIDDEN_TO_EXPERIMENT) == []
 
@@ -127,7 +147,7 @@ def test_the_walker_sees_every_spelling_an_import_can_take(tmp_path: Path) -> No
     own package both reach a module, and both were once invisible here.
     """
     source = (
-        "import tower_rl.infrastructure.adb\n"
+        "import tower_rl.simulation.adb\n"
         "from tower_rl.experiment import metrics\n"
         "from tower_rl import doctor\n"
         "from ..doctor import find\n"
@@ -141,7 +161,7 @@ def test_the_walker_sees_every_spelling_an_import_can_take(tmp_path: Path) -> No
     path.write_text(source)
     names = imported_modules(path, tmp_path)
 
-    assert "tower_rl.infrastructure.adb" in names
+    assert "tower_rl.simulation.adb" in names
     assert "tower_rl.experiment.metrics" in names
     assert "tower_rl.doctor" in names, "the `from tower_rl import doctor` form"
     assert "tower_rl.doctor.find" in names, "a relative import climbing out of the package"

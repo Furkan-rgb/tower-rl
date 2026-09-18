@@ -58,9 +58,10 @@ measured, not what to do next.
   fell from 7.25 s to 1.716 s and nothing in the RL loop reads a pixel
   (`M1B-E022`). Bring-up readiness is likewise read from the bridge's own
   `main_unavailable`/`no_initialized_run` reasons, verified again on device
-  (`M1B-E024`). `visual_profile` is retained deliberately, for the
-  review/spectate path only, where a human watches and the picture is the
-  point.
+  (`M1B-E024`). The screenshot classifier that was the previous oracle has
+  been removed outright (#16): it had no caller left, and a static guard
+  under `tests/unit/simulation/` now holds every module that can reach an
+  instance to reading no pixel and tapping no coordinate.
 - **MLflow experiment tracking** is wired behind a port and on by default;
   run with `uv run --extra tracking` to have it record.
 
@@ -105,8 +106,8 @@ measured, not what to do next.
 5. **Bring-up readiness is non-visual.** The bridge reports `main_unavailable`
    while the game is still starting — the splash, or the OFFLINE modal — and
    `no_initialized_run` once it is up and idle at home, so nothing in the
-   automated path classifies a screenshot. `visual_profile` stays for the
-   review/spectate path, where a human watches and the picture is the point.
+   automated path classifies a screenshot, and since #16 no screenshot
+   classifier remains in the tree at all.
 6. **`-gpu host` is the training renderer; snapshots are lavapipe-only.**
    Verified equivalent to lavapipe on game-time ratio, decisions/wave, mean
    wave and unattended stability (see "Done: `-gpu host` is the mandatory
@@ -626,7 +627,7 @@ from the backup if anything but the intended package changed.
 ADR 0006 now defines the separate instrumented-training and official-evaluation
 profiles. The first production bridge slice lives under `native/tower_bridge/`
 with its strict host client in
-`src/tower_rl/infrastructure/instrumented_bridge.py`. A live 29.0.3 run passed
+`src/tower_rl/simulation/instrumented_bridge.py`. A live 29.0.3 run passed
 the exact compatibility handshake and returned both active and terminal
 observations with all 60 in-run upgrades (20 Attack, 20 Defense, 20 Utility).
 Startup observations fail closed until `Main.Instance` and run scalar state are

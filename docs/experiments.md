@@ -4904,6 +4904,8 @@ AVDs; all repository checks remain green.
 
 ## M0-E010 — Domain-driven package boundaries
 
+**Superseded.** The `domain`/`ports`/`application`/`infrastructure` layering and the CLI composition root described here no longer exist; the packages are now `environment`, `simulation`, `learning` and `experiment` with `scripts/` as the composition root, the last move of which is device-verified in `M1B-E056`. The rule is enforced by `tests/unit/test_import_contracts.py` and described in `docs/architecture.md`.
+
 **Date:** 2026-09-14
 **Status:** Refactor verified; behavior preserved
 **Purpose:** Keep game concepts independent from Android and process details as

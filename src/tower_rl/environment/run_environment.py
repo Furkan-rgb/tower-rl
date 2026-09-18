@@ -68,7 +68,7 @@ class CadenceConfig:
 DEATH_BOUNDARY_TRANSIENT = "negative health in an active run"
 
 #: The smallest advance the wire protocol will carry, mirroring
-#: `MIN_ADVANCE_BUDGET_GAME_MS` in `infrastructure/instrumented_bridge.py`. The
+#: `MIN_ADVANCE_BUDGET_GAME_MS` in `simulation/instrumented_bridge.py`. The
 #: death-boundary recovery asks for one frame of game time, or for this floor
 #: when a frame is worth less than the protocol allows.
 MIN_ADVANCE_GAME_MS = 10

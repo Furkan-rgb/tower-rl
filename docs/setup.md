@@ -39,9 +39,10 @@ uv run pytest
 Python 3.12 is selected by the project metadata. The proprietary XAPK must remain
 under `local/`, which is ignored by Git.
 
-For a host-specific configuration, copy `configs/local.example.yaml` to
-`configs/local.yaml` and edit only device/profile values. Keep credentials,
-account state, snapshots, and generated runtime paths out of that file.
+There is no configuration file. Every entry point under `scripts/` is configured
+by its own command-line arguments, and the private bridge build directory is
+named by the `TOWER_BRIDGE_BUILD_DIR` environment variable. Keep credentials,
+account state, snapshots, and generated runtime paths out of the repository.
 
 ## 3. Android tooling on Apple silicon
 
@@ -82,22 +83,45 @@ Do not place AVD data, snapshots, or Android user data in the repository.
 
 Run the metadata-only checks before installation:
 
-```text
-uv run tower-rl doctor \
-  --xapk local/the-tower-29-0-1.xapk
-```
+There is no `tower-rl` console script. The checks are
+`tower_rl.doctor.run_doctor(xapk, serial)`, rendered with
+`tower_rl.doctor.render_json`; host tooling alone is
+`uv run python scripts/workstation_preflight.py`.
 
 Boot the candidate visibly for first-run characterization:
 
 ```text
 emulator @tower_rl_api36_play_arm64 \
-  -gpu lavapipe \
+  -gpu host \
   -no-audio \
   -no-boot-anim \
   -no-snapshot
 ```
 
 Wait for `adb shell getprop sys.boot_completed` to return `1`.
+
+### Which renderer
+
+`-gpu host` is the standing renderer for every fleet, training and collection
+run. It is device-verified equivalent to lavapipe on game-time ratio
+(1.0130 against 1.0118), decisions per wave (21.0 against 20.73), mean wave (6.2
+against 6.0) and unattended stability, with every health counter at zero, and it
+is the faster of the two; the last device run of the moved simulation code used
+it throughout (`M1B-E056`, read back from `/proc/<pid>/cmdline` in `M1B-E055`).
+
+The cost is that it cannot snapshot. The emulator refuses to save a snapshot of
+a Vulkan app under `-gpu host` (`KO: Snapshot save is skipped. Reason:
+UNSUPPORTED_VK_APP`), so under `-gpu host` every instance takes the cold
+bring-up path by name: `prepare_pinned_snapshot` in
+`src/tower_rl/simulation/fleet.py` checks the renderer against
+`SNAPSHOT_CAPABLE_RENDERER` (`lavapipe`), prints `renderer 'host' cannot
+snapshot; nothing to pin`, and pins nothing.
+
+So `-gpu lavapipe` survives only where a snapshot is actually saved or restored:
+`prepare_pinned_snapshot` and `bring_up`'s restore path, the golden-baseline
+restore in section 7 below, and manual visual review. The `--renderer` default
+in the scripts is still `lavapipe` for that reason; a fleet run passes
+`--renderer host` explicitly.
 
 ## 5. Optional XAPK metadata/reference inspection
 
@@ -109,23 +133,16 @@ its metadata without installing or copying proprietary bytes into the repo:
 unzip -l local/the-tower-29-0-1.xapk
 ```
 
-Confirm the Play-installed running setup:
+Confirm the Play-installed running setup with `run_doctor(xapk, serial)` against
+the running serial.
+
+The M0 `probe` command and the visual profile it validated no longer exist. The
+environment is read through the instrumented bridge instead
+(`src/tower_rl/simulation/instrumented_bridge.py`), and no part of the RL loop
+reads a pixel. To bring one instance up and inspect it:
 
 ```text
-uv run tower-rl doctor \
-  --xapk local/the-tower-29-0-1.xapk \
-  --serial emulator-5554
-
-Validate the pinned visual profile and, when desired, run the bounded no-upgrade
-navigation smoke flow. The navigation form restores the canonical snapshot after
-the run so earned in-run coins or transient state cannot drift the baseline:
-
-```text
-uv run tower-rl probe \
-  --serial emulator-5554 \
-  --navigate \
-  --restore-snapshot tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
-```
+uv run python scripts/clone_session.py up --renderer host --cores 4
 ```
 
 Launch the installed app:

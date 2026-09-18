@@ -9,28 +9,24 @@ The target system has two primary modes:
 
 ## Project status
 
-**M1 actor implementation — live control slice validated; 100-episode gate in progress.**
+**M1B complete: the environment is proven and training runs on a real fleet.**
 
-The supplied XAPK has been characterized as The Tower 29.0.1, an ARM64 split-APK
-set requiring Android API 27 or newer. The validated runtime is the Play-installed
-29.0.3 build on an API 36 Google Play ARM64 AVD. A pinned-renderer golden Tier-1
-snapshot and bounded offline navigation probe are available; full gameplay
-automation and RL remain milestone work.
+The game is observed and controlled through its own runtime via a private,
+versioned native bridge (ADR 0006/0007), not through screenshots — no part of
+the decision loop reads a pixel, and no screenshot classifier remains in the
+tree. The validated runtime is the Play-installed 29.0.3 build on an x86_64 API
+36 Google Play AVD on the RTX workstation, driven offline from a clone AVD that
+several `-read-only` instances share.
 
-The RTX workstation now has a validated x86_64 API 36 Google Play AVD using the
-pinned Lavapipe/Swangle renderer. Its Play-installed 29.0.3 game baseline is
-snapshot-restorable offline. The M1 actor starts Tier 1, extracts structured
-observations, recognizes and confirms all supported purchases, handles
-transient modals, reaches result, resets through result/home, and restores the
-golden baseline. The 100-consecutive-episode M1 gate remains open.
+A fleet of actors collects concurrently, a `stacked-dqn` learner trains against
+one prioritized sequence replay under a decision budget, and runs are
+checkpointed and evaluated exploration-free. Multi-actor scaling, renderer
+equivalence, game-time fidelity and frame-rate limits are all measured; every
+claim above has a dated entry in [docs/experiments.md](docs/experiments.md).
 
-In parallel, ADR 0006 separates a private `instrumented-training` profile from
-the unchanged official evaluation profile. Its versioned native bridge now reads
-exact game state and executes `WAIT` and earned-cash purchases on Unity's main
-thread with game-owned confirmation, verified live against the real package in
-`M1B-E001`. Evaluation and watch mode stay on the unchanged, unrooted, pixel-
-observed official profile, and no instrumented transition may enter replay until
-the remaining M1B parity and quarantine gates pass.
+Current state, what is decided and what is open:
+[docs/workstation-handoff.md](docs/workstation-handoff.md) START HERE, and the
+[project board](https://github.com/users/Furkan-rgb/projects/3).
 
 ## Authoritative documentation
 
@@ -54,58 +50,33 @@ Repository-specific agent instructions are in [AGENTS.md](AGENTS.md).
 - No APK modification, speed hacks, anti-cheat bypasses, purchases, ads, tournaments, or leaderboard automation.
 - The XAPK/APK, account state, emulator images, screenshots, replay data, and trained models must never be committed.
 
-## Intended commands
+## Commands
 
-The completed V1 will expose commands equivalent to:
-
-```text
-tower-rl doctor
-tower-rl calibrate
-tower-rl train
-tower-rl evaluate
-tower-rl watch
-```
-
-Their required behavior is specified in the documentation. The initial `doctor`
-and M0 `probe` slices exist today.
-
-The first M0 `doctor` slice is now available:
+There is no `tower-rl` console script; the entry points are the scripts under
+[`scripts/`](scripts/), each with its own `argparse` interface. The V1 command
+surface described in `docs/solution.md` section 11 is a target, not the present.
 
 ```text
 uv sync --all-groups
-uv run tower-rl doctor \
-  --xapk local/the-tower-29-0-1.xapk \
-  --serial emulator-5554
+uv run ruff check . && uv run mypy && uv run pytest
+
+# one instance up, offline, with the bridge deployed
+TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/clone_session.py up \
+  --renderer host --cores 4
+
+# a fleet of scripted actors, for throughput
+TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/run_actors.py \
+  --actors 4 --episodes 20 --renderer host
+
+# a training run on that fleet
+TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \
+  --actors 4 --renderer host --budget-decisions 100000
 ```
 
-`doctor`, `probe`, and the M1 actor/reliability runner are implemented at this
-stage; training, evaluation, and watch remain later milestone deliverables.
-
-Run the M1 gate only against the provisioned local AVD and keep its report
-outside the repository:
-
-```text
-uv run python scripts/m1_reliability.py \
-  --serial emulator-5554 \
-  --snapshot tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914_workstation \
-  --episodes 100 \
-  --output /tmp/tower-rl-m1-100.json
-```
-
-For a new workstation, start with the repository preflight and AVD helpers in
+For a new workstation, start with the preflight and AVD helpers in
 [`scripts/`](scripts/), then follow
 [`docs/workstation-handoff.md`](docs/workstation-handoff.md). These helpers stop
 before Play sign-in and account-bearing snapshot creation.
-
-The probe can validate the baseline and run the bounded no-upgrade navigation
-smoke flow, restoring the canonical snapshot afterwards:
-
-```text
-uv run tower-rl probe \
-  --serial emulator-5554 \
-  --navigate \
-  --restore-snapshot tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
-```
 
 ## Local XAPK
 

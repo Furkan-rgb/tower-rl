@@ -9,7 +9,9 @@ from tower_rl.experiment.comparison import (
     cohens_d,
     compare,
     interleave_schedule,
+    iqm,
     required_episodes,
+    stratified_bootstrap,
 )
 
 
@@ -103,3 +105,81 @@ def test_required_episodes_matches_the_measured_protocol() -> None:
     assert required_episodes(1.26, 1.0) == pytest.approx(25, abs=3)
     assert required_episodes(1.26, 2.0) < required_episodes(1.26, 1.0)
     assert required_episodes(1.26, 0.5) > 80
+
+
+def test_the_interquartile_mean_is_the_middle_half() -> None:
+    """A quarter trimmed off each end, by count, as `rliable` trims it."""
+    assert iqm([1, 2, 3, 4, 5, 6, 7, 8]) == pytest.approx(4.5)
+    assert iqm([1, 2, 3, 4]) == pytest.approx(2.5)
+    # Too short to trim anything: every value is in the middle half.
+    assert iqm([7, 3]) == pytest.approx(5.0)
+    assert iqm([9]) == pytest.approx(9.0)
+
+
+def test_the_interquartile_mean_ignores_the_tails_the_mean_chases() -> None:
+    """One runaway episode moves a mean and must not move the IQM."""
+    ordinary = [5, 5, 6, 6, 6, 7, 7, 8]
+    outlier = [*ordinary[:-1], 400]
+
+    assert iqm(outlier) == pytest.approx(iqm(ordinary))
+    assert sum(outlier) / len(outlier) > sum(ordinary) / len(ordinary) + 40
+
+
+def test_an_empty_sample_has_no_interquartile_mean() -> None:
+    with pytest.raises(ValueError, match="at least one value"):
+        iqm([])
+
+
+def test_the_stratified_interval_covers_a_known_centre() -> None:
+    """A sample drawn around a known centre must bracket it."""
+    generator = random.Random(7)
+    strata = {
+        f"actor-{index}": [generator.gauss(6.0, 1.2) for _ in range(40)] for index in range(4)
+    }
+
+    point, low, high = stratified_bootstrap(strata, resamples=2_000, seed=3)
+
+    assert low < 6.0 < high
+    assert low < point < high
+    # An interval this wide would cover anything; it has to be informative.
+    assert high - low < 1.0
+
+
+def test_the_stratified_interval_separates_a_known_difference() -> None:
+    """Two arms two waves apart, each stratified by actor, must not overlap."""
+    generator = random.Random(11)
+    weak = {f"a{index}": [generator.gauss(5.0, 1.0) for _ in range(30)] for index in range(3)}
+    strong = {f"a{index}": [generator.gauss(7.0, 1.0) for _ in range(30)] for index in range(3)}
+
+    weak_point, weak_low, weak_high = stratified_bootstrap(weak, resamples=2_000, seed=1)
+    strong_point, strong_low, strong_high = stratified_bootstrap(strong, resamples=2_000, seed=1)
+
+    assert weak_point == pytest.approx(5.0, abs=0.3)
+    assert strong_point == pytest.approx(7.0, abs=0.3)
+    assert weak_high < strong_low, "a two-wave difference is visible at this n"
+
+
+def test_the_bootstrap_resamples_within_strata_rather_than_across_them() -> None:
+    """Each stratum keeps its own size in every resample.
+
+    Two strata of different sizes, each internally constant: resampling within
+    them can only ever redraw the same values, so the estimate cannot move. A
+    flat resample of the pool would mix the strata in varying proportions and
+    produce a non-degenerate interval, which is exactly the thing that would
+    misstate the precision a design earns.
+    """
+    strata = {"a": [0.0] * 30, "b": [10.0] * 10}
+
+    point, low, high = stratified_bootstrap(
+        strata, statistic=lambda values: sum(values) / len(values), resamples=500, seed=1
+    )
+
+    assert point == pytest.approx(2.5)
+    assert low == pytest.approx(2.5) and high == pytest.approx(2.5)
+
+
+def test_a_stratum_may_not_be_empty_and_a_bootstrap_needs_strata() -> None:
+    with pytest.raises(ValueError, match="at least one stratum"):
+        stratified_bootstrap({})
+    with pytest.raises(ValueError, match="no values"):
+        stratified_bootstrap({"a": [1.0], "b": []})

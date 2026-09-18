@@ -14,10 +14,14 @@ from __future__ import annotations
 import math
 import random
 import statistics
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 BOOTSTRAP_ITERATIONS = 10_000
+
+#: The proportion trimmed from each tail by `iqm`. A quarter off each end is
+#: what makes the remainder the middle half.
+IQM_TRIM = 0.25
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,79 @@ def bootstrap_difference(
     tail = (1.0 - confidence) / 2.0
     low = differences[int(tail * iterations)]
     high = differences[min(int((1.0 - tail) * iterations), iterations - 1)]
+    return observed, low, high
+
+
+def iqm(values: Sequence[float]) -> float:
+    """The interquartile mean: the mean of the middle 50% of the sample.
+
+    This is the aggregate recommended by Agarwal et al. 2021, *Deep
+    Reinforcement Learning at the Edge of the Statistical Precipice*, and this
+    is the same estimator their `rliable` library computes - a symmetric 25%
+    trimmed mean. `rliable` itself is deliberately not a dependency of this
+    project: the estimator is four lines, and its interval comes from
+    `stratified_bootstrap` below rather than from a second bootstrap
+    implementation.
+
+    A final wave is bounded, discrete and skewed, and a handful of very long
+    episodes move its mean a long way. The IQM discards those tails without
+    discarding the shape of the bulk the way a median does.
+    """
+    if not values:
+        raise ValueError("an interquartile mean needs at least one value")
+    ordered = sorted(values)
+    # Trimmed by count, not by interpolated quantile, which is what
+    # `scipy.stats.trim_mean(x, 0.25)` does and therefore what `rliable` does.
+    cut = int(len(ordered) * IQM_TRIM)
+    middle = ordered[cut : len(ordered) - cut]
+    return statistics.fmean(middle)
+
+
+def stratified_bootstrap(
+    strata: Mapping[str, Sequence[float]],
+    statistic: Callable[[Sequence[float]], float] = iqm,
+    *,
+    resamples: int = BOOTSTRAP_ITERATIONS,
+    confidence: float = 0.95,
+    seed: int | None = 0,
+) -> tuple[float, float, float]:
+    """A statistic over pooled strata, with a percentile interval that respects them.
+
+    Every resample redraws each stratum to its own size, with replacement,
+    before pooling - so a stratum that contributed twenty episodes contributes
+    twenty to every resample. This is the stratified bootstrap of Agarwal et al.
+    2021, with the strata being whatever unit the samples are not exchangeable
+    across: here the actor an episode was collected on, and later the training
+    seed a checkpoint came from. Resampling the pool flat instead would let one
+    actor's episodes crowd out another's and would report an interval narrower
+    or wider than the design earns.
+
+    Returns the point estimate over the observed pool and the bounds of the
+    percentile interval, in that order.
+    """
+    if not strata:
+        raise ValueError("a stratified bootstrap needs at least one stratum")
+    if any(not values for values in strata.values()):
+        empty = sorted(name for name, values in strata.items() if not values)
+        raise ValueError(f"strata with no values cannot be resampled: {empty}")
+    if resamples < 1:
+        raise ValueError("a bootstrap needs at least one resample")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be within (0, 1)")
+
+    ordered = [list(strata[name]) for name in sorted(strata)]
+    observed = statistic([value for values in ordered for value in values])
+    generator = random.Random(seed)
+    estimates = []
+    for _ in range(resamples):
+        pooled: list[float] = []
+        for values in ordered:
+            pooled.extend(generator.choices(values, k=len(values)))
+        estimates.append(statistic(pooled))
+    estimates.sort()
+    tail = (1.0 - confidence) / 2.0
+    low = estimates[int(tail * resamples)]
+    high = estimates[min(int((1.0 - tail) * resamples), resamples - 1)]
     return observed, low, high
 
 

@@ -7,6 +7,171 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E037 — Fleet throughput is non-stationary within a run; the acting-lock removal's real gain is +14.3% at matched phase, not the naive −7%
+
+**Date:** 2026-09-18
+**Status:** Confirms `M1B-E031`'s unquantified lock-removal candidate, on a
+stray 7-actor 250,000-decision run that was found live (not stuck) during an
+unrelated teardown check; not a controlled before/after run
+**Purpose:** Determine whether removing the `SharedPolicy` acting lock
+(`M1B-E031`, commit `81d883a`) actually bought throughput, and establish what a
+throughput comparison must control for.
+
+Per-actor decisions/hour is **not stationary within a single run** — it decays
+as the run progresses:
+
+| segment | episodes | steps/decision | decisions/episode | per-actor dec/h |
+| --- | --- | --- | --- | --- |
+| window 0 (ep 1–100) | 100 | 0.1312 | 101.8 | 10,181 |
+| window 1 (ep 101–200) | 100 | 0.2500 | 101.3 | 9,636 |
+| post-window-1 (ep 201–244) | 44 | 0.2500 | 140.1 | 8,101 |
+
+Decomposing the decline from the window-0 figure: the learner ramp
+(steps/decision 0.131 → 0.250, the buffer warming up) accounts for **−5.4%**
+(10,181 → 9,636); deepening episodes (101.3 → 140.1 decisions/episode, the
+policy surviving to busier, higher-wave gameplay) accounts for the larger
+**−15.9%** (9,636 → 8,101). The second is gameplay cost, not host contention:
+a busier world costs more simulated work per decision. Any future throughput
+comparison must control for both steps/decision and decisions/episode, or it
+measures policy progress rather than host speed.
+
+**The lock-removal result.** The pre-removal reference (`M1B-E031`,
+`X812-SCALING-DETAIL.md`) is N=7 at 360×640, 8,904 per-actor decisions/hour,
+from a short (~10,000-decision) run where the learner had not yet ramped
+(~0.131 steps/decision) — the same phase as this run's window 0. Matched at
+that phase: **10,181 vs 8,904 = +14.3% per-actor**. The naive comparison
+against this run's later, deeper-phase segments (8,303–8,101 vs 8,904, i.e.
+"−7%") is a **phase artifact** and should not be used — it compares a
+ramped-learner, deep-episode segment against an unramped, shallow-episode
+reference. **DECISION: the acting lock was a real per-actor throughput cost,
+and removing it bought approximately +14.3% at matched phase.**
+
+**`wait_fraction` is not host idle time.** Per `training.py:336`,
+`wait_fraction` is `waits / decisions` — the fraction of decisions where the
+policy chose the wait action. It is a policy metric, not a measurement of host
+idleness, and must not be read as such.
+
+Caveats: this run was not a controlled before/after measurement (no
+after-the-lock-removal run was taken at the identical episode range as the
+before figure); the matched-phase comparison relies on both runs' window-0
+segments being phase-comparable, which is supported by both having
+steps/decision ≈0.13 and shallow early-wave episodes, but was not verified by
+an interleaved design.
+
+Source: session scratchpad `teardown-stray-250k.md`, Addendum 3 ("PHASE 1:
+BASELINE CAPTURE of the 7-actor run").
+
+## M1B-E036 — Per-decision wall time is 96.5% bridge round-trip with the host essentially idle; host-side optimisation is closed as a lever
+
+**Date:** 2026-09-18
+**Status:** Decisive at N=1 and N=4; falsifies the GIL-contention candidate
+from `M1B-E031` on its own prediction
+**Purpose:** Decompose where a decision's wall time goes, to determine whether
+host-side serialisation (a GIL or lock effect) or the emulator itself is the
+per-decision cost, and whether host-side optimisation (free-threading, batched
+inference, process-based actors, observation encoding) is worth pursuing.
+
+Fresh untrained network each arm, identical settings except `--actors`
+(`--backbone stacked-dqn --gradient-steps-per-decision 0.25
+--warmup-sequences 1 --epsilon-start 0.05 --epsilon-end 0.05
+--epsilon-anneal-decisions 1 --frame-game-ms 100 --renderer host --cores 4`).
+Pooled over the delta records (first record of each arm dropped as bring-up
+tail):
+
+| arm | bucket | share of wall | wall/cpu | wall ms/decision | cpu ms/decision |
+| --- | --- | --- | --- | --- | --- |
+| N=1 | bridge_round_trip | 96.53% | 235x | 346.93 | 1.475 |
+| N=1 | observation_decode | 0.18% | 1.00 | 0.635 | 0.633 |
+| N=1 | policy_forward | 0.93% | 1.00 | 3.353 | 3.348 |
+| N=1 | learner_step | 2.30% | 1.03 | 8.271 | 8.035 |
+| N=1 | blocked | 0.00% | — | 0.000 | 0.000 |
+| N=4 | bridge_round_trip | 96.50% | 453x | 350.65 | 0.774 |
+| N=4 | observation_decode | 0.09% | 1.00 | 0.314 | 0.313 |
+| N=4 | policy_forward | 0.65% | 1.06 | 2.377 | 2.241 |
+| N=4 | learner_step | 2.57% | 1.05 | 9.351 | 8.942 |
+| N=4 | blocked | 0.15% | ∞ | 0.539 | 0.000 |
+
+N=1: 8 records, 731 decisions, thread-busy 3.81%, accounting error 0.0 s. N=4:
+10 records, 3,310 decisions (four threads), thread-busy 3.41%, accounting
+error +3.0e-4 s.
+
+**Verdict: the host is idle and the run is emulator-bound.** `bridge_round_trip`
+dominates wall time at both actor counts (96.5%) while consuming essentially
+no CPU (wall/cpu 235x at N=1, rising to 453x at N=4 — busier, not worse,
+because four threads share the same near-zero CPU cost while waiting).
+`observation_decode` and `policy_forward` sit at wall/cpu 1.00–1.06, flat
+across actor counts — no serialisation cost appears in either bucket as
+actors scale from 1 to 4. `blocked` is 0.15% of wall at N=4 and zero at N=1.
+This directly falsifies the GIL-contention candidate left open in `M1B-E031`:
+its own prediction was that host-side Python work (observation decode, policy
+forward) would show growing wall/cpu divergence or blocking as actor count
+rose, and neither happened.
+
+**Consequence, stated as the decision this entry closes: host-side
+optimisation — free-threading, batched inference, process-based actors,
+observation encoding — is closed as a throughput lever.** With 96.5% of wall
+time in a bucket that is already near-zero CPU, none of those levers can move
+the number that matters; the bottleneck is the emulator's own per-advance
+wall time.
+
+**Caveat on the comparison.** The two arms did not match on episode depth:
+39.9 decisions/episode at N=1 vs 66.9 at N=4 (steps/decision matched to 4
+decimal places, 0.2494 vs 0.2499, so the learner ramp is controlled for, but
+episode depth is not). This does not affect the per-decision bucket
+conclusion above, because the bucket shares and wall/cpu ratios are computed
+per decision, not per episode, and depend on the emulator's per-advance cost,
+not on how many decisions accumulate before an episode ends; a deeper episode
+changes how many decisions are counted, not what each one costs.
+
+Source: session scratchpad `DECISION-TIME-PROFILE-DETAIL.md`.
+
+## M1B-E035 — 100,000-decision, 4-actor training run: final evaluation up +1.26 over scripted, within-run trend unresolved, replay occupancy indicated as the constraint
+
+**Date:** 2026-09-18
+**Status:** Suggestive, not established (~2.1 standard errors); within-run
+trend not resolved at this sample size
+**Purpose:** Record the largest training run to date and its learner
+diagnostics, to judge whether more decisions or more data (replay capacity/
+occupancy) is the next lever.
+
+Configuration as recorded in the source: 4 actors, `stacked-dqn` backbone,
+commit `f3c177b`, renderer `-gpu host`, `--cores 4`, `--frame-game-ms 100`,
+`--seed 0`, replay capacity 4,096, epsilon anneal over the first 10,000
+decisions. **Gap in the source:** gradient-steps-per-decision, batch size,
+n-step, discount, and the epsilon start/end values are not recorded in
+`FLEET-100K-DETAIL.md` for this run and are not stated here — they are not
+carried over from the unrelated profiling run in `M1B-E036`, which used a
+fresh untrained network under different settings.
+
+**Final evaluation (30 exploration-free episodes, pre-registered).** Mean
+final wave **6.833 ± 0.396** (sd 2.167, median 7, range 1–10, 30/30 valid)
+against the scripted floor of 5.57 (+1.26) and random floor 5.35 (+1.48).
+Against the 40,000-decision single-actor run's 6.033 (n=30): +0.800, se of
+the difference 0.550, **t = 1.45 — about 2.1 combined standard errors from
+zero against the floor comparison and 1.45 against the prior run, suggestive
+of improvement but not established** at this sample size.
+
+**Within-run trend: unresolved.** Post-anneal collection episodes (630,
+windows 1–6): OLS slope +0.068 waves per 100 episodes; first half mean 6.149
+(n=315, se 0.142) vs second half 6.362 (n=315, se 0.138), difference
+**+0.213 ± 0.198, t = 1.07 — not resolved**, i.e. the run's own collection
+curve cannot yet distinguish continued improvement from noise.
+
+**Learner diagnostics.** Value fit correlation rose across the run then
+retreated: 0.489 (window 0) → 0.584 (window 4) → 0.535 at run end, at replay
+occupancy 2,155 of 4,096 sequences (52.6% full). Mean |TD| fell fairly
+steadily, 0.359 → 0.250, over the same span. **Data, not reward, is indicated
+as the constraint**: the value-fit retreat coincides with replay occupancy
+still short of capacity rather than with any drop in the |TD| error signal,
+which kept falling — i.e. the learner was not struggling to fit what it had,
+it was working with a replay buffer that had not yet filled, consistent with
+the run being data-limited rather than reward- or optimisation-limited.
+
+**Throughput.** Per-actor 9,498 decisions/hour (range 9,445.7–9,575.2 across
+the four actors); aggregate 37,993 decisions/hour over the collection clock.
+
+Source: session scratchpad `FLEET-100K-DETAIL.md`.
+
 ## M1B-E034 — Stray background shells self-match their own `pgrep`, not each other's processes
 
 **Date:** 2026-09-18

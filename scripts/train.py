@@ -3,8 +3,10 @@
 
 Private device runner for the instrumented-training profile. Everything it
 produces - checkpoints, reports, replay metadata - is written outside the
-repository, and every tap it can make is gated inside the adapter on a positive
-screen classification.
+repository. Nothing in this path reads a pixel or touches the screen: the round
+boundary lives in the bridge, and an action is a semantic upgrade purchase the
+bridge performs in the game, so there is no screen classification and no tap for
+one to gate.
 
 Collection runs in decision blocks (`--block-decisions`), each landing on an
 episode boundary, until the budget is spent.
@@ -398,7 +400,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     # Read on the fleet path only: a single actor collects on the instance the
     # operator brought up, and nothing here starts or stops it.
-    parser.add_argument("--renderer", default="lavapipe", help="fleet bring-up only")
+    # `-gpu host` is the standing training renderer (M1B-E052 and the handoff's
+    # renderer decision): equivalent to lavapipe on game-time ratio,
+    # decisions/wave and mean wave, and the one the measured runs were taken
+    # under. It cannot snapshot a Vulkan app, so a fleet under it cold-starts
+    # every instance instead of restoring the pinned snapshot; `bring_up` says
+    # so by name and takes the cold path.
+    parser.add_argument("--renderer", default="host", help="fleet bring-up only")
     parser.add_argument(
         "--cores", type=int, default=4, help="emulator cores per instance; fleet only"
     )

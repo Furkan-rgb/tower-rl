@@ -396,7 +396,10 @@ def main() -> int:
             f"{CHECKPOINT_SELECTOR}<path> for a checkpoint a training run left"
         ),
     )
-    parser.add_argument("--renderer", default="lavapipe")
+    # The standing training renderer, as in `train.py`. Snapshots are
+    # lavapipe-only, so under `host` `prepare_pinned_snapshot` has nothing to
+    # pin and every actor takes the cold path.
+    parser.add_argument("--renderer", default="host")
     parser.add_argument(
         "--frame-rate-hz",
         default=str(GUEST_FRAME_RATE_HZ),

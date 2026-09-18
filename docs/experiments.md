@@ -7,6 +7,153 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E055 — Guest resolution does not move host CPU per frame: the render-cost hypothesis is falsified at 120 Hz
+
+**Date:** 2026-09-18
+**Status:** NEGATIVE on the stated hypothesis. Prediction falsified: a 3.24x
+pixel reduction left emulator-process CPU% within 2.4% of baseline
+**Purpose:** Phase 1 of the CPU-per-frame question — test whether host CPU per
+guest frame is dominated by rendering cost, which would scale with guest
+resolution.
+
+Hypothesis: host CPU per guest frame is dominated by rendering. Prediction if
+true: cutting the guest resolution (quarter the pixels) cuts emulator-process
+CPU% at a fixed 120 Hz by at least 30%. Falsified if CPU% stays within about
+10% of baseline.
+
+One instance (`emulator-5556`, clone AVD `tower_rl_instrumented_api36`,
+`-read-only`, cold `-gpu host`, `--cores 4`, `--frame-game-ms 100`, scripted, 3
+episodes per configuration), 120 Hz confirmed on three SurfaceFlinger readings
+before each arm, bridge deployed, offline verified by interface.
+
+### The measurements
+
+| arm | guest size (px) | pixels vs C0 | emulator CPU% (`/proc` utime+stime over 67 s) | `top -b` cross-check | measured ms/frame | round/budgeted | fidelity counters | valid | dec/wave | mean wave |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C0 (run a) | 360×640 | 1.00 | **160.8** | 140–200 | 8.177 | 1.00987 | all 0 | 3/3 | 21.95 | 6.67 |
+| C0 (run b) | 360×640 | 1.00 | **157.0** | 140–150 | 8.186 | 1.01109 | all 0 | 3/3 | 22.06 | 5.67 |
+| C1 | 200×356 | 0.31 | **160.8** | 150–190 | 8.184 | 1.01165 | all 0 | 3/3 | 21.26 | 7.67 |
+
+Fidelity counters are `bridge_event_divergence`, `stale_or_duplicate`,
+`advances_cut_short`, `episodes_not_started_fresh` and `invalid_episodes`: zero
+in every arm. C0 was run twice because the per-thread sampling below was added
+after the first baseline; both baselines are reported rather than one being
+discarded, and their 2.4% spread is the honest noise floor for a single
+67-second sample.
+
+**Verdict: the prediction is falsified.** 3.24x fewer pixels changed CPU% by
+0.0% against the first baseline and +2.4% against the second — inside the
+falsification band and inside the baseline's own run-to-run spread, nowhere
+near the predicted 30% fall. **C2 (a further halving) was therefore not run**,
+per the recipe's own rule that C2 follows only an effect at C1.
+
+Measured ms/frame — advance wall time divided by frames actually stepped —
+is 8.177 / 8.186 / 8.184 across the three arms, i.e. identical to three decimal
+places and equal to the 120 Hz vsync period (8.33 ms nominal). The guest is
+paced by vsync, not by how long a frame takes to render, which is the same
+conclusion the CPU figure reaches from the other side.
+
+### Where the CPU actually goes
+
+Per-thread, sampled over the same steady-state window (`top -H -b -n 2 -d 60`;
+the second iteration is the 60 s delta and is what is quoted).
+
+Host, emulator process:
+
+| arm | 4 vCPU threads | `RenderThread` (2) | remaining qemu threads | render share of process |
+| --- | --- | --- | --- | --- |
+| C0 (b) | 37.0 + 34.4 + 32.2 + 28.4 = 132.0 | 9.5 + 2.3 = 11.8 | ~8 | **~7.5%** |
+| C1 | 40.1 + 33.8 + 31.1 + 29.7 = 134.7 | 9.5 + 2.2 = 11.7 | ~10 | **~7.3%** |
+
+No thread matching `gfx`, `llvmpipe`, `gl`, `Vk` or `SwiftShader` used
+measurable CPU in either arm; under `-gpu host` the GPU work leaves the CPU.
+The host-side render share is ~7% of the emulator process and **does not move
+with resolution at all**, while ~85% of the process sits in the four vCPU
+threads — guest execution, not rasterisation.
+
+Guest, game process (per-thread `/proc/<tid>/stat` deltas over the same window;
+guest CPU% is of one guest core):
+
+| thread | C1 (200×356) | C1 first attempt (200×320, no layout fix) |
+| --- | --- | --- |
+| `UnityMain` | 47.3 | 34.2 |
+| `UnityGfxDeviceW` | 20.9 | 18.4 |
+| `Job.Worker 0` | 10.2 | 7.1 |
+| `UnityChoreograp` | 1.6 | 1.4 |
+| other >0.5% | 2.9 | 1.9 |
+
+The C0 guest sample was taken with `top -H` only and its 60 s iteration did not
+report `UnityMain` in its ranked rows, so it is not quoted as a comparison
+figure; the `/proc`-delta sampler that produced the C1 column was added after
+that arm and no extra boot was spent to redo it. What the C1 column does show
+is that the game's own render thread (`UnityGfxDeviceW`) is about 30% of the
+game's CPU even at 71,200 pixels, so guest-side render cost is not
+pixel-bound either at this size.
+
+Instance facts, read from the run rather than assumed: the emulator's own
+command line carries `-gpu host`, and the installed `libunity.so` (SHA-256
+`ffc1f3ef…dd0040`, read back after cleanup with the overlay gone) reports Unity
+`6000.3.15f1`.
+
+### How the resolution was changed, and what the device did with it
+
+No AVD configuration file was edited. The least invasive runtime path was used:
+`adb shell wm size WxH` and `wm density D` applied **after** the bridge
+deployment and **before** the bring-up's own `launch_game_at_home`, so the game
+was force-stopped and launched again by the normal path and laid out at the new
+size. No taps, no screenshots. Both were reset (`wm size reset`, `wm density
+reset`, read back as 360×640 / 140) before teardown, and the instance is
+`-read-only` in any case, so the clone AVD is unmodified.
+
+Two device constraints showed up in doing it, and both are worth recording:
+
+1. **WindowManagerService clamps a forced display size to 200 px per
+   dimension.** `wm size 180x320` — the intended exact halving — reported back
+   as `Override size: 200x320`, silently changing the aspect ratio from 0.5625
+   to 0.625. The floor is why C1 is 200×356 rather than 180×320, and it also
+   bounds any future arm: 200 px is the narrowest this lever reaches.
+2. **`wm density 70` was refused** (the reading stayed at 140), so the first C1
+   attempt ran at 200×320 with the stock density, i.e. with the game laid out
+   at 228×366 dp instead of 411×731 dp. **That attempt failed**: the episode
+   driver raised `the game did not honour speed_down: lifecycle_timeout` at the
+   very first episode boundary, before any episode ran, so its 130% CPU reading
+   is of a game idling at home and is not a measurement of anything. The
+   corrected arm keeps the logical layout identical — 200×356 at density 78 is
+   410×730 dp, against the stock 411×731 dp — and ran 3/3 valid with every
+   counter at zero. **A display change that alters the dp layout can break the
+   game's own speed control**; one that preserves it did not.
+
+### What this closes and what it does not
+
+It closes the phase-1 question: **resolution is not the lever on host CPU per
+guest frame at 120 Hz**, and the render-elimination idea that phase 2 would
+have tested is not supported by where the CPU is — ~85% of the emulator process
+is vCPU execution and ~7% is host-side rendering, at either resolution.
+
+It is consistent with `M1B-E030`, which reduced pixels 9x (1080×1920 → 360×640)
+for only a ~16% fall in per-qemu CPU and attributed its real payoff to
+throughput rather than to VRAM. This entry says the remaining pixel reduction
+available below 360×640 buys nothing at all.
+
+Single-instance, single 67 s window, 3 episodes per arm: the wave and
+decision-density figures are indicative only and no fidelity claim is made from
+them beyond the counters being zero. The CPU conclusion does not need more
+data — the effect predicted was 30% and the measured difference is inside the
+baseline's own repeat spread.
+
+Teardown after each configuration: `instrumented_bridge.sh cleanup
+emulator-5556` — override reset, libunity
+`ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+versionCode 1199, versionName 29.0.3, installer `com.android.vending`,
+`libunity_mounts: 0`, `bridge_artifacts: removed` — then kill, `adb devices`
+empty and zero qemu in `/proc/*/exe`. Only `emulator-5556` was addressed; the
+canonical AVD and `emulator-5554` were never referenced.
+
+Source: session scratchpad `E055/` (`driver.py`, `C0-360x640.json`,
+`C0b-360x640.json`, `C1-180x320.json` (the clamped, failed attempt),
+`C1b-200x356.json`, per-arm `*-host-threads.txt`, `*-guest-threads.txt`,
+`*-episodes.json`).
+
 ## M1B-E054 — Replication of the equivalence fleet in a fresh session: the rule fires nowhere, so `M1B-E053`'s REJECT is not replicated and does not stand
 
 **Date:** 2026-09-18

@@ -7,6 +7,112 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E048 — Retry with a working activity oracle: 5/7, and the Play kill moves into collection
+
+**Date:** 2026-09-18
+**Status:** Recorded; board #21 NOT closed
+**Purpose:** Repeat `M1B-E047` with the activity oracle corrected, and see where
+the kill lands once bring-up covers it.
+
+Same recipe as `M1B-E047` (N=7, cold `-gpu host`, `--cores 4 --frame-game-ms
+100`, 120 Hz, scripted, 2 episodes per instance), with `game_activity_present`
+reading the RESUMED activity line rather than the whole dump. 5/7 reporting, 10
+valid episodes, 0 invalid.
+
+All SEVEN instances reached `is at home and offline` and `confirmed at 120 Hz`
+on all three SurfaceFlinger readings (display vsync 120.00, uid 10218 game mode
+override 120, uid 10218 applied frame rate 120.00), each immediately after its
+own bring-up: 5556 was raised and collecting at 16:20:37 while 5558-5568 were
+still booting, which is the rendezvous removal visible in the log. Bring-ups ran
+37-40 s apart under the retained stagger. The deployed bridge SHA-256 was
+confirmed ON ALL SEVEN instances from the device
+(7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a), sampled right
+after readiness — the first run in which that check produced a digest. No
+relaunch fired at any point.
+
+Reporting actors: 18,603-21,053 decisions/hour; 21.8-50.7 valid episodes/hour;
+109.2 aggregate. Every fidelity counter zero: `bridge_event_divergence`,
+`stale_or_duplicate`, `advances_cut_short`, `episodes_not_started_fresh`,
+`invalid_episodes`, with `ADVANCE_TRUNCATED_BY_WALL`, `GAME_TIME_INFLATED` and
+`GAME_TIME_DEFLATED` absent. Host peak load 8.15, peak 4 concurrent qemu (a
+2-episode actor finishes before the last instance boots), VRAM 5.2 GB.
+
+Both losses are PAST every point bring-up covers, inside collection:
+- emulator-5558: bring-up clean, 120 Hz confirmed 16:21:16; killed at
+  16:21:16.03 by `Killing ...TheTower (adj 0): stop com.google.android.webview
+  due to installPackageLI` mid-episode; `run_episodes.py` died with
+  `BridgeDisconnectedError: bridge is not connected`. Nothing watches the game
+  during an episode, so no recovery point exists there.
+- emulator-5564: bring-up clean, 120 Hz confirmed 16:23:12; NO Play kill in its
+  logcat; `run_episodes.py` failed with `the game did not honour speed_max:
+  lifecycle_timeout`. The only kill in its log is our own teardown force-stop.
+  UNEXPLAINED and the first occurrence of this failure here; its bring-up
+  overlapped four actors already collecting at 120 Hz, an overlap the removed
+  rendezvous used to prevent. Recorded as a candidate, not a conclusion.
+
+Reading: covering the two bring-up points did what it was meant to and the kill
+is now downstream of bring-up entirely. Board #21 stays open, and #22
+(behavioural equivalence) is still required before training.
+
+Teardown: per-serial cleanup before kill on all 7 — override reset from a
+reading (7/7), libunity_sha256
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040 (7/7),
+versionCode 1199, 29.0.3, installer com.android.vending, libunity_mounts 0,
+bridge artifacts removed (7/7); then `adb devices` empty and zero qemu. Only
+5556-5568 addressed; emulator-5554 and the canonical AVD untouched.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifacts `G/`.
+
+## M1B-E047 — Rendezvous removed, bring-up covered: 6/7, and the relaunch that never fires is a blind oracle
+
+**Date:** 2026-09-18
+**Status:** Recorded; the fix in `fe63abc` is CORRECTED by this entry
+**Purpose:** Verify the removal of the fleet-wide rendezvous and the two new
+recovery points at N=7, and find out why the relaunch added in `fe63abc` had
+never once fired.
+
+N=7, cold `-gpu host`, `--cores 4 --frame-game-ms 100`, 120 Hz, scripted, 2
+episodes per instance, per-instance `adb logcat` captured from boot. 6/7
+reporting, 12 valid episodes, 0 invalid, every fidelity counter zero. The six
+reporting actors each confirmed 120 Hz on all three SurfaceFlinger readings.
+
+emulator-5558 (index 1) failed at the post-cut check —  `the game did not
+survive the network being cut: the game is not running` — and the NEW recovery
+declined to fire, which is the finding of this entry.
+
+**Correction to `fe63abc` (and to the reading in `M1B-E045`).** The relaunch
+added there tested `"UnityPlayerActivity" in dumpsys activity activities`, a
+substring of the WHOLE dump. `dumpsys` keeps the killed `ActivityRecord` in its
+task history, so the game's component name stays in the dump long after the
+activity is gone, and the check reported an activity that did not exist. That is
+why the relaunch never fired across three fleet runs — not because the kill was
+absent. Measured, from this run's logcat for 5558:
+
+    16:12:32.4 START ...UnityPlayerActivity   16:12:33.8 Displayed +1s500ms
+    16:12:59.02 Force stopping com.google.android.webview ...: installPackageLI
+    16:12:59.06 Killing 4028:com.TechTreeGames.TheTower (adj 0): stop
+                com.google.android.webview due to installPackageLI
+    16:12:59.06 Force removing ActivityRecord{...UnityPlayerActivity}: app died
+
+Moments later the post-cut check read `pidof` empty AND the activity check True
+on the same instance. Presence now means the game holds the RESUMED activity
+(`ResumedActivity` line, package and activity both), which is a reading a dead
+record cannot satisfy. Confirmed in `M1B-E048`.
+
+This run also confirms the mechanism recorded in `M1B-E045` a second time, on a
+different session: the WebView install is what kills the game, the game
+identity is untouched, and the kill lands wherever the instance happens to be
+rather than only inside the online window.
+
+The deployed-bridge SHA sampler misfired in this run (it matched the
+`sha256sum: ... No such file` text), so the per-instance digest is from
+`M1B-E048`, not this one.
+
+Teardown: per-serial cleanup before kill on all 7, every identity line as in
+`M1B-E048`; `adb devices` empty and zero qemu afterwards.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifacts `F/`.
+
 ## M1B-E045 — 120 Hz fleet at N=7: the fleet-safe rate, and the mechanism behind the one recurring loss
 
 **Date:** 2026-09-18

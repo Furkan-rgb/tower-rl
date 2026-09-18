@@ -224,10 +224,11 @@ def _difference(
 def wave_observations(record: Mapping[str, Any]) -> tuple[WaveObservation, ...]:
     """The per-wave rows of one episode record, empty when none were captured.
 
-    The durable episode record (`evaluator.episode_record`) is whole-episode
-    only today, so this returns nothing for records produced before the
-    environment captures waves. An empty result is reported as uncaptured, which
-    is a different statement from "the arms did not differ".
+    The durable episode record (`evaluator.episode_record`) carries `"waves"`,
+    one row per wave index the episode entered, so this returns nothing only for
+    records written before the environment captured them. An empty result is
+    reported as uncaptured, which is a different statement from "the arms did
+    not differ".
     """
     rows = record.get("waves") or ()
     return tuple(

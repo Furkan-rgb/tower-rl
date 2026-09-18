@@ -22,17 +22,13 @@ SOURCE = Path(__file__).resolve().parents[2] / "src"
 #: It is the root, so every other name in `tower_rl` is below it.
 FORBIDDEN_TO_ENVIRONMENT = ("tower_rl",)
 
-#: What `tower_rl.learning` may not reach for. An experiment observes training;
-#: training must not read back from what observes it, or the loop could not run
-#: without the reporting it is only measured by. Device adapters and host checks
-#: are the simulation side. `tower_rl.application` is the package learning
-#: absorbed: naming it here keeps it from coming back.
-FORBIDDEN_TO_LEARNING = (
-    "tower_rl.experiment",
-    "tower_rl.infrastructure",
-    "tower_rl.application",
-    "tower_rl.doctor",
-)
+#: What `tower_rl.learning` may not reach for: everything in the package except
+#: the environment. Stated as an allowance rather than as a list of neighbours,
+#: because the rule decided is "learning imports only the environment" - a
+#: denylist would have to be extended by hand for every package added, and a
+#: package nobody remembered to name would pass by omission.
+FORBIDDEN_TO_LEARNING = ("tower_rl",)
+ALLOWED_TO_LEARNING = ("tower_rl.environment",)
 
 #: What `tower_rl.experiment` may not reach for. Device adapters and host checks
 #: are the simulation side, and a script is where a run is composed: an
@@ -79,11 +75,18 @@ def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:
     return names
 
 
-def offences(package: str, forbidden: tuple[str, ...], root: Path = SOURCE) -> list[str]:
+def offences(
+    package: str,
+    forbidden: tuple[str, ...],
+    root: Path = SOURCE,
+    allowed: tuple[str, ...] = (),
+) -> list[str]:
     """Every import from `package` that crosses a boundary it may not.
 
     One package against one set of forbidden prefixes, so a new boundary is a
-    constant and a call rather than a new walker.
+    constant and a call rather than a new walker. `allowed` names the prefixes
+    that survive a forbidden one, which is what lets a rule be written as an
+    allowlist ("only the environment") instead of a list of neighbours.
     """
     directory = root / "tower_rl" / package
     modules = sorted(directory.rglob("*.py"))
@@ -94,6 +97,8 @@ def offences(package: str, forbidden: tuple[str, ...], root: Path = SOURCE) -> l
     for path in modules:
         for name in imported_modules(path, root):
             if name == own or name.startswith(f"{own}."):
+                continue
+            if any(name == prefix or name.startswith(f"{prefix}.") for prefix in allowed):
                 continue
             offence = f"{path.relative_to(root)} imports {name}"
             if name.startswith(forbidden) or name.split(".")[0] in SCRIPT_MODULES:
@@ -108,7 +113,7 @@ def test_the_environment_package_is_the_root_and_imports_nothing_above_it() -> N
 
 def test_learning_reads_back_from_nothing_that_observes_or_drives_it() -> None:
     """Everything about learning lives here, and it knows only the environment."""
-    assert offences("learning", FORBIDDEN_TO_LEARNING) == []
+    assert offences("learning", FORBIDDEN_TO_LEARNING, allowed=ALLOWED_TO_LEARNING) == []
 
 
 def test_the_experiment_package_reaches_for_no_adapter_and_no_script() -> None:

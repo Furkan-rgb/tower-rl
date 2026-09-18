@@ -150,6 +150,7 @@ EPISODE_RECORD_KEYS = {
     "advances_cut_short",
     "recovered_transients",
     "starting_wave",
+    "waves",
 }
 
 

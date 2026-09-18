@@ -119,13 +119,21 @@ class DecisionTimeBreakdown:
 
     @property
     def decisions_per_hour(self) -> float:
+        """Decisions per hour *of collecting*, not per wall hour: `elapsed_seconds`
+        counts only the time inside collecting blocks, so an actor that also runs
+        periodic evaluation reports the rate it collects at while collecting.
+        """
         if self.elapsed_seconds <= 0:
             return 0.0
         return self.decisions / self.elapsed_seconds * 3600
 
     @property
     def busy_fraction(self) -> float:
-        """The share of the span this thread was actually executing Python."""
+        """The share of the span this thread was actually executing Python.
+
+        The span is collecting time, as `decisions_per_hour` notes; time spent
+        in `measured_apart` is in neither the numerator nor the denominator.
+        """
         if self.elapsed_seconds <= 0:
             return 0.0
         return self.cpu_seconds / self.elapsed_seconds
@@ -302,6 +310,11 @@ class DecisionTimeProfile:
         self._wall[bucket] += wall_seconds
         self._cpu[bucket] += cpu_seconds
         self._count[bucket] += 1
+
+    @property
+    def block_open(self) -> bool:
+        """Whether a collecting block is open right now."""
+        return self._origin_wall is not None
 
     def open_block(self) -> None:
         self._origin_wall = time.perf_counter()

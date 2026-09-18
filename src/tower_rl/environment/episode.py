@@ -99,6 +99,34 @@ class RunTransition:
 
 
 @dataclass(frozen=True)
+class WaveRecord:
+    """What one episode did while one wave index was current.
+
+    Per-wave rows exist because a final wave is a blunt instrument: almost all
+    of its between-episode variance comes from how many waves an episode
+    survives, not from what any one wave is like. How long wave k took and what
+    it cost is where a change in how the game is driven shows up
+    (`experiment/wave_statistics.py`).
+    """
+
+    wave: int
+    #: False for the wave the episode ended in, whose duration and decisions are
+    #: a fragment of a wave rather than a wave. True once a later wave began.
+    completed: bool
+    #: Measured game time spent in this wave: the game's own round clock across
+    #: the advances made while it was current, never a budget. An advance that
+    #: crosses a wave boundary is charged whole to the wave that was current
+    #: when it started.
+    game_ms: float
+    #: Decisions the environment asked for while this wave was current.
+    decisions: int
+    #: The state at the *start* of this wave, as the observation carries it:
+    #: cash exists only log-scaled in `observation-v1` and is recorded as such.
+    health_fraction: float
+    cash_log: float
+
+
+@dataclass(frozen=True)
 class EpisodeSummary:
     """The immutable record of one attempted episode."""
 
@@ -141,6 +169,9 @@ class EpisodeSummary:
     #: rather than be silently recovered from (`begin_episode` refreshes a
     #: frozen leftover run but still continues it).
     starting_wave: int = 0
+    #: One row per wave index this episode entered, in order. Empty only for a
+    #: summary assembled without the environment's per-wave tally.
+    waves: tuple[WaveRecord, ...] = ()
 
     @property
     def valid(self) -> bool:

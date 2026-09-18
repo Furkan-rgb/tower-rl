@@ -280,6 +280,22 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "advances_cut_short": summary.advances_cut_short,
         "recovered_transients": summary.recovered_transients,
         "starting_wave": summary.starting_wave,
+        # One row per wave index the episode entered. `game_ms` here is measured
+        # round-clock time, charged whole to the wave an advance started in;
+        # `completed` is false for the wave the episode ended in, whose numbers
+        # are a fragment of a wave. `experiment/wave_statistics.py` consumes
+        # exactly these keys.
+        "waves": [
+            {
+                "wave": wave.wave,
+                "completed": wave.completed,
+                "game_ms": wave.game_ms,
+                "decisions": wave.decisions,
+                "health_fraction": wave.health_fraction,
+                "cash_log": wave.cash_log,
+            }
+            for wave in summary.waves
+        ],
     }
 
 

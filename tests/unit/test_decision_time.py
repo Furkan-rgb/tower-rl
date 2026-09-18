@@ -320,3 +320,24 @@ def test_evaluation_is_not_charged_to_the_actor_whose_instance_it_borrows() -> N
     )
     # And small against what the actor actually did spend collecting.
     assert residual < 0.25 * after.elapsed_seconds
+
+
+def test_measuring_apart_outside_a_collecting_block_opens_none() -> None:
+    """Reopening what was never open would leave a block nobody closes.
+
+    Every later snapshot would then charge that actor the wall time since,
+    silently, because `close_block` tolerates being called with none open.
+    """
+    from tower_rl.learning.training import measured_apart
+
+    profile = DecisionTimeProfile()
+
+    with measured_apart(profile):
+        assert not profile.block_open
+
+    assert not profile.block_open
+    # And the ordinary case is unchanged: a collecting block survives it.
+    with profile.collecting():
+        with measured_apart(profile):
+            assert not profile.block_open
+        assert profile.block_open

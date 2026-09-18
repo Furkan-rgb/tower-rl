@@ -684,3 +684,76 @@ def test_a_truncated_death_boundary_settle_fails_the_episode_too() -> None:
     summary = environment.summarize(transition.termination)
     assert not summary.valid
     assert any(ADVANCE_TRUNCATED_BY_WALL in detail for detail in summary.termination_detail)
+
+
+def test_an_episode_records_one_row_per_wave_it_entered() -> None:
+    """Per-wave rows are the instrument a final wave cannot be (issue #24).
+
+    This run crosses two wave boundaries, so it holds three rows: two whole
+    waves and the fragment it died in, which is labelled rather than dropped.
+    """
+    environment, _ = _environment(damage_per_second=0.3, seconds_per_wave=6.0)
+    environment.reset()
+    boundaries = {}
+
+    for _ in range(400):
+        transition = environment.step(WAIT)
+        after = transition.next_state
+        if after is not None and after.wave != transition.state.wave:
+            boundaries[after.wave] = after
+        if transition.terminated:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    summary = environment.summarize(transition.termination)
+    assert [wave.wave for wave in summary.waves] == [1, 2, 3]
+    # Only the wave the episode died in is a fragment.
+    assert [wave.completed for wave in summary.waves] == [True, True, False]
+    # Measured round time and decisions are partitioned, never double counted.
+    assert sum(wave.game_ms for wave in summary.waves) == pytest.approx(summary.round_ms)
+    assert sum(wave.decisions for wave in summary.waves) == summary.decisions
+    assert all(wave.game_ms > 0.0 and wave.decisions > 0 for wave in summary.waves)
+    # The boundary state is the state the wave began at, as the observation
+    # carries it - cash log-scaled, health as a fraction.
+    for wave in summary.waves[1:]:
+        entered = boundaries[wave.wave]
+        assert wave.health_fraction == entered.health_fraction
+        assert wave.cash_log == entered.cash_log
+    assert summary.waves[0].health_fraction == 1.0
+
+
+def test_an_advance_crossing_a_wave_boundary_is_charged_to_the_wave_it_started_in() -> None:
+    """The bridge reports one round-clock delta per advance and cannot split it.
+
+    So the whole delta goes to the wave that was current when the advance began.
+    Stated, deterministic, and worth at most one advance either side of a boundary.
+    """
+    environment, port = _environment(damage_per_second=0.3, seconds_per_wave=6.0)
+    environment.reset()
+    crossing_round_ms = 0.0
+    before_crossing = 0.0
+    original = port.advance_until_event
+    seen: list[float] = []
+
+    def recording_advance(**kwargs: object) -> FakeCommandResult:
+        result = original(**kwargs)  # type: ignore[arg-type]
+        seen.append(result.round_ms)
+        return result
+
+    port.advance_until_event = recording_advance  # type: ignore[method-assign]
+
+    while True:
+        transition = environment.step(WAIT)
+        if transition.next_state is not None and transition.next_state.wave == 2:
+            crossing_round_ms = seen[-1]
+            break
+        before_crossing += seen[-1]
+        if transition.terminated:
+            pytest.fail("the run died before it changed wave")
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+    assert crossing_round_ms > 0.0
+    first = next(wave for wave in summary.waves if wave.wave == 1)
+    assert first.game_ms == pytest.approx(before_crossing + crossing_round_ms)
+    assert next(wave for wave in summary.waves if wave.wave == 2).game_ms == 0.0

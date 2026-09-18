@@ -22,7 +22,8 @@ set -euo pipefail
 # Machine-local inputs (never committed):
 #   TOWER_BRIDGE_SERIAL     adb serial of the rooted clone (default emulator-5556)
 #   TOWER_BRIDGE_BUILD_DIR  private NDK build dir holding libtower_bridge.so and
-#                           the patched libunity-bridge.so
+#                           the patched libunity-bridge.so; defaults to the
+#                           installed bridge under ~/.local/state/tower-rl/bridge
 #   TOWER_BRIDGE_HOST_PORT  host port forwarded to device port 47651
 
 command="${1:?usage: instrumented_bridge.sh <verify|deploy|cleanup> [serial] [host_port]}"
@@ -41,7 +42,14 @@ derived_host_port() {
   esac
 }
 
-build_dir="${TOWER_BRIDGE_BUILD_DIR:-$(cat /tmp/tower-bridge-live.latest 2>/dev/null || true)}"
+# The bridge this host deploys: an explicit build tree while one is being
+# developed, otherwise the installed one. `current` is a symlink to a directory
+# named for the SHA-256 of the `libtower_bridge.so` in it, under
+# ~/.local/state, so it survives the reboot that a /tmp build directory does
+# not. Kept in step with `bridge.installed_bridge_directory`, which is what
+# every scripted path resolves through; this is the hand-run path.
+installed_bridge="${XDG_STATE_HOME:-$HOME/.local/state}/tower-rl/bridge/current"
+build_dir="${TOWER_BRIDGE_BUILD_DIR:-$installed_bridge}"
 host_port="${3:-${TOWER_BRIDGE_HOST_PORT:-$(derived_host_port)}}"
 adb="${ANDROID_SDK_ROOT:-$HOME/.local/share/android-sdk}/platform-tools/adb"
 
@@ -120,7 +128,11 @@ case "$command" in
     ;;
 
   deploy)
-    [ -n "$build_dir" ] || { echo "TOWER_BRIDGE_BUILD_DIR is required" >&2; exit 1; }
+    [ -d "$build_dir" ] || {
+      echo "no bridge to deploy: $build_dir is not a directory" >&2
+      echo "install one under ~/.local/state/tower-rl/bridge/<sha256>/ and point current at it, or set TOWER_BRIDGE_BUILD_DIR" >&2
+      exit 1
+    }
     require_offline
     bridge="$build_dir/libtower_bridge.so"
     overlay="$build_dir/libunity-bridge.so"

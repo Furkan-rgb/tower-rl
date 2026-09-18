@@ -1,19 +1,24 @@
-"""What the one call into `instrumented_bridge.sh` relays and what it refuses.
+"""Which bridge is deployed, and what the one call into the script relays.
 
 The script itself is not run: what is under test is that its output reaches the
 operator's log tagged with the instance it came from — cleanup that reports
-nothing is indistinguishable from cleanup that verified nothing — and that a
-non-zero status becomes one actor's failure.
+nothing is indistinguishable from cleanup that verified nothing — that a
+non-zero status becomes one actor's failure, and that the artifact it deploys is
+resolved from a durable home which refuses by name rather than deploying
+whatever a stale pointer happens to reach.
 """
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from tower_rl.simulation import bridge
 from tower_rl.simulation.bridge import ActorFailure, run_bridge
-from tower_rl.simulation.instance import CloneInstance
+from tower_rl.simulation.instance import CloneError, CloneInstance
 
 
 def bridge_output(
@@ -58,3 +63,74 @@ def test_a_failing_bridge_step_reports_its_output_as_well_as_failing(
     printed = capsys.readouterr().out
     assert "emulator-5556 cleanup: libunity_mounts: 1" in printed
     assert "emulator-5556 cleanup: error: warning: still mounted" in printed
+
+
+def install_bridge(root: Path, contents: bytes = b"bridge") -> str:
+    """One installed bridge under its own digest, with `current` pointing at it."""
+    digest = hashlib.sha256(contents).hexdigest()
+    (root / digest).mkdir(parents=True)
+    (root / digest / "libtower_bridge.so").write_bytes(contents)
+    (root / "current").symlink_to(digest)
+    return digest
+
+
+def test_the_installed_bridge_is_the_one_current_points_at(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    digest = install_bridge(tmp_path)
+
+    assert bridge.installed_bridge_directory() == tmp_path / digest
+
+
+def test_no_installed_bridge_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+
+    with pytest.raises(CloneError, match="no bridge is installed"):
+        bridge.installed_bridge_directory()
+
+
+def test_a_dangling_pointer_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The failure a /tmp build directory caused after a reboot, now named."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    (tmp_path / "current").symlink_to(tmp_path / "gone-with-the-scratchpad")
+
+    with pytest.raises(CloneError, match="dangles"):
+        bridge.installed_bridge_directory()
+
+
+def test_an_artifact_that_does_not_match_its_recorded_digest_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The directory name is the claim; the bytes are the evidence."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    digest = install_bridge(tmp_path)
+    (tmp_path / digest / "libtower_bridge.so").write_bytes(b"something else")
+
+    with pytest.raises(CloneError, match="not to the"):
+        bridge.installed_bridge_directory()
+
+
+def test_an_explicit_build_directory_still_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bridge under development is deployed straight out of its build tree."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    install_bridge(tmp_path)
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", "/elsewhere/build")
+
+    assert bridge.bridge_build_directory() == Path("/elsewhere/build")
+
+
+def test_a_missing_deployment_script_fails_by_name_not_as_a_subprocess_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`BRIDGE_SCRIPT` is derived from this package's location and can miss."""
+    monkeypatch.setattr(bridge, "BRIDGE_SCRIPT", tmp_path / "instrumented_bridge.sh")
+
+    with pytest.raises(ActorFailure, match="bridge deployment script is missing"):
+        run_bridge("deploy", CloneInstance())

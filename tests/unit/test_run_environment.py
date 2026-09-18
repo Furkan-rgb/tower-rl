@@ -610,3 +610,83 @@ def test_the_final_advance_of_a_healthy_run_does_not_trip_the_lower_bound() -> N
     assert not any(GAME_TIME_DEFLATED in reason for reason in transition.invalid_reasons)
     summary = environment.summarize(transition.termination)
     assert not any(GAME_TIME_DEFLATED in reason for reason in summary.termination_detail)
+
+
+def test_the_wall_ceiling_outranks_an_event_the_settled_state_shows() -> None:
+    """A truncated advance is refused even when the run ended inside it.
+
+    The bridge gives the ceiling precedence over every event reason, so a stall
+    is never excused by the world happening to do something while the host was
+    slow. The host still has to see the run end - the episode must terminate -
+    but it terminates by the invariant's name, not as a clean game over.
+    """
+    from dataclasses import replace as replace_reading
+
+    environment, port = _environment()
+    environment.reset()
+    reading = port.read_state()
+    assert reading is not None
+    ended = replace_reading(
+        reading, lifecycle="terminal", terminal=True, round_active=False,
+        health=0.0, game_speed=0.0,
+    )
+
+    def truncated_on_an_ended_run(**_kwargs: object) -> FakeCommandResult:
+        return FakeCommandResult(
+            "confirmed", "wall_ceiling", frames=3, game_ms=50.0, state=ended,
+        )
+
+    port.advance_until_event = truncated_on_an_ended_run  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert DecisionEvent.RUN_ENDED in transition.events, "the host must still see the end"
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+    assert transition.truncated and not transition.terminated
+    assert not transition.admissible
+    assert ADVANCE_TRUNCATED_BY_WALL in transition.invalid_reasons
+    # The ceiling makes no claim about events, so it is not a disagreement.
+    assert BRIDGE_EVENT_DIVERGENCE not in transition.invalid_reasons
+
+
+def test_a_truncated_death_boundary_settle_fails_the_episode_too() -> None:
+    """The one-frame recovery is held to the same invariant as any advance.
+
+    A 15 s stall rendering a single frame is exactly the distortion the ceiling
+    exists to hear, so the settled observation it returns is refused rather than
+    recovered.
+    """
+    from dataclasses import replace as replace_reading
+
+    environment, port = _environment()
+    environment.reset()
+    original = port.advance_until_event
+    calls = {"count": 0}
+
+    def stalling_recovery(**kwargs: object) -> FakeCommandResult:
+        calls["count"] += 1
+        result = original(**kwargs)  # type: ignore[arg-type]
+        assert result.state is not None
+        if calls["count"] == 1:
+            # The contradictory instant that asks for the recovery advance.
+            return replace_reading(
+                result,
+                state=replace_reading(
+                    result.state, health=-2.0, lifecycle="active", terminal=False
+                ),
+            )
+        return replace_reading(result, reason="wall_ceiling")
+
+    port.advance_until_event = stalling_recovery  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert calls["count"] == 2, "the boundary still has to be settled by advancing"
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+    assert not transition.admissible
+    assert transition.next_state is not None
+    assert ADVANCE_TRUNCATED_BY_WALL in transition.next_state.invalid_reasons
+    assert environment._tally.recovered_transients == 0
+    summary = environment.summarize(transition.termination)
+    assert not summary.valid
+    assert any(ADVANCE_TRUNCATED_BY_WALL in detail for detail in summary.termination_detail)

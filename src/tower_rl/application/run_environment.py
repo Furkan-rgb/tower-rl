@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from tower_rl.application.decision_time import (
     BRIDGE_ROUND_TRIP,
@@ -478,6 +478,13 @@ class InstrumentedRunEnvironment:
         apart the decisions the agent is offered have changed, so the transition is
         marked invalid and counted, which is what makes the drift visible.
         """
+        if bridge_reason == _BRIDGE_WALL_CEILING_REASON:
+            # The wall ceiling outranks every event reason the bridge could
+            # give, so it says nothing about what the settled state shows and
+            # there is nothing here to compare. The truncation is already
+            # reported by `ADVANCE_TRUNCATED_BY_WALL`; calling it a disagreement
+            # as well would name a drift that did not happen.
+            return ()
         claims_event = bridge_reason.startswith(_BRIDGE_EVENT_PREFIX)
         if claims_event != bool(events):
             return (BRIDGE_EVENT_DIVERGENCE,)
@@ -546,6 +553,19 @@ class InstrumentedRunEnvironment:
             )
         with self.profile.span(OBSERVATION_DECODE):
             settled = self.builder.build(result.state, captured_at_monotonic=time.monotonic())
+        if result.reason == _BRIDGE_WALL_CEILING_REASON:
+            # A stall long enough to hit the wall ceiling while rendering a
+            # single frame is exactly what the invariant exists to hear, so this
+            # advance is refused like any other truncated one. The reason rides
+            # on the state because that is what this recovery returns - the
+            # transition reasons are assembled by the caller, which never sees
+            # this advance - and an invalid state makes the transition
+            # inadmissible and the episode `OBSERVATION_INVALID` just the same.
+            return replace(
+                settled,
+                valid=False,
+                invalid_reasons=settled.invalid_reasons + (ADVANCE_TRUNCATED_BY_WALL,),
+            )
         if settled.valid:
             self._tally.recovered_transients += 1
         return settled

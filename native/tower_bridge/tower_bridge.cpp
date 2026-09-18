@@ -1298,23 +1298,28 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // boundary. Reporting the intent to pause instead froze the stream on a
   // terminal reading the host could never get past.
   *paused = pressed_pause && readable && settled.active;
+  // The wall ceiling outranks every event the settled state could show. An
+  // advance cut off by how long the host took was measured under a different
+  // decision problem from one that was not, and that is true whether or not the
+  // world happened to do something interesting while the host was slow - so the
+  // truncation is what gets reported, and the host fails the episode on it. The
+  // settled state is still what the observation is derived from, including a
+  // run that ended: only this reason string changes.
+  const bool wall_truncated = std::strcmp(stopped_on, "wall_ceiling") == 0;
   bool ended = false;
   if (!readable || !settled.active) {
-    *reason = "event:run_ended";
     ended = true;
+  }
+  if (wall_truncated) {
+    *reason = "wall_ceiling";
+  } else if (ended) {
+    *reason = "event:run_ended";
   } else if (settled.wave != before.wave) {
     *reason = "event:wave_changed";
   } else if (BecameAvailable(before, settled)) {
     *reason = "event:newly_affordable";
   } else if (std::fabs(settled.health_fraction - before.health_fraction) >= health_threshold) {
     *reason = "event:health_changed";
-  } else if (std::strcmp(stopped_on, "wall_ceiling") == 0) {
-    // The loop ran out of wall time, not of game time. The settled snapshot
-    // cannot show this - it looks exactly like a spent budget - so it is
-    // reported as its own reason. The host fails the episode on it: an advance
-    // cut off by how long the host took is load-dependent, and an episode
-    // measured that way is not comparable with one that was not.
-    *reason = "wall_ceiling";
   } else {
     *reason = "budget_exhausted";
   }

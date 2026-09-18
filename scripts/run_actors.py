@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from clone_session import (  # noqa: E402
+    SNAPSHOT_CAPABLE_RENDERER,
     CloneInstance,
     bridge_key,
     bring_up,
@@ -388,6 +389,11 @@ def prepare_pinned_snapshot(renderer: str, cores: int) -> str:
     """
     instance = CloneInstance()
     name = keyed_snapshot_name(bridge_key())
+    if renderer != SNAPSHOT_CAPABLE_RENDERER:
+        # A renderer that cannot snapshot has no pinned snapshot to prepare, and
+        # `bring_up` would take the cold path on a writable instance for nothing.
+        print(f"renderer '{renderer}' cannot snapshot; nothing to pin", flush=True)
+        return name
     if snapshot_exists(instance, name):
         return name
     print(f"no snapshot for the current bridge; preparing {name} once", flush=True)

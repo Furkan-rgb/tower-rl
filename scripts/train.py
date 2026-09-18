@@ -112,12 +112,13 @@ class ActorInstance:
 
 def build_backbone(
     arguments: argparse.Namespace, device: torch.device
-) -> tuple[Backbone, StackedDqnConfig]:
-    """The backbone and the learner settings it was fixed with.
+) -> tuple[Backbone, StackedDqnConfig, NetworkConfig]:
+    """The backbone and the two settings objects it was fixed with.
 
     The settings come back alongside it because they are part of what the arm
-    is configured by - n-step, discount, learning rate - and a run that does not
-    record them cannot be compared with the next one.
+    is configured by - n-step, discount, learning rate, the width of the network
+    - and a run that does not record them cannot be compared with the next one,
+    nor can one of its checkpoints be rebuilt into the policy that wrote it.
     """
     stacked = StackedDqnConfig(
         seed=arguments.seed,
@@ -127,13 +128,15 @@ def build_backbone(
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
     )
+    network = NetworkConfig()
     return (
         StackedDqnBackbone(
             config=stacked,
-            network_config=NetworkConfig(),
+            network_config=network,
             device=device,
         ),
         stacked,
+        network,
     )
 
 
@@ -158,7 +161,7 @@ def build_arm(
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    backbone, learner = build_backbone(arguments, device)
+    backbone, learner, network = build_backbone(arguments, device)
     replay = PrioritizedSequenceReplay(
         capacity=arguments.replay_capacity,
         alpha=arguments.priority_alpha,
@@ -175,6 +178,7 @@ def build_arm(
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
+        checkpoint_every_decisions=arguments.checkpoint_every_decisions,
         parameter_sync_episodes=arguments.parameter_sync_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
@@ -203,6 +207,7 @@ def build_arm(
         actor_ids=[actor.config.actor_id for actor in actors],
         config=config,
         learner=learner,
+        network=network,
         cadence=instances[0].environment.cadence,
         burn_in=burn_in,
         stride=stride,
@@ -271,6 +276,8 @@ def build_arm(
     # evaluation buys points too noisy to read at the price of device time.
     arm.training.evaluate = run_evaluation
     arm.training.checkpoint = arm.checkpoint
+    # The candidates a post-hoc selection chooses among, beside the resume point.
+    arm.training.numbered_checkpoint = arm.numbered_checkpoint
     arm.training.on_episode = on_episode
     arm.training.on_withdrawal = on_withdrawal
     manifest = run_dir / "manifest.json"
@@ -358,6 +365,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument(
+        "--checkpoint-every-decisions",
+        type=int,
+        default=0,
+        help=(
+            "decisions between numbered checkpoints, each written beside "
+            "latest.pt under its own name and evaluable afterwards as an arm; "
+            "0 writes none, and any value must be a multiple of --block-decisions"
+        ),
+    )
+    parser.add_argument(
         "--parameter-sync-episodes",
         type=int,
         default=1,
@@ -431,6 +448,20 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
                 "mid-run evaluation needs an instance to itself and cannot run "
                 "while a fleet is collecting; leave --evaluate-every-episodes at 0"
             )
+    if arguments.checkpoint_every_decisions < 0:
+        raise SystemExit("--checkpoint-every-decisions cannot be negative")
+    if (
+        arguments.checkpoint_every_decisions
+        and arguments.checkpoint_every_decisions % arguments.block_decisions
+    ):
+        # The budget is spent a block at a time, so a period that is not a whole
+        # number of blocks would put its checkpoints at the block boundaries
+        # nearest to it rather than where it asked for them - a selection made
+        # over candidates the operator did not choose.
+        raise SystemExit(
+            f"--checkpoint-every-decisions {arguments.checkpoint_every_decisions} is "
+            f"not a multiple of --block-decisions {arguments.block_decisions}"
+        )
     if arguments.stacked_burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.

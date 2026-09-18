@@ -27,6 +27,7 @@ from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
 from tower_rl.environment.run_environment import CadenceConfig
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.checkpoint import CheckpointIdentity
+from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.learning.training import TrainingConfig
 
@@ -111,6 +112,7 @@ def resolved_config(
     actor_ids: Sequence[str],
     config: TrainingConfig,
     learner: StackedDqnConfig,
+    network: NetworkConfig,
     cadence: CadenceConfig,
     burn_in: int,
     stride: int,
@@ -138,6 +140,14 @@ def resolved_config(
         "burn_in": burn_in,
         "stride": stride,
         "history_length": arguments.history_length if name == "stacked-dqn" else None,
+        # The shape of the network, not only its hyperparameters: a checkpoint
+        # whose snapshot cannot say how wide its layers were cannot be rebuilt
+        # into the policy that wrote it, which is what an evaluation of a
+        # numbered checkpoint has to do.
+        "network_identity_capacity": network.identity_capacity,
+        "network_identity_dim": network.identity_dim,
+        "network_hidden": network.hidden,
+        "network_core_hidden": network.core_hidden,
         "n_step": learner.n_step,
         "discount": learner.discount,
         "learning_rate": learner.learning_rate,
@@ -155,6 +165,7 @@ def resolved_config(
         "evaluate_every_episodes": arguments.evaluate_every_episodes,
         "evaluation_episodes": arguments.evaluation_episodes,
         "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
+        "checkpoint_every_decisions": config.checkpoint_every_decisions,
         # The parameter lag the fleet acted under, which a later reading of the
         # collection curve needs as much as the replay ratio.
         "parameter_sync_episodes": config.parameter_sync_episodes,

@@ -99,6 +99,21 @@ class TrainingReport:
         """The resume point, overwritten in place as the run proceeds."""
         self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
 
+    def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
+        """One candidate model of the run, named by the decisions behind it.
+
+        Beside `latest.pt` rather than instead of it: the resume point is
+        overwritten as the run proceeds and therefore names no particular model,
+        while these are the arms a later evaluation chooses among. The name
+        carries the decisions actually spent when it was written - the counter
+        lands past its period, not on it, because an episode is played to its
+        classified end - so a file says what it cost rather than what it was
+        aimed at.
+        """
+        path = self.run_dir / "checkpoints" / f"checkpoint-{report.decisions:07d}.pt"
+        self._write(report, path)
+        print(f"[{self.name}] checkpoint {path.name}", flush=True)
+
     def _write(self, report: TrainingProgressReport, path: Path) -> str:
         """Write one checkpoint and return the digest of the weights in it."""
         return write_checkpoint(

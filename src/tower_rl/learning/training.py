@@ -213,6 +213,13 @@ class TrainingConfig:
     #: episodes. Evaluation is exploration-free and never writes to replay.
     evaluate_every_episodes: int = 0
     checkpoint_every_episodes: int = 0
+    #: Decisions between the numbered checkpoints a later evaluation chooses
+    #: among. Zero leaves only the resume point, which is overwritten as the run
+    #: proceeds and therefore names no particular model. A period in decisions
+    #: rather than in episodes because decisions are the budget unit the arms
+    #: are equalised on: two runs whose episodes differ in length still produce
+    #: checkpoints at the same points of their budgets.
+    checkpoint_every_decisions: int = 0
     #: How many episodes in a row may fail at the port before an actor gives up.
     #: A single failed episode is an ordinary event on a real device and must not
     #: end a run that has hours of experience in it; a device that fails every
@@ -248,6 +255,8 @@ class TrainingConfig:
             raise ValueError("at least one episode failure must be survivable")
         if self.parameter_sync_episodes < 1:
             raise ValueError("actors must be synchronised at least every episode")
+        if self.checkpoint_every_decisions < 0:
+            raise ValueError("a checkpoint period in decisions cannot be negative")
 
     def progress(self, decisions: int) -> float:
         return min(1.0, decisions / self.budget_decisions)
@@ -572,6 +581,12 @@ class TrainingRun:
     #: run while the fleet is not collecting.
     evaluate: Callable[[], EvaluationReport] | None = None
     checkpoint: Callable[[TrainingProgressReport], None] | None = None
+    #: Called when the fleet crosses a multiple of `checkpoint_every_decisions`,
+    #: to write a checkpoint under its own name. Separate from `checkpoint`
+    #: above, which keeps the one resume point: a numbered checkpoint is a
+    #: candidate a later evaluation may choose, so it must survive the next one
+    #: being written.
+    numbered_checkpoint: Callable[[TrainingProgressReport], None] | None = None
     #: Progress so far. It is instance state rather than a local because a run
     #: can be advanced in blocks: several arms sharing one device take turns, so
     #: whatever drifts on the device lands on all of them equally.
@@ -590,6 +605,12 @@ class TrainingRun:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     #: Gradient steps earned but not yet taken, carried across blocks.
     _owed: float = field(default=0.0, init=False)
+    #: The last multiple of `checkpoint_every_decisions` a numbered checkpoint
+    #: was written for. Episodes end whole, so the counter jumps past a multiple
+    #: rather than landing on it, and several multiples can fall inside one long
+    #: episode; this records which of them have already been answered so a
+    #: crossing produces exactly one checkpoint.
+    _numbered_at: int = field(default=0, init=False)
     #: Episodes each actor has played since its copy was last refreshed. Starts
     #: at the cadence so every actor publishes before its first episode, which
     #: is also what picks up a checkpoint loaded into the backbone after the run
@@ -897,6 +918,16 @@ class TrainingRun:
         if self.checkpoint is not None and period and report.episodes % period == 0:
             self.checkpoint(report)
             report.checkpoints_written += 1
+        decisions_period = self.config.checkpoint_every_decisions
+        if self.numbered_checkpoint is not None and decisions_period:
+            # The multiple this many decisions has reached, which is what the
+            # crossing is counted by: the counter lands past a multiple, not on
+            # it, because an episode is played to its end.
+            reached = report.decisions // decisions_period * decisions_period
+            if reached > self._numbered_at:
+                self._numbered_at = reached
+                self.numbered_checkpoint(report)
+                report.checkpoints_written += 1
 
     def _optimise(self, decisions: int) -> LearnMetrics:
         # The buffer's lock is held across sampling, learning and the priority

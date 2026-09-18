@@ -29,6 +29,7 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import ActorConfig
+from tower_rl.learning.checkpoint import load
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.simulation.instance import CloneInstance
@@ -93,9 +94,13 @@ def fleet(count: int = 1, **fake: Any) -> list[train.ActorInstance]:
 
 
 def session(
-    run_dir: Path, budget: str = "120", actors: int = 1, **fake: Any
+    run_dir: Path,
+    budget: str = "120",
+    actors: int = 1,
+    settings: dict[str, str] | None = None,
+    **fake: Any,
 ) -> dict[str, Any]:
-    overrides = {"--budget-decisions": budget}
+    overrides = {"--budget-decisions": budget, **(settings or {})}
     if actors > 1:
         overrides.update(
             {
@@ -235,6 +240,94 @@ def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -
     """Checked before the device is touched, not an hour into collection."""
     with pytest.raises(SystemExit, match="cannot fill a window"):
         arguments(tmp_path, **{"--stacked-burn-in": "2"})
+
+
+#: A checkpoint period that is a whole number of the 50-decision blocks these
+#: settings collect in, which is what the parser requires of it.
+CHECKPOINT_PERIOD = 100
+
+
+def numbered_checkpoints(report: dict[str, Any]) -> tuple[dict[str, Any], Path, list[int]]:
+    """The arm, its checkpoint directory, and the decisions each file names."""
+    arm = report["arms"][0]
+    directory = Path(report["session"]) / arm["run_id"] / "checkpoints"
+    files = sorted(directory.glob("checkpoint-*.pt"))
+    return arm, directory, [int(path.stem.removeprefix("checkpoint-")) for path in files]
+
+
+def test_a_numbered_checkpoint_is_written_at_every_crossing_of_the_period(
+    tmp_path: Path,
+) -> None:
+    """One checkpoint per multiple of the period the fleet crosses.
+
+    The counter lands past a multiple rather than on it - an episode is played
+    to its classified end - and a long episode can carry the run past several
+    multiples at once, which is one crossing and therefore one checkpoint. The
+    expected files are recomputed here from the run's own episode series rather
+    than assumed to be one per multiple.
+    """
+    report = session(
+        tmp_path,
+        budget="600",
+        settings={"--checkpoint-every-decisions": str(CHECKPOINT_PERIOD)},
+    )
+    arm, directory, written = numbered_checkpoints(report)
+
+    spent = 0
+    crossed = 0
+    expected: list[int] = []
+    for episode in arm["collected_episodes"]:
+        spent += int(episode["decisions"])
+        reached = spent // CHECKPOINT_PERIOD * CHECKPOINT_PERIOD
+        if reached > crossed:
+            crossed = reached
+            expected.append(spent)
+
+    assert len(written) >= 2, "a 600-decision budget crosses the period several times"
+    assert written == expected
+    # Beside the resume point, which is overwritten and names no one model.
+    assert (directory / "latest.pt").exists()
+
+
+def test_a_numbered_checkpoint_carries_the_run_it_came_from(tmp_path: Path) -> None:
+    """Each one is resumable and says which run, and which decisions, made it."""
+    report = session(
+        tmp_path,
+        budget="300",
+        settings={"--checkpoint-every-decisions": str(CHECKPOINT_PERIOD)},
+    )
+    arm, directory, written = numbered_checkpoints(report)
+    assert written, "the budget crosses the period at least once"
+
+    for decisions in written:
+        checkpoint = load(directory / f"checkpoint-{decisions:07d}.pt")
+        assert checkpoint.identity.run_id == arm["run_id"]
+        assert checkpoint.identity.backbone == "stacked-dqn"
+        assert checkpoint.identity.profile_id == PROFILE
+        # The name is the decisions the progress in the file records, not an
+        # aspiration: a selection reads the file, not the directory listing.
+        assert checkpoint.progress.environment_decisions == decisions
+        # The width of the network, so the checkpoint can be rebuilt into the
+        # policy that wrote it without being told what shape it is.
+        assert checkpoint.resolved_config["network_hidden"] == SMALL_NETWORK.hidden
+
+
+def test_no_numbered_checkpoints_are_written_without_a_period(tmp_path: Path) -> None:
+    """The default leaves only the resume point, exactly as before."""
+    assert train.parse_arguments(["--run-dir", str(tmp_path)]).checkpoint_every_decisions == 0
+
+    _, directory, written = numbered_checkpoints(session(tmp_path, budget="150"))
+
+    assert written == []
+    assert (directory / "latest.pt").exists()
+
+
+def test_a_checkpoint_period_that_is_not_whole_blocks_is_refused(tmp_path: Path) -> None:
+    """Checked in the parser: the budget is spent a block at a time."""
+    with pytest.raises(SystemExit, match="not a multiple of --block-decisions"):
+        arguments(tmp_path, **{"--checkpoint-every-decisions": "75"})
+    with pytest.raises(SystemExit, match="cannot be negative"):
+        arguments(tmp_path, **{"--checkpoint-every-decisions": "-1"})
 
 
 #: Two fake instances, which is the fleet arrangement a device run takes: every

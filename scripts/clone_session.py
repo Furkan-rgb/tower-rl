@@ -146,17 +146,54 @@ SNAPSHOT_CAPABLE_RENDERER = "lavapipe"
 #: The rate the guest paces the game at, in Hz. The game's frame pacing is a
 #: guest-side vsync timer, so a decision's frames arrive at whatever rate the
 #: guest display runs, and raising it is what makes an advance cheaper in wall
-#: time (60 Hz -> 16.17 ms a frame, 240 Hz -> 4.14 ms). Two settings have to agree
+#: time (60 Hz -> 16.17 ms a frame, 120 Hz -> 8.3 ms). Two settings have to agree
 #: or the guest keeps 60: `-vsync-rate` below sets the display's physical vsync
 #: mode, and `raise_frame_rate` lifts SurfaceFlinger's per-uid game
 #: frame-rate override (`ro.surface_flinger.game_default_frame_rate_override=60`)
 #: that otherwise pins the game surface to 60 whatever mode the display is in.
 #: They are one constant here precisely because they cannot be allowed to drift
-#: apart: a 240 override against a 60 Hz mode still renders at 60.
+#: apart: a 120 override against a 60 Hz mode still renders at 60.
+#:
+#: A third layer exists and is deliberately not a lever: the bridge sets Unity's
+#: own `targetFrameRate` to `kUncappedFrameRate = 240`
+#: (`native/tower_bridge/tower_bridge.cpp`), which `M1B-E041` found inert under
+#: capture mode. The pair above is therefore the complete set only because that
+#: third setting is non-binding.
 GUEST_FRAME_RATE_HZ = 120
+#: Measured ceiling, not a preference: `M1B-E042` found the solo knee at 300 Hz,
+#: and 360 Hz a cliff where the guest reports the rate as adopted while
+#: delivering 91 fps. The confirmation below reads the guest's own claim, which
+#: at that point is false, so the bound is what keeps this constant from being
+#: tuned past what measured fps supports.
+assert GUEST_FRAME_RATE_HZ <= 300, "no measured fps supports a guest rate above 300 Hz"
 #: How long SurfaceFlinger is given to apply a raised rate before the instance is
 #: called unusable. Observed on device to take a beat, not to be slow.
 FRAME_RATE_CONFIRM_TIMEOUT = 20.0
+#: SurfaceFlinger reports the applied rate as a float it computed from a vsync
+#: period, so an instance genuinely at the rate can read `120.000004`. The
+#: readings are compared within this, because the failure worth refusing is a
+#: surface still at 60, not a rounding difference.
+FRAME_RATE_TOLERANCE_HZ = 0.5
+#: The game's Unity activity, as `dumpsys activity activities` names it. Its
+#: absence is what separates a game that is merely slow to start from one the
+#: guest's Google Play has killed: the process comes back for a job service, so
+#: `pidof` answers, but nothing is on screen and the in-process bridge is frozen.
+GAME_ACTIVITY = "UnityPlayerActivity"
+#: How many times one bring-up re-issues the launcher intent after that kill.
+#: Two, because the hazard is a batch of Play installs passing through, not a
+#: standing condition: if two relaunches do not outlast it, something else is
+#: wrong and the readiness timeout should report it rather than loop forever.
+MAX_RELAUNCHES = 2
+#: How often readiness is re-read. The online window is held open until the
+#: bridge calls the game ready, so the poll interval is time the instance spends
+#: online for no reason; it is short there and stays cheap everywhere else.
+POLL_SECONDS = 5.0
+ONLINE_POLL_SECONDS = 1.0
+#: Where the emulator's own output is captured. A module-level path rather than
+#: a `tempfile.gettempdir()` call inside `launch_emulator`, so a test can point
+#: it somewhere harmless: the log is opened `"wb"` before the launch, and a test
+#: that fakes only `Popen` truncated the live instance's log every run.
+EMULATOR_LOG_DIRECTORY = Path(tempfile.gettempdir())
 
 
 class CloneError(RuntimeError):
@@ -239,6 +276,16 @@ def set_radios(instance: CloneInstance, enabled: bool, *, settle: float = 25.0) 
 
 def game_pid(instance: CloneInstance) -> str:
     return adb(instance, "shell", "pidof", PACKAGE)
+
+
+def game_activity_present(instance: CloneInstance) -> bool:
+    """Whether the game holds an activity, rather than only a background service."""
+    return GAME_ACTIVITY in adb(instance, "shell", "dumpsys", "activity", "activities")
+
+
+def launch_game(instance: CloneInstance) -> None:
+    """Send the game's launcher intent. `monkey` sends the intent; it taps nothing."""
+    adb(instance, "shell", "monkey", "-p", PACKAGE, "-c", "android.intent.category.LAUNCHER", "1")
 
 
 def bridge_build_directory() -> Path:
@@ -345,9 +392,37 @@ def why_not_ready(instance: CloneInstance) -> str | None:
     return None
 
 
-def wait_until_ready(instance: CloneInstance, *, timeout: float) -> None:
+def wait_until_ready(
+    instance: CloneInstance,
+    *,
+    timeout: float,
+    poll: float = POLL_SECONDS,
+    relaunch: Callable[[], None] | None = None,
+    max_relaunches: int = MAX_RELAUNCHES,
+) -> None:
+    """Wait for the bridge to call the game ready, relaunching a game Play killed.
+
+    The guest's own Google Play installs app updates during the one online
+    window, and installing WebView force-stops every process holding it, the game
+    included (`Killing ... (adj 0): stop com.google.android.webview due to
+    installPackageLI`, then `Force removing ActivityRecord{...
+    UnityPlayerActivity}: app died`). Android restarts the game moments later for
+    a job service only, so it has a pid and no activity, is frozen in the
+    background, and the in-process bridge never answers again. Waiting that out
+    costs the whole timeout, which is how a cold `-gpu host` bring-up lost an
+    instance to a 300s `main_unavailable`.
+
+    So the loss of the activity is detected and the launcher intent re-issued.
+    Only a *lost* activity counts: the game is watched until it has an activity
+    at least once, which is also what keeps the intent that started it from
+    being re-sent before the activity appears. Re-issuing an intent is not a
+    network operation, so a relaunch after the radios are down stays offline;
+    nothing here touches a radio.
+    """
     deadline = time.monotonic() + timeout
     last = "nothing observed yet"
+    had_activity = False
+    relaunches = 0
     while time.monotonic() < deadline:
         reason = why_not_ready(instance)
         if reason is None:
@@ -355,7 +430,22 @@ def wait_until_ready(instance: CloneInstance, *, timeout: float) -> None:
         if reason != last:
             print(f"  {instance.serial}: {reason}", flush=True)
             last = reason
-        time.sleep(5.0)
+        if relaunch is not None:
+            if game_activity_present(instance):
+                had_activity = True
+            elif had_activity and relaunches < max_relaunches:
+                relaunches += 1
+                print(
+                    f"  {instance.serial}: the game lost its activity while starting; "
+                    f"re-issuing the launcher intent ({relaunches}/{max_relaunches})",
+                    flush=True,
+                )
+                relaunch()
+                # The next relaunch waits for the game to come back and be
+                # killed again, rather than firing on the same absence.
+                had_activity = False
+                last = "relaunched, waiting for the game again"
+        time.sleep(poll)
     raise CloneError(f"{instance.serial} never became ready: {last}")
 
 
@@ -494,7 +584,7 @@ def launch_emulator(
     # running ...`, for example). Kept on success too, overwritten by the next
     # launch, so a failure can always be explained without spamming this
     # process's own console when there is nothing to explain.
-    log_path = Path(tempfile.gettempdir()) / f"tower-rl-emulator-{instance.serial}.log"
+    log_path = EMULATOR_LOG_DIRECTORY / f"tower-rl-emulator-{instance.serial}.log"
     with log_path.open("wb") as log_file:
         process = subprocess.Popen(
             command, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True
@@ -541,12 +631,23 @@ def launch_game_at_home(instance: CloneInstance) -> None:
     requires the bridge already deployed and its overlay mounted: it runs after
     `deploy`, never before it. The radios come down only once the bridge says the
     game is up, and the result is verified by interface.
+
+    That reading is the whole length of the window, so it is taken every
+    `ONLINE_POLL_SECONDS` rather than on the ordinary poll: the game is ready
+    seconds after it is launched, and every second between being ready and being
+    read is a second the guest's Google Play spends installing updates over a
+    running game. `wait_until_ready` relaunches the game if Play kills it anyway.
     """
     print("enabling radios for the startup check only", flush=True)
     set_radios(instance, True)
     adb(instance, "shell", "am", "force-stop", PACKAGE)
-    adb(instance, "shell", "monkey", "-p", PACKAGE, "-c", "android.intent.category.LAUNCHER", "1")
-    wait_until_ready(instance, timeout=300.0)
+    launch_game(instance)
+    wait_until_ready(
+        instance,
+        timeout=300.0,
+        poll=ONLINE_POLL_SECONDS,
+        relaunch=lambda: launch_game(instance),
+    )
     print("the game is up and idle; cutting the network", flush=True)
     set_radios(instance, False)
     require_offline(instance)
@@ -594,7 +695,7 @@ def confirm_frame_rate(instance: CloneInstance) -> None:
         wrong = [
             f"{name} {value}"
             for name, value in readings.items()
-            if value == "absent" or float(value) != float(rate)
+            if value == "absent" or abs(float(value) - float(rate)) > FRAME_RATE_TOLERANCE_HZ
         ]
         if not wrong:
             break
@@ -618,13 +719,14 @@ def raise_frame_rate(instance: CloneInstance) -> None:
     `instrumented_bridge.sh cleanup` resets it during teardown and no instance is
     left modified.
 
-    This is deliberately *not* part of bring-up. An instance already running at a
-    high rate while a peer boots killed that peer's Vulkan surface on device
-    (`Failed to find ColorBuffer`, the game gone by the time the network was
-    cut), and every instance boots fine at 60. So a fleet brings every instance
-    up at the stock rate and calls this on each of them only once the whole fleet
-    is up (`run_actors.stagger_bring_up`); a single instance is that same fleet
-    with one member.
+    This is deliberately *not* part of bring-up, though no longer because a
+    raised peer was shown to kill a booting one: `M1B-E043` refuted that reading
+    — every instance was at the stock 60 Hz through bring-up and the same deaths
+    reproduced. The deferral is kept because it is harmless and keeps the boot
+    the fleet has most evidence for. So a fleet brings every instance up at the
+    stock rate and calls this on each of them only once the whole fleet is up
+    (`run_actors.stagger_bring_up`); a single instance is that same fleet with
+    one member.
     """
     adb(instance, "shell", "cmd", "game", "set", "--fps", str(GUEST_FRAME_RATE_HZ), PACKAGE)
     confirm_frame_rate(instance)
@@ -727,9 +829,12 @@ def cold_bring_up(
 ) -> None:
     """The full path, and the only one that opens a network window.
 
-    `deploy` force-stops and cold-launches the game, and an offline cold launch
-    stops on the OFFLINE modal (`M1B-E010`), so the one online window has to cover
-    both that launch and the one `launch_game_at_home` performs afterwards.
+    The window belongs to the game and to nothing else: the instance boots
+    offline and `deploy` runs offline too (`instrumented_bridge.sh deploy`
+    refuses an online instance, and whatever it leaves on the OFFLINE modal is
+    force-stopped and launched again here). So the radios are up only from the
+    game's launch to the bridge calling it ready, which is where `M1B-E010` says
+    the network is genuinely needed — the Firebase check and the OFFLINE modal.
     """
     start(instance, renderer, read_only=read_only, cores=cores)
     require_offline(instance)
@@ -862,8 +967,20 @@ def main() -> int:
                 cores=arguments.cores,
                 force_cold=arguments.cold,
             )
-            # A single instance is a fleet of one: it is up, so it may be raised.
-            raise_frame_rate(instance)
+            # A single instance is a fleet of one: it is up, so it may be
+            # raised — but only a `--read-only` instance, which writes to a
+            # throwaway overlay. `cmd game set` is GameManagerService state that
+            # outlives the process, so raising a writable instance would leave
+            # the clone AVD modified and a later `snapshot` would bake the
+            # override into the state every future run restores.
+            if arguments.read_only:
+                raise_frame_rate(instance)
+            else:
+                print(
+                    f"{instance.serial}: writable, so the guest stays at the stock rate; "
+                    "raise it on a --read-only instance",
+                    flush=True,
+                )
         elif arguments.command == "snapshot":
             save_snapshot(instance, arguments.name or keyed_snapshot_name(bridge_key()))
         elif arguments.command == "restore":

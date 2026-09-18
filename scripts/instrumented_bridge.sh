@@ -145,10 +145,37 @@ case "$command" in
   cleanup)
     device shell am force-stop "$package"
     # Bring-up pins the game's frame rate through GameManagerService (see
-    # `clone_session.pin_game_frame_rate`); that override is device state, so it
-    # is reset here and no instance is left modified by a run.
-    device shell cmd game reset "$package" > /dev/null
-    echo "game_frame_rate_override: reset"
+    # `clone_session.raise_frame_rate`); that override is device state, so it is
+    # reset here and no instance is left modified by a run.
+    #
+    # Unguarded, this line ended cleanup: `set -e` plus adb's propagation of the
+    # remote exit code meant one nonzero `cmd game` return left the overlay
+    # mounted, the bridge deployed and identity never re-verified — the state
+    # cleanup exists to prevent. And the restore is read back rather than
+    # asserted: every other line printed here is evidence, so this one may not
+    # claim a reset it never observed.
+    device shell cmd game reset "$package" > /dev/null 2>&1 ||
+      echo "warning: cmd game reset returned nonzero" >&2
+    uid="$(device shell dumpsys package "$package" 2> /dev/null |
+      sed -n 's/.*\(appId\|userId\)=\([0-9]\+\).*/\2/p' | head -n 1 | tr -d '\r' || true)"
+    override=""
+    if [ -n "$uid" ]; then
+      override="$(device shell dumpsys SurfaceFlinger 2> /dev/null | tr -d '\r' |
+        sed -n "s/.*{$uid, \([0-9]\+\) [0-9]\+}.*/\1/p" | head -n 1 || true)"
+    fi
+    if [ -z "$override" ]; then
+      # The game is force-stopped above, so SurfaceFlinger may hold no per-uid
+      # entry at all; absence is not a reading and is not reported as one.
+      echo "game_frame_rate_override: reset-issued (unverified)"
+    elif [ "$override" = "0" ] || [ "$override" = "60" ]; then
+      # Observed on device: a reset leaves the per-uid gameModeOverride at 0,
+      # which is GameManagerService holding no override at all; 60 is the stock
+      # `ro.surface_flinger.game_default_frame_rate_override`. Either is the
+      # state bring-up found, and neither is the rate bring-up pinned.
+      echo "game_frame_rate_override: reset"
+    else
+      echo "game_frame_rate_override: NOT-reset, still $override" >&2
+    fi
     unmount_overlay "$target" || echo "warning: the overlay is still mounted" >&2
     su_device "rm -f /data/user/0/$package/files/libtower_bridge.so /data/local/tmp/libtower_bridge.so /data/local/tmp/libunity-tower-bridge.so"
     device forward --remove "tcp:$host_port" 2> /dev/null || true

@@ -281,8 +281,8 @@ def collect_episodes(
     `await_fleet` is the other half of that sequencing, and it is why the guest
     frame rate is raised here rather than in bring-up: every instance boots at
     the stock 60 Hz, and the fleet is raised only once no instance is still
-    booting. An instance already collecting at 240 Hz while a peer booted killed
-    that peer on device.
+    booting. That order is retained as harmless, not as a remedy — `M1B-E043`
+    refuted the reading that a raised peer killed a booting one.
     """
     try:
         bring_up(
@@ -293,12 +293,17 @@ def collect_episodes(
             cores=arguments.cores,
             force_cold=arguments.cold,
         )
-        # By interface, per instance, immediately before anything is measured.
-        require_offline(instance)
     finally:
         signal_ready()
 
     await_fleet()
+    # By interface, per instance, after the fleet rendezvous and immediately
+    # before anything is measured. Not before the rendezvous: every peer opens
+    # its own online window while this instance waits there, and
+    # `run_episodes.py` makes no offline check of its own, so this is the last
+    # reading that can still precede an episode. `cold_bring_up` has already
+    # verified the same thing at the end of bring-up.
+    require_offline(instance)
     raise_frame_rate(instance)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
@@ -353,10 +358,13 @@ def stagger_bring_up(
 
     The same gates carry a second, fleet-wide rendezvous: an instance that is up
     waits for *every* instance's bring-up to conclude before its guest frame rate
-    is raised and its episodes begin. Raising during bring-up is what broke a
-    2-instance fleet at 240 Hz — actor 1 died with its Vulkan surface gone
-    (`Failed to find ColorBuffer`) while actor 0 was already running at 240 —
-    and a boot at the stock 60 Hz is exactly the boot that works today.
+    is raised and its episodes begin. This was once believed to be the fix for a
+    2-instance fleet at 240 Hz in which actor 1 died with its Vulkan surface gone
+    (`Failed to find ColorBuffer`); `M1B-E043` refuted that — every instance was
+    at the stock 60 Hz through bring-up and the deaths reproduced anyway, and
+    `Failed to find ColorBuffer` appears in healthy survivors too. The
+    rendezvous is kept because it costs nothing and keeps every boot identical,
+    not because it is known to prevent anything.
 
     Sequencing on readiness rather than a fixed sleep means instance i+1 starts
     its bring-up the moment instance i's bring-up actually concludes, not after

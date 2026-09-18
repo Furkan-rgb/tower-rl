@@ -38,6 +38,23 @@ STARTING = BridgeRunUnavailable(1, "main_unavailable")
 IDLE = BridgeRunUnavailable(2, "no_initialized_run")
 
 
+@pytest.fixture(autouse=True)
+def emulator_log_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep every test's emulator log out of the directory the live ones use.
+
+    `launch_emulator` opens its log `"wb"` before the launch, so a test that
+    fakes only `Popen` still truncates a file — and the name is derived from the
+    index, so tests at index 0 and 1 were truncating the logs of the instances
+    actually running on 5556 and 5558, destroying the only account a real
+    failure leaves behind. Autouse rather than per-test: this must not depend on
+    a new test remembering it.
+    """
+    directory = tmp_path / "emulator-logs"
+    directory.mkdir()
+    monkeypatch.setattr(clone_session, "EMULATOR_LOG_DIRECTORY", directory)
+    return directory
+
+
 def running_round(wave: int = 12) -> BridgeObservation:
     return BridgeObservation(
         sequence=3,
@@ -78,6 +95,18 @@ class FakeClone:
         #: What `cmd game set --fps` has pinned, which is what the fake
         #: SurfaceFlinger dump then reports back for the game's uid.
         self.pinned_rate = 60
+        #: The display's own vsync mode, which `-vsync-rate` sets and which the
+        #: override cannot exceed. Separate from `pinned_rate` because the two
+        #: levers fail silently and independently, and a run collecting at 60
+        #: under a 120 override is exactly the failure being refused.
+        self.display_rate = clone_session.GUEST_FRAME_RATE_HZ
+        #: Whether `dumpsys activity activities` lists the game's activity, one
+        #: reading per call, the last repeating. A Play update kills the
+        #: activity while leaving the process, so this is scripted apart from
+        #: the pid.
+        self.activities = [True]
+        #: How many launcher intents have been sent.
+        self.launches = 0
 
     def adb(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
         command = " ".join(args)
@@ -94,6 +123,17 @@ class FakeClone:
             return "1"
         if command.startswith("shell pidof"):
             return self.pid
+        if command == "shell dumpsys activity activities":
+            present = self.activities[0] if len(self.activities) == 1 else self.activities.pop(0)
+            if not present:
+                return "  topResumedActivity=ActivityRecord{NexusLauncher}"
+            return (
+                "  topResumedActivity=ActivityRecord{com.TechTreeGames.TheTower/"
+                "com.unity3d.player.UnityPlayerActivity}"
+            )
+        if command.startswith("shell monkey"):
+            self.launches += 1
+            return ""
         if command.startswith("shell cmd game set --fps"):
             self.pinned_rate = int(args[args.index("--fps") + 1])
             return ""
@@ -108,7 +148,7 @@ class FakeClone:
                 f"FrameRateOverrides=\n    setFrameRate=\n"
                 f"        (uid, frameRate)={{10218, {self.pinned_rate}.00 Hz}}\n"
                 f"    activeMode={{id=0, hwcId=0, resolution=360x640, vsyncRate="
-                f"{clone_session.GUEST_FRAME_RATE_HZ}.00 Hz, dpi=140.00x140.00}}\n"
+                f"{self.display_rate}.00 Hz, dpi=140.00x140.00}}\n"
             )
         if command.startswith("emu avd snapshot save"):
             if self.snapshot_reply.startswith("OK") and self.create_snapshot_dir:
@@ -581,7 +621,6 @@ def test_a_launch_failure_surfaces_the_emulators_own_message(
 ) -> None:
     """The emulator refusing to start must not look like a hang."""
     monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
-    monkeypatch.setattr(clone_session.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(clone_session.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(clone_session.time, "sleep", lambda _: None)
 
@@ -603,7 +642,6 @@ def test_a_boot_timeout_includes_the_captured_output(
 ) -> None:
     """A slow boot that never completes must still explain itself, not just time out."""
     monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
-    monkeypatch.setattr(clone_session.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(clone_session, "adb", lambda *_, **__: "")
 
     now = [0.0]
@@ -714,7 +752,110 @@ def test_a_guest_still_at_sixty_is_refused_rather_than_collected_from(
 
 
 def test_teardown_resets_the_frame_rate_override_it_pinned() -> None:
-    """Bring-up modifies device state, so cleanup has to hand it back."""
+    """Bring-up modifies device state, so cleanup has to hand it back.
+
+    Read from the script rather than run: cleanup is root-only device work
+    (`su`, `mount`, `restorecon`), and standing that up in a fake would be a
+    reimplementation rather than a test. What is checked is what reading cannot
+    get wrong — the reset is issued, a nonzero return does not abort the rest of
+    cleanup under `set -e`, and the restore is read back rather than announced.
+    """
     script = Path(__file__).resolve().parents[2] / "scripts" / "instrumented_bridge.sh"
     cleanup = script.read_text()
-    assert 'device shell cmd game reset "$package"' in cleanup
+    assert 'device shell cmd game reset "$package" > /dev/null 2>&1 ||' in cleanup
+    assert "game_frame_rate_override: reset-issued (unverified)" in cleanup
+    assert "game_frame_rate_override: NOT-reset" in cleanup
+
+
+def test_a_game_killed_by_a_play_update_is_relaunched_and_reaches_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Play installs WebView over the running game; the activity dies, the pid stays."""
+    clone = FakeClone(online=False)
+    clone.activities = [True, False, True]
+    install(monkeypatch, clone, [STARTING, STARTING, STARTING, IDLE])
+
+    launch_game_at_home(CloneInstance())
+
+    # The launcher intent that started it, plus exactly one relaunch.
+    assert clone.launches == 2
+    assert not clone.online
+
+
+def test_a_game_that_keeps_being_killed_is_relaunched_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap is what keeps a standing fault from looping instead of reporting."""
+    clone = FakeClone(online=False)
+    clone.activities = [True, False, True, False]
+    install(monkeypatch, clone, [STARTING])
+
+    with pytest.raises(CloneError, match="never became ready"):
+        launch_game_at_home(CloneInstance())
+
+    assert clone.launches == 1 + clone_session.MAX_RELAUNCHES
+
+
+def test_a_relaunch_never_turns_a_radio_back_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The kill can land after the network is cut, and a relaunch may not reopen it."""
+    clone = FakeClone(online=False)
+    clone.activities = [True, False, True]
+    instance = CloneInstance()
+    install(monkeypatch, clone, [STARTING, STARTING, STARTING, IDLE])
+
+    clone_session.wait_until_ready(
+        instance,
+        timeout=300.0,
+        poll=clone_session.ONLINE_POLL_SECONDS,
+        relaunch=lambda: clone_session.launch_game(instance),
+    )
+
+    assert clone.launches == 1
+    assert not clone.online
+    assert not [command for command in clone.commands if command.startswith("shell svc")]
+
+
+def test_an_emulator_log_under_test_never_touches_the_directory_the_live_ones_use(
+    emulator_log_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A test that fakes only `Popen` still opens this file `"wb"` for writing."""
+    monkeypatch.setattr(clone_session, "find_android_tool", lambda name: Path(name))
+    monkeypatch.setattr(clone_session, "adb", lambda *_, **__: "1")
+    record_launches(monkeypatch)
+
+    clone_session.launch_emulator(CloneInstance(index=1), "host", None, read_only=True)
+
+    assert (emulator_log_directory / "tower-rl-emulator-emulator-5558.log").is_file()
+    assert emulator_log_directory == clone_session.EMULATOR_LOG_DIRECTORY
+
+
+def test_an_override_the_display_mode_cannot_honour_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two levers fail independently: a 120 override on a 60 Hz mode renders 60."""
+    clone = FakeClone(online=False)
+    clone.display_rate = 60
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="display vsync mode 60"):
+        clone_session.raise_frame_rate(CloneInstance())
+
+    # The override itself was taken; it is the display that cannot honour it.
+    assert clone.pinned_rate == clone_session.GUEST_FRAME_RATE_HZ
+
+
+def test_a_reading_a_hair_off_the_rate_is_still_the_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SurfaceFlinger computes the applied rate from a vsync period; 120.000004 is 120."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    monkeypatch.setattr(
+        clone_session,
+        "adb",
+        lambda instance, *args, **kwargs: (
+            clone.adb(instance, *args, **kwargs).replace(".00 Hz}", ".000004 Hz}")
+        ),
+    )
+
+    clone_session.raise_frame_rate(CloneInstance())

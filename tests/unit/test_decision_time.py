@@ -11,33 +11,22 @@ transitions exist to exercise the plumbing and never reach a training run.
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
+from fakes.fake_run_port import FakeRunPort
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from fakes.fake_run_port import FakeRunPort  # noqa: E402
-
-from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import EvaluationReport, evaluate  # noqa: E402
-from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
-    CadenceConfig,
-    InstrumentedRunEnvironment,
-)
-from tower_rl.application.training import (  # noqa: E402
+from tower_rl.application.actor import Actor, ActorConfig
+from tower_rl.application.evaluator import EvaluationReport, evaluate
+from tower_rl.application.replay import PrioritizedSequenceReplay
+from tower_rl.application.training import (
     TrainingConfig,
     TrainingRun,
 )
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.experiment.decision_time import (  # noqa: E402
+from tower_rl.environment.decision_time import (
     BLOCKED,
     BRIDGE_ROUND_TRIP,
     BUCKETS,
@@ -45,15 +34,18 @@ from tower_rl.experiment.decision_time import (  # noqa: E402
     POLICY_FORWARD,
     RESIDUAL,
     DecisionTimeProfile,
-    pooled,
 )
-from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.stacked_dqn import (  # noqa: E402
+from tower_rl.environment.run_environment import (
+    CadenceConfig,
+    InstrumentedRunEnvironment,
+)
+from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.metrics import pooled
+from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.stacked_dqn import (
     StackedDqnBackbone,
     StackedDqnConfig,
 )
-
-torch.set_num_threads(1)
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 

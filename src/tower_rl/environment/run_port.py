@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from tower_rl.domain.run_state import ExactRunReadingLike
+from tower_rl.environment.run_state import ExactRunReadingLike
 
 
 @runtime_checkable

@@ -68,7 +68,7 @@ from clone_session import (  # noqa: E402
 )
 from run_episodes import POLICIES, add_cadence_arguments  # noqa: E402
 
-from tower_rl.application.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
+from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
 
 #: A rejected command the bridge reports by name; the environment carries the
 #: name through into the episode's termination detail.

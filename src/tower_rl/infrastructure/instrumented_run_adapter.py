@@ -13,6 +13,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from tower_rl.environment.run_port import RunPortError
 from tower_rl.infrastructure.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
@@ -21,7 +22,6 @@ from tower_rl.infrastructure.instrumented_bridge import (
     InstrumentedBridgeClient,
     InstrumentedBridgeError,
 )
-from tower_rl.ports.run_port import RunPortError
 
 #: The game's own speed multiplier, pinned at 1x. It is not a speed-up mechanism
 #: for this project: a faster game clock makes every rendered frame worth more
@@ -108,7 +108,7 @@ class InstrumentedRunAdapter:
 
         Once this returns the environment owns the observation sequence every
         further command must bind, which is why the pin happens here and nowhere
-        later. Its effect is not taken on trust: `application/run_environment.py`
+        later. Its effect is not taken on trust: `environment/run_environment.py`
         fails any episode whose round clock outruns the game time its advances
         budgeted, which is what actually verifies the multiplier (M1B-E023).
         """
@@ -287,7 +287,7 @@ class InstrumentedRunAdapter:
         game's paused state, and a world standing still credits no game time and
         ends no episode.
 
-        The effect is still not taken on trust. `application/run_environment.py`
+        The effect is still not taken on trust. `environment/run_environment.py`
         fails any episode whose round clock outruns the game time its advances
         budgeted, which is what actually witnesses the multiplier (`M1B-E023`).
         """

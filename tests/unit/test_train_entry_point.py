@@ -19,29 +19,24 @@ from typing import Any
 
 import pytest
 import torch
+import train
+from clone_session import CloneInstance
+from fakes.fake_run_port import FakeRunPort
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
-import train  # noqa: E402
-from clone_session import CloneInstance  # noqa: E402
-from fakes.fake_run_port import FakeRunPort  # noqa: E402
-
-from tower_rl.application.actor import ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import evaluate  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
+from tower_rl.application.actor import ActorConfig
+from tower_rl.application.evaluator import evaluate
+from tower_rl.environment.episode import TerminationOutcome
+from tower_rl.environment.features import StateFeatures
+from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
-from tower_rl.domain.episode import TerminationOutcome  # noqa: E402
-from tower_rl.domain.features import StateFeatures  # noqa: E402
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
-from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.ports.run_port import RunPortError  # noqa: E402
+from tower_rl.environment.run_port import RunPortError
+from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.learning.network import NetworkConfig
 
 #: Tensors this small spend their time handing work between threads rather than
 #: computing: one thread runs the whole file about fifteen times faster.
-torch.set_num_threads(1)
 
 PROFILE = "fake-profile-v1"
 

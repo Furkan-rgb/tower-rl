@@ -61,16 +61,17 @@ from run_episodes import (  # noqa: E402
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.application.training import (  # noqa: E402
     ActorProgress,
     TrainingConfig,
     TrainingProgressReport,
     TrainingRun,
 )
-from tower_rl.domain.episode import REWARD_SCHEMA_VERSION  # noqa: E402
-from tower_rl.domain.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
-from tower_rl.domain.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilder  # noqa: E402
+from tower_rl.environment.episode import REWARD_SCHEMA_VERSION  # noqa: E402
+from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION  # noqa: E402
+from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
+from tower_rl.environment.run_port import RunPortError  # noqa: E402
+from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION, RunStateBuilder  # noqa: E402
 from tower_rl.experiment.run_identity import (  # noqa: E402
     REFERENCE_FINAL_WAVES,
     new_run_id,
@@ -94,7 +95,6 @@ from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointIdentity, write_manifest  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
-from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 #: The one backbone this project trains.
 BACKBONE = "stacked-dqn"

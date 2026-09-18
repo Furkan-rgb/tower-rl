@@ -14,30 +14,24 @@ from typing import Any
 
 import pytest
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
-import train  # noqa: E402
-from fakes.recording_tracker import RecordedRun, RecordingTracker  # noqa: E402
-from test_import_contracts import imported_modules  # noqa: E402
-from test_train_entry_point import (  # noqa: E402
+import train
+from fakes.recording_tracker import RecordedRun, RecordingTracker
+from test_import_contracts import imported_modules
+from test_train_entry_point import (
     PROFILE,
     SMALL_NETWORK,
     arguments,
     fleet,
 )
 
-from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE  # noqa: E402
-from tower_rl.experiment.tracking import (  # noqa: E402
+from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
+from tower_rl.experiment.tracking import (
     ExperimentTracker,
     NoExperimentTracker,
     TrackedRun,
     artifact_root,
     tracking_uri,
 )
-
-torch.set_num_threads(1)
 
 REPOSITORY = Path(train.__file__).resolve().parents[1]
 

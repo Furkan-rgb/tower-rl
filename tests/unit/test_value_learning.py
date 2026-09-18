@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.value_learning import n_step_targets, value_fit_correlation
 
 ACTIONS = len(RUN_ACTIONS)

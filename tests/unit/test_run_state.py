@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from tower_rl.domain.run_actions import (
+from tower_rl.environment.run_actions import (
     ACTION_SCHEMA_VERSION,
     RUN_ACTIONS,
     SLOTS_PER_FAMILY,
@@ -15,7 +15,7 @@ from tower_rl.domain.run_actions import (
     action_index,
     upgrade_action,
 )
-from tower_rl.domain.run_state import (
+from tower_rl.environment.run_state import (
     MAX_AFFORDABILITY_RATIO,
     RunStateBuilder,
     action_is_allowed,

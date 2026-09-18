@@ -29,7 +29,7 @@ from tower_rl.application.training import (
     collection_windows,
     episode_health,
 )
-from tower_rl.experiment.decision_time import EMPTY_BREAKDOWN, DecisionTimeBreakdown, pooled
+from tower_rl.environment.decision_time import EMPTY_BREAKDOWN, DecisionTimeBreakdown
 from tower_rl.experiment.metrics import (
     DECISION_TIME_INTERVAL_SECONDS,
     LearningCurvePoint,
@@ -41,6 +41,7 @@ from tower_rl.experiment.metrics import (
     fleet_decision_time,
     health_metrics,
     per_hour,
+    pooled,
     window_line,
     window_metrics,
 )

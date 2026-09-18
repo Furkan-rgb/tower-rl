@@ -10,8 +10,8 @@ from contextlib import suppress
 import pytest
 
 from tower_rl.application.evaluator import evaluate
-from tower_rl.application.run_environment import CadenceConfig, InstrumentedRunEnvironment
-from tower_rl.domain.run_state import RunStateBuilder
+from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
+from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.infrastructure.instrumented_bridge import (
     ADVANCE_WALL_CEILING_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,

@@ -28,11 +28,11 @@ from tower_rl.application.policies import (  # noqa: E402
     RandomPolicy,
     WaitOnlyPolicy,
 )
-from tower_rl.application.run_environment import (  # noqa: E402
+from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
-from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.infrastructure.instrumented_bridge import (  # noqa: E402
     BridgeCompatibility,
     InstrumentedBridgeClient,

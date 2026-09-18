@@ -22,12 +22,12 @@ from tower_rl.application.training import (
     TrainingProgressReport,
     episode_health,
 )
-from tower_rl.domain.episode import EpisodeSummary
-from tower_rl.experiment.decision_time import (
+from tower_rl.environment.decision_time import (
     BUCKETS,
     EMPTY_BREAKDOWN,
     DecisionTimeBreakdown,
 )
+from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 
 
@@ -218,6 +218,18 @@ def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, object]:
 DECISION_TIME_INTERVAL_SECONDS = 30.0
 
 
+def pooled(breakdowns: list[DecisionTimeBreakdown]) -> DecisionTimeBreakdown:
+    """Every actor's decomposition added into one, the fleet's.
+
+    Aggregation, so it belongs here rather than beside the profile the actors
+    write: nothing in the loop pools anything, only a report does.
+    """
+    total = EMPTY_BREAKDOWN
+    for item in breakdowns:
+        total = total + item
+    return total
+
+
 def fleet_decision_time(report: TrainingProgressReport) -> dict[str, DecisionTimeBreakdown]:
     """Each actor's cumulative time decomposition, as it last published it.
 
@@ -336,6 +348,7 @@ __all__ = [
     "health_counters",
     "health_metrics",
     "per_hour",
+    "pooled",
     "window_line",
     "window_metrics",
 ]

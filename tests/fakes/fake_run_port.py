@@ -11,11 +11,49 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from tower_rl.domain.run_actions import SLOTS_PER_FAMILY
-from tower_rl.infrastructure.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
-from tower_rl.ports.run_port import RunPortError
+from tower_rl.environment.run_actions import SLOTS_PER_FAMILY
+from tower_rl.environment.run_port import RunPortError
 
 FAMILIES = ("attack", "defense", "utility")
+
+
+@dataclass(frozen=True)
+class FakeUpgradeReading:
+    """One upgrade slot as this instance reports it (`UpgradeEntryLike`)."""
+
+    family: str
+    index: int
+    cost: float
+    level: int
+    max_level: int
+    unlocked: bool
+    tier_unlocked: bool
+    maxed: bool
+
+
+@dataclass(frozen=True)
+class FakeRunReading:
+    """One exact reading of this instance (`ExactRunReadingLike`).
+
+    Deliberately declared here from the environment's protocols rather than
+    reusing the bridge's own observation type: a double that reached into
+    `infrastructure` would make the environment untestable without the
+    transport it is supposed to be independent of. The field set still mirrors
+    what the bridge transmits, `terminal`, `round_active` and `play_time`
+    included, so a test can substitute either shape for the other.
+    """
+
+    sequence: int
+    lifecycle: str
+    wave: int
+    cash: float
+    health: float
+    max_health: float
+    terminal: bool
+    round_active: bool
+    game_speed: float
+    play_time: float
+    upgrades: tuple[FakeUpgradeReading, ...]
 
 
 @dataclass
@@ -40,7 +78,7 @@ class FakeCommandResult:
     wall_micros: int = 0
     #: The settled reading an advance ended on, exactly as the real bridge sends
     #: the observation its result describes.
-    state: BridgeObservation | None = None
+    state: FakeRunReading | None = None
 
 
 @dataclass
@@ -132,15 +170,15 @@ class FakeRunPort:
         self.active = True
         self.sequence += 1
 
-    def read_state(self) -> BridgeObservation | None:
+    def read_state(self) -> FakeRunReading | None:
         self.reads += 1
         return self._observe()
 
-    def _observe(self) -> BridgeObservation | None:
+    def _observe(self) -> FakeRunReading | None:
         if not self.active and self.health > 0.0:
             return None
         self.sequence += 1
-        return BridgeObservation(
+        return FakeRunReading(
             sequence=self.sequence,
             lifecycle="active" if self.active else "terminal",
             wave=self.wave,
@@ -155,7 +193,7 @@ class FakeRunPort:
             game_speed=self.game_speed if self.active else 0.0,
             play_time=100.0 + self.elapsed_ms / 1000.0,
             upgrades=tuple(
-                UpgradeInventoryEntry(
+                FakeUpgradeReading(
                     family=family,
                     index=index,
                     cost=slot.cost,

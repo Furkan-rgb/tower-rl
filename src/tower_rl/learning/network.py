@@ -18,8 +18,8 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
-from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
+from tower_rl.environment.run_actions import RUN_ACTIONS
 
 #: The stacked agent's carried state: the last `history_length - 1` scalar
 #: vectors, shaped `[batch, history_length - 1, scalars]`.

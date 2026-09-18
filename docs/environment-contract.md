@@ -148,13 +148,19 @@ real elapsed time from compatible immutable profiles.
 ## Implementation anchors
 
 The canonical run typed definitions live in
-[`src/tower_rl/domain/contracts.py`](../src/tower_rl/domain/contracts.py), with
-the Android port in [`src/tower_rl/ports/android.py`](../src/tower_rl/ports/android.py).
-The application probe is in [`src/tower_rl/application/probe.py`](../src/tower_rl/application/probe.py)
-and the ADB adapter is in
-[`src/tower_rl/infrastructure/adb_probe.py`](../src/tower_rl/infrastructure/adb_probe.py).
-Compatibility exports remain at the package root. None of these modules contain
-a game clone, private API, or learned coordinate action.
+[`src/tower_rl/environment/run_state.py`](../src/tower_rl/environment/run_state.py)
+(the observation schema and its validation) and
+[`src/tower_rl/environment/run_actions.py`](../src/tower_rl/environment/run_actions.py)
+(the action schema), with the episode and reward vocabulary in
+[`src/tower_rl/environment/episode.py`](../src/tower_rl/environment/episode.py).
+What a decision costs and what it may conclude is
+[`src/tower_rl/environment/run_environment.py`](../src/tower_rl/environment/run_environment.py),
+and the port it drives an instance through is
+[`src/tower_rl/environment/run_port.py`](../src/tower_rl/environment/run_port.py);
+the adapter behind that port is
+[`src/tower_rl/infrastructure/instrumented_run_adapter.py`](../src/tower_rl/infrastructure/instrumented_run_adapter.py).
+None of these modules contain a game clone, private API, or learned coordinate
+action.
 
 M8–M11 meta definitions must live in a separate progression contract module and
 must not be added as variants to the run types above.

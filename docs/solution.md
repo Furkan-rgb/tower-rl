@@ -164,7 +164,7 @@ Tower-RL/
 │   ├── limitations.md
 │   └── adr/
 ├── src/tower_rl/
-│   ├── domain/              # entities, value objects, invariants, schemas
+│   ├── environment/         # what a run is: actions, state, episode, port, cost
 │   ├── application/         # use cases and orchestration
 │   ├── ports/               # inbound/outbound protocols
 │   ├── infrastructure/      # ADB, vision, persistence, process adapters
@@ -1072,7 +1072,7 @@ round trip plus pause and unpause. One round trip per decision instead of one pe
 slice puts the frame back in charge of what a decision costs.
 
 **The host predicate stays authoritative.** `_events_between` in
-`application/run_environment.py` remains the only definition of what a decision
+`environment/run_environment.py` remains the only definition of what a decision
 condition is: run ended, wave changed, newly affordable, health moved beyond the
 fraction. The bridge evaluates the same conditions only to decide *when to stop*,
 and the environment re-derives the events from the returned state regardless of
@@ -1163,7 +1163,7 @@ running, twice.
 the rate the unpaused world runs at — its observations are all taken paused — so
 `set_speed` can only confirm that the request was accepted. What verifies it is the pair of clocks each
 advance already reports: `round_ms`, the game's own round clock, against
-`game_ms`, the game time the advance budgeted. `application/run_environment.py`
+`game_ms`, the game time the advance budgeted. `environment/run_environment.py`
 fails an episode whose episode-to-date ratio exceeds `MAX_ROUND_CLOCK_RATIO`
 (1.25, between the 1.069 measured on known-good episodes and the 1.625 measured
 with the world left at this account's 1.5 ceiling, `M1B-E023`), naming

@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
-from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.backbone import parameters_are_equal
 from tower_rl.learning.checkpoint import (
     Checkpoint,

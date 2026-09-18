@@ -21,8 +21,8 @@ from collections.abc import Sequence
 
 import torch
 
-from tower_rl.application.run_environment import CadenceConfig
 from tower_rl.application.training import TrainingConfig
+from tower_rl.environment.run_environment import CadenceConfig
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
 
 #: The measured floors a learning curve has to be read against, carried in every

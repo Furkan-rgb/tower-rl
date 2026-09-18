@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from tower_rl.domain.run_actions import RunActionId
-from tower_rl.domain.run_state import RunState
+from tower_rl.environment.run_actions import RunActionId
+from tower_rl.environment.run_state import RunState
 
 REWARD_SCHEMA_VERSION = "reward-v1"
 

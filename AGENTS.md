@@ -90,4 +90,4 @@ The final handoff must include supported versions, selected actor count, through
 
 ## Board discipline
 
-The GitHub project board (project #3, `tower-rl Task Board`) is the single source of truth for task state; every piece of work maps to a board issue, and `.claude/hooks/board-state.sh` surfaces its open items into every turn so this cannot silently drift. Commits that complete an issue use a `Closes #n` trailer; commits that advance one without finishing it use `Refs #n`. Workers cite the issue number they are working against in their reports.
+Task board: GitHub Projects #3, owner `Furkan-rgb`, skill `board-github-projects`; open items are injected each turn by the hook in `.claude/settings.json`. Task state is not prose.

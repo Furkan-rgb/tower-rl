@@ -7,6 +7,67 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M2-P001 — Milestone 2 pre-registered protocol (written before any run)
+
+**Date:** 2026-09-18
+**Status:** Pre-registered; no run has started. This entry records the plan and
+its decision rule before any data exists, not a result.
+
+**Goal.** One model, `stacked-dqn`, trained on the 7-actor fleet at 120 Hz,
+compared against random and scripted under one protocol. Claims are
+distributional (IQM with stratified bootstrap intervals, strata = actors); no
+claim rests on a single best run. One training seed this round; that is a
+stated limitation, not a claim of generality.
+
+**Recipe.** Fleet: N=7 clone instances (`tower_rl_instrumented_api36`,
+`-read-only`, cold `-gpu host`, 120 Hz confirmed per instance, bridge digest
+confirmed by name, offline by interface). Training: `scripts/train.py --actors
+7 --budget-decisions 1000000 --checkpoint-every-decisions 100000` (block size
+as default), epsilon/beta schedules as the script's defaults, replay ratio
+0.25 gradient-steps/decision (~126:1). Expected wall ≈ 7 h at 129–143k
+decisions/hour (`M1B-E052`). Candidates: the 10 numbered checkpoints
+`checkpoint-<decisions>.pt`. Set A (selection): each candidate evaluated
+greedily on the fleet, `run_actors.py --actors 7 --episodes 2
+--policy checkpoint:<path>` (14 episodes per candidate, 140 total, ≈1 h).
+Selection: `select_checkpoint.py` — highest IQM of final wave; ties broken by
+lower decisions (earlier checkpoint). Set B (report): the selected checkpoint,
+scripted, and random, each `--episodes 9` on 7 actors (≥60 valid per arm,
+≈1.3 h), fresh episodes, into separate directories; `report_arms.py` with
+`--mlflow-run` so results land in the training run.
+
+**Skeleton first.** Before the budgeted run, the same pipeline at
+`--budget-decisions 100000 --checkpoint-every-decisions 25000`, set A
+`--episodes 1`, set B `--episodes 2` (≈1.2 h total). Its purpose is to prove
+the pipeline end to end and the per-episode MLflow view; its numbers are not
+evidence about the model.
+
+**Pre-registered decision rule.** Report IQM and 95% stratified-bootstrap
+intervals of final wave per arm on set B, and pairwise bootstrap differences.
+The headline claim "`stacked-dqn` beats scripted" is made only if the pairwise
+interval of (model − scripted) final-wave IQM excludes zero on set B. "Beats
+random" likewise. Per-wave statistics (`wave_statistics.analyse_reports`) are
+reported as secondary evidence, not as a decision. Selection on set A never
+appears in a claim; only set B does. Any failure of the fleet (an arm below 60
+valid) means that arm is re-run whole, not padded.
+
+**What the sample cannot detect.** At ~60 valid per arm, final-wave
+differences below roughly 0.5 waves (`M1B-E021`/`M1B-E053` sd ≈ 1.3) are
+undetectable; nothing about seed-to-seed variance (one seed); nothing about
+robustness to a different image state or frame rate; a selection-set optimism
+bias remains in set A numbers, which is why they are not reported.
+
+**Live view.** MLflow run logs per episode (`episode_final_wave`,
+`episode_decisions`, `episode_game_ms`, `episode_wait_fraction`,
+`episode_purchases`, `episode_valid`, `episode_actor`, epsilon), learner
+scalars (`learner_*`), the 30 s decision-time breakdown, numbered checkpoints
+as artifacts; post-hoc `greedy_final_wave_iqm` per checkpoint at its decisions
+and set-B arm results at step 0. UI: `uv run --extra tracking mlflow ui
+--backend-store-uri <tracking uri printed at run start>`.
+
+**Approvals.** Developer approved the ~7 h training budget on 2026-09-18
+contingent on the skeleton passing; the ~2.3 h evaluation phase is stated here
+so the total (~9.5 h) is on record before the run.
+
 ## M1B-E056 — The simulation module drives the device exactly as the scripts did
 
 **Date:** 2026-09-18

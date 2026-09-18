@@ -7,6 +7,77 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E046 — Play-update relaunch fix and two 7-actor cold runs: the relaunch never fired, and the fault moved to the fleet rendezvous
+
+**Date:** 2026-09-18
+**Status:** OPEN pending a design change (board #21); NOT cleared for
+training (board #22)
+**Purpose:** Verify the M1B-E045 diagnosis (Play's WebView update kills the
+game inside the online window) is closed by relaunch-on-lost-activity, on a
+rebuilt bridge, at N=7, with the two review fixes (guarded cleanup, test-log
+pollution) folded in.
+
+Setup: relaunch-on-lost-activity added to the readiness wait (cap 2, reset
+after each, no radio touched); the online window polled at 1 s (measured
+20-26 s across run 1's seven instances) — the window itself is NOT removable:
+`M1B-E010` records a cold launch stopping at a Firebase online check and an
+OFFLINE modal, so it belongs to the game alone. Cleanup guarded (`cmd game
+reset` can no longer abort teardown under `set -e`) with a real
+`gameModeOverride` read-back. Deployable bridge rebuilt containing the string
+`wall_ceiling`, SHA-256
+`7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a`. N=7 cold
+`-gpu host` at 120 Hz, scripted, 2 episodes per instance, run twice.
+
+**Result:** run 1 6/7 reporting, run 2 (the single approved retry) 5/7.
+**The relaunch path never fired in either run** — no `lost its activity` line
+in either run's log. All three failures were instances that had ALREADY
+reached "at home and offline," killed after that point, at the two points the
+readiness-wait relaunch does not cover: (a) the single post-cut
+`why_not_ready` check, which has no relaunch (run 2, emulator-5558: "the game
+did not survive the network being cut: the game is not running"); (b) the
+idle gap across `run_actors.await_fleet()`'s fleet rendezvous before
+`raise_frame_rate`, where nothing re-checks the game at all — a game with no
+surface leaves no per-uid `FrameRateOverrides` entry, which is exactly
+"uid 10218 applied frame rate absent" (run 1 emulator-5558, run 2
+emulator-5560). No logcat was captured for either failure shape: the failure
+watcher keyed on the frame-rate message and teardown preceded it — recorded
+as the main evidence gap.
+
+Survivors: every fidelity counter zero in both runs (`bridge_event_divergence`,
+`stale_or_duplicate`, `advances_cut_short`, `episodes_not_started_fresh`,
+`invalid_episodes` all 0; `ADVANCE_TRUNCATED_BY_WALL` never appeared on the
+new bridge). Every reporting actor confirmed 120 Hz on all three
+SurfaceFlinger readings (display vsync mode, per-uid game mode override,
+per-uid applied frame rate). Per-actor throughput 19.4-20.8 valid
+episodes/hour. The per-instance deployed-bridge SHA sampler produced nothing
+before teardown (`adb shell su 0 sha256sum` returned no digest in time) — mark
+that check unconfirmed, not passed.
+
+Device finding: after a real `cmd game reset`, the per-uid `gameModeOverride`
+reads 0, not 60; the cleanup read-back now accepts both as "reset."
+
+Test-pollution fix (module-level `EMULATOR_LOG_DIRECTORY` plus an autouse
+fixture pointing it at `tmp_path`) verified two ways: canary content written
+to the live 5556/5558 logs survives a full `uv run pytest` invocation, and
+making the live logs read-only and running the whole suite raises no
+`PermissionError` anywhere.
+
+**CONCLUSION / DECISION:** Play downloads its update during the online window
+and installs it whenever it likes afterwards, offline. The fleet-wide
+rendezvous (raise every instance's frame rate only after every instance is
+ready) parks each already-ready instance idle for up to N x 360 s — exactly
+the window in which Play kills it. That rendezvous was added on the
+raised-peer hypothesis, which `M1B-E043`'s correction already refuted; it is
+therefore pure cost with no remaining justification. **DECISION: remove the
+rendezvous** — raise each instance's frame rate immediately after it is ready
+and offline, and start its episodes immediately — **and extend relaunch
+coverage to the post-cut `why_not_ready` check and to the point of use
+immediately before the raise.** Ruling reaffirmed: `com.android.vending` is
+not disabled or firewalled anywhere in this path. Status: OPEN pending that
+change (board #21); NOT cleared for training (board #22).
+
+Source: session scratchpad `PLAY-UPDATE-FIX-DETAIL.md`.
+
 ## M1B-E045 — 120 Hz fleet at N=7: the fleet-safe rate, and the mechanism behind the one recurring loss
 
 **Date:** 2026-09-18

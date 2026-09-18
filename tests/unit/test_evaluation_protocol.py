@@ -1,0 +1,491 @@
+"""The two stages of the evaluation protocol, over directories on disk.
+
+Neither script here touches a device: both read what `run_actors.py` already
+left behind. The synthetic directories below are that shape exactly - one JSON
+record per actor, each naming the arm that played it - so what is under test is
+the selection and the reporting, not the collection.
+
+The last test is the whole chain end to end against the fake port: train, take
+the numbered checkpoints, play each one, select among them, report the selection
+against the floors.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+import report_arms
+import run_episodes
+import select_checkpoint
+import torch
+import train
+from fakes.fake_run_port import FakeRunPort
+
+from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
+from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.learning.evaluator import evaluate
+from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.policies import CheapestFirstPolicy, RandomPolicy
+
+PROFILE = "fake-profile-v1"
+
+SMALL_NETWORK = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic evaluation directories, in the shape run_actors.py writes
+# ---------------------------------------------------------------------------
+
+
+def episode(final_wave: int, decisions: int) -> dict[str, Any]:
+    """One valid episode record, with the per-wave rows the comparison reads."""
+    return {
+        "episode_index": 0,
+        "valid": True,
+        "final_wave": final_wave,
+        "decisions": decisions,
+        "purchases": decisions // 2,
+        "frames": decisions * 6,
+        "budgeted_game_ms": decisions * 100.0,
+        "round_ms": decisions * 100.0,
+        "advance_wall_seconds": decisions * 0.01,
+        "elapsed_wall_seconds": decisions * 0.02,
+        "invalid_reasons": (),
+        "termination_detail": (),
+        "advances_cut_short": 0,
+        "recovered_transients": 0,
+        "starting_wave": 1,
+        "waves": [
+            {
+                "wave": wave,
+                "completed": wave < final_wave,
+                "game_ms": 1000.0 + wave * 50.0,
+                "decisions": max(1, decisions // final_wave),
+                "health_fraction": max(0.0, 1.0 - wave * 0.05),
+                "cash_log": 3.0 + wave * 0.1,
+            }
+            for wave in range(1, final_wave + 1)
+        ],
+    }
+
+
+def actor_record(waves: list[int], identity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "policy": "StackedDqnBackbone",
+        "policy_identity": identity,
+        "valid_episodes": len(waves),
+        "invalid_episodes": 0,
+        "episodes": [episode(wave, 30 + wave * 3) for wave in waves],
+    }
+
+
+def evaluation_directory(
+    root: Path, name: str, per_actor: dict[str, list[int]], identity: dict[str, Any]
+) -> Path:
+    """One arm's evaluation: one record per actor, all naming the same arm."""
+    directory = root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    for actor, waves in per_actor.items():
+        (directory / f"{actor}.json").write_text(
+            json.dumps(actor_record(waves, identity), indent=2)
+        )
+    return directory
+
+
+def checkpoint_identity(path: Path) -> dict[str, Any]:
+    return {
+        "name": path.stem,
+        "checkpoint_path": str(path),
+        "checkpoint_identity": "abc123def456",
+        "run_id": "stacked-dqn-20260101-000000-abcdef",
+    }
+
+
+def run_with_checkpoints(root: Path, decisions: list[int]) -> tuple[Path, list[Path]]:
+    """A run directory holding numbered checkpoints. The files are never read."""
+    run = root / "stacked-dqn-20260101-000000-abcdef"
+    (run / "checkpoints").mkdir(parents=True)
+    paths = []
+    for spent in decisions:
+        path = run / "checkpoints" / f"checkpoint-{spent:07d}.pt"
+        path.write_bytes(b"")
+        paths.append(path)
+    return run, paths
+
+
+def invoke(module: Any, argv: list[str], monkeypatch: pytest.MonkeyPatch) -> int:
+    monkeypatch.setattr(sys, "argv", [module.__name__, *argv])
+    return int(module.main())
+
+
+# ---------------------------------------------------------------------------
+# Stage one: selection
+# ---------------------------------------------------------------------------
+
+
+def test_the_selection_is_the_checkpoint_with_the_highest_interquartile_mean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200, 300])
+    weak, best, late = checkpoints
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals",
+            "weak",
+            {"emulator-5556": [4, 5, 4, 5], "emulator-5558": [5, 4, 5, 4]},
+            checkpoint_identity(weak),
+        ),
+        evaluation_directory(
+            tmp_path / "evals",
+            "best",
+            {"emulator-5556": [11, 12, 11, 12], "emulator-5558": [12, 11, 12, 11]},
+            checkpoint_identity(best),
+        ),
+        evaluation_directory(
+            tmp_path / "evals",
+            "late",
+            {"emulator-5556": [7, 8, 7, 8], "emulator-5558": [8, 7, 8, 7]},
+            checkpoint_identity(late),
+        ),
+    ]
+    output = tmp_path / "selection.json"
+
+    code = invoke(
+        select_checkpoint,
+        [str(run), *[str(item) for item in directories], "--resamples", "200",
+         "--output", str(output)],
+        monkeypatch,
+    )
+
+    assert code == 0
+    printed = capsys.readouterr().out
+    # Every candidate is in the table, on both reported statistics.
+    for path in checkpoints:
+        assert printed.count(path.name) >= 2
+    assert "final_wave" in printed and "decisions" in printed
+    assert f"selected {best}" in printed
+
+    report = json.loads(output.read_text())
+    assert report["selected_checkpoint"] == str(best)
+    assert report["selected_on"] == "final_wave"
+    assert len(report["candidates"]) == 3
+    # The table is in the order the run produced them, not the command line's.
+    assert [Path(str(item["checkpoint"])).name for item in report["candidates"]] == [
+        path.name for path in checkpoints
+    ]
+    # Three separated arms: nothing contests the winner at this sample.
+    assert report["selection_contested_by"] == []
+
+
+def test_a_selection_among_checkpoints_it_cannot_separate_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The selection is still made; a difference the sample cannot resolve is not a finding."""
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
+    first, second = checkpoints
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals",
+            "first",
+            {"emulator-5556": [6, 7, 6, 7], "emulator-5558": [7, 6, 7, 6]},
+            checkpoint_identity(first),
+        ),
+        evaluation_directory(
+            tmp_path / "evals",
+            "second",
+            {"emulator-5556": [6, 7, 7, 7], "emulator-5558": [7, 6, 7, 7]},
+            checkpoint_identity(second),
+        ),
+    ]
+
+    invoke(
+        select_checkpoint,
+        [str(run), *[str(item) for item in directories], "--resamples", "200",
+         "--output", str(tmp_path / "selection.json")],
+        monkeypatch,
+    )
+
+    printed = capsys.readouterr().out
+    assert "could not separate" in printed
+
+
+def test_an_evaluation_of_another_runs_checkpoint_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _ = run_with_checkpoints(tmp_path, [100])
+    other = tmp_path / "elsewhere" / "checkpoint-0900000.pt"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"")
+    directory = evaluation_directory(
+        tmp_path / "evals", "foreign", {"a": [5, 6]}, checkpoint_identity(other)
+    )
+
+    with pytest.raises(SystemExit, match="not a numbered checkpoint of this run"):
+        invoke(select_checkpoint, [str(run), str(directory)], monkeypatch)
+
+
+def test_an_evaluation_of_a_non_checkpoint_arm_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _ = run_with_checkpoints(tmp_path, [100])
+    directory = evaluation_directory(
+        tmp_path / "evals", "scripted", {"a": [5, 6]}, {"name": "scripted"}
+    )
+
+    with pytest.raises(SystemExit, match="did not play a checkpoint"):
+        invoke(select_checkpoint, [str(run), str(directory)], monkeypatch)
+
+
+def test_a_run_without_numbered_checkpoints_has_nothing_to_choose_among(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = tmp_path / "run"
+    (run / "checkpoints").mkdir(parents=True)
+
+    with pytest.raises(SystemExit, match="--checkpoint-every-decisions"):
+        invoke(select_checkpoint, [str(run), str(tmp_path)], monkeypatch)
+
+
+def test_a_directory_that_mixes_two_arms_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One directory holds one arm; pooling two would report a policy that never played."""
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
+    directory = evaluation_directory(
+        tmp_path / "evals", "mixed", {"a": [5, 6]}, checkpoint_identity(checkpoints[0])
+    )
+    (directory / "b.json").write_text(
+        json.dumps(actor_record([7, 8], checkpoint_identity(checkpoints[1])))
+    )
+
+    with pytest.raises(SystemExit, match="mixes arms"):
+        invoke(select_checkpoint, [str(run), str(directory)], monkeypatch)
+
+
+# ---------------------------------------------------------------------------
+# Stage two: reporting the selection against the floors
+# ---------------------------------------------------------------------------
+
+
+def arm_directories(tmp_path: Path) -> dict[str, Path]:
+    return {
+        "random": evaluation_directory(
+            tmp_path / "arms",
+            "random",
+            {"emulator-5556": [3, 4, 3, 4, 5], "emulator-5558": [4, 3, 4, 3, 4]},
+            {"name": "random"},
+        ),
+        "scripted": evaluation_directory(
+            tmp_path / "arms",
+            "scripted",
+            {"emulator-5556": [5, 6, 5, 6, 6], "emulator-5558": [6, 5, 6, 5, 6]},
+            {"name": "scripted"},
+        ),
+        "stacked-dqn": evaluation_directory(
+            tmp_path / "arms",
+            "stacked-dqn",
+            {"emulator-5556": [10, 11, 10, 12, 11], "emulator-5558": [11, 10, 12, 11, 10]},
+            {"name": "checkpoint-0000300"},
+        ),
+    }
+
+
+def test_the_report_prints_every_section_for_every_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arms = arm_directories(tmp_path)
+    output = tmp_path / "arms.json"
+
+    code = invoke(
+        report_arms,
+        [
+            *[f"{name}={path}" for name, path in arms.items()],
+            "--resamples", "200",
+            "--output-directory", str(tmp_path / "pooled"),
+            "--output", str(output),
+        ],
+        monkeypatch,
+    )
+
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "interquartile mean, stratified by actor" in printed
+    assert "pairwise difference in mean final wave" in printed
+    assert "per wave index" in printed
+    for name in arms:
+        assert name in printed
+
+    report = json.loads(output.read_text())
+    assert sorted(report["arms"]) == ["random", "scripted", "stacked-dqn"]
+    for entry in report["arms"].values():
+        assert entry["valid_episodes"] == 10
+        assert entry["final_wave"]["low"] <= entry["final_wave"]["iqm"]
+        assert entry["final_wave"]["iqm"] <= entry["final_wave"]["high"]
+    # The learned arm is the highest of the three, and is separated from both.
+    assert report["arms"]["stacked-dqn"]["final_wave"]["low"] > (
+        report["arms"]["scripted"]["final_wave"]["high"]
+    )
+    assert len(report["differences"]) == 3
+    assert all(item["separated"] for item in report["differences"])
+    assert len(report["per_wave"]) == 3
+    # The pooled files the per-wave comparison was run over are kept beside it.
+    assert sorted(p.name for p in (tmp_path / "pooled").glob("*.json")) == [
+        "random.json",
+        "scripted.json",
+        "stacked-dqn.json",
+    ]
+
+
+def test_arms_are_named_and_a_report_needs_two_of_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arms = arm_directories(tmp_path)
+    with pytest.raises(SystemExit, match="expected name=<directory>"):
+        invoke(report_arms, [str(arms["random"])], monkeypatch)
+    with pytest.raises(SystemExit, match="at least two arms"):
+        invoke(report_arms, [f"random={arms['random']}"], monkeypatch)
+    with pytest.raises(SystemExit, match="named twice"):
+        invoke(
+            report_arms,
+            [f"random={arms['random']}", f"random={arms['scripted']}"],
+            monkeypatch,
+        )
+    with pytest.raises(SystemExit, match="no directory at"):
+        invoke(
+            report_arms,
+            [f"random={arms['random']}", f"scripted={tmp_path / 'absent'}"],
+            monkeypatch,
+        )
+
+
+# ---------------------------------------------------------------------------
+# The whole protocol, against the fake port
+# ---------------------------------------------------------------------------
+
+
+def environment() -> InstrumentedRunEnvironment:
+    return InstrumentedRunEnvironment(
+        port=FakeRunPort(damage_per_second=2.0),
+        builder=RunStateBuilder(profile_id=PROFILE),
+        cadence=CadenceConfig(frame_game_ms=100.0, max_quiet_game_ms=4000),
+    )
+
+
+def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) -> Path:
+    """What `run_actors.py` does, minus the emulators: one record per actor.
+
+    The policy is resolved through the runner's own selector and the episodes go
+    through the evaluator, so this is the collection path a device run takes with
+    the device removed - the fake port never reaches replay, only evaluation.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for index in range(actors):
+        policy, identity = run_episodes.policy_from(selector)
+        report = evaluate(environment(), policy, episodes=episodes, profile_id=PROFILE)
+        record = run_episodes.actor_record(
+            report,
+            identity,
+            frame_game_ms=100.0,
+            max_quiet_game_ms=4000,
+            wall_seconds=60.0,
+        )
+        (directory / f"fake-{index}.json").write_text(json.dumps(record, indent=2))
+    return directory
+
+
+def test_train_then_select_then_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Train, evaluate each numbered checkpoint, select one, report it on a fresh set."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        session = train.train_session(
+            train.parse_arguments(
+                [
+                    "--budget-decisions", "300",
+                    "--block-decisions", "50",
+                    "--checkpoint-every-decisions", "100",
+                    "--batch-size", "2",
+                    "--gradient-steps-per-decision", "0.2",
+                    "--warmup-sequences", "2",
+                    "--sequence-length", "6",
+                    "--stacked-burn-in", "3",
+                    "--history-length", "4",
+                    "--replay-capacity", "64",
+                    "--evaluate-every-episodes", "0",
+                    "--evaluation-episodes", "1",
+                    "--collection-window-episodes", "2",
+                    "--serial", "fake-0",
+                    "--max-quiet-game-ms", "4000",
+                    "--run-dir", str(tmp_path / "runs"),
+                ]
+            ),
+            [train.ActorInstance(serial="fake-0", environment=environment())],
+            profile_id=PROFILE,
+            revision="test",
+            device=torch.device("cpu"),
+        )
+
+    run = Path(session["session"]) / session["arms"][0]["run_id"]
+    checkpoints = sorted((run / "checkpoints").glob("checkpoint-*.pt"))
+    assert len(checkpoints) >= 2, "the budget crosses the period more than once"
+
+    # Set A: every candidate, each in its own directory.
+    set_a = [
+        play(f"checkpoint:{path}", tmp_path / "set-a" / path.stem) for path in checkpoints
+    ]
+    selection = tmp_path / "selection.json"
+    assert (
+        invoke(
+            select_checkpoint,
+            [str(run), *[str(item) for item in set_a], "--resamples", "200",
+             "--output", str(selection)],
+            monkeypatch,
+        )
+        == 0
+    )
+    chosen = Path(json.loads(selection.read_text())["selected_checkpoint"])
+    assert chosen in checkpoints
+
+    # Set B: the selection, played again into a directory of its own, beside the
+    # floors it has to be read against.
+    arms = {
+        "random": play("random", tmp_path / "set-b" / "random"),
+        "scripted": play("scripted", tmp_path / "set-b" / "scripted"),
+        "stacked-dqn": play(f"checkpoint:{chosen}", tmp_path / "set-b" / "stacked-dqn"),
+    }
+    report = tmp_path / "arms.json"
+    assert (
+        invoke(
+            report_arms,
+            [
+                *[f"{name}={path}" for name, path in arms.items()],
+                "--resamples", "200",
+                "--output-directory", str(tmp_path / "pooled"),
+                "--output", str(report),
+            ],
+            monkeypatch,
+        )
+        == 0
+    )
+
+    printed = capsys.readouterr().out
+    assert "selected" in printed and "per wave index" in printed
+    scored = json.loads(report.read_text())
+    assert sorted(scored["arms"]) == ["random", "scripted", "stacked-dqn"]
+    # The learned arm carries the checkpoint it was; the floors carry their name.
+    assert scored["arms"]["stacked-dqn"]["policy_identity"]["name"] == chosen.stem
+    assert scored["arms"]["scripted"]["policy_identity"] == {"name": "scripted"}
+    assert len(scored["differences"]) == 3
+
+
+def test_the_floors_go_through_the_same_selector_as_a_checkpoint(tmp_path: Path) -> None:
+    """One protocol: the floors and a checkpoint are played by identical machinery."""
+    for selector, expected in (("random", RandomPolicy), ("scripted", CheapestFirstPolicy)):
+        policy, identity = run_episodes.policy_from(selector)
+        assert isinstance(policy, expected)
+        assert identity == {"name": selector}

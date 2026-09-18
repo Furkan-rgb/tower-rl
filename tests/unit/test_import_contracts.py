@@ -63,7 +63,15 @@ FORBIDDEN_TO_TESTS: tuple[str, ...] = ()
 #: Modules that only exist beside an entry point. No package module may import
 #: them at all, by any name, and no test may import one either unless it is that
 #: script's own test.
-SCRIPT_MODULES = ("train", "run_episodes", "run_actors", "clone_session", "compare_arms")
+SCRIPT_MODULES = (
+    "train",
+    "run_episodes",
+    "run_actors",
+    "clone_session",
+    "compare_arms",
+    "select_checkpoint",
+    "report_arms",
+)
 
 #: The test files allowed to import each entry point: the ones that test that
 #: script. Named explicitly rather than derived from the filename, because the
@@ -80,6 +88,11 @@ SCRIPT_MODULES = ("train", "run_episodes", "run_actors", "clone_session", "compa
 #: tests one thing that composition owns: its argument parsing and resolved run
 #: identity, its tracker wiring, its report writing, and the session itself.
 #: Nothing else in the suite may reach for it.
+#: Two files are deliberately listed under several scripts, because the
+#: behaviour they hold is itself spread across entry points and lives nowhere
+#: else: the evaluation protocol runs a training session, plays its checkpoints
+#: through the episode runner and reads them back with the two post-hoc
+#: scripts, and the bridge-directory rule is one rule three runners obey.
 SCRIPT_TESTS: dict[str, frozenset[str]] = {
     "train": frozenset(
         {
@@ -87,10 +100,32 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             "test_run_identity",
             "test_tracking",
             "test_training_report",
+            # Trains the run whose numbered checkpoints are then selected among.
+            "test_evaluation_protocol",
+            # Where every runner finds the bridge it expects to be talking to.
+            "test_script_bridge_directory",
         }
     ),
-    "run_actors": frozenset({"test_multi_actor"}),
+    "run_actors": frozenset(
+        {
+            "test_multi_actor",
+            # The fleet's half of playing a checkpoint as an arm.
+            "test_checkpoint_arm",
+        }
+    ),
     "clone_session": frozenset({"test_clone_session_cli"}),
+    "run_episodes": frozenset(
+        {
+            # The policy selector and the actor record it writes live here.
+            "test_checkpoint_arm",
+            # Plays each arm of the protocol through the same selector.
+            "test_evaluation_protocol",
+            "test_script_bridge_directory",
+        }
+    ),
+    "compare_arms": frozenset({"test_script_bridge_directory"}),
+    "select_checkpoint": frozenset({"test_evaluation_protocol"}),
+    "report_arms": frozenset({"test_evaluation_protocol"}),
 }
 
 def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:

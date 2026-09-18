@@ -9,6 +9,7 @@ and the device-safety properties that hang off it.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,10 @@ class FakeClone:
         create_snapshot_dir: bool = True,
     ) -> None:
         self.online = online
-        self.pid = pid
+        #: What `pidof` answers, one reading per call, the last repeating — the
+        #: same scripting as `activities`, because a Play update takes the
+        #: process away and gives it back moments later as a job service.
+        self.pids = [pid]
         self.commands: list[str] = []
         #: The emulator console's reply to `snapshot save`. Real replies are
         #: `OK` on success or `KO: <reason>` on refusal (for example
@@ -122,7 +126,7 @@ class FakeClone:
         if command == "shell getprop sys.boot_completed":
             return "1"
         if command.startswith("shell pidof"):
-            return self.pid
+            return self.pids[0] if len(self.pids) == 1 else self.pids.pop(0)
         if command == "shell dumpsys activity activities":
             present = self.activities[0] if len(self.activities) == 1 else self.activities.pop(0)
             if not present:
@@ -520,7 +524,7 @@ class RestoredWithoutItsGame(FakeClone):
     def adb(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
         answer = super().adb(instance, *args, timeout=timeout)
         if " ".join(args).startswith("shell monkey"):
-            self.pid = "4242"
+            self.pids = ["4242"]
         return answer
 
 
@@ -859,3 +863,136 @@ def test_a_reading_a_hair_off_the_rate_is_still_the_rate(
     )
 
     clone_session.raise_frame_rate(CloneInstance())
+
+
+def test_a_game_killed_as_the_network_is_cut_is_relaunched_and_reaches_home(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The kill lands after readiness too: Play installs when it chooses to.
+
+    Two fleet runs lost an instance to the single check after the cut — `the
+    game did not survive the network being cut: the game is not running` — on an
+    instance that had already reached home. The activity is gone there for the
+    same reason it is gone inside the readiness wait, so it is recovered the
+    same way, offline.
+    """
+    clone = FakeClone(online=False)
+    # Ready, then no process at the post-cut check, then back after the relaunch.
+    clone.pids = ["4242", "", "4242"]
+    clone.activities = [False, True]
+    install(monkeypatch, clone, [IDLE])
+
+    launch_game_at_home(CloneInstance())
+
+    assert clone.launches == 2
+    assert not clone.online
+    printed = capsys.readouterr().out
+    assert "no activity as the network was cut" in printed
+
+
+def test_a_game_killed_before_the_rate_is_raised_is_relaunched_and_then_raised(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The gap between bring-up and the first episode is the other uncovered point.
+
+    A game with no activity has no surface, so SurfaceFlinger publishes no
+    applied frame rate for its uid and the raise fails with `applied frame rate
+    absent` — which is how two fleet runs lost an actor that had already reached
+    home. The activity is checked where it is about to be relied on.
+    """
+    clone = FakeClone(online=False)
+    clone.activities = [False, True]
+    instance = CloneInstance()
+    install(monkeypatch, clone, [IDLE])
+
+    assert clone_session.relaunch_if_activity_lost(
+        instance, point="before the frame rate was raised"
+    )
+    clone_session.raise_frame_rate(instance)
+
+    assert clone.launches == 1
+    assert clone.pinned_rate == clone_session.GUEST_FRAME_RATE_HZ
+    assert "no activity before the frame rate was raised" in capsys.readouterr().out
+
+
+def test_a_game_that_still_holds_its_activity_is_never_restarted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a lost activity is recoverable; anything else must be reported, not restarted."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+
+    assert not clone_session.relaunch_if_activity_lost(CloneInstance(), point="before a check")
+
+    assert clone.launches == 0
+
+
+def test_no_relaunch_outside_the_online_window_turns_a_radio_back_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both new recovery points fire after the cut, and neither may reopen the network."""
+    clone = FakeClone(online=False)
+    clone.pids = ["4242", "", "4242"]
+    clone.activities = [False, True, False, True]
+    instance = CloneInstance()
+    install(monkeypatch, clone, [IDLE])
+
+    launch_game_at_home(instance)
+    after_the_cut = clone.index_of("shell svc wifi disable")
+    clone_session.relaunch_if_activity_lost(instance, point="before the frame rate was raised")
+
+    assert not clone.online
+    assert not [
+        command
+        for command in clone.commands[after_the_cut:]
+        if command.startswith("shell svc") and command.endswith("enable")
+    ]
+
+
+def test_an_absent_applied_rate_names_the_missing_game_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare `applied frame rate absent` cost a fleet run its diagnosis."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    monkeypatch.setattr(
+        clone_session,
+        "adb",
+        lambda instance, *args, **kwargs: re.sub(
+            r"\(uid, frameRate\)=\{10218, [\d.]+ Hz\}",
+            "",
+            clone.adb(instance, *args, **kwargs),
+        ),
+    )
+
+    with pytest.raises(CloneError, match="lost its activity"):
+        clone_session.raise_frame_rate(CloneInstance())
+
+
+def test_the_activity_a_kill_left_in_the_task_history_is_not_a_present_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why the relaunch never fired on device: the dump keeps the dead record.
+
+    `emulator-5558` (run F) was killed by the guest's Play at 16:12:59 —
+    `Killing ...TheTower ... due to installPackageLI`, `Force removing
+    ActivityRecord{... UnityPlayerActivity}: app died` — and moments later
+    `pidof` answered nothing while the component name was still in the dump.
+    Whatever else is in the history, only the resumed activity is the game
+    being on screen.
+    """
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    monkeypatch.setattr(
+        clone_session,
+        "adb",
+        lambda instance, *args, **kwargs: (
+            "  topResumedActivity=ActivityRecord{NexusLauncher}\n"
+            "  * Hist #0: ActivityRecord{u0 com.TechTreeGames.TheTower/"
+            "com.unity3d.player.UnityPlayerActivity t70 f}}\n"
+            if " ".join(args) == "shell dumpsys activity activities"
+            else clone.adb(instance, *args, **kwargs)
+        ),
+    )
+
+    assert not clone_session.game_activity_present(CloneInstance())

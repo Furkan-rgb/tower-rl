@@ -63,6 +63,7 @@ from clone_session import (  # noqa: E402
     keyed_snapshot_name,
     kill_emulator,
     raise_frame_rate,
+    relaunch_if_activity_lost,
     require_offline,
     snapshot_exists,
 )
@@ -262,7 +263,6 @@ def collect_episodes(
     arguments: argparse.Namespace,
     *,
     signal_ready: Callable[[], None] = lambda: None,
-    await_fleet: Callable[[], None] = lambda: None,
 ) -> dict[str, Any]:
     """Bring one instance up ready and offline, and run its episodes.
 
@@ -278,11 +278,15 @@ def collect_episodes(
     surely as a successful one, or one dead actor would stall the rest of the
     fleet from ever starting.
 
-    `await_fleet` is the other half of that sequencing, and it is why the guest
-    frame rate is raised here rather than in bring-up: every instance boots at
-    the stock 60 Hz, and the fleet is raised only once no instance is still
-    booting. That order is retained as harmless, not as a remedy — `M1B-E043`
-    refuted the reading that a raised peer killed a booting one.
+    Nothing else waits for the fleet. Every instance boots at the stock 60 Hz and
+    this actor raises its *own* instance the moment its own bring-up returns,
+    then starts collecting while its peers are still booting. The fleet-wide
+    rendezvous that used to sit here came from the reading that a raised peer
+    killed a booting one, which `M1B-E043` refuted, and it was not free: it
+    parked a ready instance idle for as long as the remaining boots took — up to
+    N x 360s — and the guest's Google Play spent that window installing the
+    update it had downloaded, over a game no step was watching. Two 7-actor runs
+    lost actors exactly there.
     """
     try:
         bring_up(
@@ -296,14 +300,16 @@ def collect_episodes(
     finally:
         signal_ready()
 
-    await_fleet()
-    # By interface, per instance, after the fleet rendezvous and immediately
-    # before anything is measured. Not before the rendezvous: every peer opens
-    # its own online window while this instance waits there, and
+    # By interface, per instance, immediately before anything is measured:
     # `run_episodes.py` makes no offline check of its own, so this is the last
     # reading that can still precede an episode. `cold_bring_up` has already
     # verified the same thing at the end of bring-up.
     require_offline(instance)
+    # The last point at which a game Play killed can still be put back. A game
+    # with no activity has no surface, and SurfaceFlinger then publishes no
+    # applied frame rate for its uid at all, which is how this arrived twice on
+    # device: as `applied frame rate absent` from the raise below.
+    relaunch_if_activity_lost(instance, point="before the frame rate was raised")
     raise_frame_rate(instance)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
@@ -356,15 +362,13 @@ def stagger_bring_up(
     why only bring-up is gated here. Once an instance is up, its episode
     collection runs exactly as concurrently as it always has.
 
-    The same gates carry a second, fleet-wide rendezvous: an instance that is up
-    waits for *every* instance's bring-up to conclude before its guest frame rate
-    is raised and its episodes begin. This was once believed to be the fix for a
-    2-instance fleet at 240 Hz in which actor 1 died with its Vulkan surface gone
-    (`Failed to find ColorBuffer`); `M1B-E043` refuted that — every instance was
-    at the stock 60 Hz through bring-up and the deaths reproduced anyway, and
-    `Failed to find ColorBuffer` appears in healthy survivors too. The
-    rendezvous is kept because it costs nothing and keeps every boot identical,
-    not because it is known to prevent anything.
+    Only bring-up is sequenced. The gates once carried a second, fleet-wide
+    rendezvous — no instance raised its rate or began collecting until every
+    instance was up — on the reading that a raised peer killed a booting one.
+    `M1B-E043` refuted that reading, and the rendezvous was actively harmful: it
+    left a ready instance idle for the rest of the fleet's boots, which is when
+    the guest's Play installs what it downloaded and kills the game. An actor now
+    raises its own instance and collects as soon as its own bring-up returns.
 
     Sequencing on readiness rather than a fixed sleep means instance i+1 starts
     its bring-up the moment instance i's bring-up actually concludes, not after
@@ -405,21 +409,8 @@ def stagger_bring_up(
             await_previous(instance)
         begun_at[instance.index] = time.monotonic()
         begun[instance.index].set()
-
-        def fleet_is_up() -> None:
-            for index, gate in enumerate(gates):
-                if not gate.wait(BRING_UP_STAGGER_BACKSTOP):
-                    print(
-                        f"{instance.serial}: instance {index} never signalled ready within "
-                        f"{BRING_UP_STAGGER_BACKSTOP:.0f}s; raising the rate anyway",
-                        flush=True,
-                    )
-
         return collect_episodes(
-            instance,
-            arguments,
-            signal_ready=gates[instance.index].set,
-            await_fleet=fleet_is_up,
+            instance, arguments, signal_ready=gates[instance.index].set
         )
 
     return collect

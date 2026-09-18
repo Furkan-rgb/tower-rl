@@ -317,20 +317,48 @@ Nothing is running. The last stage was closed with
 device offline, no emulator running.
 
 To resume: `clone_session.py start` (instance up and offline, game not yet
-launched), then `TOWER_BRIDGE_BUILD_DIR=<private build dir>
-./scripts/instrumented_bridge.sh deploy`, then `clone_session.py launch` (the one
-online window, ending with the bridge reporting the game up and idle). The
-private build directory holds `libtower_bridge.so` and the patched
-`libunity-bridge.so`; the NDK is at `~/.local/share/android-sdk/ndk/29.0.14206865`
-and the bridge is rebuilt with `cmake --build <build dir>`.
+launched), then `./scripts/instrumented_bridge.sh deploy`, then
+`clone_session.py launch` (the one online window, ending with the bridge
+reporting the game up and idle). `clone_session.py up` does all three.
 
-**`/tmp/tower-bridge-live.latest` is not to be trusted without checking.** Before
-the `M1B-E017` run it pointed at a build whose `CMakeCache` read `unconfigured`
-for every compatibility value and which had no patched `libunity-bridge.so`, so
-it could neither deploy nor handshake. That run rebuilt it, with the package
-version, version code, signer and library hashes verified against the live
-device, and repointed the file. Verify the cache values and the presence of both
-libraries before relying on the pointer; `/tmp` does not survive a reboot.
+**The bridge this host deploys lives in
+`~/.local/state/tower-rl/bridge/`.** One directory per bridge, named for the
+SHA-256 of the `libtower_bridge.so` inside it, holding that artifact, the
+patched `libunity-bridge.so` and the `CMakeCache.txt` the compatibility identity
+is read from; `current` is a symlink to the one that is deployed, so `ls -l`
+shows which bridge this host installs and what its digest is. Today that is
+`7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a`. This
+replaces `/tmp/tower-bridge-live.latest`, which pointed into a session
+scratchpad and did not survive a reboot — and, before `M1B-E017`, pointed at a
+build that could neither deploy nor handshake.
+
+Rebuild and install a new one (the NDK is at
+`~/.local/share/android-sdk/ndk/29.0.14206865`):
+
+    cmake --build <build dir>
+    sha=$(sha256sum <build dir>/libtower_bridge.so | cut -d' ' -f1)
+    install -D -t ~/.local/state/tower-rl/bridge/$sha \
+      <build dir>/libtower_bridge.so <build dir>/libunity-bridge.so \
+      <build dir>/CMakeCache.txt
+    sha256sum ~/.local/state/tower-rl/bridge/$sha/libtower_bridge.so   # must be $sha
+    ln -sfn $sha ~/.local/state/tower-rl/bridge/current
+
+Copy, verify, *then* move the pointer, in that order. `TOWER_BRIDGE_BUILD_DIR`
+still overrides all of it, which is how a bridge under development is deployed
+straight out of its build tree.
+
+Resolving the artifact refuses by name if `current` is missing or dangles, or
+if `libtower_bridge.so` does not hash to the directory name it is filed under —
+an installed build cannot pass as a digest it is not.
+
+**Every deploy reads the deployed bridge back off the device**, through
+`adb shell "su -c 'sha256sum /data/user/0/<package>/files/libtower_bridge.so'"`,
+and holds it to the host artifact: a deploy either prints
+`deployed bridge confirmed <sha256>` or fails by name, on an empty read-back as
+well as on a mismatch. The CLI and the fleet share that one form. `su 0
+sha256sum` is not it — it returned nothing on all seven instances of two
+seven-actor fleets (`M1B-E046`, `M1B-E053`), which is why both had to record the
+deployed bridge as unconfirmed; "unconfirmed" is no longer a silent outcome.
 
 The logcat tag is
 `tower_bridge`. Always finish with `cleanup`.
@@ -669,12 +697,17 @@ before those gates pass. Keep the canonical emulator and all evaluation
 unchanged, unrooted, normal-speed, and pixel-observed.
 
 Operate the private clone with `scripts/instrumented_bridge.sh`
-(`verify`/`deploy`/`cleanup`) and `TOWER_BRIDGE_BUILD_DIR` pointing at the private
-NDK build directory that holds `libtower_bridge.so` and the patched
-`libunity-bridge.so`. Launch that clone with `-gpu lavapipe`; `swiftshader_indirect`
-produced an unusable System UI ANR on this host. Always finish with `cleanup` and
-confirm the original `libunity.so` SHA-256, unchanged package identity, no
-remaining mounts, and no running emulator. Never send a tap without first
+(`verify`/`deploy`/`cleanup`), which deploys the installed bridge under
+`~/.local/state/tower-rl/bridge/current` by default; `TOWER_BRIDGE_BUILD_DIR`
+overrides that with a private NDK build directory holding `libtower_bridge.so`,
+the patched `libunity-bridge.so` and `CMakeCache.txt`, which is how a bridge
+under development is deployed. Launch that clone with `-gpu lavapipe`;
+`swiftshader_indirect` produced an unusable System UI ANR on this host. Always
+finish with `cleanup` and confirm the original `libunity.so` SHA-256, unchanged
+package identity, no remaining mounts, and no running emulator. Cleanup reads
+that original digest out of the installed `CMakeCache.txt` to verify the
+unmount, so an install whose cache records a different original fails cleanup
+loudly rather than degrading to a blind `umount`. Never send a tap without first
 classifying the screen.
 
 Private/local-only material includes the copied rooted system image, disposable

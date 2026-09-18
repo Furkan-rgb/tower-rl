@@ -52,7 +52,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from tower_rl.simulation.bridge import compatibility
+from tower_rl.simulation.bridge import bridge_build_directory, compatibility
 from tower_rl.simulation.instance import (
     BRIDGE_DEVICE_PORT,
     GUEST_FRAME_RATE_HZ,
@@ -167,17 +167,6 @@ def game_activity_present(instance: CloneInstance) -> bool:
 def launch_game(instance: CloneInstance) -> None:
     """Send the game's launcher intent. `monkey` sends the intent; it taps nothing."""
     adb(instance, "shell", "monkey", "-p", PACKAGE, "-c", "android.intent.category.LAUNCHER", "1")
-
-
-def bridge_build_directory() -> Path:
-    """Where the private bridge was built; never committed, never guessed."""
-    configured = os.environ.get("TOWER_BRIDGE_BUILD_DIR")
-    if configured:
-        return Path(configured)
-    live = Path("/tmp/tower-bridge-live.latest")
-    if live.is_file():
-        return Path(live.read_text().strip())
-    raise CloneError("the private bridge build directory is unknown: set TOWER_BRIDGE_BUILD_DIR")
 
 
 def expected_compatibility() -> BridgeCompatibility:

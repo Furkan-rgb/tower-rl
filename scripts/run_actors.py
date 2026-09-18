@@ -56,6 +56,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from clone_session import (  # noqa: E402
+    GUEST_FRAME_RATE_HZ,
+    MAX_GUEST_FRAME_RATE_HZ,
     SNAPSHOT_CAPABLE_RENDERER,
     CloneInstance,
     bridge_key,
@@ -296,6 +298,7 @@ def collect_episodes(
             read_only=True,
             cores=arguments.cores,
             force_cold=arguments.cold,
+            frame_rate_hz=arguments.frame_rate_hz,
         )
     finally:
         signal_ready()
@@ -312,7 +315,7 @@ def collect_episodes(
     # name instead: `M1B-E049` measured that a relaunch this side of the network
     # cut sits at the OFFLINE modal, so the instance is lost, not recoverable.
     require_game_activity(instance)
-    raise_frame_rate(instance)
+    raise_frame_rate(instance, arguments.frame_rate_hz)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
     result = subprocess.run(
@@ -468,6 +471,13 @@ def main() -> int:
     parser.add_argument("--episodes", type=int, default=20, help="episodes per actor")
     parser.add_argument("--policy", choices=sorted(POLICIES), default="scripted")
     parser.add_argument("--renderer", default="lavapipe")
+    parser.add_argument(
+        "--frame-rate-hz",
+        type=int,
+        default=GUEST_FRAME_RATE_HZ,
+        help="guest frame rate for every instance this fleet measures; "
+        f"default {GUEST_FRAME_RATE_HZ}, the fleet operating rate",
+    )
     parser.add_argument("--cores", type=int, default=4, help="emulator cores per instance")
     parser.add_argument(
         "--cold",
@@ -486,6 +496,14 @@ def main() -> int:
 
     if arguments.actors < 1:
         raise SystemExit("a fleet needs at least one actor")
+    # The same measured ceiling the module constant is held to: above it the
+    # guest reports a rate it is not delivering, so the confirmation would pass
+    # on a fleet collecting at some other rate entirely.
+    if not 1 <= arguments.frame_rate_hz <= MAX_GUEST_FRAME_RATE_HZ:
+        raise SystemExit(
+            f"--frame-rate-hz must be between 1 and {MAX_GUEST_FRAME_RATE_HZ}; "
+            "no measured fps supports a guest rate above that"
+        )
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
     instances = [CloneInstance(index=index) for index in range(arguments.actors)]
     if not arguments.cold:
@@ -502,6 +520,9 @@ def main() -> int:
     report["episodes_per_actor"] = arguments.episodes
     report["frame_game_ms"] = arguments.frame_game_ms
     report["cores_per_instance"] = arguments.cores
+    # The arm's identity: a report read months later must say which rate it was
+    # collected at, not leave it to the directory it happens to sit in.
+    report["frame_rate_hz"] = arguments.frame_rate_hz
 
     arguments.output.write_text(json.dumps(report, indent=2))
     for actor in report["actors"]:

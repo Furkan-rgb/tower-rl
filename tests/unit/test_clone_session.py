@@ -744,6 +744,41 @@ def test_raising_the_rate_pins_the_game_to_the_rate_the_display_was_launched_at(
     assert clone.pinned_rate == rate
 
 
+def test_a_run_may_choose_its_rate_and_both_levers_follow_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The equivalence comparison's 60 Hz arm: one value, both levers.
+
+    The two levers only ever fail apart, so a per-run rate has to reach the
+    launch flag and the per-uid override from the same number, and the
+    confirmation has to read that number back rather than the constant.
+    """
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    clone = FakeClone(online=False)
+    clone.display_rate = 60
+    install(monkeypatch, clone, [IDLE])
+    launches = record_launches(monkeypatch)
+
+    clone_session.bring_up(CloneInstance(), "lavapipe", deploy=lambda _: None, frame_rate_hz=60)
+    clone_session.raise_frame_rate(CloneInstance(), 60)
+
+    assert launches[0][launches[0].index("-vsync-rate") + 1] == "60"
+    assert f"shell cmd game set --fps 60 {clone_session.PACKAGE}" in clone.commands
+    assert clone.pinned_rate == 60
+
+
+def test_a_rate_the_display_was_not_launched_at_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 60 Hz arm raised against a 120 Hz display mode is not a 60 Hz arm."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="the guest is not at 60 Hz"):
+        clone_session.raise_frame_rate(CloneInstance(), 60)
+
+
 def test_a_guest_still_at_sixty_is_refused_rather_than_collected_from(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

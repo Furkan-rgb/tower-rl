@@ -156,7 +156,7 @@ def test_the_read_back_asks_for_root_the_way_that_answers_on_this_image(
     digest = install_bridge(tmp_path)
     asked = device_digest(monkeypatch, f"{digest}  {bridge.DEPLOYED_BRIDGE_PATH}\n")
 
-    assert bridge.confirm_deployed_bridge(CloneInstance()) == digest
+    assert bridge.confirm_deployed_bridge(CloneInstance(), digest) == digest
     assert asked == ["shell", f"su -c 'sha256sum {bridge.DEPLOYED_BRIDGE_PATH}'"]
 
 
@@ -167,46 +167,46 @@ def test_a_confirmed_bridge_is_named_in_the_operators_log(
     digest = install_bridge(tmp_path)
     device_digest(monkeypatch, f"{digest}  {bridge.DEPLOYED_BRIDGE_PATH}\r\n")
 
-    bridge.confirm_deployed_bridge(CloneInstance(index=1))
+    bridge.confirm_deployed_bridge(CloneInstance(index=1), digest)
 
     assert f"emulator-5558 deploy: deployed bridge confirmed {digest}" in capsys.readouterr().out
 
 
 def test_a_read_back_that_produced_nothing_fails_by_name(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two seven-actor fleets recorded "unconfirmed"; it is now a failure."""
-    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
-    install_bridge(tmp_path)
+    digest = hashlib.sha256(b"deployed").hexdigest()
     device_digest(monkeypatch, "")
 
     with pytest.raises(ActorFailure, match="no digest came back"):
-        bridge.confirm_deployed_bridge(CloneInstance())
+        bridge.confirm_deployed_bridge(CloneInstance(), digest)
 
 
-def test_sha256sums_own_error_text_is_not_read_as_a_digest(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_a_read_back_that_is_not_a_digest_reports_what_the_device_said(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The `M1B-E047` misfire: the first word of a failure is not a reading."""
-    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
-    install_bridge(tmp_path)
+    """The `M1B-E047` misfire — and root being refused reads exactly like it."""
+    digest = hashlib.sha256(b"deployed").hexdigest()
     device_digest(
-        monkeypatch, f"sha256sum: {bridge.DEPLOYED_BRIDGE_PATH}: No such file or directory\n"
+        monkeypatch, f"sha256sum: {bridge.DEPLOYED_BRIDGE_PATH}: Permission denied\nignored\n"
     )
 
-    with pytest.raises(ActorFailure, match="no digest came back"):
-        bridge.confirm_deployed_bridge(CloneInstance())
+    with pytest.raises(ActorFailure, match="is not a digest") as failure:
+        bridge.confirm_deployed_bridge(CloneInstance(), digest)
+
+    assert "Permission denied" in str(failure.value)
+    assert "ignored" not in str(failure.value)
 
 
 def test_a_bridge_that_is_not_the_one_this_host_deployed_fails_by_name(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
-    install_bridge(tmp_path)
+    digest = hashlib.sha256(b"deployed").hexdigest()
     device_digest(monkeypatch, f"{'a' * 64}  {bridge.DEPLOYED_BRIDGE_PATH}\n")
 
     with pytest.raises(ActorFailure, match="the deployed bridge is aaa"):
-        bridge.confirm_deployed_bridge(CloneInstance())
+        bridge.confirm_deployed_bridge(CloneInstance(), digest)
 
 
 def test_deploying_reads_the_bridge_back_before_it_returns(
@@ -222,3 +222,18 @@ def test_deploying_reads_the_bridge_back_before_it_returns(
         bridge.deploy_bridge(CloneInstance())
 
     assert "emulator-5556 deploy: deployed: overlay mounted" in capsys.readouterr().out
+
+
+def test_a_bad_install_is_refused_before_anything_is_pushed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing is mounted over the game's own libunity.so to then be cleaned up."""
+    monkeypatch.setattr(bridge, "BRIDGE_STATE_DIRECTORY", tmp_path)
+    (tmp_path / "current").symlink_to(tmp_path / "gone-with-the-scratchpad")
+    ran: list[str] = []
+    monkeypatch.setattr(bridge, "run_bridge", lambda command, instance: ran.append(command))
+
+    with pytest.raises(CloneError, match="dangles"):
+        bridge.deploy_bridge(CloneInstance())
+
+    assert ran == []

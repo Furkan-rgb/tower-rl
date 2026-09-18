@@ -697,12 +697,17 @@ before those gates pass. Keep the canonical emulator and all evaluation
 unchanged, unrooted, normal-speed, and pixel-observed.
 
 Operate the private clone with `scripts/instrumented_bridge.sh`
-(`verify`/`deploy`/`cleanup`) and `TOWER_BRIDGE_BUILD_DIR` pointing at the private
-NDK build directory that holds `libtower_bridge.so` and the patched
-`libunity-bridge.so`. Launch that clone with `-gpu lavapipe`; `swiftshader_indirect`
-produced an unusable System UI ANR on this host. Always finish with `cleanup` and
-confirm the original `libunity.so` SHA-256, unchanged package identity, no
-remaining mounts, and no running emulator. Never send a tap without first
+(`verify`/`deploy`/`cleanup`), which deploys the installed bridge under
+`~/.local/state/tower-rl/bridge/current` by default; `TOWER_BRIDGE_BUILD_DIR`
+overrides that with a private NDK build directory holding `libtower_bridge.so`,
+the patched `libunity-bridge.so` and `CMakeCache.txt`, which is how a bridge
+under development is deployed. Launch that clone with `-gpu lavapipe`;
+`swiftshader_indirect` produced an unusable System UI ANR on this host. Always
+finish with `cleanup` and confirm the original `libunity.so` SHA-256, unchanged
+package identity, no remaining mounts, and no running emulator. Cleanup reads
+that original digest out of the installed `CMakeCache.txt` to verify the
+unmount, so an install whose cache records a different original fails cleanup
+loudly rather than degrading to a blind `umount`. Never send a tap without first
 classifying the screen.
 
 Private/local-only material includes the copied rooted system image, disposable

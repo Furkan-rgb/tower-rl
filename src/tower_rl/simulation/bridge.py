@@ -33,7 +33,7 @@ DEPLOYED_BRIDGE_PATH = f"/data/user/0/{PACKAGE}/files/libtower_bridge.so"
 #: to the same stream (`sha256sum: ...: No such file or directory`), and a
 #: sampler that took the first word of whatever came back read that text as a
 #: reading once already (`M1B-E047`).
-DIGEST = re.compile("[0-9a-f]{64}")
+DIGEST_PATTERN = re.compile("[0-9a-f]{64}")
 
 #: Where this host keeps the bridge builds it can deploy. The artifact is never
 #: committed and is far too large to be, but it also cannot live in a build
@@ -49,7 +49,6 @@ BRIDGE_STATE_DIRECTORY = (
     / "tower-rl"
     / "bridge"
 )
-
 
 
 def artifact_digest(binary: Path) -> str:
@@ -173,8 +172,8 @@ def run_bridge(command: str, instance: CloneInstance) -> None:
         )
 
 
-def deployed_bridge_digest(instance: CloneInstance) -> str:
-    """The SHA-256 of the bridge on this instance, or "" if it gave no digest.
+def deployed_bridge_read_back(instance: CloneInstance) -> str:
+    """Whatever the device says about the bridge deployed on this instance.
 
     One form, and the only one: `adb shell "su -c 'sha256sum <path>'"`. The
     deployed bridge is app-private — mode 0555 under the package's own `files`
@@ -188,28 +187,37 @@ def deployed_bridge_digest(instance: CloneInstance) -> str:
     (`M1B-E056`) because that instance's adbd happened to be running as root,
     which is a property of how the emulator came up rather than of the check.
 
-    Anything that is not a digest is no reading at all, and is returned as one.
+    Anything that is not a digest is no reading at all, so what came back is
+    returned as it is and judged by the caller: the device's own words are what
+    an operator needs when root is refused, and are not a digest either way.
     """
     output = adb(instance, "shell", f"su -c 'sha256sum {DEPLOYED_BRIDGE_PATH}'")
-    words = output.replace("\r", "").strip().split()
-    return words[0] if words and DIGEST.fullmatch(words[0]) else ""
+    return output.replace("\r", "").strip()
 
 
-def confirm_deployed_bridge(instance: CloneInstance) -> str:
+def confirm_deployed_bridge(instance: CloneInstance, expected: str) -> str:
     """Read the deployed bridge back and hold it to the artifact this host sent.
 
     The bridge on the device is what produced every observation a run records,
     so a run that cannot name it has no evidence about which bridge it measured.
-    That is why both outcomes below are failures rather than warnings: a digest
-    that never arrived and a digest that disagrees are equally unable to say the
-    device is running the artifact this host deployed.
+    That is why all three outcomes below are failures rather than warnings: a
+    read-back that said nothing, one that said something other than a digest,
+    and a digest that disagrees are equally unable to say the device is running
+    the artifact this host deployed.
     """
-    expected = artifact_digest(bridge_build_directory() / "libtower_bridge.so")
-    digest = deployed_bridge_digest(instance)
-    if not digest:
+    read_back = deployed_bridge_read_back(instance)
+    words = read_back.split()
+    digest = words[0] if words else ""
+    if not read_back:
         raise ActorFailure(
             f"{instance.serial}: no digest came back for {DEPLOYED_BRIDGE_PATH}, "
             f"so the deployed bridge cannot be confirmed as {expected}"
+        )
+    if not DIGEST_PATTERN.fullmatch(digest):
+        raise ActorFailure(
+            f"{instance.serial}: the read-back of {DEPLOYED_BRIDGE_PATH} is not a digest, "
+            f"so the deployed bridge cannot be confirmed as {expected}; the device said: "
+            f"{read_back.splitlines()[0][:200]}"
         )
     if digest != expected:
         raise ActorFailure(
@@ -227,6 +235,13 @@ def deploy_bridge(instance: CloneInstance) -> None:
     separately: the CLI and the fleet both reach the device through here, so
     there is one read-back and no path on which a bridge is deployed and never
     read back.
+
+    The artifact is resolved and hashed first, which is also what runs the
+    installed-bridge checks — a dangling `current`, or an artifact that does not
+    hash to the directory name it is filed under. A bad install is then refused
+    before anything is pushed, rather than after it is mounted over the game's
+    own `libunity.so` and has to be cleaned up.
     """
+    expected = artifact_digest(bridge_build_directory() / "libtower_bridge.so")
     run_bridge("deploy", instance)
-    confirm_deployed_bridge(instance)
+    confirm_deployed_bridge(instance, expected)

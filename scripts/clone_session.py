@@ -152,7 +152,10 @@ SNAPSHOT_CAPABLE_RENDERER = "lavapipe"
 #: frame-rate override (`ro.surface_flinger.game_default_frame_rate_override=60`)
 #: that otherwise pins the game surface to 60 whatever mode the display is in.
 #: They are one constant here precisely because they cannot be allowed to drift
-#: apart: a 120 override against a 60 Hz mode still renders at 60.
+#: apart: a 120 override against a 60 Hz mode still renders at 60. A run that
+#: needs another rate — the 60 Hz arm of the behavioural equivalence
+#: comparison — passes `frame_rate_hz` down the bring-up chain instead, where it
+#: still feeds both levers from the one value.
 #:
 #: A third layer exists and is deliberately not a lever: the bridge sets Unity's
 #: own `targetFrameRate` to `kUncappedFrameRate = 240`
@@ -165,7 +168,12 @@ GUEST_FRAME_RATE_HZ = 120
 #: delivering 91 fps. The confirmation below reads the guest's own claim, which
 #: at that point is false, so the bound is what keeps this constant from being
 #: tuned past what measured fps supports.
-assert GUEST_FRAME_RATE_HZ <= 300, "no measured fps supports a guest rate above 300 Hz"
+#: The measured ceiling, as a name because a per-run `frame_rate_hz` is held to
+#: it too and not only this constant.
+MAX_GUEST_FRAME_RATE_HZ = 300
+assert GUEST_FRAME_RATE_HZ <= MAX_GUEST_FRAME_RATE_HZ, (
+    "no measured fps supports a guest rate above 300 Hz"
+)
 #: How long SurfaceFlinger is given to apply a raised rate before the instance is
 #: called unusable. Observed on device to take a beat, not to be slow.
 FRAME_RATE_CONFIRM_TIMEOUT = 20.0
@@ -543,6 +551,7 @@ def emulator_command(
     snapshot: str | None,
     read_only: bool,
     cores: int,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> list[str]:
     """The exact invocation for one instance.
 
@@ -551,9 +560,14 @@ def emulator_command(
     also incompatible with saving a snapshot, which is why it is a choice and
     not the default.
 
-    `-vsync-rate` is half of `GUEST_FRAME_RATE_HZ`; `raise_frame_rate` is the
-    other half. Every instance this builds is `-no-window`, which is why raising
-    it here is safe: the emulator warns that exceeding the host display's refresh
+    `-vsync-rate` is half of the guest rate; `raise_frame_rate` is the other
+    half, and both take it from the same `frame_rate_hz` — which defaults to
+    `GUEST_FRAME_RATE_HZ` and is a per-run choice only so one fleet run can be
+    collected at another rate without editing the constant: the 60 Hz arm of the
+    behavioural equivalence comparison is exactly that run.
+
+    Every instance this builds is `-no-window`, which is why raising the rate
+    here is safe: the emulator warns that exceeding the host display's refresh
     rate is undefined, and a headless instance is driving no host display at all.
     The windowed review path (`launch_avd.sh`) keeps default pacing for that
     reason, and because a human watching a checkpoint play wants the game's own
@@ -563,7 +577,7 @@ def emulator_command(
         binary, f"@{instance.avd}",
         "-gpu", renderer, "-no-audio", "-no-boot-anim", "-no-window",
         "-cores", str(cores), "-port", str(instance.console_port), "-no-snapshot-save",
-        "-vsync-rate", str(GUEST_FRAME_RATE_HZ),
+        "-vsync-rate", str(frame_rate_hz),
     ]
     if read_only:
         command.append("-read-only")
@@ -578,6 +592,7 @@ def launch_emulator(
     *,
     read_only: bool = False,
     cores: int = 8,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> None:
     require_shareable(instance, read_only)
     binary = find_android_tool("emulator")
@@ -590,6 +605,7 @@ def launch_emulator(
         snapshot=snapshot,
         read_only=read_only,
         cores=cores,
+        frame_rate_hz=frame_rate_hz,
     )
     detail = [renderer]
     if snapshot:
@@ -627,7 +643,12 @@ def kill_emulator(instance: CloneInstance) -> None:
 
 
 def start(
-    instance: CloneInstance, renderer: str, *, read_only: bool = False, cores: int = 8
+    instance: CloneInstance,
+    renderer: str,
+    *,
+    read_only: bool = False,
+    cores: int = 8,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> None:
     """Cold start: the instance up and offline, with the game not yet launched.
 
@@ -635,7 +656,14 @@ def start(
     now the bridge's own reading and the bridge has to be deployed first — and
     `instrumented_bridge.sh deploy` refuses to run against an online instance.
     """
-    launch_emulator(instance, renderer, snapshot=None, read_only=read_only, cores=cores)
+    launch_emulator(
+        instance,
+        renderer,
+        snapshot=None,
+        read_only=read_only,
+        cores=cores,
+        frame_rate_hz=frame_rate_hz,
+    )
     set_radios(instance, False)
     require_offline(instance)
     print(f"{instance.serial} is up and offline; the game is not launched yet", flush=True)
@@ -741,7 +769,7 @@ def missing_surface_cause(applied_reading: str) -> str:
     )
 
 
-def confirm_frame_rate(instance: CloneInstance) -> None:
+def confirm_frame_rate(instance: CloneInstance, frame_rate_hz: int = GUEST_FRAME_RATE_HZ) -> None:
     """Fail unless the display mode and the game's own override are both at the rate.
 
     The two levers fail silently and independently: a 60 Hz display mode renders
@@ -754,7 +782,7 @@ def confirm_frame_rate(instance: CloneInstance) -> None:
     """
     uid = game_uid(instance)
     applied_name = f"uid {uid} applied frame rate"
-    rate = GUEST_FRAME_RATE_HZ
+    rate = frame_rate_hz
     # SurfaceFlinger applies a new override a beat after GameManagerService takes
     # it, so a reading taken the instant `cmd game set` returns still says 60.
     deadline = time.monotonic() + FRAME_RATE_CONFIRM_TIMEOUT
@@ -787,7 +815,7 @@ def confirm_frame_rate(instance: CloneInstance) -> None:
     ), flush=True)
 
 
-def raise_frame_rate(instance: CloneInstance) -> None:
+def raise_frame_rate(instance: CloneInstance, frame_rate_hz: int = GUEST_FRAME_RATE_HZ) -> None:
     """Lift the per-uid game frame-rate override, so the game may use the display.
 
     SurfaceFlinger ships a game default frame-rate override of 60 Hz that applies
@@ -806,8 +834,8 @@ def raise_frame_rate(instance: CloneInstance) -> None:
     the fleet took to boot, which is exactly the window the guest's Play uses to
     install what it downloaded, over a game nothing was watching.
     """
-    adb(instance, "shell", "cmd", "game", "set", "--fps", str(GUEST_FRAME_RATE_HZ), PACKAGE)
-    confirm_frame_rate(instance)
+    adb(instance, "shell", "cmd", "game", "set", "--fps", str(frame_rate_hz), PACKAGE)
+    confirm_frame_rate(instance, frame_rate_hz)
 
 
 def restore(
@@ -817,13 +845,21 @@ def restore(
     renderer: str = "lavapipe",
     read_only: bool = False,
     cores: int = 8,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> None:
     """The point of the snapshot: never connect at all.
 
     The renderer is the one the snapshot was taken with: a snapshot holds
     renderer state, so restoring it under a different one is not the same state.
     """
-    launch_emulator(instance, renderer, snapshot=snapshot, read_only=read_only, cores=cores)
+    launch_emulator(
+        instance,
+        renderer,
+        snapshot=snapshot,
+        read_only=read_only,
+        cores=cores,
+        frame_rate_hz=frame_rate_hz,
+    )
     require_offline(instance)
     # The claim a snapshot makes is that the game is already started, so that is
     # what is checked. The bridge is deliberately not required here: a snapshot
@@ -904,6 +940,7 @@ def cold_bring_up(
     deploy: Callable[[CloneInstance], None],
     read_only: bool = False,
     cores: int = 8,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> None:
     """The full path, and the only one that opens a network window.
 
@@ -914,7 +951,7 @@ def cold_bring_up(
     game's launch to the bridge calling it ready, which is where `M1B-E010` says
     the network is genuinely needed — the Firebase check and the OFFLINE modal.
     """
-    start(instance, renderer, read_only=read_only, cores=cores)
+    start(instance, renderer, read_only=read_only, cores=cores, frame_rate_hz=frame_rate_hz)
     require_offline(instance)
     deploy(instance)
     launch_game_at_home(instance)
@@ -929,6 +966,7 @@ def bring_up(
     read_only: bool = False,
     cores: int = 8,
     force_cold: bool = False,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> str:
     """Bring one instance up ready and offline, and say which path it took.
 
@@ -957,11 +995,25 @@ def bring_up(
             f"(snapshots are {SNAPSHOT_CAPABLE_RENDERER}-only); taking the cold path",
             flush=True,
         )
-        cold_bring_up(instance, renderer, deploy=deploy, read_only=read_only, cores=cores)
+        cold_bring_up(
+            instance,
+            renderer,
+            deploy=deploy,
+            read_only=read_only,
+            cores=cores,
+            frame_rate_hz=frame_rate_hz,
+        )
         return "cold"
     if not force_cold and snapshot_exists(instance, name):
         try:
-            restore(instance, name, renderer=renderer, read_only=read_only, cores=cores)
+            restore(
+                instance,
+                name,
+                renderer=renderer,
+                read_only=read_only,
+                cores=cores,
+                frame_rate_hz=frame_rate_hz,
+            )
             wait_until_ready(instance, timeout=RESTORED_READY_TIMEOUT)
             require_offline(instance)
             print(f"{instance.serial}: restored {name}, ready, never connected", flush=True)
@@ -969,7 +1021,14 @@ def bring_up(
         except CloneError as error:
             print(f"{instance.serial}: {name} did not verify ({error}); cold path", flush=True)
             discard_instance(instance)
-    cold_bring_up(instance, renderer, deploy=deploy, read_only=read_only, cores=cores)
+    cold_bring_up(
+        instance,
+        renderer,
+        deploy=deploy,
+        read_only=read_only,
+        cores=cores,
+        frame_rate_hz=frame_rate_hz,
+    )
     if read_only:
         # A `-read-only` instance writes to a throwaway overlay and cannot save a
         # snapshot; the pinned one is prepared on a writable instance instead.

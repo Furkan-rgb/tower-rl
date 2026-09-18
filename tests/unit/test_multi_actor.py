@@ -19,6 +19,7 @@ import run_actors
 from clone_session import (
     CANONICAL_AVD,
     CLONE_AVD,
+    GUEST_FRAME_RATE_HZ,
     CloneError,
     CloneInstance,
     emulator_command,
@@ -28,6 +29,7 @@ from run_actors import (
     ActorOutcome,
     aggregate,
     collect_episodes,
+    frame_rates,
     health_counters,
     run_actor,
     run_bridge,
@@ -230,7 +232,11 @@ def test_a_teardown_failure_is_reported_without_losing_the_episodes() -> None:
 
 
 def bring_up_steps(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, cold: bool = False
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    cold: bool = False,
+    frame_rate_hz: int = GUEST_FRAME_RATE_HZ,
 ) -> tuple[list[str], list[dict[str, object]]]:
     """Record one actor's bring-up and how it asked for it, with the device injected."""
     steps: list[str] = []
@@ -255,13 +261,18 @@ def bring_up_steps(
         "require_game_activity",
         lambda *_, **__: bool(steps.append("require_game_activity")),
     )
-    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: steps.append("raise_frame_rate"))
+    monkeypatch.setattr(
+        run_actors,
+        "raise_frame_rate",
+        lambda _, rate: steps.append(f"raise_frame_rate {rate}"),
+    )
     monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
     monkeypatch.setattr(run_actors.subprocess, "run", episode_process)
 
     arguments = argparse.Namespace(
         cold=cold,
         renderer="lavapipe",
+        frame_rates=[frame_rate_hz],
         cores=4,
         episodes=2,
         policy="scripted",
@@ -291,7 +302,7 @@ def test_an_actor_is_ready_and_verified_offline_before_any_episode_runs(
         "bring_up",
         "require_offline",
         "require_game_activity",
-        "raise_frame_rate",
+        f"raise_frame_rate {GUEST_FRAME_RATE_HZ}",
         "run_episodes.py",
     ]
     assert asked == [
@@ -302,8 +313,70 @@ def test_an_actor_is_ready_and_verified_offline_before_any_episode_runs(
             "read_only": True,
             "cores": 4,
             "force_cold": False,
+            "frame_rate_hz": GUEST_FRAME_RATE_HZ,
         }
     ]
+
+
+def test_one_fleet_run_can_be_collected_at_another_guest_rate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The 60 Hz arm of the equivalence comparison is a flag, not an edit.
+
+    Both levers have to move together or the guest stays where it was, so the
+    one value has to reach the launch (`-vsync-rate`, through `bring_up`) and
+    the per-uid override (`raise_frame_rate`) alike.
+    """
+    steps, asked = bring_up_steps(monkeypatch, tmp_path, frame_rate_hz=60)
+
+    assert asked[0]["frame_rate_hz"] == 60
+    assert "raise_frame_rate 60" in steps
+
+
+def test_an_actors_record_says_which_rate_it_was_collected_at(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One fleet may hold two arms, so the record carries its own arm.
+
+    Grouping episodes by the directory they landed in would attribute them by
+    filing rather than by measurement; the rate is written into the durable
+    record the analysis reads.
+    """
+    bring_up_steps(monkeypatch, tmp_path, frame_rate_hz=60)
+
+    written = json.loads((tmp_path / "emulator-5556.json").read_text())
+    assert written["frame_rate_hz"] == 60
+
+
+def test_a_fleet_may_run_two_rates_at_once_one_per_instance() -> None:
+    """The comparison is one fleet, not two: the rate belongs to the index.
+
+    Both levers are per emulator, so instances at different rates share one
+    window and one host, which is what removes the order confound a sequential
+    pair of arms could not exclude.
+    """
+    assert frame_rates("60,120,60,120,60,120,60", 7) == [60, 120, 60, 120, 60, 120, 60]
+
+
+def test_one_rate_is_the_whole_fleets_rate() -> None:
+    assert frame_rates("120", 3) == [120, 120, 120]
+
+
+def test_a_rate_list_that_does_not_cover_the_fleet_is_refused_by_name() -> None:
+    """Six of seven instances at one rate would look exactly like seven."""
+    with pytest.raises(SystemExit, match="lists 3 rates for 7 actors"):
+        frame_rates("60,120,60", 7)
+
+
+def test_a_rate_beyond_what_measured_fps_supports_is_refused() -> None:
+    """Above the ceiling the guest reports a rate it is not delivering."""
+    with pytest.raises(SystemExit, match="outside 1..300"):
+        frame_rates("60,360", 2)
+
+
+def test_a_rate_that_is_not_a_number_is_refused() -> None:
+    with pytest.raises(SystemExit, match="whole numbers of Hz"):
+        frame_rates("60,fast", 2)
 
 
 def test_an_actor_can_be_made_to_cold_start(
@@ -374,6 +447,8 @@ def stagger_arguments(tmp_path: Path) -> argparse.Namespace:
     return argparse.Namespace(
         cold=False,
         renderer="lavapipe",
+        # One per instance index, and a stagger test may run several instances.
+        frame_rates=[GUEST_FRAME_RATE_HZ] * 16,
         cores=4,
         episodes=2,
         policy="scripted",
@@ -488,7 +563,7 @@ def test_an_actor_collects_while_a_peer_is_still_booting(
             events.append(f"up:{target.index}")
         return "restored"
 
-    def fake_raise(target: CloneInstance) -> None:
+    def fake_raise(target: CloneInstance, rate: int) -> None:
         with lock:
             events.append(f"raise:{target.index}")
 

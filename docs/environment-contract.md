@@ -16,36 +16,35 @@ contract.
 
 ## Observation
 
-An `Observation` is evidence-bearing and fail-closed. It contains:
+An observation is a frozen `RunState` (`environment/run_state.py`), built from
+one exact bridge reading by `RunStateBuilder`. There is no visual profile and no
+screen classifier: the only source is the instrumented bridge, and no part of
+the decision loop reads a pixel.
 
 | Field | Meaning |
 | --- | --- |
-| `source_profile`, `source_sequence`, `captured_at_monotonic` | `official_visual` or `instrumented_bridge` provenance and strict ordering. |
-| `compatibility_id` | Exact game/device plus visual profile, or game/library plus bridge/protocol/speed profile. |
-| `screen` | `battle_home_tier_1`, `tier_select`, `tier_1_active_run`, `tier_1_result`, `supported_modal`, or `unknown`. |
-| `wave` | Visible wave number with confidence and source region. |
-| `cash_normalized` | Spendable in-run currency normalized for the policy; raw text remains diagnostic-only. |
-| `health_fraction` | Visible current/max health ratio. |
-| `max_health_normalized` | Normalized maximum health when visible. |
-| `upgrade_levels` | Per-action observed level readings. |
-| `upgrade_costs_normalized` | Per-action current-price readings. |
-| `action_mask` | Actions currently valid after freshness and UI checks. |
+| `source_sequence`, `captured_at_monotonic` | Provenance and strict ordering; both must advance between states of one episode. |
+| `profile_id` | The exact game/library plus bridge/protocol/speed identity this reading belongs to. |
+| `lifecycle` | `active` or `terminal`. `terminal` is what `RunState.terminal` reports. |
+| `wave`, `wave_log` | The wave number, raw and log-scaled for the encoder. |
+| `cash_log` | Spendable in-run currency, log-scaled. `observation-v1` carries cash only in this form. |
+| `health_fraction` | Current/max health ratio. |
+| `max_health_log` | Log-scaled maximum health. |
+| `game_speed` | The world's speed multiplier as the game reports it. |
+| `rows` | One `UpgradeRow` per upgrade action: `cost_log`, `affordability` (clipped at `MAX_AFFORDABILITY_RATIO`), `level`, `max_level`, `headroom`, `unlocked`, `maxed`, `available`. |
+| `action_mask` | One flag per entry of `RUN_ACTIONS`, in that order; authoritative for this observation. |
 | `valid`, `invalid_reasons` | Admission decision for replay and environment stepping. |
+| `schema_version` | `observation-v1`. |
 
-Each numeric field is a `FieldReading`: value (or `None`), confidence in
-`[0,1]`, source sequence, evidence identifier (visual region or allowlisted
-IL2CPP field), and an optional reason. Exact bridge readings use confidence 1
-only while their handshake, heartbeat, lifecycle, sequence, and pixel-watchdog
-checks are valid. Missing or low-confidence values remain missing; they are never
-converted to zero.
+Readings are exact rather than confidence-weighted: the bridge reports a
+game-owned field or it reports nothing. A missing value is never converted to
+zero — the state is invalid instead.
 
-An active-run observation is invalid unless wave, cash, and health are present.
-The validator rejects negative currency, impossible health fractions, stale or
-non-monotonic source timestamps/sequences, backward wave movement within an active
-episode, unsupported masked actions, schema/compatibility mismatches, bridge and
-pixel lifecycle disagreement, and any explicit invalid reason.
-Invalid observations are retried, recovered, quarantined, or terminated; they do
-not become an ordinary `WAIT` transition.
+`validate_transition(previous, current)` rejects a non-advancing source sequence
+or capture time, a profile identity or schema version that changed inside an
+episode, backward wave movement while both states are active, and any upgrade
+level that moved backwards. Invalid observations are retried, recovered,
+quarantined, or terminated; they do not become an ordinary `WAIT` transition.
 
 ## Run learned actions
 
@@ -56,17 +55,15 @@ including Utility, and records each discovered action as `supported`, `excluded`
 `unavailable`, or `unsafe`. Only `supported` entries are serialized in
 `run-action-v1`; an exclusion cannot silently remove an action from inventory.
 
-The current action IDs are profile data rather than an exhaustive contract list.
-For example:
-
-```text
-WAIT
-BUY_HEALTH
-BUY_DAMAGE
-BUY_ATTACK_SPEED
-BUY_CRITICAL_CHANCE
-BUY_CRITICAL_FACTOR
-```
+The action space is a slot grid rather than a named inventory
+(`environment/run_actions.py`): `RUN_ACTIONS` is `WAIT` at index 0 followed by
+one `RunActionId(family, slot)` for each of the three `UpgradeFamily` values
+(`attack`, `defense`, `utility`) across `SLOTS_PER_FAMILY = 20` slots — 61
+indices in all, spelled `attack:3`, `utility:0`, and so on. Twenty slots per
+family is what the supported 29.0.3 baseline reports and is the same width the
+bridge reads availability over (`kMaskSlotsPerFamily`); a build reporting a
+different count is a different action schema and fails closed rather than
+silently renumbering.
 
 The action mask is authoritative for the current observation. Navigation (tab
 selection, scrolling, opening menus, starting Tier 1, closing supported modals)
@@ -76,24 +73,28 @@ actions are outside the V1 API and this run contract.
 
 ## Action outcomes
 
-Every requested action produces exactly one typed outcome:
+Every requested action produces exactly one typed outcome (`ActionOutcome` in
+`environment/episode.py`):
 
-`executed`, `unavailable`, `failed`, `ambiguous`, `navigation_failed`, or
+`executed`, `unavailable`, `failed`, `ambiguous`, `waited`, or
 `invalid_observation`.
 
 An action is `executed` only after a fresh post-action observation confirms the
-intended result. The official profile requires visible confirmation; the
-instrumented profile requires game-owned before/after field confirmation from a
-Unity-main-thread purchase plus a valid watchdog state. Instrumented `WAIT`
-requires its bounded interval and a strictly newer valid observation. A failed
-or ambiguous action is not treated as a successful purchase or as `WAIT`.
+intended result: game-owned before/after field confirmation from a
+Unity-main-thread purchase plus a valid watchdog state. `WAIT` produces `waited`
+and requires its bounded advance and a strictly newer valid observation. A
+failed or ambiguous action is not treated as a successful purchase or as `WAIT`.
 
 ## Transition and reward
 
-`StepResult` contains the previous observation, optional next observation,
-semantic action, action mask, typed outcome, scalar reward, termination flags,
-termination reason, and elapsed real seconds. No transition enters replay until
-the next observation is valid.
+`RunTransition` contains the previous observation, optional next observation,
+semantic action, action mask, typed outcome, scalar reward, `terminated` and
+`truncated` flags, termination reason, the `DecisionEvent`s that ended the
+advance, elapsed real seconds, the game time the advance *requested*
+(`requested_game_ms` — this build exposes no live in-run clock, so the honest
+record is the request, `M1B-E003`), invalid reasons, and
+`reward_schema_version`. Its `admissible` property is what gates replay: both
+states valid, a next state present, and no invalid reason.
 
 The episode record additionally carries `waves`: one row per wave index the
 episode entered, each holding the wave number, whether the episode went on past
@@ -115,11 +116,56 @@ experiment metadata and never hide invalid or failed actions.
 
 ## Termination and recovery
 
-Termination reasons are distinct: `tower_died`, `user_stop`, `safety_timeout`,
-`invalid_observation`, `navigation_failure`, `device_failure`, and
-`baseline_drift`. Normal reset follows the game's death-to-new-run path. Golden
-snapshot restore is recovery only and must re-verify the fixed baseline before
-the next episode.
+Termination reasons are distinct (`TerminationOutcome`): `game_over`,
+`operator_stop`, `max_episode_duration`, `observation_invalid`,
+`action_pipeline_failed`, `ui_state_lost`, `device_failed`, `baseline_drift`,
+and `recovery_failed`.
+
+`VALID_TERMINATIONS` is `{game_over}` alone: only a genuine death is a complete
+episode, and everything else is an environment or infrastructure failure
+excluded from model-quality measurement. Every summary also carries
+`termination_detail`, because an outcome without its reason cannot be diagnosed
+later. Normal reset follows the game's death-to-new-run path. Golden snapshot
+restore is recovery only and must re-verify the fixed baseline before the next
+episode.
+
+## Fidelity
+
+An episode measured in a world that did not run at 1x is not comparable with one
+that did, so the environment checks the game's own round clock against the game
+time its advances budgeted and fails the episode by name rather than counting it
+(`environment/run_environment.py`):
+
+- `MAX_ROUND_CLOCK_RATIO = 1.25` and `GAME_TIME_INFLATED` — the world simulated
+  more time than was asked for. Six known-good episodes measured 1.069 of round
+  clock per budgeted millisecond; the same six at the account's 1.5x speed
+  ceiling measured 1.625 (`M1B-E023`). The ceiling sits between them.
+- `MIN_ROUND_CLOCK_RATIO = 0.99` and `GAME_TIME_DEFLATED` — the world simulated
+  less. Healthy runs pooled 1.007–1.014; a 150 ms-step arm that under-credited
+  simulated time measured 0.987. 1.0 would be the natural floor but leaves no
+  room for float noise.
+- `MIN_RATIO_EVIDENCE_GAME_MS = 2000.0` — the ratio is taken over the episode so
+  far and only once that much game time has been spent; one advance is too short
+  a window to judge a clock by. The advance that ends a run is exempt from the
+  lower bound explicitly, because its round time legitimately reads zero.
+- `ADVANCE_TRUNCATED_BY_WALL` — an advance ended because the bridge ran out of
+  wall time rather than because the world did anything. How long the host took
+  to render is not part of the decision problem, so such an episode was measured
+  under a different problem and is failed, not counted (`M1B-E032`).
+- `BRIDGE_EVENT_DIVERGENCE` — the bridge and the host disagree about which
+  decision condition fired. The host's `_events_between` stays the only
+  definition of what a decision condition is; the transition is recorded invalid
+  rather than the host predicate being relaxed to match.
+- `DEATH_BOUNDARY_TRANSIENT` — the one inconsistency the bridge may legitimately
+  show. Health and the round flag are read separately, so at the instant of
+  death health goes negative a moment before game-over flips (`M1B-E008`). It is
+  recovered by advancing the world minimally (`MIN_ADVANCE_GAME_MS`), never by
+  reading again, and counted as `recovered_transients`.
+
+`advances_cut_short` counts advances the bridge stopped mid-loop on a reading
+its settled snapshot then did not corroborate. It is benign — the settled state
+is what the agent observes — but counted, because a rise in it says the loop and
+the state it reports are drifting apart.
 
 ## Meta environment contract (`meta-observation-v1`, `meta-action-v1`)
 

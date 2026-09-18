@@ -8,10 +8,16 @@ context rather than as current truth.
 
 ### The goal
 
-A reproducible benchmark on the real game in which several RL backbones are
-trained and compared under one identical budgeted protocol, where the best
-learned model reproducibly beats the random and scripted baselines, with all
-evidence in `docs/experiments.md`.
+A reproducible benchmark on the real game in which a learned model, trained
+under one budgeted protocol, reproducibly beats the random and scripted
+baselines, with all evidence in `docs/experiments.md`.
+
+The multi-backbone comparison is retired (`#7`, 2026-09-18): the project commits
+to one backbone, the `BACKBONE` constant in `scripts/train.py`. The equal-budget
+interleaving and the bootstrap/per-wave statistics remain and are what any arm
+comparison runs on — they were used for the 60 Hz against 120 Hz equivalence
+fleet, where `M1B-E053`'s provisional reject did not replicate in `M1B-E054` and
+120 Hz cleared.
 
 ### Task tracking is on GitHub, not in this file
 
@@ -41,13 +47,14 @@ measured, not what to do next.
   ran at 100 percent validity (`M1B-E009`). That clears M2's *reliability*
   clauses. **M2 is not complete**: its speed/actor-count comparison clause and
   its visual-evidence clause are both open.
-- **The learning pipeline, end to end on the real game.** Both backbones,
+- **The learning pipeline, end to end on the real game.** Two backbones,
   interleaved on one device, 54 episodes, 614 optimisation steps, no replay
   rejections, checkpoints round-tripping with identity and checksums
   (`M1B-E011`). This proves plumbing, not learning.
-- **Two backbones behind one contract suite**: `recurrent-q` and `stacked-dqn`
-  (the rank-1 candidate from `docs/rl-candidates.md`). They share the trunk,
-  the dueling heads and the n-step double-Q targets, so only the core differs.
+- **One backbone behind the contract suite**: `stacked-dqn`, the rank-1
+  candidate from `docs/rl-candidates.md`. `recurrent-q` was the second arm the
+  `M1B-E011` run above used; it was removed with the multi-backbone goal (`#7`),
+  so `learning/` holds `stacked_dqn.py` alone and `BACKBONE` names it.
 - **The comparison machinery**: interleaved scheduling, bootstrap intervals,
   Cohen's d, and `required_episodes` for power.
 - **Frame-exact stepping** (`M1B-E016`) and **the advance loop inside the
@@ -112,8 +119,11 @@ measured, not what to do next.
    Verified equivalent to lavapipe on game-time ratio, decisions/wave, mean
    wave and unattended stability (see "Done: `-gpu host` is the mandatory
    training renderer" below). The emulator refuses to snapshot a Vulkan app
-   under host GPU, so `clone_session.py` never attempts a save or restore
-   there; host bring-up is cold every time, by design, and says so in its log.
+   under host GPU, so bring-up never attempts a save or restore there;
+   `prepare_pinned_snapshot` and `bring_up` in `src/tower_rl/simulation/` check
+   the renderer against `SNAPSHOT_CAPABLE_RENDERER` by name. Host bring-up is
+   cold every time, by design, and says so in its log
+   (`renderer 'host' cannot snapshot a Vulkan app`).
 
 ### Done: the advance loop is inside the bridge
 
@@ -411,11 +421,12 @@ emulator @tower_rl_api36_play_arm64 \
 Then verify:
 
 ```text
-uv run tower-rl doctor \
-  --xapk local/the-tower-29-0-1.xapk \
-  --serial emulator-5554
-uv run tower-rl probe --serial emulator-5554
+uv run python scripts/clone_session.py verify
 ```
+
+(Historical: this step read `uv run tower-rl doctor` and `uv run tower-rl
+probe`. There is no `tower-rl` console script and no `probe`; readiness and
+network state are reported non-visually.)
 
 The expected state is Battle home, Tier 1 selected, highest wave 2, 53 coins,
 0 gems, x1.00 total coin bonus, Labs locked, airplane mode enabled, and no
@@ -466,8 +477,10 @@ from an ARM64 AVD and is also tied to the pinned Lavapipe/Swangle renderer.
    the wifi radio stays up with a route (`M1B-E010`). Use `adb shell svc wifi
    disable` and `adb shell svc data disable`, then confirm that `ip -o -4 addr
    show` lists nothing but `lo`.
-7. Verify that new snapshot with `tower-rl probe --navigate
-   --restore-snapshot <workstation-snapshot>` before any actor or learner work.
+7. Verify that new snapshot by restoring it and reading the bridge back —
+   `uv run python scripts/clone_session.py restore <workstation-snapshot>` then
+   `verify` — before any actor or learner work. (This step read `tower-rl probe
+   --navigate` when a visual probe existed; it does not.)
 
 The workstation snapshot should be created with the renderer that is actually
 validated there. Do not copy or reuse the Mac's account-bearing snapshot merely
@@ -552,19 +565,20 @@ archive bytes into the repository.
 
 M0 is complete: host/device characterization, Play installation, renderer
 selection, offline baseline, snapshot restore, and bounded navigation probe are
-recorded in `docs/experiments.md` (M0-E001 through M0-E014). M1 implementation
-is in `src/tower_rl/vision.py`, `src/tower_rl/infrastructure/adb_device.py`,
-and `src/tower_rl/application/controller.py`. The repeatable gate is
-`scripts/m1_reliability.py`; reports belong under `/tmp` or another ignored
-machine-local directory. The post-diagnosis one-episode smoke passed, but the
-earlier 100-episode run did not. A future run must finish with `passed: true`,
-`valid_episodes: 100`, and `baseline_restored: true` before M1 is declared
-complete.
+recorded in `docs/experiments.md` (M0-E001 through M0-E014).
+
+**Superseded.** The visual M1 implementation this paragraph pointed at —
+`src/tower_rl/vision.py`, `src/tower_rl/infrastructure/adb_device.py`,
+`src/tower_rl/application/controller.py`, `src/tower_rl/infrastructure/visual_profile.py`
+— and the `scripts/m1_reliability.py` gate no longer exist. The game is observed
+and controlled through the instrumented bridge instead, with no screenshot
+classifier left in the tree (see START HERE, and `M1B-E056` for the last device
+verification of the code that replaced it). The current packages and their
+dependency rule are `docs/architecture.md`; the reliability gate now in force is
+the 1,000-episode scripted run recorded in START HERE.
 
 Before changing code, read `AGENTS.md`, `docs/task.md`, `docs/solution.md`,
-relevant ADRs, and current controller/vision tests. After any live run, restore
-the golden snapshot and verify with `uv run tower-rl probe --serial
-emulator-5554 --restore-snapshot <snapshot-name>`.
+`docs/architecture.md`, relevant ADRs, and the current tests for the area.
 
 ## Resolved — screen calibration after progression drift — 2026-09-17
 
@@ -576,7 +590,8 @@ now on the home screen. The Battle-home classifier samples pixel (10, 200), whic
 was background at the baseline and now falls inside the new widget, so the screen
 no longer classifies and the adapter correctly refuses the boundary tap.
 
-Resolved in `M1B-E005`. The gate now lives in
+Resolved in `M1B-E005`, and since superseded entirely: the visual gate described
+here was removed with the rest of the screenshot path. It lived in
 `src/tower_rl/infrastructure/visual_profile.py`, calibrated against sixty-three
 live frames labelled by the game's own lifecycle, with seven anchors for home,
 four for the result panel and three for an active run. The result gate anchors on

@@ -5,11 +5,13 @@
 Before planning, editing code, or delegating work, read these files completely:
 
 1. `docs/workstation-handoff.md` — the START HERE section at the top says where
-   the project actually is, what is already decided, and what the next slice is
+   the project actually is and what is already decided
 2. `docs/task.md`
 3. `docs/solution.md`
-4. Any relevant ADRs under `docs/adr/`
-5. The current implementation and tests for the affected area
+4. `docs/architecture.md` — the packages that exist, what each owns, and the
+   dependency rule between them
+5. Any relevant ADRs under `docs/adr/`
+6. The current implementation and tests for the affected area
 
 Do not rely on conversation context as a substitute for the repository documents.
 
@@ -17,26 +19,19 @@ Do not rely on conversation context as a substitute for the repository documents
 
 - `docs/task.md` is authoritative for scope, outcomes, milestones, acceptance gates, constraints, and Definition of Done.
 - `docs/solution.md` is authoritative for the current technical approach.
+- `docs/architecture.md` describes the structure that exists; if it and the code disagree, the code wins and the document is fixed.
 - ADRs explain consequential technical decisions and changes.
 - Code and configuration must implement those documents; they do not silently redefine them.
 
-A technical discovery may require changing `docs/solution.md`. Changing `docs/task.md` requires an actual product-scope or acceptance decision and must not be done merely to make implementation easier.
+Documents are not pinned. When code or measured evidence contradicts a document, the document changes — and every durable claim carries its evidence pointer (a `docs/experiments.md` entry) or goes. Changing `docs/task.md` requires an actual product-scope or acceptance decision and must not be done merely to make implementation easier.
 
 If task and solution conflict, follow the task and reconcile the documents before continuing.
 
-## Current phase
+Task state is not prose. It lives on the GitHub board (see Board discipline below); do not add a to-do list, a priority list, or a "next steps" section to any document.
 
-The repository starts at **M0: feasibility and environment characterization**.
+## Module rule
 
-The first work is to:
-
-- inspect the host and locally supplied XAPK without committing proprietary bytes;
-- determine package contents, version, ABIs, Android requirements, and installation set;
-- select and validate one compatible Android device profile;
-- launch the real game in one controllable instance;
-- record evidence and update the solution/ADRs when discoveries change the planned approach.
-
-Do not begin RL training merely because a model or emulator can run. The deterministic scripted environment must pass the M2 reliability gate first.
+`src/tower_rl/` is four packages in one direction — `environment` is the root, `simulation` and `learning` each import only it and never each other, `experiment` imports `environment` and `learning`, and `scripts/` is the composition root — stated in full in [`docs/architecture.md`](docs/architecture.md) section 1 and enforced by `tests/unit/test_import_contracts.py`. To change a rule, change the constant there and say why beside it; a rule relaxed to make one import compile is the failure that test exists to expose.
 
 ## Execution rules
 

@@ -137,62 +137,53 @@ selected only after baseline, navigation, snapshot, renderer, and isolation
 validation complete. Do not falsify installer identity, bypass Play licensing,
 automate credentials, make purchases, or automate advertisements.
 
-## 5. Proposed repository structure
+## 5. Repository structure
 
-Use a Python package with feature-oriented boundaries:
+A Python package with feature-oriented boundaries:
 
 ```text
 Tower-RL/
 ├── README.md
+├── AGENTS.md
 ├── pyproject.toml
 ├── uv.lock
-├── configs/
-│   ├── base.yaml
-│   ├── train.yaml
-│   ├── evaluate.yaml
-│   └── watch.yaml
 ├── docs/
 │   ├── task.md
 │   ├── solution.md
 │   ├── architecture.md
+│   ├── environment-contract.md
 │   ├── environment-profile.yaml
 │   ├── setup.md
 │   ├── workstation-handoff.md
-│   ├── operations.md
-│   ├── environment-contract.md
 │   ├── experiments.md
-│   ├── limitations.md
+│   ├── rl-candidates.md
 │   └── adr/
 ├── src/tower_rl/
-│   ├── environment/         # what a run is: actions, state, episode, port, cost
-│   ├── simulation/          # reaching one instance: bring-up, bridge, fleet
-│   ├── cli/                 # composition root
-│   ├── policies/
-│   ├── replay/
-│   ├── learning/            # everything about learning: policies, replay, actor, evaluator, training run
-│   ├── actors/
-│   ├── evaluation/
-│   ├── orchestration/
-│   ├── telemetry/
-│   └── artifacts/
+│   ├── environment/         # what a run is: actions, state, features, episode, port, decision cost
+│   ├── simulation/          # reaching one instance: SDK, instance, bring-up, frame rate, bridge, adapter, fleet
+│   ├── learning/            # policies, network, backbone, replay, actor, learner, training run, evaluator, checkpoint
+│   ├── experiment/          # run identity, metrics, tracking, reports, comparison, wave statistics
+│   ├── doctor.py            # host and package checks
+│   └── xapk.py
 ├── tests/
-│   ├── unit/
-│   ├── contract/
-│   ├── integration/
-│   └── fixtures/
-├── scripts/
-└── runtime/                 # ignored; profiles, runs, logs, models, replay
+│   ├── unit/                # including unit/simulation/
+│   └── fakes/
+├── scripts/                 # composition roots: train, run_actors, run_episodes, compare_arms, clone_session
+└── runtime/                 # ignored; runs, logs, models, replay
 ```
 
-Keep proprietary and generated material out of Git. `.gitignore` must cover the APK, Android device data, user/account state, golden snapshots, screenshots containing user data, replay storage, checkpoints, logs, and local runtime configuration. Provide `.example` configuration files where useful.
+`docs/architecture.md` states the dependency rule between those packages;
+`tests/unit/test_import_contracts.py` enforces it.
+
+Keep proprietary and generated material out of Git. `.gitignore` must cover the APK, Android device data, user/account state, golden snapshots, screenshots containing user data, replay storage, checkpoints, logs, and local runtime configuration.
 
 Use Python 3.12 unless the selected PyTorch/Android integration on the target host requires a different supported version. Manage dependencies and reproducible commands with `uv`. Use PyTorch for the model and learner. Prefer small, explicit internal abstractions over adopting a large distributed-RL framework before the environment is proven. TorchRL components may be used where they reduce risk, but the stored data contracts and orchestration must remain project-owned and testable.
 
-The package uses domain-driven design with dependencies pointing inward:
-infrastructure adapters depend on application use cases and ports; application
-services depend on domain contracts and ports; domain code depends on neither
-Android nor persistence. The CLI is the composition root. Root-level compatibility
-modules are temporary shims and must not become new dependency targets.
+The package is four feature packages in one direction, not layers; the rule is
+stated once in `docs/architecture.md` section 1 and enforced by
+`tests/unit/test_import_contracts.py`. The earlier
+`domain`/`ports`/`application`/`infrastructure` layering and the `tower-rl` CLI
+composition root no longer exist (`M0-E010` is superseded).
 
 The M0 `probe` uses Pillow only for deterministic PNG decoding and conservative
 profile-anchor checks. It is a transport and navigation smoke tool, not the
@@ -531,24 +522,12 @@ exactly what a single actor acting from the learner's own network always did, so
 
 The evaluator owns a dedicated device and receives immutable candidate checkpoints. It runs complete episodes with `epsilon=0`, learning disabled, and replay disabled.
 
-Use a two-stage evaluation budget:
-
-- **screening**: 10 valid episodes for routine candidates;
-- **promotion**: 30 valid episodes for candidates that pass screening.
-
-These are initial defaults and configurable. Invalid episodes do not count toward the valid budget, but excessive invalidity fails the evaluation.
-
-Promotion comparison:
-
-1. Require environment/baseline/schema compatibility.
-2. Require the configured valid episode count and invalid-rate ceiling.
-3. Compare candidate and incumbent primarily by mean final wave.
-4. Require a minimum practical margin configured in waves or relative improvement; start with zero only during bootstrap when no incumbent exists.
-5. Use bootstrap confidence intervals over episode-level final wave as supporting uncertainty evidence.
-6. If intervals are inconclusive or the practical margin is not met, retain the incumbent.
-7. Promote atomically only after the report is fully written.
-
-Do not repeatedly evaluate every learner update. Schedule evaluation by learner step and minimum wall-clock interval so one real evaluator cannot become an uncontrolled bottleneck.
+The two-stage screening/promotion budget and the promoter that would compare a
+candidate against an incumbent are **not implemented**; selection is post-hoc —
+a run takes one pre-registered exploration-free evaluation on its final weights
+after its decision budget is spent, and arms are compared afterwards from their
+records (`experiment/comparison.py`, `experiment/wave_statistics.py`). Record
+the Milestone 2 entry here when a promoter lands.
 
 ### 6.12 Supervisor
 
@@ -898,7 +877,15 @@ Before recurrence and multiple actors, train a single-actor Double/Dueling DQN o
 
 If real-game learning time is prohibitive for debugging, unit-test the learner with standard toy environments. Do not feed toy or synthetic Tower transitions into the real replay or use toy success as evidence that the Tower environment is correct.
 
-### 9.2b Comparing backbones on one device
+### 9.2b Comparing arms on one device
+
+The multi-backbone goal is retired (`#7`): the project commits to one backbone,
+the `BACKBONE` constant in `scripts/train.py`, and `train.py` trains a single
+arm. The equal-budget machinery below is built and is what any arm comparison
+still runs on — it has been used for an equal-budget comparison that was not
+about backbones: the 60 Hz against 120 Hz equivalence fleet, where `M1B-E053`'s
+provisional reject did not replicate in `M1B-E054` and 120 Hz cleared. Read
+"arm" below as "the thing being compared", not necessarily as a backbone.
 
 Several candidates are compared, and there is only one clone to run them on.
 Training one arm to its full budget and then the next would confound the
@@ -1554,7 +1541,17 @@ Operationally:
 
 ## 11. Commands and operator flow
 
-Use Typer or an equivalent typed CLI. All commands accept a config file and explicit overrides, print the resolved run/profile identity, and return nonzero on failure.
+**What exists today.** There is no `tower-rl` console script; the entry points
+are the scripts under `scripts/`, run as `uv run python scripts/<name>.py`, each
+parsing its own `argparse` arguments and returning nonzero on failure:
+`clone_session.py` (one instance up, down, or inspected), `run_episodes.py` (one
+actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
+`train.py` (a training run on a fleet), `compare_arms.py` (two policies
+interleaved on one instance), and `workstation_preflight.py` (host checks).
+`tower_rl.doctor` is a library module with the host/APK/device checks below and
+no command of its own; the M0 `probe` and its vision layer no longer exist.
+
+The rest of this section is the V1 target, not a description of the present.
 
 ### 11.1 `tower-rl doctor`
 
@@ -1580,16 +1577,15 @@ Interactive only where evidence/confirmation is inherently needed. Produces a ve
 
 ### 11.3 `tower-rl train`
 
-**What exists today.** `tower-rl` implements `doctor` and `probe` only. Training
-runs through `scripts/train.py`, a device runner for the instrumented profile:
-it takes `--backbone` once or repeatedly, interleaves the named arms in decision
-blocks (section 9.2b), checkpoints atomically under
-`~/.local/state/tower-rl/runs`, and evaluates without exploration on a long
-period. Resume is not implemented — see the open question in
+**What exists today.** Training runs through `scripts/train.py`, a device runner
+for the instrumented profile. It trains one arm on the single backbone named by
+the `BACKBONE` constant (`stacked-dqn`) — the multi-backbone comparison of
+section 9.2b was retired and there is no `--backbone` flag — advancing the run
+in `--block-decisions` blocks to `--budget-decisions`, checkpointing atomically
+under `~/.local/state/tower-rl/runs`, and taking one exploration-free evaluation
+on the final weights. Resume is not implemented — see the open question in
 `docs/workstation-handoff.md`; an interrupted run is a shorter run, not a corrupt
 one, because the budget is counted in decisions.
-
-The rest of this section is the V1 target, not a description of the present.
 
 Example behavior:
 
@@ -1637,6 +1633,12 @@ Defaults to `best.pt`, one visible device, epsilon zero, no replay, and no learn
 The UI must not obscure controls needed by the automation. Prefer a separate terminal/dashboard initially; add an on-video overlay only if it is reliable and non-invasive.
 
 ## 12. Configuration
+
+**What exists today.** There are no configuration files and no layering. Every
+entry point under `scripts/` is configured by its own `argparse` arguments and
+by `TOWER_BRIDGE_BUILD_DIR`; the resolved values are recorded in the run
+manifest by `experiment/run_identity.py`. The rest of this section is the V1
+target, like section 11.
 
 Use layered configuration:
 

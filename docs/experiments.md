@@ -226,6 +226,37 @@ and set-B arm results at step 0. UI: `uv run --extra tracking mlflow ui
 contingent on the skeleton passing; the ~2.3 h evaluation phase is stated here
 so the total (~9.5 h) is on record before the run.
 
+**Correction 2026-09-18 (after M2-E001), developer-approved:**
+
+The recipe's throughput premise (129–143k decisions/hour, `M1B-E052`) was a
+scripted-policy figure. Measured under the learning policy in `M2-E001`:
+~28–30k decisions/hour fleet-wide at 120 Hz, `episode_wait_fraction` ≈ 0.80
+(waits advance the world further per decision). The 1M-decision budget would
+take ~33 h, not ~7 h.
+
+`M2-E001` also found `train.py` never raised the per-uid frame rate (fixed in
+`#30`, merge `215c4c6`); the 30k/h figure was measured after raising it by
+hand.
+
+Re-priced budgeted run, approved by the developer on 2026-09-18:
+`--budget-decisions 200000 --checkpoint-every-decisions 50000` (a multiple of
+the default 2,000-decision block), ≈7 h at the measured rate, K=50k → 4
+candidates; set A `--episodes 2` per actor (14 per candidate, 56 total); set B
+unchanged (`--episodes 9` per actor for the selected checkpoint, scripted,
+random; ≥60 valid per arm). `report_arms.py --selection <run>/selection.json`
+required.
+
+Stated expectation, pre-registered: 200k decisions (~50k gradient steps at
+0.25 steps/decision) is a first point on the learning curve; the headline
+claim ("beats scripted") is NOT expected to be reachable at this budget and is
+not made unless the pre-registered rule fires on set B. The run's purpose is
+to establish whether loss and exploring final wave move under this
+configuration and whether the fleet holds for 7 h.
+
+The decision as a budget unit is under review after this run (waits cost ~4–5x
+a purchase in wall time); game-time is the candidate replacement (M2-P001's
+rules are otherwise unchanged).
+
 ## M1B-E056 — The simulation module drives the device exactly as the scripts did
 
 **Date:** 2026-09-18

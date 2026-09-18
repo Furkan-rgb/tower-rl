@@ -23,8 +23,6 @@ import train
 from clone_session import CloneInstance
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.application.actor import ActorConfig
-from tower_rl.application.evaluator import evaluate
 from tower_rl.environment.episode import TerminationOutcome
 from tower_rl.environment.features import StateFeatures
 from tower_rl.environment.run_environment import (
@@ -33,6 +31,8 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.learning.actor import ActorConfig
+from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
 
 #: Tensors this small spend their time handing work between threads rather than

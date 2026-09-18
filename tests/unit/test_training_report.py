@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 import train
-from test_train_entry_point import session
+from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environment, session
 
 from tower_rl.experiment.metrics import health_counters
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
@@ -292,6 +293,62 @@ def test_the_run_ends_on_one_pre_registered_exploration_free_evaluation(
             point for point in arm["learning_curve"] if point["pre_registered_final"]
         ]
         assert headline == [final] == [arm["learning_curve"][-1]]
+
+
+def test_the_record_names_the_pre_registered_point_rather_than_its_caller(
+    tmp_path: Path,
+) -> None:
+    """`record_point` owns `final_point`: the headline is named where it is made.
+
+    It used to be assigned by the closure that ran the evaluation, so a second
+    caller recording a final point left the report naming the first one. The
+    report records results; it does not run evaluations and does not depend on
+    whoever asked for one to finish the record off.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        arm, run_evaluation = train.build_arm(
+            train.BACKBONE,
+            arguments(tmp_path, **{"--budget-decisions": "20"}),
+            instances=[train.ActorInstance(serial="fake-0", environment=environment())],
+            device=torch.device("cpu"),
+            profile_id=PROFILE,
+            parent=tmp_path,
+            revision="test",
+            started=0.0,
+            tracker=train.NoExperimentTracker(),
+            tags={},
+        )
+
+    assert not hasattr(arm, "evaluation"), "the report holds no evaluation to run"
+    assert arm.final_point is None
+
+    run_evaluation(False)
+    assert arm.final_point is None, "a mid-run point is not the headline"
+
+    run_evaluation(True)
+    assert arm.final_point is arm.learning_curve[-1]
+    assert arm.final_point is not None and arm.final_point.pre_registered_final
+
+
+def test_a_checkpoint_carries_the_schedules_the_run_actually_used(
+    trained: dict[str, Any],
+) -> None:
+    """Epsilon and beta are the run's to publish, not the report's to recompute.
+
+    The report used to evaluate the training config's schedules itself, which is
+    a learning decision taken in the record of one. It reads what the run
+    published instead, so a checkpoint restores the values collection and
+    sampling actually ran at.
+    """
+    for arm in trained["arms"]:
+        stored = load(Path(arm["checkpoint_path"]))
+        resolved = arm["resolved_config"]
+
+        assert resolved["epsilon_end"] <= stored.progress.epsilon <= resolved["epsilon_start"]
+        # Annealed away from where it started: the run drew it per episode.
+        assert stored.progress.epsilon < resolved["epsilon_start"]
+        assert resolved["beta_start"] <= stored.progress.importance_beta <= resolved["beta_end"]
 
 
 def test_the_learner_diagnostics_travel_with_every_point(trained: dict[str, Any]) -> None:

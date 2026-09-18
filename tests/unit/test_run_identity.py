@@ -17,8 +17,13 @@ import torch
 import train
 from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environment
 
+from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
+from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
+from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.experiment.run_identity import (
     REFERENCE_FINAL_WAVES,
+    RunIdentity,
+    checkpoint_identity,
     new_run_id,
     source_revision,
     tracked_params,
@@ -28,7 +33,7 @@ from tower_rl.experiment.run_identity import (
 def _arm(run_dir: Path, **overrides: str) -> Any:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
-        return train.build_arm(
+        arm, _ = train.build_arm(
             train.BACKBONE,
             arguments(run_dir, **overrides),
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
@@ -40,6 +45,7 @@ def _arm(run_dir: Path, **overrides: str) -> Any:
             tracker=train.NoExperimentTracker(),
             tags={},
         )
+    return arm
 
 
 def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
@@ -98,6 +104,55 @@ def test_a_run_id_names_its_backbone_and_collides_with_nothing() -> None:
     first, second = new_run_id(train.BACKBONE), new_run_id(train.BACKBONE)
 
     assert first.startswith(f"{train.BACKBONE}-") and first != second
+
+
+def test_a_checkpoint_key_is_derived_from_the_run_rather_than_assembled_by_a_script() -> None:
+    """The schemas belong to the code, so the script never names them.
+
+    `scripts/train.py` used to build the checkpoint identity out of three schema
+    constants of its own, which is a compatibility decision taken at the command
+    line. It passes a profile id and gets both identities back instead.
+    """
+    identity = RunIdentity.started_now(
+        train.BACKBONE, profile_id="fake-profile-v1", source_revision="abc1234"
+    )
+    key = checkpoint_identity(identity)
+
+    assert key.run_id == identity.run_id and key.backbone == train.BACKBONE
+    assert key.profile_id == "fake-profile-v1" and key.source_revision == "abc1234"
+    assert key.observation_schema == OBSERVATION_SCHEMA_VERSION
+    assert key.action_schema == ACTION_SCHEMA_VERSION
+    assert key.reward_schema == REWARD_SCHEMA_VERSION
+
+
+def test_a_later_run_may_resume_an_earlier_one_s_checkpoint() -> None:
+    """The run id is deliberately not part of the compatibility key.
+
+    Resume exists precisely so a new run can continue an old one's weights; what
+    may not differ is the arm, the device profile and all three schemas.
+    """
+    first = checkpoint_identity(
+        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+    )
+    second = checkpoint_identity(
+        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="def")
+    )
+    other_arm = checkpoint_identity(
+        RunIdentity.started_now("other", profile_id="p", source_revision="abc")
+    )
+
+    assert first.run_id != second.run_id
+    assert first.incompatibilities(second) == ()
+    assert other_arm.incompatibilities(first) != ()
+
+
+def test_the_arm_is_filed_under_the_identity_it_was_built_with(tmp_path: Path) -> None:
+    """What the script composes is what the checkpoints are written under."""
+    arm = _arm(tmp_path)
+
+    assert arm.identity.run_id == arm.run_dir.name
+    assert arm.identity.profile_id == PROFILE
+    assert arm.identity.observation_schema == OBSERVATION_SCHEMA_VERSION
 
 
 def test_every_artifact_is_bound_to_the_code_that_produced_it() -> None:

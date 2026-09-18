@@ -9,7 +9,6 @@ from contextlib import suppress
 
 import pytest
 
-from tower_rl.application.evaluator import evaluate
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.infrastructure.instrumented_bridge import (
@@ -33,6 +32,7 @@ from tower_rl.infrastructure.instrumented_bridge import (
     read_frame,
 )
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter
+from tower_rl.learning.evaluator import evaluate
 
 EXPECTED = BridgeCompatibility(
     package_version="29.0.3",

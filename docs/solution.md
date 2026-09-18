@@ -165,13 +165,12 @@ Tower-RL/
 │   └── adr/
 ├── src/tower_rl/
 │   ├── environment/         # what a run is: actions, state, episode, port, cost
-│   ├── application/         # use cases and orchestration
 │   ├── ports/               # inbound/outbound protocols
 │   ├── infrastructure/      # ADB, vision, persistence, process adapters
 │   ├── cli/                 # composition root
 │   ├── policies/
 │   ├── replay/
-│   ├── learning/
+│   ├── learning/            # everything about learning: policies, replay, actor, evaluator, training run
 │   ├── actors/
 │   ├── evaluation/
 │   ├── orchestration/

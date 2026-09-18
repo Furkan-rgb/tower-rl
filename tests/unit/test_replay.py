@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from tower_rl.application.replay import (
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, encode_state
+from tower_rl.environment.run_actions import RUN_ACTIONS, WAIT, action_index, upgrade_action
+from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.infrastructure.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
+from tower_rl.learning.replay import (
     PrioritizedSequenceReplay,
     ReplayRejected,
     ReplaySequence,
     ReplayStep,
     SequenceMetadata,
 )
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, encode_state
-from tower_rl.environment.run_actions import RUN_ACTIONS, WAIT, action_index, upgrade_action
-from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.infrastructure.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
 
 BUILDER = RunStateBuilder(profile_id="profile-v1")
 

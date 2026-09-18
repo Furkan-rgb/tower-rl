@@ -22,10 +22,17 @@ SOURCE = Path(__file__).resolve().parents[2] / "src"
 #: It is the root, so every other name in `tower_rl` is below it.
 FORBIDDEN_TO_ENVIRONMENT = ("tower_rl",)
 
-#: What a use case may not reach for. An experiment observes training; training
-#: must not read back from what observes it, or the loop could not run without
-#: the reporting it is only measured by.
-FORBIDDEN_TO_APPLICATION = ("tower_rl.experiment",)
+#: What `tower_rl.learning` may not reach for. An experiment observes training;
+#: training must not read back from what observes it, or the loop could not run
+#: without the reporting it is only measured by. Device adapters and host checks
+#: are the simulation side. `tower_rl.application` is the package learning
+#: absorbed: naming it here keeps it from coming back.
+FORBIDDEN_TO_LEARNING = (
+    "tower_rl.experiment",
+    "tower_rl.infrastructure",
+    "tower_rl.application",
+    "tower_rl.doctor",
+)
 
 #: What `tower_rl.experiment` may not reach for. Device adapters and host checks
 #: are the simulation side, and a script is where a run is composed: an
@@ -36,8 +43,14 @@ FORBIDDEN_TO_EXPERIMENT = ("tower_rl.infrastructure", "tower_rl.doctor")
 #: them at all, by any name.
 SCRIPT_MODULES = ("train", "run_episodes", "run_actors", "clone_session", "compare_arms")
 
-def imported_modules(path: Path) -> set[str]:
+def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:
     """Every `tower_rl` module name this file imports, however it spells it.
+
+    `root` is the source root the file's own package is resolved against, so a
+    probe file can be written under a temporary directory. The source tree is
+    never written to by a test: a probe left in `src/` by a killed run would
+    poison the package, and one written while another suite runs would fail its
+    rules on an import it never made.
 
     Three spellings reach a module: `import a.b`, `from a.b import c`, and
     `from a import b`, where the imported name is itself a module. The third is
@@ -48,7 +61,7 @@ def imported_modules(path: Path) -> set[str]:
     climbs out of the package it lives in is reported under the name it
     actually reaches.
     """
-    package = path.relative_to(SOURCE).parent.parts
+    package = path.relative_to(root).parent.parts
     names: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.Import):
@@ -66,23 +79,23 @@ def imported_modules(path: Path) -> set[str]:
     return names
 
 
-def offences(package: str, forbidden: tuple[str, ...]) -> list[str]:
+def offences(package: str, forbidden: tuple[str, ...], root: Path = SOURCE) -> list[str]:
     """Every import from `package` that crosses a boundary it may not.
 
     One package against one set of forbidden prefixes, so a new boundary is a
     constant and a call rather than a new walker.
     """
-    directory = SOURCE / "tower_rl" / package
+    directory = root / "tower_rl" / package
     modules = sorted(directory.rglob("*.py"))
     assert modules, f"the {package} package must exist to be checked"
 
     found: list[str] = []
     own = f"tower_rl.{package}"
     for path in modules:
-        for name in imported_modules(path):
+        for name in imported_modules(path, root):
             if name == own or name.startswith(f"{own}."):
                 continue
-            offence = f"{path.relative_to(SOURCE)} imports {name}"
+            offence = f"{path.relative_to(root)} imports {name}"
             if name.startswith(forbidden) or name.split(".")[0] in SCRIPT_MODULES:
                 found.append(offence)
     return found
@@ -93,16 +106,16 @@ def test_the_environment_package_is_the_root_and_imports_nothing_above_it() -> N
     assert offences("environment", FORBIDDEN_TO_ENVIRONMENT) == []
 
 
-def test_no_use_case_reads_back_from_what_observes_it() -> None:
-    assert offences("application", FORBIDDEN_TO_APPLICATION) == []
-    assert offences("learning", FORBIDDEN_TO_APPLICATION) == []
+def test_learning_reads_back_from_nothing_that_observes_or_drives_it() -> None:
+    """Everything about learning lives here, and it knows only the environment."""
+    assert offences("learning", FORBIDDEN_TO_LEARNING) == []
 
 
 def test_the_experiment_package_reaches_for_no_adapter_and_no_script() -> None:
     assert offences("experiment", FORBIDDEN_TO_EXPERIMENT) == []
 
 
-def test_the_walker_sees_every_spelling_an_import_can_take() -> None:
+def test_the_walker_sees_every_spelling_an_import_can_take(tmp_path: Path) -> None:
     """The rules are only as good as what the walker can see.
 
     `from tower_rl import doctor` and a relative import that climbs out of its
@@ -115,12 +128,13 @@ def test_the_walker_sees_every_spelling_an_import_can_take() -> None:
         "from ..doctor import find\n"
         "from . import run_state\n"
     )
-    path = SOURCE / "tower_rl" / "environment" / "_walker_probe.py"
-    try:
-        path.write_text(source)
-        names = imported_modules(path)
-    finally:
-        path.unlink()
+    # Under `tmp_path`, never under `src`: the probe is resolved against the
+    # root it is written to, so the real package is left alone.
+    directory = tmp_path / "tower_rl" / "environment"
+    directory.mkdir(parents=True)
+    path = directory / "_walker_probe.py"
+    path.write_text(source)
+    names = imported_modules(path, tmp_path)
 
     assert "tower_rl.infrastructure.adb" in names
     assert "tower_rl.experiment.metrics" in names

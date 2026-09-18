@@ -27,13 +27,11 @@ from __future__ import annotations
 import statistics
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 
-from tower_rl.application.actor import Actor, ActorConfig, EpisodeResult
-from tower_rl.application.evaluator import EvaluationReport
-from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.environment.decision_time import (
     LEARNER_STEP,
     DecisionTimeBreakdown,
@@ -42,6 +40,7 @@ from tower_rl.environment.decision_time import (
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
 from tower_rl.environment.run_port import RunPortError
+from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.backbone import (
     Backbone,
     LearnMetrics,
@@ -49,12 +48,14 @@ from tower_rl.learning.backbone import (
     acting_copy,
     collate,
 )
+from tower_rl.learning.evaluator import EvaluationReport
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 
 #: The device's own rejection reason for a stale or duplicate command, carried
 #: into an episode's `termination_detail` free text exactly as it comes off the
 #: bridge. `scripts/run_actors.py` names the identical literal
 #: (`STALE_OR_DUPLICATE`) for its own report; it is not imported from there
-#: because the application layer does not depend on a script.
+#: because the learning package does not depend on a script.
 STALE_OR_DUPLICATE = "stale_or_duplicate"
 
 
@@ -454,6 +455,12 @@ class TrainingProgressReport:
     recent_value_fits: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
+    #: The exploration rate the run last acted at and the importance-sampling
+    #: exponent it last sampled at. Published here by the run that draws them
+    #: from its schedules, so a checkpoint or a report carries the value the run
+    #: actually used rather than re-evaluating a learning schedule of its own.
+    epsilon: float = 0.0
+    importance_beta: float = 0.0
     #: Episodes the port could not produce at all - a boundary that would not
     #: settle, an instance that would not start. They are counted in `episodes`
     #: like any other attempt, but they leave no summary behind, so the two
@@ -513,6 +520,24 @@ class TrainingProgressReport:
     def episodes_of(self, actor_id: str) -> list[CollectedEpisode]:
         """The episodes one actor collected, in the order it completed them."""
         return [episode for episode in self.collected if episode.actor_id == actor_id]
+
+
+@contextmanager
+def measured_apart(profile: DecisionTimeProfile) -> Iterator[None]:
+    """Run something on an actor's thread without charging it to that actor.
+
+    The hooks an episode owes - periodic evaluation, checkpointing, reporting -
+    run on whichever actor's thread finished the episode, but they are
+    measurement rather than collection. The collecting block is closed around
+    them and reopened after, so the total the buckets decompose is collection
+    alone and the residual keeps meaning "Python time this actor could not
+    account for".
+    """
+    profile.close_block()
+    try:
+        yield
+    finally:
+        profile.open_block()
 
 
 @dataclass
@@ -575,6 +600,8 @@ class TrainingRun:
             # name would report as one instance and hide a dead one.
             raise ValueError("every actor of a fleet needs an id of its own")
         self.learner = Learner(self.backbone)
+        self.report.epsilon = self.config.epsilon(self.report.decisions)
+        self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}
         for index, actor in enumerate(self.actors):
             actor_id = actor.config.actor_id
@@ -627,6 +654,7 @@ class TrainingRun:
         ]
         if not collecting:
             raise RunPortError("every actor has withdrawn; nothing is left collecting")
+        self._refuse_evaluation_during_collection(len(collecting))
 
         started = time.monotonic()
         with ThreadPoolExecutor(max_workers=len(collecting)) as pool:
@@ -651,6 +679,28 @@ class TrainingRun:
             # is what the failure limit exists to end the run on.
             raise withdrawals[-1]
         return report
+
+    def _refuse_evaluation_during_collection(self, collecting: int) -> None:
+        """Refuse a periodic evaluation that would share an instance with an actor.
+
+        Evaluation borrows an actor's environment and plays whole episodes on
+        it. With one actor that is safe: the hook runs on that actor's own
+        thread, between its episodes. With a fleet, every other actor is still
+        collecting, and the borrowed environment would be driven from two
+        threads at once - which the port cannot detect and which corrupts both
+        the evaluation and the episode it interleaved with. Checked here, before
+        a single thread is started, rather than trusted to whatever composed the
+        run.
+        """
+        if collecting < 2 or self.evaluate is None:
+            return
+        if not self.config.evaluate_every_episodes:
+            return
+        raise ValueError(
+            "periodic evaluation borrows an instance and cannot run while a fleet "
+            f"of {collecting} actors is collecting; leave evaluate_every_episodes "
+            "at 0 for a fleet, or evaluate after the budget is spent"
+        )
 
     def _collect(self, actor: Actor, target: int) -> None:
         """One actor's thread: collect episodes, and learn from what it collected.
@@ -689,6 +739,7 @@ class TrainingRun:
                 if self.report.decisions >= target:
                     return
                 epsilon = self.config.epsilon(self.report.decisions)
+                self.report.epsilon = epsilon
             # Refreshed between episodes and never inside one: the copy's
             # parameters hold still for a whole episode, and the history window
             # the actor carries through that episode was produced by exactly the
@@ -722,7 +773,7 @@ class TrainingRun:
                         if self.on_withdrawal is not None:
                             self.on_withdrawal(progress)
                     else:
-                        self._after_episode()
+                        self._after_episode(profile)
                 if withdrawn:
                     raise
                 continue
@@ -733,7 +784,7 @@ class TrainingRun:
                 # Published before the hooks, so a hook reading the fleet's
                 # decomposition sees this episode's learning in it.
                 progress.decision_time = profile.snapshot()
-                self._after_episode()
+                self._after_episode(profile)
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:
         """Count an episode the port could not deliver, against run and actor."""
@@ -771,11 +822,18 @@ class TrainingRun:
         else:
             progress.invalid_episodes += 1
 
-    def _after_episode(self) -> None:
-        """The hooks one episode owes, on the thread that collected it."""
-        self._periodic(self.report)
-        if self.on_episode is not None:
-            self.on_episode(self.report)
+    def _after_episode(self, profile: DecisionTimeProfile) -> None:
+        """The hooks one episode owes, on the thread that collected it.
+
+        Charged to nobody: see `measured_apart`. A periodic evaluation plays
+        whole episodes, and left inside the collecting span its wall time would
+        land in this actor's residual and read as contention that never
+        happened.
+        """
+        with measured_apart(profile):
+            self._periodic(self.report)
+            if self.on_episode is not None:
+                self.on_episode(self.report)
 
     def _learn(self, decisions: int) -> None:
         """Take the gradient steps these decisions earned.
@@ -839,9 +897,11 @@ class TrainingRun:
         # update together: an actor adding to a full buffer in between would
         # evict a sequence and shift every index this batch was sampled at,
         # which replay refuses outright rather than applying to the wrong one.
+        beta = self.config.beta(decisions)
+        self.report.importance_beta = beta
         with self.replay.lock:
             indices, sequences, weights = self.replay.sample(
-                self.config.batch_size, beta=self.config.beta(decisions)
+                self.config.batch_size, beta=beta
             )
             # Built where the parameters are: a CPU batch handed to a CUDA model
             # fails on the first optimisation step, which is the worst place to

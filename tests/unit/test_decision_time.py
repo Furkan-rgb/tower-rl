@@ -19,13 +19,6 @@ from typing import Any
 import pytest
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.application.actor import Actor, ActorConfig
-from tower_rl.application.evaluator import EvaluationReport, evaluate
-from tower_rl.application.replay import PrioritizedSequenceReplay
-from tower_rl.application.training import (
-    TrainingConfig,
-    TrainingRun,
-)
 from tower_rl.environment.decision_time import (
     BLOCKED,
     BRIDGE_ROUND_TRIP,
@@ -41,10 +34,17 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.metrics import pooled
+from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.evaluator import EvaluationReport, evaluate
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import (
     StackedDqnBackbone,
     StackedDqnConfig,
+)
+from tower_rl.learning.training import (
+    TrainingConfig,
+    TrainingRun,
 )
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
@@ -286,8 +286,12 @@ def test_evaluation_is_not_charged_to_the_actor_whose_instance_it_borrows() -> N
     training.run()
     collected = actor.profile.snapshot()
     # The pre-registered final evaluation: taken after the budget is spent, with
-    # no block of collection open for it to be charged to.
+    # no block of collection open for it to be charged to. Timed, because it is
+    # the yardstick the residual below is held against: one evaluation of this
+    # size is what a periodic evaluation would have cost the actor's account.
+    started = time.perf_counter()
     evaluate_now()
+    one_evaluation = time.perf_counter() - started
     after = actor.profile.snapshot()
 
     assert evaluations > 1, "the run evaluated periodically and once at the end"
@@ -304,3 +308,15 @@ def test_evaluation_is_not_charged_to_the_actor_whose_instance_it_borrows() -> N
     assert after.decisions == training.report.actors[actor.config.actor_id].decisions
     assert abs(after.accounting_error_seconds) < TOLERANCE_SECONDS
     assert after.buckets[RESIDUAL].wall_seconds >= -TOLERANCE_SECONDS
+    # Not merely non-negative: the periodic evaluations ran on this actor's own
+    # thread, and if their wall time were still inside the collecting span it
+    # would be here, in the one bucket nothing else claims. Several of them ran,
+    # so a residual below the cost of a single one cannot be hiding any.
+    residual = after.buckets[RESIDUAL].wall_seconds
+    assert evaluations > 2, "several evaluations, so the yardstick is conservative"
+    assert residual < one_evaluation, (
+        f"residual {residual:.3f}s is at least one evaluation ({one_evaluation:.3f}s): "
+        "evaluation time is being charged to the actor that lent its instance"
+    )
+    # And small against what the actor actually did spend collecting.
+    assert residual < 0.25 * after.elapsed_seconds

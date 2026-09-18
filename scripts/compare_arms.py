@@ -30,8 +30,6 @@ from run_episodes import (  # noqa: E402
     compatibility,
 )
 
-from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.evaluator import WaveDistribution, episode_record  # noqa: E402
 from tower_rl.environment.episode import EpisodeSummary  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
@@ -42,6 +40,8 @@ from tower_rl.experiment.comparison import (  # noqa: E402
 )
 from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
 from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
+from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
+from tower_rl.learning.evaluator import WaveDistribution, episode_record  # noqa: E402
 
 
 def named_policies(requested: list[str]) -> list[str]:

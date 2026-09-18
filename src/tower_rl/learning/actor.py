@@ -13,13 +13,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from tower_rl.application.policies import Policy
-from tower_rl.application.replay import (
-    PrioritizedSequenceReplay,
-    ReplaySequence,
-    ReplayStep,
-    SequenceMetadata,
-)
 from tower_rl.environment.decision_time import (
     OBSERVATION_DECODE,
     POLICY_FORWARD,
@@ -30,6 +23,13 @@ from tower_rl.environment.features import StateFeatures, encode_state
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION, WAIT, action_at, action_index
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
+from tower_rl.learning.policies import Policy
+from tower_rl.learning.replay import (
+    PrioritizedSequenceReplay,
+    ReplaySequence,
+    ReplayStep,
+    SequenceMetadata,
+)
 
 #: `WAIT` is index 0 of `run-action-v1`, asked rather than assumed.
 WAIT_ACTION_INDEX = action_index(WAIT)

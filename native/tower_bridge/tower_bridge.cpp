@@ -91,7 +91,7 @@ constexpr useconds_t kPauseSettleMicros = 500000;
 constexpr int32_t kPauseSettleFrames = 2;
 // The width Python maps into its action mask, per upgrade family. A slot the
 // game does not report is unavailable here exactly as it is masked there; it is
-// `SLOTS_PER_FAMILY` in `src/tower_rl/domain/run_actions.py` and the two must
+// `SLOTS_PER_FAMILY` in `src/tower_rl/environment/run_actions.py` and the two must
 // agree or the bridge would stop on availability the host cannot act on.
 constexpr size_t kMaskSlotsPerFamily = 20;
 

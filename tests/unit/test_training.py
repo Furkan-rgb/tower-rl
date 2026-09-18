@@ -6,19 +6,6 @@ import pytest
 import torch
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.application.actor import Actor, ActorConfig
-from tower_rl.application.evaluator import EvaluationReport
-from tower_rl.application.replay import PrioritizedSequenceReplay
-from tower_rl.application.training import (
-    STALE_OR_DUPLICATE,
-    CollectedEpisode,
-    TrainingConfig,
-    TrainingRun,
-    action_distribution,
-    collection_windows,
-    episode_budget,
-    episode_health,
-)
 from tower_rl.environment.episode import (
     EpisodeSummary,
     TerminationOutcome,
@@ -31,8 +18,21 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.training import (
+    STALE_OR_DUPLICATE,
+    CollectedEpisode,
+    TrainingConfig,
+    TrainingRun,
+    action_distribution,
+    collection_windows,
+    episode_budget,
+    episode_health,
+)
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
@@ -138,6 +138,35 @@ def test_importance_sampling_correction_anneals_the_other_way() -> None:
     assert config.beta(100) == pytest.approx(1.0)
 
 
+def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> None:
+    """The schedules are the run's, so the values it drew are on its report.
+
+    Whatever records a run - a checkpoint, a curve point - needs the epsilon the
+    fleet actually acted at and the beta the learner actually sampled at. Read
+    from the report, so nothing outside `learning` has to evaluate a schedule of
+    its own and arrive at a value the run never used.
+    """
+    training = _run(
+        budget_decisions=150, epsilon_start=1.0, epsilon_end=0.05, epsilon_anneal_decisions=150
+    )
+
+    # Before a decision is spent: exactly where the schedules start.
+    assert training.report.epsilon == pytest.approx(1.0)
+    assert training.report.importance_beta == pytest.approx(training.config.beta_start)
+
+    report = training.run()
+
+    assert report.optimisation_steps > 0
+    # The value of the last episode it started, which is the last one it acted
+    # at: drawn once per episode, so it lags the schedule by that episode.
+    assert training.config.epsilon(report.decisions) <= report.epsilon < 1.0
+    assert report.epsilon == pytest.approx(
+        training.config.epsilon(report.decisions - report.collected[-1].summary.decisions)
+    )
+    assert training.config.beta_start <= report.importance_beta <= training.config.beta_end
+    assert report.importance_beta > training.config.beta_start
+
+
 def test_no_optimisation_happens_before_the_buffer_is_warm() -> None:
     training = _run(warmup_sequences=10_000, budget_decisions=80)
 
@@ -177,7 +206,7 @@ def test_each_episode_is_reported_as_it_completes() -> None:
 
 
 def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
-    from tower_rl.application.evaluator import EvaluationReport, WaveDistribution
+    from tower_rl.learning.evaluator import EvaluationReport, WaveDistribution
 
     evaluations = 0
 
@@ -228,7 +257,7 @@ def test_periodic_hooks_are_off_when_their_period_is_zero() -> None:
 
 def test_evaluation_does_not_consume_the_decision_budget() -> None:
     """Evaluation is measurement, not experience."""
-    from tower_rl.application.evaluator import EvaluationReport, WaveDistribution
+    from tower_rl.learning.evaluator import EvaluationReport, WaveDistribution
 
     training = _run(budget_decisions=120)
     training.config = TrainingConfig(

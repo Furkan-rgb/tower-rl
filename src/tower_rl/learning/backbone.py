@@ -15,8 +15,8 @@ from typing import Any, Protocol
 import torch
 from torch import Tensor, nn
 
-from tower_rl.application.replay import ReplaySequence
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, StateFeatures
+from tower_rl.learning.replay import ReplaySequence
 
 
 @dataclass(frozen=True)

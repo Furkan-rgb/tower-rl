@@ -7,6 +7,233 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E034 — Stray background shells self-match their own `pgrep`, not each other's processes
+
+**Date:** 2026-09-18
+**Status:** NEGATIVE result, corrects a prior contamination hypothesis
+**Purpose:** Investigate three Claude Code background shells reported as hung
+for roughly 16–18 hours during the scaling work below, and determine whether
+they had contaminated any measurement.
+
+### Root cause
+
+Three waiter shells were each blocked in a `until <condition>; do sleep …; done`
+loop whose condition could never become true, because it used `pgrep -f
+"<pattern>"` to detect completion and `pgrep -f` matches against the full
+command line — including the querying shell's own `pgrep -f "<pattern>"`
+invocation. The pattern is therefore always "found" and the loop never exits.
+One waited on `! pgrep -f "pytest tests/unit/test_train_entry_point"` (the
+pytest it was waiting for had finished the day before); the other two waited
+on file contents (`-s file`, `grep -qE "passed|failed|error" file`) that had
+stopped changing hours earlier and never satisfied. All three were confirmed
+stuck (elapsed 16:16:30–18:02:52) and were killed by hand; their `sleep`
+children were reaped cleanly with TERM, no orphaned sleeps remained.
+
+### DECISION-relevant finding: no contamination occurred
+
+**This is a negative result, correcting a prior hypothesis that an orphaned
+process was stealing host CPU during the actor-scaling runs below.** Combined
+CPU time consumed by all three shells over their ~16–18 hours of wall time was
+**~28 seconds**. They were sleeping in the loop, not spinning, so they did not
+compete for CPU, GPU, or memory with any of the measurements in this stage. No
+`pytest`, `torch`, or `multiprocessing/spawn_main` process was left running
+anywhere on the host.
+
+The same self-match class of bug also inflates naive process counts taken
+during this stage: `pgrep -c -f 'qemu-system-x86_64-headless'` reported 8
+qemu instances when only 7 were actually running (the querying shell's own
+command line matched the pattern), and `pgrep -c -f 'adb .*fork-server'`
+similarly reported 2 adb servers when there was exactly 1. Authoritative
+process counting in this stage used `/proc/*/exe` rather than `pgrep -f`.
+
+Source: session scratchpad `teardown-stray-250k.md` (addendum, "long-lived
+process sweep and stray-shell kill").
+
+## M1B-E033 — `--frame-game-ms 150` at the shrunk render target: underpowered, not evidence either way
+
+**Date:** 2026-09-18
+**Status:** Inconclusive by design (n=5); not a fidelity decision
+**Purpose:** Check whether 150 ms per frame remains faithful to the game at
+the 360×640 render target introduced in `M1B-E030`, as a candidate throughput
+lever beyond the 100 ms chosen in `M1B-E017`/prior entries.
+
+One instance, scripted `CheapestFirstPolicy`, 5 episodes at 100 ms then 5 at
+150 ms, same session, both at 360×640. **This is the only test 150 ms has ever
+received, and it was 5 episodes on one instance — this entry does not claim
+equivalence and does not claim rejection.**
+
+| arm | valid | mean wave | sd | dec/wave | round/budgeted | cut short | speedup | dec/h |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 100 ms | 5/5 | 5.80 | 2.95 | 21.59 | 1.01104 | 0 | 4.667 | 10,942 |
+| 150 ms | 5/5 | 6.60 | 1.52 | 20.46 | 0.98745 | 0 | 6.307 | 13,879 |
+
+The wave difference (+0.80) is not significant at n=5 (se of the difference
+~1.49, t = 0.54). What moved is the game-time accounting: round/budgeted drops
+from 1.01104 at 100 ms to 0.98745 at 150 ms, i.e. the game credits 2.3% *less*
+simulated time per requested millisecond than budgeted — the opposite
+direction from `GAME_TIME_INFLATED`, and a value the one-sided inflation guard
+(threshold 1.25) cannot see at all since it never crosses 1. This ratio is the
+same phenomenon later formalised as `GAME_TIME_DEFLATED` /
+`MIN_ROUND_CLOCK_RATIO` = 0.99 at commit `894c36d`.
+
+Power: at n=5 per arm with per-episode sd 1.5–3.0, the detectable difference
+at 80% power is roughly 2.9 waves. `M1B-E018` (in this document) detected 250
+ms at +2.12 waves with n=8. **This arm could not have detected an effect the
+size of the one that got 250 ms rejected.** 150 ms remains an open, untested
+throughput lever, not a validated one.
+
+Source: session scratchpad `X812-fid-150.json`, `X812-fid-100.json`,
+`X812-fidelity.py`, `X812-SCALING-DETAIL.md`.
+
+## M1B-E032 — `advances_cut_short` rises with actor count: open, not resolved
+
+**Date:** 2026-09-18
+**Status:** OPEN — flagged for investigation, not a resolved benign finding
+**Purpose:** Record that `advances_cut_short`, zero in every entry recorded in
+this document through `M1B-E028`, is no longer zero once actor count climbs
+past four.
+
+| run | episodes | `advances_cut_short` |
+| --- | --- | --- |
+| 4 actors, 1080×1920 (100k reference) | 731 | 1 |
+| 7 actors, 360×640 | 104 | 3 |
+| 8 actors, 1080×1920 | 120 | 12 |
+
+An `advances_cut_short` event means an advance hit its frame budget rather
+than the episode's own stopping condition — it is not a wrong simulation, and
+every other health counter (`BRIDGE_EVENT_DIVERGENCE`, `stale_or_duplicate`,
+`GAME_TIME_INFLATED`, `episodes_not_started_fresh`) stayed at 0 across all
+three runs, with pooled round/budgeted ratios 1.00634–1.00867 and worst-case
+ratios 1.01105–1.01401, indistinguishable from the single- and four-actor
+baselines. But the count is not flat, and its cause relative to actor count is
+not established by this evidence — treat it as an open fidelity question
+under investigation, not as a settled benign artifact.
+
+Source: session scratchpad `X812-SCALING-DETAIL.md` ("Environment health"
+table).
+
+## M1B-E031 — Per-actor throughput decays with actor count; cause not separated
+
+**Date:** 2026-09-18
+**Status:** OPEN — two candidate causes not distinguished by this evidence
+**Purpose:** Explain why per-actor decisions/hour falls as actor count rises
+even though per-emulator CPU stays flat and no host resource is near a limit
+(see `M1B-E029`).
+
+Per-actor decisions/hour: 9,498 at N=4 (1080×1920) → 8,904 at N=7 (360×640) →
+8,479 at N=8 (1080×1920), while per-emulator CPU stays flat at ~96–97% median
+across all three counts. A single instance running the same scripted policy
+with **no learner attached** reaches 10,942 dec/h at 360×640 — higher than any
+fleet actor's per-actor figure — so the emulators themselves are not the
+limiter; the marginal loss with N sits in the host-side Python process.
+
+Two candidates are named but **not separated by this evidence**:
+
+1. The former `SharedPolicy` acting lock, under which every actor's forward
+   pass and every learner gradient step serialised through one lock; gradient
+   steps scale with aggregate decisions at 0.25/decision, so the learner's
+   share of lock time roughly doubles from N=4 to N=8. This lock was removed
+   at commit `81d883a` (every actor given its own copy of the network),
+   **without a controlled before/after measurement** — its benefit, if any,
+   is unquantified by this document.
+2. GIL contention during host-side observation decoding, independent of any
+   lock.
+
+Both are host-side serialisation and would look identical in the CPU, load,
+and GPU counters gathered here. What this stage establishes is only that the
+bottleneck is host-side, not device-side.
+
+Source: session scratchpad `X812-SCALING-DETAIL.md` ("What binds: host-side,
+not the emulators").
+
+## M1B-E030 — The render-target shrink does not save VRAM; it buys throughput
+
+**Date:** 2026-09-18
+**Status:** NEGATIVE result on the stated goal, POSITIVE on a different axis
+**Purpose:** Shrink the emulator render target to raise the actor-count VRAM
+ceiling ahead of the scaling runs in `M1B-E029`.
+
+The `tower_rl_instrumented_api36` clone AVD's `hw.lcd.width` /
+`hw.lcd.height` / `hw.lcd.density` were changed from 1080 / 1920 / 420 to
+360 / 640 / 140. The logical density-independent size is unchanged at
+411×731 dp, so the game's own UI layout is unaffected. Only the clone AVD was
+touched; the canonical `tower_rl_api36_play_x86_64` play AVD was not touched.
+The original config was backed up as `X812-avd-config.ini.orig` in the session
+scratchpad before the change; the change was left in place afterward.
+
+**This did not meaningfully reduce VRAM, which was the reason it was tried.**
+Measured per-instance VRAM fell only ~8%, from 2,421 MiB (1080×1920, two-point
+fit) to 2,234 MiB (360×640, one instance measured directly). Under `-gpu host`
+VRAM is dominated by the game's texture/asset working set, not the
+framebuffer — the 1080×1920×32 framebuffer itself is only ~8 MB, so a 9x
+reduction in pixel count barely moves total VRAM.
+
+Its actual payoff was throughput, measured on a single scripted instance with
+no learner attached: 8,850 → 10,942 decisions/hour (+24%), and per-qemu CPU
+165% → 138.7%. That single-instance throughput figure supersedes the
+1080×1920 100 ms scripted single-actor figure (8,850 dec/h) recorded in
+`M1B-E028` as the current single-instance reference at this profile; the
+`M1B-E028` figure remains an accurate record of its own (1080×1920) condition
+and is not corrected in place.
+
+Source: session scratchpad `X812-SCALING-DETAIL.md` ("Render target change"
+and "Memory and VRAM"), `X812-avd-config.ini.orig`.
+
+## M1B-E029 — Actor-count scaling to eight: the operating point is 7, bound by VRAM
+
+**Date:** 2026-09-18
+**Status:** Commit `f3c177b` (measurement build); render target per `M1B-E030`
+**Purpose:** Find the actor count this workstation can reliably run, and the
+resource that binds it, ahead of longer training runs.
+
+### Measured throughput and bring-up
+
+| N | resolution | per-actor dec/h | aggregate dec/h | bring-up result |
+| --- | --- | --- | --- | --- |
+| 1 (scripted, no learner, 100 ms) | 360×640 | 10,942 | — | n/a |
+| 4 (reference, 100k run) | 1080×1920 | 9,498 | 37,993 | 4/4 up |
+| 7 | 360×640 | 8,904 | 62,327 | 7/7 up |
+| 8 | 1080×1920 | 8,479 | 67,384 | 8/8 up |
+| 8 requested | 360×640 | — | — | **7 came up; the 8th never left `main_unavailable` within its 300 s timeout** |
+
+The 8-at-360×640 bring-up failure is a **measurement**, not an estimate: seven
+instances reached ready in 40–52 s each (total 310 s); the eighth was still
+polling `main_unavailable` when its 300 s timeout expired. Peak VRAM during
+that attempt was 20.3 GiB, 83% of the card's 24,564 MiB.
+
+### What binds: VRAM, not CPU or RAM
+
+VRAM ceiling arithmetic (**inferred, not measured directly** — it is a linear
+extrapolation from the measured 2,234 MiB/instance and measured idle/fixed
+overhead in `M1B-E030`): 80% ceiling of 24,564 MiB = 19,651 MiB; fixed
+overhead ~1,850 MiB (724 MiB idle + ~1,100 MiB learner CUDA context); N =
+(19,651 − 1,850) / 2,234 = **7.97**.
+
+CPU and RAM were **not** binding at any count measured here. CPU: 70% of
+3,200% = 2,240%, and per-emulator CPU under load was measured at ~97%,
+implying headroom to N≈23; total qemu CPU under the 7-actor training load was
+measured at 691.7% of 3,200% available (21.6%). RAM: 70% of 112.7 GiB = 78.9
+GiB against a measured 6.87 GiB RSS per instance, implying headroom to
+N≈11.5.
+
+**DECISION: 7 actors is the reliable operating point.** 8 actors at
+1080×1920 did come up cleanly (21.36 GiB, 87% VRAM) earlier the same session,
+so the ceiling is marginal rather than a hard wall — but 8 actors at 360×640
+lost the eighth actor at bring-up the same day under the same arithmetic
+region, so 7 is treated as reliable and 8 as a count that sometimes loses an
+actor at bring-up.
+
+Host: i9-14900, 24 physical cores / 32 threads, 125 GiB RAM, RTX 4090 24,564
+MiB VRAM.
+
+A defect was also observed here and is recorded, not fixed by this entry: an
+instance that fails bring-up is never added to `started`, so
+`tear_down_fleet` does not tear it down — `emulator-5570` was left running
+with the bridge deployed after the 8-requested run exited 0, and was cleaned
+up by hand.
+
+Source: session scratchpad `X812-SCALING-DETAIL.md`.
+
 ## M1B-E028 — Multi-actor scaling is linear to four actors
 
 **Date:** 2026-09-17

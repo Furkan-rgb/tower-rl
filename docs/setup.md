@@ -209,3 +209,59 @@ adb -s emulator-5554 emu kill
 
 Do not delete the AVD after account setup; its user data may be needed to create
 the later golden recovery baseline and must remain outside Git.
+
+## 9. Watching an agent
+
+`scripts/spectate.py` is the one path that exists for a human rather than for a
+measurement: one clone instance comes up **with a window**, the chosen arm plays
+in it, and a terminal panel beside the window shows what the agent is doing.
+
+```text
+uv run python scripts/spectate.py --policy checkpoint:<path-to-checkpoint.pt>
+```
+
+`--policy` takes the same arms every other runner takes: `scripted`, `random`,
+`wait`, or `checkpoint:<path>`.
+
+The default session is **one episode**: the agent plays a single run from wave 1
+until the tower dies. `--episodes N` plays N, and `--episodes 0` plays until you
+stop it. When the last episode ends the panel holds the final state — the wave
+reached, the termination outcome, the last actions — and waits for a keypress
+before the instance is torn down, so the death is not the moment the window
+disappears.
+
+The panel shows the current episode, wave, cash and health, the last 20 actions
+(each upgrade slot bought, or `wait`), episodes played, the running mean final
+wave, and decisions per minute.
+
+Keys: `q` stops at the next decision; Ctrl-C does the same, and both keep the
+episodes that had already finished. Any key ends the hold at the end, and the
+hold ends by itself after `--hold-seconds` either way, so a session nobody came
+back to still puts its emulator down. Whatever happens, the bridge and the
+emulator are put down through the same teardown path the fleet uses.
+
+`--no-panel` is the log-friendly mode: it prints one line per decision instead
+of drawing a terminal panel, which is what you want when the session is
+unattended, redirected to a file, or read afterwards rather than watched. There
+`--hold-seconds` (default 10) simply waits, since there is no key to press.
+
+**60 Hz is real time.** That is the default and it is the point: one game second
+per wall second, the speed the game is actually played at. The fleet runs at 120
+Hz to make an advance cheap in wall time, which buys throughput and nothing a
+human wants; `--frame-rate-hz 120` is accepted if you want to watch it at that
+rate.
+
+**Spectating takes the host to itself.** The script refuses to start while any
+emulator is running — `adb devices` non-empty, or a `qemu-system` process
+present — and says so. A windowed real-time session must never share a host with
+a training run or a measurement, whose throughput is what the host is for.
+
+`--record session.mp4` records the guest screen with `adb shell screenrecord`
+and pulls the file back at the end. Android's `screenrecord` stops itself after
+**three minutes**, which no flag lifts, so a longer session is recorded as
+consecutive numbered chunks (`session-000.mp4`, `session-001.mp4`, …) with about
+a second lost at each seam. The recording covers through the death and the hold.
+
+`--output-directory` writes the episodes the session played as the same
+per-episode records the fleet writes. Omit it and nothing is kept: the panel is
+a view, not a measurement.

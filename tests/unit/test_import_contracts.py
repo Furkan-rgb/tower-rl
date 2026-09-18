@@ -71,6 +71,7 @@ SCRIPT_MODULES = (
     "compare_arms",
     "select_checkpoint",
     "report_arms",
+    "spectate",
 )
 
 #: The test files allowed to import each entry point: the ones that test that
@@ -126,6 +127,11 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     "compare_arms": frozenset({"test_script_bridge_directory"}),
     "select_checkpoint": frozenset({"test_evaluation_protocol"}),
     "report_arms": frozenset({"test_evaluation_protocol"}),
+    # The panel's model, the exclusive-device refusal and the episode loop live
+    # in the entry point, because a panel is composition: a view of the decision
+    # stream drawn in a terminal, owning no domain concept of its own. This is
+    # the one file that reads them.
+    "spectate": frozenset({"test_spectate"}),
 }
 
 def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:

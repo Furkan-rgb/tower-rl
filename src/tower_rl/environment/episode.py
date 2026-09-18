@@ -53,6 +53,42 @@ class DecisionEvent(StrEnum):
     RUN_ENDED = "run_ended"
 
 
+@dataclass(frozen=True)
+class DecisionView:
+    """One decision as a human watching the run sees it.
+
+    The decision stream is the only seam a spectator needs: a view is emitted
+    once per `InstrumentedRunEnvironment.step`, carries what that decision did,
+    and is thrown away by everything that does not want it. It is deliberately
+    *not* a `RunTransition` - a panel that held transitions would hold two
+    whole observations per decision and would have to know `observation-v1` to
+    read them - and deliberately not named `DecisionEvent`, which above is the
+    cadence condition the environment stopped advancing on.
+
+    Nothing here is a second source of truth. The durable record of an episode
+    is still `EpisodeSummary`; this is a live view of the same decisions.
+    """
+
+    #: Episodes begun on this environment, counting from one.
+    episode: int
+    #: Decisions taken in this episode, counting from one.
+    decision: int
+    #: The state the decision produced, or the state it was taken in when the
+    #: port produced none - which is itself a failing episode about to end.
+    wave: int
+    #: Earned cash, back out of the observation's log scale. `observation-v1`
+    #: carries `cash_log`, and a human reads cash.
+    cash: float
+    health_fraction: float
+    #: `wait`, or the upgrade slot bought, as `attack:3`.
+    action: str
+    reward: float
+    #: Whether this decision ended the episode, however it ended.
+    done: bool
+    #: Why it ended, when it did.
+    termination: TerminationOutcome | None
+
+
 def wave_progress_reward(state: RunState, next_state: RunState | None) -> float:
     """V1 reward: genuine wave progress only.
 

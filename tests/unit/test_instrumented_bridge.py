@@ -1089,9 +1089,6 @@ def test_the_final_evaluation_survives_a_client_left_idle_by_the_rest_of_the_fle
         def initial_state(self) -> None:
             return None
 
-        def stored_recurrent_state(self, state: None) -> None:
-            return None
-
         def act(
             self, features: object, state: None, *, epsilon: float
         ) -> tuple[int, None]:

@@ -690,7 +690,7 @@ class TrainingRun:
                     return
                 epsilon = self.config.epsilon(self.report.decisions)
             # Refreshed between episodes and never inside one: the copy's
-            # parameters hold still for a whole episode, and the recurrent state
+            # parameters hold still for a whole episode, and the history window
             # the actor carries through that episode was produced by exactly the
             # parameters it is still acting from. `_lock` is released first, so
             # the only order locks are ever taken in is progress, then replay,

@@ -44,12 +44,12 @@ from tower_rl.learning.backbone import (  # noqa: E402
     LearnMetrics,
     SequenceBatch,
     acting_copy,
+    parameters_are_equal,
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.recurrent_q import (  # noqa: E402
-    RecurrentQBackbone,
-    RecurrentQConfig,
-    parameters_are_equal,
+from tower_rl.learning.stacked_dqn import (  # noqa: E402
+    StackedDqnBackbone,
+    StackedDqnConfig,
 )
 from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
@@ -133,8 +133,8 @@ def fleet(
     **overrides: Any,
 ) -> TrainingRun:
     """One arm collecting on these instances, one actor each."""
-    learner = backbone or RecurrentQBackbone(
-        config=RecurrentQConfig(seed=0), network_config=SMALL
+    learner = backbone or StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
     )
     replay = PrioritizedSequenceReplay(capacity=256, seed=0)
     actors = [
@@ -142,7 +142,7 @@ def fleet(
             environment=item,
             policy=learner,
             config=ActorConfig(
-                actor_id=f"fake-{index}:recurrent-q",
+                actor_id=f"fake-{index}:stacked-dqn",
                 sequence_length=6,
                 burn_in=1,
                 stride=3,
@@ -207,11 +207,11 @@ def test_a_bridge_that_stops_answering_withdraws_its_actor_and_not_the_run() -> 
 
     report = training.run()
 
-    dead = report.actors["fake-1:recurrent-q"]
+    dead = report.actors["fake-1:stacked-dqn"]
     assert dead.withdrawn is not None and "liveness expired" in dead.withdrawn
     assert dead.failed_episodes == 3 and dead.decisions == 0
     # Named as it happened, with the instance it names and why it left.
-    assert withdrawn == [("fake-1:recurrent-q", dead.withdrawn)]
+    assert withdrawn == [("fake-1:stacked-dqn", dead.withdrawn)]
     alive = [progress for progress in report.actors.values() if progress.withdrawn is None]
     assert len(alive) == 2 and all(progress.valid_episodes > 0 for progress in alive)
     assert report.decisions >= 200
@@ -311,7 +311,7 @@ def test_one_dead_instance_costs_an_actor_and_not_the_run() -> None:
 
     report = training.run()
 
-    dead = report.actors["fake-1:recurrent-q"]
+    dead = report.actors["fake-1:stacked-dqn"]
     assert dead.withdrawn is not None and dead.failed_episodes == 3
     assert dead.decisions == 0 and dead.valid_episodes == 0
     assert report.failed_episodes == 3 and len(report.episode_failures) == 3
@@ -330,7 +330,7 @@ def test_a_withdrawn_actor_is_not_asked_again_in_a_later_block() -> None:
     )
 
     training.advance(100)
-    dead = training.report.actors["fake-1:recurrent-q"]
+    dead = training.report.actors["fake-1:stacked-dqn"]
     failures_after_first_block = dead.failed_episodes
 
     training.advance(100)
@@ -389,7 +389,7 @@ class WatchedBackbone:
     instance records is exactly what reached the learner itself.
     """
 
-    inner: RecurrentQBackbone
+    inner: StackedDqnBackbone
     #: Breaches of the one rule the learner's lock is still there for.
     torn: list[str] = field(default_factory=list)
     #: Model versions observed by `act`, in order.
@@ -423,9 +423,6 @@ class WatchedBackbone:
     def initial_state(self) -> Any:
         return self.inner.initial_state()
 
-    def stored_recurrent_state(self, state: Any) -> Any:
-        return self.inner.stored_recurrent_state(state)
-
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
         if self.publishing:
             self.torn.append("the learner stepped while its parameters were being read")
@@ -456,7 +453,9 @@ class WatchedBackbone:
 def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, WatchedBackbone]:
     """A fleet whose learner and acting copies both keep a record of themselves."""
     watched = WatchedBackbone(
-        RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+        StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
     )
     training = fleet([environment() for _ in range(instances)], backbone=watched, **overrides)
     return training, watched
@@ -493,7 +492,9 @@ def test_an_actor_does_not_wait_for_the_learner_to_finish_a_step() -> None:
     """
     overlap = Overlap()
     watched = WatchedBackbone(
-        RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+        StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
     )
     updates: list[tuple[float, float]] = []
     inner_learn = watched.learn
@@ -560,7 +561,9 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     is what it would have acted from before.
     """
     watched = WatchedBackbone(
-        RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+        StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
     )
     matched: list[bool] = []
     instance = environment()
@@ -605,7 +608,7 @@ def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
         assert len(within) <= 1, "the parameters moved inside a single episode"
         start = end
     assert len(set(acting.versions)) > 1, "and they did move between episodes"
-    # And no refresh ever landed inside an episode, so the recurrent state the
+    # And no refresh ever landed inside an episode, so the history window the
     # actor carries through one was produced by the parameters it still holds.
     assert acting.publish_positions
     assert set(acting.publish_positions) <= {0, *boundaries}
@@ -624,7 +627,7 @@ def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_episodes() -> 
 
 
 def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alone() -> None:
-    """The recurrent state is the actor's, not the network's, and outlives a refresh."""
+    """The carried history window is the actor's, not the network's, and outlives a refresh."""
     training, _ = watched_fleet(1, budget_decisions=200)
     acting = copies(training)[0]
     instance = training.actors[0].environment
@@ -633,24 +636,26 @@ def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alon
 
     features = encode_state(instance.reset())
     _, carried = acting.act(features, acting.initial_state(), epsilon=0.0)
-    before = tuple(part.clone() for part in carried)
+    before = carried.clone()
 
     training.learner.publish_to(acting)
 
-    assert all(
-        torch.equal(part, kept) for part, kept in zip(carried, before, strict=True)
-    ), "a refresh of the parameters disturbed the state the episode was carrying"
+    assert torch.equal(carried, before), (
+        "a refresh of the parameters disturbed the state the episode was carrying"
+    )
     action, resumed = acting.act(features, carried, epsilon=0.0)
     assert features.mask[action]
-    assert all(part.shape == kept.shape for part, kept in zip(resumed, before, strict=True))
+    assert resumed.shape == before.shape
 
 
 def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
     """Copies of one backbone would otherwise share the stream they were copied from."""
-    learner = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    learner = StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
     first = acting_copy(learner)
-    second = acting_copy(learner, exploration_seed="fake-1:recurrent-q")
-    third = acting_copy(learner, exploration_seed="fake-2:recurrent-q")
+    second = acting_copy(learner, exploration_seed="fake-1:stacked-dqn")
+    third = acting_copy(learner, exploration_seed="fake-2:stacked-dqn")
 
     draws = [
         [copy._random.random() for _ in range(8)]  # type: ignore[attr-defined]
@@ -664,7 +669,9 @@ def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
 
 
 def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> None:
-    learner = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    learner = StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
 
     acting = acting_copy(learner)
 
@@ -674,7 +681,7 @@ def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> 
     assert not any(parameter.requires_grad for parameter in acting.online.parameters())
     assert not acting.online.training
     with torch.no_grad():
-        learner.online.state_dict()["core.weight_ih_l0"].add_(1.0)
+        learner.online.state_dict()["core.0.weight"].add_(1.0)
     assert not parameters_are_equal(acting.online, learner.online), (
         "the copy moved with the learner, so it shares its storage"
     )

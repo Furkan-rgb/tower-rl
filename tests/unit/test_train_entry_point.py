@@ -124,11 +124,9 @@ ZERO_HEALTH_COUNTERS = {
 ADDITIVE_HEALTH_COUNTERS = ZERO_HEALTH_COUNTERS | {"episodes", "valid_episodes"}
 
 
-def arguments(run_dir: Path, *backbones: str, **overrides: str) -> argparse.Namespace:
+def arguments(run_dir: Path, **overrides: str) -> argparse.Namespace:
     """The real parser, so the entry point's own defaults and checks are used."""
-    argv = []
-    for name in backbones:
-        argv += ["--backbone", name]
+    argv: list[str] = []
     settings = {
         "--budget-decisions": "150",
         "--block-decisions": "50",
@@ -136,8 +134,7 @@ def arguments(run_dir: Path, *backbones: str, **overrides: str) -> argparse.Name
         "--gradient-steps-per-decision": "0.2",
         "--warmup-sequences": "2",
         "--sequence-length": "6",
-        "--burn-in": "3",
-        # Per arm: the stacked backbone needs exactly `history-length - 1`.
+        # Exactly `history-length - 1`, which is what fills the window.
         "--stacked-burn-in": "3",
         "--history-length": "4",
         "--replay-capacity": "64",
@@ -176,7 +173,7 @@ def fleet(count: int = 1, **fake: Any) -> list[train.ActorInstance]:
 
 
 def session(
-    run_dir: Path, *backbones: str, budget: str = "120", actors: int = 1, **fake: Any
+    run_dir: Path, budget: str = "120", actors: int = 1, **fake: Any
 ) -> dict[str, Any]:
     overrides = {"--budget-decisions": budget}
     if actors > 1:
@@ -193,7 +190,7 @@ def session(
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
-            arguments(run_dir, *backbones, **overrides),
+            arguments(run_dir, **overrides),
             fleet(actors, **fake),
             profile_id=PROFILE,
             revision="test",
@@ -201,24 +198,24 @@ def session(
         )
 
 
-#: Long enough that every arm plays more than one episode, which is what closes
+#: Long enough that the arm plays more than one episode, which is what closes
 #: a window of the collection curve.
-INTERLEAVED_BUDGET = "300"
+TRAINING_BUDGET = "300"
 
 
 @pytest.fixture(scope="module")
 def trained(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    """One interleaved session over both backbones, reused by several checks."""
+    """One short session, reused by several checks."""
     run_dir = tmp_path_factory.mktemp("runs")
-    return session(run_dir, "recurrent-q", "stacked-dqn", budget=INTERLEAVED_BUDGET)
+    return session(run_dir, budget=TRAINING_BUDGET)
 
 
-def test_both_backbones_train_under_one_interleaved_budget(trained: dict[str, Any]) -> None:
+def test_the_backbone_trains_under_one_budget(trained: dict[str, Any]) -> None:
     arms = trained["arms"]
 
-    assert [arm["backbone"] for arm in arms] == ["recurrent-q", "stacked-dqn"]
+    assert [arm["backbone"] for arm in arms] == ["stacked-dqn"]
     for arm in arms:
-        assert arm["decisions"] >= int(INTERLEAVED_BUDGET), "every arm spends the budget"
+        assert arm["decisions"] >= int(TRAINING_BUDGET), "the arm spends the budget"
         assert arm["episodes"] > 0
         assert arm["optimisation_steps"] > 0
         assert arm["sequences_accepted"] > 0
@@ -372,9 +369,6 @@ def test_evaluation_runs_without_exploration(tmp_path: Path) -> None:
         def initial_state(self) -> None:
             return None
 
-        def stored_recurrent_state(self, state: None) -> None:
-            return None
-
         def act(
             self, features: StateFeatures, state: None, *, epsilon: float
         ) -> tuple[int, None]:
@@ -395,7 +389,7 @@ def test_evaluation_runs_without_exploration(tmp_path: Path) -> None:
 
 
 def test_an_episode_the_port_refuses_does_not_abort_the_session(tmp_path: Path) -> None:
-    report = session(tmp_path, "recurrent-q", refuse_episodes=frozenset({2, 3}))
+    report = session(tmp_path, refuse_episodes=frozenset({2, 3}))
 
     # Episode ordinals are consumed by evaluation episodes too, so one refusal
     # lands on collection and one on an evaluation. Neither may end the session.
@@ -413,7 +407,7 @@ def test_an_ambiguous_advance_is_classified_and_the_session_continues(
 ) -> None:
     # Ordinal 1 is the first collected episode; evaluation episodes take the
     # ordinals after it.
-    report = session(tmp_path, "recurrent-q", ambiguous_advance_episodes=frozenset({1}))
+    report = session(tmp_path, ambiguous_advance_episodes=frozenset({1}))
 
     arm = report["arms"][0]
     assert arm["failed_episodes"] == 0, "the port answered; the episode did not"
@@ -439,7 +433,6 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     assert defaults.warmup_sequences == 100
     assert defaults.sequence_length == 80
     assert defaults.stacked_burn_in == defaults.history_length - 1 == 7
-    assert defaults.burn_in == 40, "the recurrent arm reconstructs a state, not a window"
     assert defaults.n_step == 10
     assert defaults.discount == 0.99
     assert defaults.learning_rate == 1e-4
@@ -457,12 +450,12 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     assert defaults.parameter_sync_episodes == 1
 
 
-def _arm(run_dir: Path, name: str, **overrides: str) -> Any:
+def _arm(run_dir: Path, **overrides: str) -> Any:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.build_arm(
-            name,
-            arguments(run_dir, name, **overrides),
+            train.BACKBONE,
+            arguments(run_dir, **overrides),
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
             profile_id=PROFILE,
@@ -478,7 +471,6 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
     """A flag that reaches nothing is worse than no flag: it looks like a knob."""
     arm = _arm(
         tmp_path,
-        "stacked-dqn",
         **{
             "--n-step": "3",
             "--discount": "0.9",
@@ -516,26 +508,20 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
     assert resolved["parameter_sync_episodes"] == 4
 
 
-def test_the_two_backbones_burn_in_differently(tmp_path: Path) -> None:
-    """Burn-in means two different things, so one number cannot serve both arms.
-
-    The stacked arm's burn-in only fills its history window; anything past
-    `history_length - 1` throws learnable steps away. The recurrent arm's burn-in
-    reconstructs a stored LSTM state and needs the length it was tuned with.
-    """
-    stacked = _arm(tmp_path / "stacked", "stacked-dqn", **{"--stacked-burn-in": "3"})
-    recurrent = _arm(tmp_path / "recurrent", "recurrent-q", **{"--burn-in": "4"})
+def test_the_burn_in_the_arm_is_built_with_is_the_one_that_fills_the_window(
+    tmp_path: Path,
+) -> None:
+    """Burn-in only fills the history window; anything longer throws steps away."""
+    stacked = _arm(tmp_path / "stacked", **{"--stacked-burn-in": "3"})
 
     assert stacked.training.actors[0].config.burn_in == 3
-    assert recurrent.training.actors[0].config.burn_in == 4
     assert stacked.resolved["burn_in"] == 3
-    assert recurrent.resolved["burn_in"] == 4
 
 
 def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -> None:
     """Checked before the device is touched, not an hour into collection."""
     with pytest.raises(SystemExit, match="cannot fill a window"):
-        arguments(tmp_path, "stacked-dqn", **{"--stacked-burn-in": "2"})
+        arguments(tmp_path, **{"--stacked-burn-in": "2"})
 
 
 def test_the_report_carries_the_collection_curve(trained: dict[str, Any]) -> None:
@@ -601,23 +587,21 @@ def test_the_learner_diagnostics_travel_with_every_point(trained: dict[str, Any]
         assert distribution["decisions"] == arm["decisions"]
 
 
-#: Two fake instances and both backbones, which is the fleet arrangement a
-#: device run takes: the arms still take turns, and each turn uses every actor.
+#: Two fake instances, which is the fleet arrangement a device run takes: every
+#: block of collection uses every actor.
 FLEET_BUDGET = "300"
 
 
 @pytest.fixture(scope="module")
 def fleet_trained(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     run_dir = tmp_path_factory.mktemp("fleet")
-    return session(
-        run_dir, "recurrent-q", "stacked-dqn", budget=FLEET_BUDGET, actors=2
-    )
+    return session(run_dir, budget=FLEET_BUDGET, actors=2)
 
 
-def test_a_fleet_trains_every_backbone_under_one_budget(
+def test_a_fleet_trains_the_backbone_under_one_budget(
     fleet_trained: dict[str, Any],
 ) -> None:
-    """Both arms still work, and each spends its budget across both instances."""
+    """The arm still works, and spends its budget across both instances."""
     assert fleet_trained["actors"] == 2
     assert fleet_trained["actor_serials"] == ["fake-0", "fake-1"]
     assert fleet_trained["bring_up_failures"] == []
@@ -706,7 +690,6 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
         report = train.train_session(
             arguments(
                 tmp_path,
-                "recurrent-q",
                 **{
                     "--budget-decisions": "150",
                     "--actors": "2",
@@ -726,8 +709,8 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
         )
 
     arm = report["arms"][0]
-    dead = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-1:recurrent-q")
-    alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:recurrent-q")
+    dead = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-1:stacked-dqn")
+    alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:stacked-dqn")
     assert dead["withdrawn"] is not None and dead["failed_episodes"] > 0
     assert arm["actors_withdrawn"] == 1
     assert alive["decisions"] == arm["decisions"] >= 150
@@ -737,26 +720,26 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
     announcement = next(
         line for line in capsys.readouterr().out.splitlines() if "withdrawn" in line
     )
-    assert "fake-1:recurrent-q" in announcement and dead["withdrawn"] in announcement
+    assert "fake-1:stacked-dqn" in announcement and dead["withdrawn"] in announcement
 
 
 def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
     """The default, and the configuration the in-flight run is reproducible from."""
     assert train.parse_arguments(["--run-dir", str(tmp_path)]).actors == 1
 
-    report = session(tmp_path, "recurrent-q")
+    report = session(tmp_path)
 
     assert report["actors"] == 1 and report["actor_serials"] == ["fake-0"]
     arm = report["arms"][0]
     assert arm["resolved_config"]["actors"] == 1
-    assert [actor["actor_id"] for actor in arm["actors"]] == ["fake-0:recurrent-q"]
+    assert [actor["actor_id"] for actor in arm["actors"]] == ["fake-0:stacked-dqn"]
     assert arm["actors"][0]["decisions"] == arm["decisions"]
 
 
 def test_a_fleet_refuses_an_instance_named_by_hand(tmp_path: Path) -> None:
     """--serial and --port configure one actor; a fleet is addressed by index."""
     with pytest.raises(SystemExit, match="CloneInstance"):
-        arguments(tmp_path, "recurrent-q", **{"--actors": "2", "--serial": "fake-0"})
+        arguments(tmp_path, **{"--actors": "2", "--serial": "fake-0"})
 
 
 def test_a_fleet_refuses_mid_run_evaluation(tmp_path: Path) -> None:
@@ -764,7 +747,6 @@ def test_a_fleet_refuses_mid_run_evaluation(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="instance to itself"):
         arguments(
             tmp_path,
-            "recurrent-q",
             **{
                 "--actors": "2",
                 "--serial": CloneInstance(index=0).serial,
@@ -775,7 +757,7 @@ def test_a_fleet_refuses_mid_run_evaluation(tmp_path: Path) -> None:
 
 def test_a_run_needs_at_least_one_actor(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="at least one actor"):
-        arguments(tmp_path, "recurrent-q", **{"--actors": "0"})
+        arguments(tmp_path, **{"--actors": "0"})
 
 
 def test_a_fleet_brings_its_instances_up_one_at_a_time(tmp_path: Path) -> None:

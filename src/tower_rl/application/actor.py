@@ -1,9 +1,8 @@
 """The actor: drives one environment with one policy and emits replay sequences.
 
-Sequences are fixed length with a burn-in prefix and a configurable stride, so a
-recurrent learner always receives contiguous history, and each window carries the
-recurrent state the policy held at its first step so the learner burns in from a
-stored state rather than from zeros.  Every episode contributes the step that
+Sequences are fixed length with a burn-in prefix and a configurable stride, so
+the learner always receives contiguous history and warms its stacked window on
+the prefix rather than on zeros.  Every episode contributes the step that
 ended it: the last window is aligned to the end of the episode, and an episode
 shorter than one window is padded rather than dropped.  The actor never
 decides whether a transition is admissible; the environment classifies it and
@@ -13,7 +12,6 @@ replay refuses what is not.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from tower_rl.application.decision_time import (
     OBSERVATION_DECODE,
@@ -98,11 +96,8 @@ class Actor:
     def run_episode(self) -> EpisodeResult:
         """Play one episode to its classified end and emit its sequences."""
         state = self.environment.reset()
-        recurrent = self.policy.initial_state()
+        carried_state = self.policy.initial_state()
         steps: list[ReplayStep] = []
-        #: The recurrent state the policy carried *entering* each stored step,
-        #: so a window can be emitted with the state its first step began from.
-        carried: list[Any] = []
         total_reward = 0.0
         termination = TerminationOutcome.OPERATOR_STOP
 
@@ -113,14 +108,12 @@ class Actor:
                 # No action is available, which means the run is already over.
                 termination = TerminationOutcome.GAME_OVER
                 break
-            entering = self.policy.stored_recurrent_state(recurrent)
             with self.profile.span(POLICY_FORWARD):
-                action_index, recurrent = self.policy.act(
-                    features, recurrent, epsilon=self.config.epsilon
+                action_index, carried_state = self.policy.act(
+                    features, carried_state, epsilon=self.config.epsilon
                 )
             transition = self.environment.step(action_at(action_index))
             total_reward += transition.reward
-            carried.append(entering)
             steps.append(
                 ReplayStep(
                     features=features,
@@ -139,7 +132,7 @@ class Actor:
             termination = TerminationOutcome.MAX_EPISODE_DURATION
 
         summary = self.environment.summarize(termination)
-        offered, accepted = self._emit(steps, carried, summary)
+        offered, accepted = self._emit(steps, summary)
         return EpisodeResult(
             summary,
             offered,
@@ -148,9 +141,7 @@ class Actor:
             wait_decisions=sum(1 for step in steps if step.action_index == WAIT_ACTION_INDEX),
         )
 
-    def _emit(
-        self, steps: list[ReplayStep], carried: list[Any], summary: EpisodeSummary
-    ) -> tuple[int, int]:
+    def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:
         if self.replay is None:
             return 0, 0
         metadata = SequenceMetadata(
@@ -164,28 +155,17 @@ class Actor:
             epsilon=self.config.epsilon,
             game_speed=summary.game_speed,
         )
-        if len(carried) != len(steps):
-            raise ValueError("every stored step needs the state it was entered with")
         offered = accepted = 0
         # One acquisition for the whole episode: several actors write into the
         # one buffer while the learner samples it, and replay leaves that
         # discipline to its callers (see `PrioritizedSequenceReplay.lock`).
         # Uncontended for a single actor, which is the fleet of one.
         with self.profile.acquiring(self.replay.lock):
-            for start, window in self._windows(steps):
+            for _start, window in self._windows(steps):
                 offered += 1
                 # Replay is the authority on admissibility; a window containing a
                 # classified failure is refused there and counted, not dropped here.
-                sequence = ReplaySequence(
-                    metadata,
-                    window,
-                    self.config.burn_in,
-                    # The state the window's first real step was entered with. A
-                    # left-padded window starts at step 0, whose state is the one the
-                    # episode opened from - the initial state - which is exactly what
-                    # its padded prefix stands in for.
-                    recurrent_state=carried[start],
-                )
+                sequence = ReplaySequence(metadata, window, self.config.burn_in)
                 if self.replay.add(sequence):
                     accepted += 1
         return offered, accepted
@@ -193,8 +173,7 @@ class Actor:
     def _windows(self, steps: list[ReplayStep]) -> list[tuple[int, tuple[ReplayStep, ...]]]:
         """Cut one episode into learning windows, terminal step included.
 
-        Each window is returned with the index of the episode step it begins at,
-        which is what selects the recurrent state it is stored with.
+        Each window is returned with the index of the episode step it begins at.
 
         Striding from the start alone emits whole windows only, so the step that
         ends the episode reaches replay only when the episode length happens to

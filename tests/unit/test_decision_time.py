@@ -45,9 +45,9 @@ from tower_rl.application.training import (  # noqa: E402
 )
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.recurrent_q import (  # noqa: E402
-    RecurrentQBackbone,
-    RecurrentQConfig,
+from tower_rl.learning.stacked_dqn import (  # noqa: E402
+    StackedDqnBackbone,
+    StackedDqnConfig,
 )
 
 torch.set_num_threads(1)
@@ -101,18 +101,44 @@ def test_sleeping_and_computing_are_told_apart() -> None:
 
 
 def test_waiting_for_a_lock_is_charged_to_blocked() -> None:
+    """Only the wait is `blocked` - the work done holding the lock is not.
+
+    Charging the body to `blocked` too would read as contention that is really
+    the holder's own work, so the two are separated by making them very
+    different lengths and checking the wait alone lands in the bucket.
+    """
+    wait_seconds, body_seconds = 0.10, 0.30
     held = threading.Lock()
-    held.acquire()
+    taken = threading.Event()
+
+    def hold_it_for_a_known_time() -> None:
+        held.acquire()
+        taken.set()
+        time.sleep(wait_seconds)
+        held.release()
+
+    holder = threading.Thread(target=hold_it_for_a_known_time)
+    holder.start()
+    taken.wait()
+
     profile = DecisionTimeProfile()
-    releaser = threading.Timer(0.05, held.release)
-    releaser.start()
-    with profile.collecting(), profile.acquiring(held):
-        pass
-    releaser.join()
-    breakdown = profile.snapshot()
-    assert breakdown.buckets[BLOCKED].wall_seconds >= 0.04
+    with profile.collecting():
+        with profile.acquiring(held):
+            time.sleep(body_seconds)
+        breakdown = profile.snapshot()
+    holder.join()
+
+    blocked = breakdown.buckets[BLOCKED]
+    assert blocked.count == 1
+    # The wait, and nothing like the body: charging the body here would read as
+    # about 0.4 s rather than about 0.1 s.
+    assert wait_seconds * 0.5 <= blocked.wall_seconds < wait_seconds + body_seconds * 0.5
     # The wait was off the CPU, which is what separates it from busy work.
-    assert breakdown.buckets[BLOCKED].cpu_seconds < 0.02
+    assert blocked.cpu_seconds < 0.02
+    # The body's time is accounted for, just not as contention: it opened no
+    # bucket of its own, so it is the remainder.
+    assert breakdown.elapsed_seconds >= (wait_seconds + body_seconds) * 0.9
+    assert breakdown.residual.wall_seconds >= body_seconds * 0.8
 
 
 def test_two_profiles_do_not_see_each_other() -> None:
@@ -167,7 +193,9 @@ def environment() -> InstrumentedRunEnvironment:
 
 
 def fleet(count: int) -> TrainingRun:
-    learner = RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+    learner = StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
     replay = PrioritizedSequenceReplay(capacity=256, seed=0)
     actors = [
         Actor(

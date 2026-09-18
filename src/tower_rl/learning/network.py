@@ -7,11 +7,8 @@ identity embedding supplies per-slot specificity, and its table is deliberately
 larger than the current roster so a slot that becomes available later occupies an
 unused row instead of forcing a reshape.
 
-Two networks are built from the same encoder and the same dueling heads, and
-differ only in how they carry information across time: `RecurrentPolicyNetwork`
-threads an LSTM state, `StackedPolicyNetwork` concatenates the last `k` run
-scalar vectors.  Sharing everything else is what makes a comparison between them
-a comparison of that one choice.
+`StackedPolicyNetwork` carries information across time by concatenating the last
+`k` run scalar vectors onto the current one.
 """
 
 from __future__ import annotations
@@ -24,7 +21,6 @@ from torch import Tensor, nn
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
 from tower_rl.domain.run_actions import RUN_ACTIONS
 
-RecurrentState = tuple[Tensor, Tensor]
 #: The stacked agent's carried state: the last `history_length - 1` scalar
 #: vectors, shaped `[batch, history_length - 1, scalars]`.
 StackedState = Tensor
@@ -42,7 +38,7 @@ class NetworkConfig:
     identity_capacity: int = 96
     identity_dim: int = 16
     hidden: int = 128
-    #: Width of whatever carries information across time, recurrent or not.
+    #: Width of what carries information across time.
     core_hidden: int = 128
 
     def __post_init__(self) -> None:
@@ -129,37 +125,6 @@ class DuelingHeads(nn.Module):
         expanded = core.unsqueeze(2).expand(batch, time, cfg.row_count, cfg.core_hidden)
         rows_advantage = self.row_advantage(torch.cat((encoded_rows, expanded), dim=-1)).squeeze(-1)
         return _dueling_masked_q(value, torch.cat((wait, rows_advantage), dim=-1), mask)
-
-
-class RecurrentPolicyNetwork(nn.Module):
-    """Dueling recurrent Q-network over a variable-length upgrade roster."""
-
-    def __init__(self, config: NetworkConfig | None = None) -> None:
-        super().__init__()
-        self.config = config or NetworkConfig()
-        self.trunk = TowerTrunk(self.config)
-        self.core = nn.LSTM(self.trunk.output_width, self.config.core_hidden, batch_first=True)
-        self.heads = DuelingHeads(self.config)
-
-    def initial_state(self, batch: int, device: torch.device | None = None) -> RecurrentState:
-        zeros = torch.zeros(1, batch, self.config.core_hidden, device=device)
-        return zeros, zeros.clone()
-
-    def forward(
-        self,
-        scalars: Tensor,
-        rows: Tensor,
-        mask: Tensor,
-        state: RecurrentState | None = None,
-    ) -> tuple[Tensor, RecurrentState]:
-        """Return masked Q-values for `[batch, time, action]` and the next state.
-
-        `rows` is `[batch, time, row_count, row_width]` and `mask` is
-        `[batch, time, action_count]` with index 0 always `WAIT`.
-        """
-        encoded_rows, pooled = self.trunk(scalars, rows)
-        core, next_state = self.core(pooled, state)
-        return self.heads(core, encoded_rows, mask), next_state
 
 
 class StackedPolicyNetwork(nn.Module):

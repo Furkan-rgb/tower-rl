@@ -16,9 +16,6 @@ dependencies = [
 [project.optional-dependencies]
 tracking = ["mlflow>=3,<4"]
 
-[project.scripts]
-tower-rl = "tower_rl.cli:app"
-
 [dependency-groups]
 dev = [
     "mypy>=1.17,<2",
@@ -34,7 +31,7 @@ build-backend = "hatchling.build"
 packages = ["src/tower_rl"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/unit", "tests/contract"]
+testpaths = ["tests/unit"]
 addopts = "-ra"
 
 [tool.ruff]

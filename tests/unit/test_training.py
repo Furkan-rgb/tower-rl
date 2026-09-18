@@ -36,7 +36,7 @@ from tower_rl.domain.episode import (  # noqa: E402
 )
 from tower_rl.domain.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
@@ -48,8 +48,8 @@ def _run(*, device: torch.device | None = None, **overrides: object) -> Training
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
-    backbone = RecurrentQBackbone(
-        config=RecurrentQConfig(seed=0),
+    backbone = StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2),
         network_config=SMALL,
         device=device or torch.device("cpu"),
     )
@@ -190,7 +190,7 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
         nonlocal evaluations
         evaluations += 1
         return EvaluationReport(
-            policy="RecurrentQBackbone",
+            policy="StackedDqnBackbone",
             profile_id="fake-profile-v1",
             model_version=0,
             game_speed=8.0,

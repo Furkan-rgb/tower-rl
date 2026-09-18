@@ -1,6 +1,6 @@
 """Bounded prioritized sequence replay.
 
-Stores sequences rather than isolated transitions, because a recurrent learner
+Stores sequences rather than isolated transitions, because the learner
 needs contiguous history with burn-in.  It holds encoded features and never game
 state, so it knows nothing about The Tower: what it does know is which schema and
 which profile a sequence came from, and it refuses to mix them.
@@ -12,7 +12,6 @@ import random
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
 
 from tower_rl.domain.features import StateFeatures
 from tower_rl.domain.run_actions import RUN_ACTIONS
@@ -76,16 +75,6 @@ class ReplaySequence:
     metadata: SequenceMetadata
     steps: tuple[ReplayStep, ...]
     burn_in: int
-    #: The recurrent state the acting policy carried at this window's *first*
-    #: step, detached and on CPU. R2D2 section 2.3 measures stored state against
-    #: burning in from zeros and finds the stored state materially better, so
-    #: the actor keeps it and the learner burns in from it. `None` for a policy
-    #: that carries no recurrent state, which is the honest answer rather than a
-    #: zero of the wrong shape. Opaque here: replay stores it and never reads
-    #: into it, which is why this module still depends on no tensor library.
-    #: Excluded from equality: two windows are the same experience whatever
-    #: state preceded them, and a tensor has no boolean equality anyway.
-    recurrent_state: Any = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not self.steps:

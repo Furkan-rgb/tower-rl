@@ -42,7 +42,7 @@ def tracked_session(run_dir: Path, tracker: RecordingTracker) -> dict[str, Any]:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
-            arguments(run_dir, "recurrent-q", **{"--budget-decisions": "120"}),
+            arguments(run_dir, **{"--budget-decisions": "120"}),
             fleet(),
             profile_id=PROFILE,
             revision="test-revision",
@@ -79,7 +79,7 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         report = train.train_session(
-            arguments(tmp_path, "recurrent-q", **{"--budget-decisions": "120"}),
+            arguments(tmp_path, **{"--budget-decisions": "120"}),
             fleet(),
             profile_id=PROFILE,
             revision="test",
@@ -106,7 +106,7 @@ def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
     tmp_path: Path,
 ) -> None:
     """A tracked run that cannot be tracked must not start; --no-track can."""
-    tracked = arguments(tmp_path, "recurrent-q")
+    tracked = arguments(tmp_path)
     with pytest.MonkeyPatch.context() as patch:
         patch.setitem(sys.modules, "mlflow", None)
         patch.setitem(sys.modules, "mlflow.tracking", None)
@@ -186,7 +186,7 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
 ) -> None:
     params = recorded.params
 
-    assert params["backbone"] == "recurrent-q"
+    assert params["backbone"] == "stacked-dqn"
     for key in (
         "seed",
         "budget_decisions",
@@ -225,7 +225,7 @@ def test_provenance_travels_with_the_run(recorded: RecordedRun) -> None:
     assert tags["source_revision"] == "test-revision"
     assert tags["bridge_version"] == "bridge-test"
     assert tags["profile_id"] == PROFILE
-    assert tags["backbone"] == "recurrent-q"
+    assert tags["backbone"] == "stacked-dqn"
     assert tags["actors"] == "1"
     assert tags["session"].startswith("session-")
     assert tags["run_id"] == recorded.name
@@ -283,7 +283,7 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     )
 
     run = tracker.start_run(
-        name="recurrent-q-test", params={"seed": 0}, tags={"backbone": "recurrent-q"}
+        name="stacked-dqn-test", params={"seed": 0}, tags={"backbone": "stacked-dqn"}
     )
     run.log_metrics({"eval_mean_final_wave": 6.5}, decisions=120)
     run.log_artifact(artifact, directory="checkpoints/abc")
@@ -292,7 +292,7 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     client = MlflowClient(tracking_uri=uri)
     stored = client.get_run(run.run_id)
     assert stored.data.params["seed"] == "0"
-    assert stored.data.tags["backbone"] == "recurrent-q"
+    assert stored.data.tags["backbone"] == "stacked-dqn"
     assert stored.info.status == "FINISHED"
     history = client.get_metric_history(run.run_id, "eval_mean_final_wave")
     assert [(item.step, item.value) for item in history] == [(120, 6.5)]

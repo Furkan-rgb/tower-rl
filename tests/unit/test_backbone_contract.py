@@ -1,14 +1,11 @@
-"""What every backbone must do identically, whatever algorithm it runs.
+"""What a backbone must do, whatever algorithm it runs.
 
-The benchmark's premise is that several algorithms are addressed through one
-interface, over one environment, one action space and one replay. Anything a
-backbone is free to vary lives inside `learn`; everything asserted here is the
-part that must not vary, or the comparison stops being a comparison.
+Anything a backbone is free to vary lives inside `learn`; everything asserted
+here is the part that must not vary, because the environment, action space,
+replay and evaluation path are shared and must stay shared.
 """
 
 from __future__ import annotations
-
-from collections.abc import Callable
 
 import pytest
 import torch
@@ -18,28 +15,21 @@ from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFe
 from tower_rl.domain.run_actions import RUN_ACTIONS
 from tower_rl.learning.backbone import Backbone, collate
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
 ACTIONS = len(RUN_ACTIONS)
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 BURN_IN = 2
 
-#: Every backbone under comparison. A new one is added here and must pass
-#: unchanged; if it cannot, it is not comparable to the others.
-BACKBONES: dict[str, Callable[[], Backbone]] = {
-    "recurrent-q": lambda: RecurrentQBackbone(
-        config=RecurrentQConfig(seed=0), network_config=SMALL
-    ),
-    "stacked-dqn": lambda: StackedDqnBackbone(
+def new_backbone() -> Backbone:
+    return StackedDqnBackbone(
         config=StackedDqnConfig(seed=0, history_length=BURN_IN + 1), network_config=SMALL
-    ),
-}
+    )
 
 
-@pytest.fixture(params=sorted(BACKBONES), name="backbone")
-def _backbone(request: pytest.FixtureRequest) -> Backbone:
-    return BACKBONES[request.param]()
+@pytest.fixture(name="backbone")
+def _backbone() -> Backbone:
+    return new_backbone()
 
 
 def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> StateFeatures:
@@ -48,12 +38,6 @@ def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> State
         rows=tuple([seed] * (ROW_COUNT * ROW_WIDTH)),
         mask=tuple(index in valid for index in range(ACTIONS)),
     )
-
-
-def _zero_recurrent_state() -> tuple[torch.Tensor, torch.Tensor]:
-    """An explicit zero state, valid across backbones: the stacked arm ignores it."""
-    full = torch.zeros(1, 1, SMALL.core_hidden)
-    return full, full.clone()
 
 
 def _sequence(
@@ -78,7 +62,6 @@ def _sequence(
         ),
         steps,
         BURN_IN,
-        recurrent_state=_zero_recurrent_state(),
     )
 
 
@@ -121,16 +104,14 @@ def test_learning_advances_the_model_version_and_reports_its_errors(
     assert all(len(row) == 8 - BURN_IN for row in metrics.td_errors)
 
 
-def test_padding_is_neither_trained_on_nor_prioritised(
-    backbone: Backbone, request: pytest.FixtureRequest
-) -> None:
+def test_padding_is_neither_trained_on_nor_prioritised(backbone: Backbone) -> None:
     """A short episode is padded to fill a window; the filler must do nothing.
 
     Padded steps carry no experience, so they may not enter the loss and may not
     contribute a TD error - a zero there would drag the mean term of the
     sequence's priority down and make an early death look duller than it is.
     """
-    other = BACKBONES[request.node.callspec.params["backbone"]]()
+    other = new_backbone()
 
     quiet = backbone.learn(collate((_sequence(padding=3),), (1.0,)))
     loud = other.learn(collate((_sequence(padding=3, padded_reward=999.0),), (1.0,)))
@@ -146,9 +127,9 @@ def test_burn_in_never_contributes_to_the_loss(backbone: Backbone) -> None:
     assert len(metrics.td_errors[0]) == 8 - BURN_IN
 
 
-def test_state_round_trips_exactly(backbone: Backbone, request: pytest.FixtureRequest) -> None:
+def test_state_round_trips_exactly(backbone: Backbone) -> None:
     backbone.learn(collate((_sequence(),), (1.0,)))
-    restored = BACKBONES[request.node.callspec.params["backbone"]]()
+    restored = new_backbone()
 
     restored.load_state_dict(backbone.state_dict())
 
@@ -160,5 +141,5 @@ def test_state_round_trips_exactly(backbone: Backbone, request: pytest.FixtureRe
     )
 
 
-def test_every_backbone_states_where_its_parameters_live(backbone: Backbone) -> None:
+def test_the_backbone_states_where_its_parameters_live(backbone: Backbone) -> None:
     assert isinstance(backbone.device, torch.device)

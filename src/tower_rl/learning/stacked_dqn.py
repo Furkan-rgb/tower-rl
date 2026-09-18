@@ -1,16 +1,13 @@
 """The rank-1 candidate from `docs/rl-candidates.md` 3.1.
 
-Masked data-efficient DQN on a stacked history: the same masked dueling double-Q
-learning as the recurrent backbone, over the same replay sequences and the same
-targets, but carrying time in a window of recent run scalars instead of in an
-LSTM state.  That single difference is the hypothesis - section 2.3 of the
-candidate study argues this problem is much closer to fully observed than the
-recurrent skeleton assumes, and this backbone is how that gets tested rather than
-asserted.
+Masked dueling double-Q learning over replay sequences, carrying time in a
+window of recent run scalars rather than in a hidden state: section 2.3 of the
+candidate study argues this problem is much closer to fully observed than
+partially observed, and this is the backbone the project runs on.
 
-Three things depart from the recurrent backbone's operating point, all from the
-Atari 100k literature the study cites: an EMA target rather than a periodic hard
-copy, decoupled weight decay, and a replay ratio the training loop supplies.
+Three things come from the Atari 100k literature the study cites: an EMA target
+rather than a periodic hard copy, decoupled weight decay, and a replay ratio the
+training loop supplies.
 """
 
 from __future__ import annotations
@@ -107,15 +104,6 @@ class StackedDqnBackbone:
 
     def initial_state(self) -> StackedState:
         return self.online.initial_state(1, self.device)
-
-    def stored_recurrent_state(self, state: StackedState) -> None:
-        """Nothing: this backbone has no recurrent state to store.
-
-        Its window is the stored scalars themselves, rebuilt from the burn-in
-        prefix in `learn`, so a carried state in replay would be a field nothing
-        reads.
-        """
-        return None
 
     def act(
         self, features: StateFeatures, state: StackedState | None, *, epsilon: float

@@ -7,6 +7,7 @@ import torch
 
 from tower_rl.domain.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.domain.run_actions import RUN_ACTIONS
+from tower_rl.learning.backbone import parameters_are_equal
 from tower_rl.learning.checkpoint import (
     Checkpoint,
     CheckpointError,
@@ -18,11 +19,7 @@ from tower_rl.learning.checkpoint import (
     write_manifest,
 )
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.recurrent_q import (
-    RecurrentQBackbone,
-    RecurrentQConfig,
-    parameters_are_equal,
-)
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
@@ -30,7 +27,7 @@ SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 def _identity(**overrides: str) -> CheckpointIdentity:
     base = {
         "run_id": "run-1",
-        "backbone": "recurrent-q",
+        "backbone": "stacked-dqn",
         "profile_id": "profile-v1",
         "observation_schema": "observation-v1",
         "action_schema": "run-action-v1",
@@ -41,8 +38,10 @@ def _identity(**overrides: str) -> CheckpointIdentity:
     return CheckpointIdentity(**base)  # type: ignore[arg-type]
 
 
-def _backbone() -> RecurrentQBackbone:
-    return RecurrentQBackbone(config=RecurrentQConfig(seed=0), network_config=SMALL)
+def _backbone() -> StackedDqnBackbone:
+    return StackedDqnBackbone(
+        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+    )
 
 
 def _features() -> StateFeatures:

@@ -1,9 +1,8 @@
 """The interface every candidate algorithm implements.
 
-Several backbones are compared under one protocol, so they must share the same
-environment, observation, action space and evaluation path.  Anything a backbone
-is free to vary lives behind this interface; anything that must be identical
-across the comparison lives outside it.
+A backbone is addressed only through this protocol, so the environment,
+observation, action space and evaluation path stay outside it and a change of
+algorithm cannot quietly change what it is measured against.
 """
 
 from __future__ import annotations
@@ -60,12 +59,6 @@ class SequenceBatch:
     padding: Tensor
     weights: Tensor  # [batch]
     burn_in: int
-    #: Each sequence's stored recurrent state, in the order the batch was
-    #: sampled, exactly as the actor stored it. Empty when the sequences carry
-    #: none, which is every sequence collected by a policy without a recurrent
-    #: state. Left in per-sequence form because how states combine into a batch
-    #: is the recurrent backbone's own business, not collation's.
-    recurrent_states: tuple[Any, ...] = ()
 
     @property
     def batch_size(self) -> int:
@@ -88,20 +81,11 @@ class Backbone(Protocol):
     def act(
         self, features: StateFeatures, state: Any, *, epsilon: float
     ) -> tuple[int, Any]:
-        """Choose one valid action index and return the carried recurrent state."""
+        """Choose one valid action index and return the carried state."""
         ...
 
     def initial_state(self) -> Any:
-        """The recurrent state an episode starts from."""
-        ...
-
-    def stored_recurrent_state(self, state: Any) -> Any:
-        """The carried state as replay must keep it, or `None` to keep nothing.
-
-        See `Policy.stored_recurrent_state`: a backbone that burns in from a
-        stored state stores one, and a backbone that carries no recurrent state
-        stores nothing rather than a state no `learn` would ever read.
-        """
+        """The carried state an episode starts from."""
         ...
 
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
@@ -134,7 +118,7 @@ def acting_copy(backbone: Backbone, *, exploration_seed: int | str | None = None
     trained, and the acting path must build no graph.
 
     `exploration_seed` reseeds the copy's epsilon-greedy stream, if it keeps one
-    in a `random.Random` as both learned backbones do. Left `None` the copy
+    in a `random.Random` as the learned backbone does. Left `None` the copy
     carries on the stream it was copied with, which is what keeps a fleet of one
     drawing exactly the exploration a single actor draws today; a fleet gives
     every actor after the first a seed of its own, or they would all explore in
@@ -145,12 +129,6 @@ def acting_copy(backbone: Backbone, *, exploration_seed: int | str | None = None
         if isinstance(value, nn.Module):
             value.eval()
             value.requires_grad_(False)
-            for module in value.modules():
-                if isinstance(module, nn.RNNBase):
-                    # A copied recurrent core no longer holds its weights in one
-                    # chunk, and cuDNN would then compact them on every single
-                    # forward pass - on the acting path, fifty times a second.
-                    module.flatten_parameters()
     stream = getattr(acting, "_random", None)
     if exploration_seed is not None and isinstance(stream, random.Random):
         stream.seed(exploration_seed)
@@ -194,16 +172,6 @@ def collate(
         dones.append([step.done for step in sequence.steps])
         padding.append([step.padding for step in sequence.steps])
 
-    states = tuple(sequence.recurrent_state for sequence in sequences)
-    if any(state is None for state in states):
-        if any(state is not None for state in states):
-            # Half a batch burning in from zeros and half from stored states is
-            # the silent version of the bug stored state exists to fix.
-            raise ValueError(
-                "a batch cannot mix sequences with and without a stored recurrent state"
-            )
-        states = ()
-
     row_tensor = torch.tensor(rows, dtype=torch.float32, device=device)
     return SequenceBatch(
         scalars=torch.tensor(scalars, dtype=torch.float32, device=device),
@@ -215,5 +183,12 @@ def collate(
         padding=torch.tensor(padding, dtype=torch.bool, device=device),
         weights=torch.tensor(weights, dtype=torch.float32, device=device),
         burn_in=burn_in,
-        recurrent_states=states,
     )
+
+
+def parameters_are_equal(left: nn.Module, right: nn.Module) -> bool:
+    """Whether two modules hold identical weights, used by resume verification."""
+    left_state, right_state = left.state_dict(), right.state_dict()
+    if left_state.keys() != right_state.keys():
+        return False
+    return all(torch.equal(left_state[key], right_state[key]) for key in left_state)

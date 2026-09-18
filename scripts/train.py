@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Train one or more backbones against the clone under one equal budget.
+"""Train the stacked-DQN backbone against the clone under one fixed budget.
 
 Private device runner for the instrumented-training profile. Everything it
 produces - checkpoints, reports, replay metadata - is written outside the
 repository, and every tap it can make is gated inside the adapter on a positive
 screen classification.
 
-Naming several backbones interleaves them on the one device in decision blocks,
-for the same reason `compare_arms.py` interleaves its episodes: training one arm
-to completion and then the next would confound the backbone with whatever
-drifted on the host, the device or the account in between.
+Collection runs in decision blocks (`--block-decisions`), each landing on an
+episode boundary, until the budget is spent.
 
     TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
-        --backbone recurrent-q --backbone stacked-dqn \\
         --budget-decisions 20000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
@@ -27,7 +24,7 @@ four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
     TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
-        --backbone recurrent-q --actors 4 --budget-decisions 100000
+        --actors 4 --budget-decisions 100000
 
 The run records itself to the local MLflow store under `~/.local/state/tower-rl`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
@@ -64,7 +61,6 @@ from run_episodes import (  # noqa: E402
 )
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
-from tower_rl.application.comparison import interleave_schedule  # noqa: E402
 from tower_rl.application.decision_time import (  # noqa: E402
     BUCKETS,
     EMPTY_BREAKDOWN,
@@ -111,7 +107,6 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     write_manifest,
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.recurrent_q import RecurrentQBackbone, RecurrentQConfig  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.ports.experiment_tracker import (  # noqa: E402
     ExperimentTracker,
@@ -120,9 +115,8 @@ from tower_rl.ports.experiment_tracker import (  # noqa: E402
 )
 from tower_rl.ports.run_port import RunPortError  # noqa: E402
 
-#: Every backbone in the comparison, addressed identically. Adding one here is
-#: all it takes to put it under the same protocol as the others.
-BACKBONES = ("recurrent-q", "stacked-dqn")
+#: The one backbone this project trains.
+BACKBONE = "stacked-dqn"
 
 #: The measured floors a learning curve has to be read against, carried in every
 #: report so the curve is legible without a second document. Mean final wave over
@@ -717,37 +711,20 @@ class Arm:
 
 
 def build_backbone(
-    name: str, arguments: argparse.Namespace, device: torch.device
-) -> tuple[Backbone, RecurrentQConfig | StackedDqnConfig]:
+    arguments: argparse.Namespace, device: torch.device
+) -> tuple[Backbone, StackedDqnConfig]:
     """The backbone and the learner settings it was fixed with.
 
     The settings come back alongside it because they are part of what the arm
     is configured by - n-step, discount, learning rate - and a run that does not
     record them cannot be compared with the next one.
     """
-    if name == "recurrent-q":
-        recurrent = RecurrentQConfig(
-            seed=arguments.seed,
-            n_step=arguments.n_step,
-            discount=arguments.discount,
-            learning_rate=arguments.learning_rate,
-        )
-        return (
-            RecurrentQBackbone(
-                config=recurrent,
-                network_config=NetworkConfig(),
-                device=device,
-            ),
-            recurrent,
-        )
     stacked = StackedDqnConfig(
         seed=arguments.seed,
         history_length=arguments.history_length,
         n_step=arguments.n_step,
         discount=arguments.discount,
         learning_rate=arguments.learning_rate,
-        # The EMA target belongs to this backbone alone; the recurrent arm
-        # copies its target on a period instead.
         target_ema_decay=arguments.target_ema_decay,
     )
     return (
@@ -777,7 +754,7 @@ def build_arm(
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    backbone, learner = build_backbone(name, arguments, device)
+    backbone, learner = build_backbone(arguments, device)
     replay = PrioritizedSequenceReplay(
         capacity=arguments.replay_capacity,
         alpha=arguments.priority_alpha,
@@ -797,7 +774,7 @@ def build_arm(
         parameter_sync_episodes=arguments.parameter_sync_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
-    burn_in = burn_in_for(name, arguments)
+    burn_in = int(arguments.stacked_burn_in)
     # One actor per instance, all of them writing into the one buffer above and
     # all of them learned from by the one backbone. `TrainingRun` gives each its
     # own copy of that backbone to act from and refreshes it on the configured
@@ -829,8 +806,7 @@ def build_arm(
         "warmup_sequences": config.warmup_sequences,
         "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
         "sequence_length": arguments.sequence_length,
-        # The burn-in this arm was built with, which is not the same number for
-        # both arms: see `burn_in_for`.
+        # The burn-in this arm was built with: exactly what fills the window.
         "burn_in": burn_in,
         "stride": stride,
         "history_length": arguments.history_length if name == "stacked-dqn" else None,
@@ -951,18 +927,12 @@ def build_arm(
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Everything the run is configured by, validated before a device is touched."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--backbone",
-        action="append",
-        choices=BACKBONES,
-        help="repeat to interleave several arms under one equal budget",
-    )
-    parser.add_argument("--budget-decisions", type=int, default=20_000, help="per arm")
+    parser.add_argument("--budget-decisions", type=int, default=20_000)
     parser.add_argument(
         "--block-decisions",
         type=int,
         default=2_000,
-        help="decisions before handing the device to the next arm; lands on an episode",
+        help="decisions collected before the loop checks the budget; lands on an episode",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--replay-capacity", type=int, default=4096)
@@ -976,21 +946,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup-sequences", type=int, default=100)
     parser.add_argument("--sequence-length", type=int, default=80)
     parser.add_argument(
-        "--burn-in",
-        type=int,
-        default=40,
-        help="recurrent-q only: how much history warms the LSTM state before the unroll",
-    )
-    parser.add_argument(
         "--stacked-burn-in",
         type=int,
         default=7,
         help=(
-            "stacked-dqn only: exactly history-length - 1, which is what fills the "
-            "window; anything longer discards learnable steps for nothing"
+            "exactly history-length - 1, which is what fills the window; anything "
+            "longer discards learnable steps for nothing"
         ),
     )
-    # Read by stacked-dqn only; the recurrent backbone carries time in its state.
     parser.add_argument("--history-length", type=int, default=8)
     parser.add_argument("--n-step", type=int, default=10)
     parser.add_argument("--discount", type=float, default=0.99)
@@ -999,7 +962,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--target-ema-decay",
         type=float,
         default=0.995,
-        help="stacked-dqn only; the recurrent arm copies its target on a period",
+        help="how slowly the target network follows the online one",
     )
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
@@ -1088,7 +1051,6 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
-    arguments.backbone = list(dict.fromkeys(arguments.backbone or ["recurrent-q"]))
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
     if arguments.actors < 1:
@@ -1111,37 +1073,19 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
                 "mid-run evaluation needs an instance to itself and cannot run "
                 "while a fleet is collecting; leave --evaluate-every-episodes at 0"
             )
-    if (
-        "stacked-dqn" in arguments.backbone
-        and arguments.stacked_burn_in < arguments.history_length - 1
-    ):
+    if arguments.stacked_burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
         raise SystemExit(
             f"burn-in {arguments.stacked_burn_in} cannot fill a window of "
             f"{arguments.history_length}"
         )
-    for name in arguments.backbone:
-        if burn_in_for(name, arguments) >= arguments.sequence_length:
-            raise SystemExit(
-                f"burn-in {burn_in_for(name, arguments)} leaves {name} no learning steps "
-                f"in a sequence of {arguments.sequence_length}"
-            )
+    if arguments.stacked_burn_in >= arguments.sequence_length:
+        raise SystemExit(
+            f"burn-in {arguments.stacked_burn_in} leaves no learning steps "
+            f"in a sequence of {arguments.sequence_length}"
+        )
     return arguments
-
-
-def burn_in_for(name: str, arguments: argparse.Namespace) -> int:
-    """How much of a sequence this backbone burns in before it learns.
-
-    Per arm, because the number means two different things. The recurrent arm
-    burns in to reconstruct an LSTM state that was produced by older parameters,
-    and needs enough steps to do it. The stacked arm has no state to
-    reconstruct: its burn-in only fills the history window, so
-    `history_length - 1` steps fill it exactly and every further step is a
-    learnable step thrown away. A single global flag would therefore have to be
-    wrong for one of the two arms.
-    """
-    return int(arguments.stacked_burn_in if name == "stacked-dqn" else arguments.burn_in)
 
 
 def tracking_uri(arguments: argparse.Namespace) -> str:
@@ -1196,16 +1140,12 @@ def train_session(
     bridge_version: str | None = None,
     bring_up_failures: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Train every named arm to its budget and return the session report.
+    """Train the arm to its budget and return the session report.
 
     The instances are a parameter rather than something built here, so the one
     place a bridge to a real device is opened is `main`. Nothing else decides
-    what the arms are talking to.
-
-    Every arm collects with the whole fleet; the arms still take turns, so only
-    one backbone is ever driving the instances at a time.
+    what the arm is talking to.
     """
-    names = list(arguments.backbone)
     started = time.monotonic()
     session = arguments.run_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}"
     recorder = NoExperimentTracker() if tracker is None else tracker
@@ -1220,40 +1160,33 @@ def train_session(
     }
     if bridge_version is not None:
         tags["bridge_version"] = bridge_version
-    arms = {
-        name: build_arm(
-            name,
-            arguments,
-            instances=instances,
-            device=device,
-            profile_id=profile_id,
-            parent=session,
-            revision=revision,
-            started=started,
-            tracker=recorder,
-            tags=tags,
-        )
-        for name in names
-    }
+    arm = build_arm(
+        BACKBONE,
+        arguments,
+        instances=instances,
+        device=device,
+        profile_id=profile_id,
+        parent=session,
+        revision=revision,
+        started=started,
+        tracker=recorder,
+        tags=tags,
+    )
 
-    blocks_per_arm = -(-arguments.budget_decisions // arguments.block_decisions)
-    schedule = interleave_schedule(tuple(names), blocks_per_arm, block=1, seed=arguments.seed)
+    blocks = -(-arguments.budget_decisions // arguments.block_decisions)
     try:
-        for name in schedule:
-            arm = arms[name]
+        for _ in range(blocks):
             if arm.training.finished:
-                continue
+                break
             arm.training.advance(arguments.block_decisions)
 
-        for arm in arms.values():
-            arm.checkpoint(arm.training.report)
-            # The one pre-registered measurement of the run: exploration-free,
-            # on the final weights, sized so its standard error can resolve a
-            # real difference against the scripted floor. Taken after the budget
-            # is spent, so it costs no decisions and cannot be chosen after the
-            # fact from a series of mid-run points.
-            if arm.evaluation is None:
-                continue
+        arm.checkpoint(arm.training.report)
+        # The one pre-registered measurement of the run: exploration-free, on
+        # the final weights, sized so its standard error can resolve a real
+        # difference against the scripted floor. Taken after the budget is
+        # spent, so it costs no decisions and cannot be chosen after the fact
+        # from a series of mid-run points.
+        if arm.evaluation is not None:
             try:
                 arm.evaluation(True)
             except (RunPortError, ValueError) as failure:
@@ -1262,7 +1195,7 @@ def train_session(
                 arm.training.report.evaluation_failures.append(str(failure))
                 print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
-        summaries = [arm.summary() for arm in arms.values()]
+        summaries = [arm.summary()]
         report: dict[str, object] = {
             "session": str(session),
             "profile_id": profile_id,
@@ -1282,18 +1215,16 @@ def train_session(
         }
         session.mkdir(parents=True, exist_ok=True)
         (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
-        for arm, summary in zip(arms.values(), summaries, strict=True):
-            # The arm's summary holds its learning curve and the per-episode
-            # evaluation records, so it is what a tracked run is read from.
-            path = arm.run_dir / "summary.json"
-            path.write_text(json.dumps(summary, indent=2, default=str))
-            arm.run.log_artifact(path)
+        # The arm's summary holds its learning curve and the per-episode
+        # evaluation records, so it is what a tracked run is read from.
+        path = arm.run_dir / "summary.json"
+        path.write_text(json.dumps(summaries[0], indent=2, default=str))
+        arm.run.log_artifact(path)
         return report
     finally:
         # A run that ended badly is still a run that has to be closed, or it
         # would sit open in the store forever.
-        for arm in arms.values():
-            arm.run.finish()
+        arm.run.finish()
 
 
 def connect(

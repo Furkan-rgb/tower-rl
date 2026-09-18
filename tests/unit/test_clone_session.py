@@ -865,88 +865,66 @@ def test_a_reading_a_hair_off_the_rate_is_still_the_rate(
     clone_session.raise_frame_rate(CloneInstance())
 
 
-def test_a_game_killed_as_the_network_is_cut_is_relaunched_and_reaches_home(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_game_killed_as_the_network_is_cut_fails_by_name_and_stays_offline(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The kill lands after readiness too: Play installs when it chooses to.
+    """The kill lands after the cut too, and there it is fatal, not recoverable.
 
-    Two fleet runs lost an instance to the single check after the cut — `the
-    game did not survive the network being cut: the game is not running` — on an
-    instance that had already reached home. The activity is gone there for the
-    same reason it is gone inside the readiness wait, so it is recovered the
-    same way, offline.
+    `M1B-E049` forced this on device: re-issuing the launcher intent with the
+    network gone leaves the game at `main_unavailable` until the timeout,
+    because a launch without a network stops at the Firebase check and the
+    OFFLINE modal (`M1B-E010`). So the instance is lost; what the run must carry
+    is the cause, by name, and no attempt to reopen the network.
     """
     clone = FakeClone(online=False)
-    # Ready, then no process at the post-cut check, then back after the relaunch.
-    clone.pids = ["4242", "", "4242"]
-    clone.activities = [False, True]
+    # Ready, then no process at the post-cut check, and no activity behind it.
+    clone.pids = ["4242", ""]
+    clone.activities = [False]
     install(monkeypatch, clone, [IDLE])
 
-    launch_game_at_home(CloneInstance())
+    with pytest.raises(CloneError, match="did not survive the network being cut") as error:
+        launch_game_at_home(CloneInstance())
 
-    assert clone.launches == 2
-    assert not clone.online
-    printed = capsys.readouterr().out
-    assert "no activity as the network was cut" in printed
-
-
-def test_a_game_killed_before_the_rate_is_raised_is_relaunched_and_then_raised(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The gap between bring-up and the first episode is the other uncovered point.
-
-    A game with no activity has no surface, so SurfaceFlinger publishes no
-    applied frame rate for its uid and the raise fails with `applied frame rate
-    absent` — which is how two fleet runs lost an actor that had already reached
-    home. The activity is checked where it is about to be relied on.
-    """
-    clone = FakeClone(online=False)
-    clone.activities = [False, True]
-    instance = CloneInstance()
-    install(monkeypatch, clone, [IDLE])
-
-    assert clone_session.relaunch_if_activity_lost(
-        instance, point="before the frame rate was raised"
-    )
-    clone_session.raise_frame_rate(instance)
-
+    assert clone_session.GAME_ACTIVITY_LOST in str(error.value)
+    # The launcher intent that started it, and nothing after it.
     assert clone.launches == 1
-    assert clone.pinned_rate == clone_session.GUEST_FRAME_RATE_HZ
-    assert "no activity before the frame rate was raised" in capsys.readouterr().out
-
-
-def test_a_game_that_still_holds_its_activity_is_never_restarted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Only a lost activity is recoverable; anything else must be reported, not restarted."""
-    clone = FakeClone(online=False)
-    install(monkeypatch, clone, [IDLE])
-
-    assert not clone_session.relaunch_if_activity_lost(CloneInstance(), point="before a check")
-
-    assert clone.launches == 0
-
-
-def test_no_relaunch_outside_the_online_window_turns_a_radio_back_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Both new recovery points fire after the cut, and neither may reopen the network."""
-    clone = FakeClone(online=False)
-    clone.pids = ["4242", "", "4242"]
-    clone.activities = [False, True, False, True]
-    instance = CloneInstance()
-    install(monkeypatch, clone, [IDLE])
-
-    launch_game_at_home(instance)
-    after_the_cut = clone.index_of("shell svc wifi disable")
-    clone_session.relaunch_if_activity_lost(instance, point="before the frame rate was raised")
-
     assert not clone.online
+    after_the_cut = clone.index_of("shell svc wifi disable")
     assert not [
         command
         for command in clone.commands[after_the_cut:]
         if command.startswith("shell svc") and command.endswith("enable")
     ]
+
+
+def test_a_game_that_survived_the_cut_is_not_blamed_for_a_lost_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A game that is present but unready is a different fault and keeps its own message."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+
+    assert clone_session.lost_activity_cause(CloneInstance()) == ""
+    clone_session.require_game_activity(CloneInstance())
+
+
+def test_a_lost_activity_before_the_rate_is_raised_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gap between bring-up and the first episode: reported, never restarted.
+
+    A game with no activity has no surface, so the raise would otherwise fail
+    with a bare `applied frame rate absent`. Nothing is relaunched here: after
+    the cut there is no launch that reaches home.
+    """
+    clone = FakeClone(online=False)
+    clone.activities = [False]
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="lost its activity"):
+        clone_session.require_game_activity(CloneInstance())
+
+    assert clone.launches == 0
 
 
 def test_an_absent_applied_rate_names_the_missing_game_surface(

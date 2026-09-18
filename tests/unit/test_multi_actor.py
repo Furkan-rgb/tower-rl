@@ -256,8 +256,8 @@ def bring_up_steps(
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: steps.append("require_offline"))
     monkeypatch.setattr(
         run_actors,
-        "relaunch_if_activity_lost",
-        lambda *_, **__: bool(steps.append("relaunch_if_activity_lost")),
+        "require_game_activity",
+        lambda *_, **__: bool(steps.append("require_game_activity")),
     )
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: steps.append("raise_frame_rate"))
     monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
@@ -294,7 +294,7 @@ def test_an_actor_is_ready_and_verified_offline_before_any_episode_runs(
     assert steps == [
         "bring_up",
         "require_offline",
-        "relaunch_if_activity_lost",
+        "require_game_activity",
         "raise_frame_rate",
         "run_episodes.py",
     ]
@@ -417,7 +417,7 @@ def test_bring_ups_are_sequenced_but_collection_still_runs_concurrently(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
-    monkeypatch.setattr(run_actors, "relaunch_if_activity_lost", lambda *_, **__: False)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -458,7 +458,7 @@ def test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
-    monkeypatch.setattr(run_actors, "relaunch_if_activity_lost", lambda *_, **__: False)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -506,7 +506,7 @@ def test_an_actor_collects_while_a_peer_is_still_booting(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
-    monkeypatch.setattr(run_actors, "relaunch_if_activity_lost", lambda *_, **__: False)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", fake_raise)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -543,7 +543,7 @@ def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
-    monkeypatch.setattr(run_actors, "relaunch_if_activity_lost", lambda *_, **__: False)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -559,6 +559,35 @@ def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
     assert len(failed) == 1
     assert failed[0].index == 1
     assert "cold boot refused" in (failed[0].failure or "")
+
+
+def test_a_game_that_lost_its_activity_before_the_raise_runs_no_episode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The instance is lost, and the actor says so instead of measuring it.
+
+    `M1B-E049`: after the network is cut there is no relaunch that reaches home,
+    so a game the guest's Play killed between bring-up and the first episode
+    cannot be put back. What must not happen is an episode collected from it, or
+    the bare `applied frame rate absent` the raise would otherwise report.
+    """
+    ran: list[str] = []
+
+    def refuse(instance: CloneInstance) -> None:
+        raise CloneError(f"{instance.serial}: the game has lost its activity")
+
+    monkeypatch.setattr(run_actors, "bring_up", lambda *_, **__: "cold")
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "require_game_activity", refuse)
+    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: ran.append("raise"))
+    monkeypatch.setattr(
+        run_actors.subprocess, "run", lambda *_, **__: ran.append("episodes")
+    )
+
+    with pytest.raises(CloneError, match="lost its activity"):
+        collect_episodes(CloneInstance(), stagger_arguments(tmp_path))
+
+    assert ran == []
 
 
 def bridge_output(

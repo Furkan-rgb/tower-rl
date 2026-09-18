@@ -63,7 +63,7 @@ from clone_session import (  # noqa: E402
     keyed_snapshot_name,
     kill_emulator,
     raise_frame_rate,
-    relaunch_if_activity_lost,
+    require_game_activity,
     require_offline,
     snapshot_exists,
 )
@@ -305,11 +305,13 @@ def collect_episodes(
     # reading that can still precede an episode. `cold_bring_up` has already
     # verified the same thing at the end of bring-up.
     require_offline(instance)
-    # The last point at which a game Play killed can still be put back. A game
-    # with no activity has no surface, and SurfaceFlinger then publishes no
-    # applied frame rate for its uid at all, which is how this arrived twice on
-    # device: as `applied frame rate absent` from the raise below.
-    relaunch_if_activity_lost(instance, point="before the frame rate was raised")
+    # Nothing has watched the game since bring-up returned, and a game with no
+    # activity has no surface, so SurfaceFlinger publishes no applied frame rate
+    # for its uid at all — which is how this arrived twice on device, as
+    # `applied frame rate absent` from the raise below. It is reported here by
+    # name instead: `M1B-E049` measured that a relaunch this side of the network
+    # cut sits at the OFFLINE modal, so the instance is lost, not recoverable.
+    require_game_activity(instance)
     raise_frame_rate(instance)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"

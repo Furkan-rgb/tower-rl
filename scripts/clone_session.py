@@ -180,16 +180,14 @@ FRAME_RATE_TOLERANCE_HZ = 0.5
 #: back for a job service, so `pidof` answers, but nothing is on screen and the
 #: in-process bridge is frozen.
 GAME_ACTIVITY = "UnityPlayerActivity"
-#: How many times one bring-up re-issues the launcher intent after that kill.
-#: Two, because the hazard is a batch of Play installs passing through, not a
-#: standing condition: if two relaunches do not outlast it, something else is
-#: wrong and the readiness timeout should report it rather than loop forever.
+#: How many times the one readiness wait re-issues the launcher intent after
+#: that kill. Two, because the hazard is a batch of Play installs passing
+#: through, not a standing condition: if two relaunches do not outlast it,
+#: something else is wrong and the readiness timeout should report it rather
+#: than loop forever. This is the whole budget of a bring-up: the wait inside
+#: `launch_game_at_home` is the only place a relaunch happens, because it is the
+#: only place the radios are still up (`M1B-E049`).
 MAX_RELAUNCHES = 2
-#: How long a relaunch made outside the online window is given to reach home
-#: again. Shorter than the cold launch's own 300s because the game has already
-#: been past its Firebase check once this boot; long enough that a relaunch
-#: competing with the rest of Play's install batch is not cut off mid-start.
-RELAUNCH_READY_TIMEOUT = 180.0
 #: How often readiness is re-read. The online window is held open until the
 #: bridge calls the game ready, so the poll interval is time the instance spends
 #: online for no reason; it is short there and stays cheap everywhere else.
@@ -419,7 +417,6 @@ def wait_until_ready(
     poll: float = POLL_SECONDS,
     relaunch: Callable[[], None] | None = None,
     max_relaunches: int = MAX_RELAUNCHES,
-    point: str = "while starting",
 ) -> None:
     """Wait for the bridge to call the game ready, relaunching a game Play killed.
 
@@ -437,13 +434,12 @@ def wait_until_ready(
     Only a *lost* activity counts: the game is watched until it has an activity
     at least once, which is also what keeps the intent that started it from
     being re-sent before the activity appears. Re-issuing an intent is not a
-    network operation, so a relaunch after the radios are down stays offline;
-    nothing here touches a radio.
-
-    `point` names where in the lifecycle this wait is happening, and it is
-    printed with every relaunch: Play chooses when it installs, so which of the
-    points that watch for the kill actually fires is the evidence a run leaves
-    behind about where the kill landed this time.
+    Re-issuing an intent is not a network operation, so nothing here touches a
+    radio. This is nevertheless the ONLY place a relaunch can work: it runs
+    while the radios are still up, and `M1B-E049` measured a relaunch after the
+    cut sitting at `main_unavailable` until its timeout, because a launch with
+    no network stops at the Firebase check and the OFFLINE modal (`M1B-E010`).
+    Everywhere else the loss of the activity is reported, not repaired.
     """
     deadline = time.monotonic() + timeout
     last = "nothing observed yet"
@@ -462,7 +458,7 @@ def wait_until_ready(
             elif had_activity and relaunches < max_relaunches:
                 relaunches += 1
                 print(
-                    f"  {instance.serial}: the game lost its activity {point}; "
+                    f"  {instance.serial}: the game lost its activity while starting; "
                     f"re-issuing the launcher intent ({relaunches}/{max_relaunches})",
                     flush=True,
                 )
@@ -473,43 +469,6 @@ def wait_until_ready(
                 last = "relaunched, waiting for the game again"
         time.sleep(poll)
     raise CloneError(f"{instance.serial} never became ready: {last}")
-
-
-def relaunch_if_activity_lost(
-    instance: CloneInstance, *, point: str, timeout: float = RELAUNCH_READY_TIMEOUT
-) -> bool:
-    """Put the game back if Play has taken its activity away, and say whether it had.
-
-    The kill is not confined to the readiness wait. Play downloads its WebView
-    update during the one online window and installs it later, offline, at a
-    time of its own choosing, so an instance that has already reached home and
-    been cut off the network can still lose its activity — which is what two
-    7-actor fleet runs recorded, at the check after the network is cut and again
-    in the gap before the frame rate is raised. Both left a game with a pid, a
-    job service and nothing on screen: no activity, no surface, and an
-    in-process bridge that never answers.
-
-    So the same recovery the readiness wait makes is available wherever bring-up
-    asserts the game is there. Only the activity's absence triggers it: a game
-    that is present but reports some other reason is a different fault and must
-    be reported rather than restarted. Re-issuing the launcher intent is not a
-    network operation, so this stays offline; nothing here touches a radio.
-    """
-    if game_activity_present(instance):
-        return False
-    print(
-        f"  {instance.serial}: the game has no activity {point}; "
-        f"re-issuing the launcher intent (offline)",
-        flush=True,
-    )
-    launch_game(instance)
-    wait_until_ready(
-        instance,
-        timeout=timeout,
-        relaunch=lambda: launch_game(instance),
-        point=point,
-    )
-    return True
 
 
 def _captured_output(log_path: Path | None, *, limit: int = 4000) -> str:
@@ -699,10 +658,11 @@ def launch_game_at_home(instance: CloneInstance) -> None:
     `ONLINE_POLL_SECONDS` rather than on the ordinary poll: the game is ready
     seconds after it is launched, and every second between being ready and being
     read is a second the guest's Google Play spends installing updates over a
-    running game. `wait_until_ready` relaunches the game if Play kills it anyway,
-    and so does the check after the cut: Play installs what it downloaded at a
-    time of its choosing, which on device has been after the network was already
-    gone.
+    running game. `wait_until_ready` relaunches the game if Play kills it inside
+    that window, which is the only place a relaunch can reach home. The check
+    after the cut has no such remedy: Play installs what it downloaded at a time
+    of its choosing, and when that lands after the network is gone the instance
+    is lost and says so by name.
     """
     print("enabling radios for the startup check only", flush=True)
     set_radios(instance, True)
@@ -718,10 +678,11 @@ def launch_game_at_home(instance: CloneInstance) -> None:
     set_radios(instance, False)
     require_offline(instance)
     reason = why_not_ready(instance)
-    if reason is not None and relaunch_if_activity_lost(instance, point="as the network was cut"):
-        reason = why_not_ready(instance)
     if reason is not None:
-        raise CloneError(f"the game did not survive the network being cut: {reason}")
+        raise CloneError(
+            f"the game did not survive the network being cut: {reason}"
+            + lost_activity_cause(instance)
+        )
     print(f"{instance.serial} is at home and offline", flush=True)
 
 
@@ -732,6 +693,34 @@ def game_uid(instance: CloneInstance) -> str:
         if match:
             return match.group(1)
     raise CloneError(f"{instance.serial}: {PACKAGE} has no uid; is it installed?")
+
+
+#: What a lost activity is called wherever bring-up finds one. Named because the
+#: instance cannot be recovered from it — a relaunch without a network stops at
+#: the OFFLINE modal (`M1B-E049`) — so the fleet log has to carry the cause
+#: rather than a bare symptom.
+GAME_ACTIVITY_LOST = (
+    "the game has lost its activity (the guest's Play kills it to install an update)"
+)
+
+
+def lost_activity_cause(instance: CloneInstance) -> str:
+    """The named reason appended when the game has no activity left."""
+    return f"; {GAME_ACTIVITY_LOST}" if not game_activity_present(instance) else ""
+
+
+def require_game_activity(instance: CloneInstance) -> None:
+    """Fail by name unless the game still holds its activity.
+
+    The last reading before an instance is measured. There is nothing to repair
+    here: `M1B-E049` forced the kill on device and found that re-issuing the
+    launcher intent after the network is cut leaves the game at
+    `main_unavailable` until the timeout, because a launch with no network stops
+    at the Firebase check and the OFFLINE modal (`M1B-E010`). So the fleet loses
+    this instance either way, and what matters is that its log says why.
+    """
+    if not game_activity_present(instance):
+        raise CloneError(f"{instance.serial}: {GAME_ACTIVITY_LOST}")
 
 
 def missing_surface_cause(applied_reading: str) -> str:

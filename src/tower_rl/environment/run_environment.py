@@ -8,8 +8,10 @@ an environment failure can never be mistaken for an ordinary `WAIT`.
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from tower_rl.environment.decision_time import (
@@ -20,6 +22,7 @@ from tower_rl.environment.decision_time import (
 from tower_rl.environment.episode import (
     ActionOutcome,
     DecisionEvent,
+    DecisionView,
     EpisodeSummary,
     RunTransition,
     TerminationOutcome,
@@ -265,8 +268,17 @@ class InstrumentedRunEnvironment:
     #: mutated only by the actor thread that drives it (see
     #: `environment/decision_time.py`); a run publishes snapshots of it.
     profile: DecisionTimeProfile = field(default_factory=DecisionTimeProfile)
+    #: An observer of the decision stream, called once per `step` with what that
+    #: decision did. `None` - the default, and what every collecting and
+    #: evaluating path leaves it as - costs one attribute test per decision and
+    #: builds nothing. It exists for `scripts/spectate.py`, which is a human
+    #: watching one run; it is not a logging hook, and nothing it is handed is
+    #: a record of anything (see `DecisionView`).
+    on_decision: Callable[[DecisionView], None] | None = None
     _state: RunState | None = field(default=None, init=False)
     _episode_id: str = field(default="", init=False)
+    #: Episodes begun on this environment, which only the view above reports.
+    _episodes: int = field(default=0, init=False)
     _tally: _EpisodeTally = field(default_factory=_EpisodeTally, init=False)
     _last_reasons: tuple[str, ...] = field(default=(), init=False)
 
@@ -281,6 +293,7 @@ class InstrumentedRunEnvironment:
             raise RunPortError("the instance did not reach an active run")
         self._state = state
         self._episode_id = uuid.uuid4().hex
+        self._episodes += 1
         self._tally = _EpisodeTally(
             started_at=time.monotonic(),
             peak_wave=state.wave,
@@ -673,7 +686,32 @@ class InstrumentedRunEnvironment:
         )
         if not transition.admissible:
             self._tally.invalid_transitions += 1
+        if self.on_decision is not None:
+            self.on_decision(self._view(transition))
         return transition
+
+    def _view(self, transition: RunTransition) -> DecisionView:
+        """The decision just taken, as a spectator reads it.
+
+        Read from the transition and from nothing else, so what a panel shows
+        and what the episode record holds cannot drift apart. The state quoted
+        is the one the decision produced; when the port produced none there is
+        nothing later to quote, so the state it was taken in stands - that
+        transition is ending the episode anyway.
+        """
+        shown = transition.next_state or transition.state
+        action = transition.action
+        return DecisionView(
+            episode=self._episodes,
+            decision=self._tally.decisions,
+            wave=shown.wave,
+            cash=math.expm1(shown.cash_log),
+            health_fraction=shown.health_fraction,
+            action="wait" if action.is_wait else str(action),
+            reward=transition.reward,
+            done=transition.termination is not None,
+            termination=transition.termination,
+        )
 
 
 def _advance_failure(outcome: str) -> ActionOutcome:

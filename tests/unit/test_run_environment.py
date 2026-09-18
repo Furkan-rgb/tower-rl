@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 from fakes.fake_run_port import FakeCommandResult, FakeRunPort
 
 from tower_rl.environment.episode import (
     ActionOutcome,
     DecisionEvent,
+    DecisionView,
     TerminationOutcome,
 )
 from tower_rl.environment.run_actions import WAIT, upgrade_action
@@ -757,3 +760,78 @@ def test_an_advance_crossing_a_wave_boundary_is_charged_to_the_wave_it_started_i
     first = next(wave for wave in summary.waves if wave.wave == 1)
     assert first.game_ms == pytest.approx(before_crossing + crossing_round_ms)
     assert next(wave for wave in summary.waves if wave.wave == 2).game_ms == 0.0
+
+
+def test_a_decision_stream_observer_hears_one_view_per_step() -> None:
+    """The seam a spectator watches: one view per decision, and no more."""
+    environment, _ = _environment()
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+    environment.reset()
+
+    for _ in range(3):
+        environment.step(WAIT)
+
+    assert len(seen) == 3
+    assert [view.decision for view in seen] == [1, 2, 3]
+    assert {view.episode for view in seen} == {1}
+    assert [view.action for view in seen] == ["wait", "wait", "wait"]
+    assert not any(view.done for view in seen)
+
+
+def test_a_view_says_what_its_own_transition_said() -> None:
+    """The panel and the record must not be able to disagree."""
+    environment, _ = _environment()
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+    view = seen[-1]
+
+    assert transition.next_state is not None
+    assert view.wave == transition.next_state.wave
+    assert view.health_fraction == transition.next_state.health_fraction
+    assert view.cash == pytest.approx(math.expm1(transition.next_state.cash_log))
+    assert view.reward == transition.reward
+    assert view.action == str(target.action)
+    assert view.termination is transition.termination
+
+
+def test_the_last_view_of_an_episode_is_the_one_marked_done() -> None:
+    """A watcher learns the tower died from the stream, not from a summary."""
+    environment, _ = _environment(damage_per_second=2.0, max_health=1.0)
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+    environment.reset()
+
+    while not seen or not seen[-1].done:
+        environment.step(WAIT)
+
+    assert [view.done for view in seen] == [False] * (len(seen) - 1) + [True]
+    assert seen[-1].termination is TerminationOutcome.GAME_OVER
+
+
+def test_episodes_are_numbered_across_resets_and_decisions_are_not() -> None:
+    environment, _ = _environment()
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+
+    environment.reset()
+    environment.step(WAIT)
+    environment.reset()
+    environment.step(WAIT)
+
+    assert [(view.episode, view.decision) for view in seen] == [(1, 1), (2, 1)]
+
+
+def test_an_environment_with_no_observer_builds_no_views() -> None:
+    """The default costs an attribute test per decision and nothing else."""
+    environment, _ = _environment()
+    environment.reset()
+
+    transition = environment.step(WAIT)
+
+    assert environment.on_decision is None
+    assert transition.admissible

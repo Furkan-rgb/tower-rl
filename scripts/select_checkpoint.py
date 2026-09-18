@@ -40,6 +40,7 @@ from tower_rl.experiment.arm_evaluation import (  # noqa: E402
     statistic_line,
 )
 from tower_rl.experiment.comparison import stratified_bootstrap  # noqa: E402
+from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
 
 #: The statistic the selection is made on. `decisions` is reported beside it and
 #: chooses nothing: a checkpoint that survives longer per episode is interesting,
@@ -83,6 +84,18 @@ def candidate(directory: Path, checkpoints: dict[str, Path]) -> ArmEvaluation:
     return evaluation
 
 
+def checkpoint_decisions(name: str) -> int:
+    """The decisions a numbered checkpoint's file name records.
+
+    The budget axis every other metric of the run is keyed by, so the greedy
+    curve lands above the exploring one rather than beside it.
+    """
+    digits = name.removeprefix("checkpoint-").removesuffix(".pt")
+    if not digits.isdigit():
+        raise SystemExit(f"{name} does not name the decisions behind it")
+    return int(digits)
+
+
 def score(
     evaluation: ArmEvaluation, *, resamples: int, seed: int
 ) -> dict[str, dict[str, float | int]]:
@@ -102,6 +115,23 @@ def score(
     return scored
 
 
+def tracked_run(arguments: argparse.Namespace) -> TrackedRun | None:
+    """The run these results are added to, or nothing if none was named."""
+    if not arguments.mlflow_run:
+        return None
+    try:
+        return open_tracked_run(
+            arguments.mlflow_run,
+            run_dir=arguments.run_dir,
+            experiment=arguments.experiment,
+        )
+    except ImportError as missing:
+        raise SystemExit(
+            f"--mlflow-run needs MLflow installed ({missing}). "
+            "Install it with `uv sync --extra tracking`, or drop the flag."
+        ) from missing
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -117,6 +147,25 @@ def main() -> int:
     )
     parser.add_argument("--resamples", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--mlflow-run",
+        default=None,
+        help=(
+            "an existing tracked run id to add these results to, so the greedy "
+            "curve lands on the page of the training run it is about"
+        ),
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=Path.home() / ".local/state/tower-rl/runs",
+        help="where the tracking store lives; only read with --mlflow-run",
+    )
+    parser.add_argument(
+        "--experiment",
+        default="tower-rl-training",
+        help="the MLflow experiment the run belongs to; only read with --mlflow-run",
+    )
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-selection.json"))
     arguments = parser.parse_args()
 
@@ -174,8 +223,26 @@ def main() -> int:
         flush=True,
     )
 
+    tracked = tracked_run(arguments)
+    if tracked is not None:
+        # Onto the training run's own page, on its own budget axis: the greedy
+        # curve is the one question the exploring curve cannot answer, and a
+        # second run holding it would have to be found by hand.
+        for evaluation, numbers in scored:
+            entry = numbers[SELECT_ON]
+            tracked.log_metrics(
+                {
+                    "greedy_final_wave_iqm": float(entry["iqm"]),
+                    "greedy_final_wave_ci_low": float(entry["low"]),
+                    "greedy_final_wave_ci_high": float(entry["high"]),
+                },
+                decisions=checkpoint_decisions(Path(str(evaluation.checkpoint)).name),
+            )
+        print(f"  logged to tracked run {tracked.run_id}", flush=True)
+
     report: dict[str, Any] = {
         "run_directory": str(arguments.run_directory),
+        "mlflow_run": arguments.mlflow_run,
         "selected_on": SELECT_ON,
         "selected_checkpoint": str(selected),
         "selection_contested_by": contested,

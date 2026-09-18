@@ -75,6 +75,9 @@ def test_the_default_tracker_satisfies_the_port_and_keeps_nothing() -> None:
     run.log_artifact(Path("/nowhere/checkpoint.pt"), directory="checkpoints/abc")
     run.finish()
     assert run.run_id == "untracked"
+    # Attaching to an existing run - what a post-hoc selection does - answers
+    # the same handle, so a script that was given no run id takes no other path.
+    assert tracker.open_run("whatever").run_id == "untracked"
 
 
 def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:

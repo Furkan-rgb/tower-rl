@@ -24,6 +24,7 @@ import select_checkpoint
 import torch
 import train
 from fakes.fake_run_port import FakeRunPort
+from fakes.recording_tracker import RecordedRun
 
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
 from tower_rl.environment.run_state import RunStateBuilder
@@ -481,6 +482,125 @@ def test_train_then_select_then_report(
     assert scored["arms"]["stacked-dqn"]["policy_identity"]["name"] == chosen.stem
     assert scored["arms"]["scripted"]["policy_identity"] == {"name": "scripted"}
     assert len(scored["differences"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Results taken after the run, on the run they are about
+# ---------------------------------------------------------------------------
+
+
+def attached(module: Any, monkeypatch: pytest.MonkeyPatch) -> RecordedRun:
+    """A handle on an existing tracked run, recorded instead of sent anywhere."""
+    recorded = RecordedRun(name="stacked-dqn-under-test", params={}, tags={})
+    monkeypatch.setattr(
+        module,
+        "open_tracked_run",
+        lambda run_id, *, run_dir, experiment: recorded,
+    )
+    return recorded
+
+
+def test_the_greedy_curve_is_logged_onto_the_training_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keyed by each checkpoint's own decisions, so it sits above the exploring curve."""
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
+    weak, best = checkpoints
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals",
+            "weak",
+            {"emulator-5556": [4, 5, 4, 5], "emulator-5558": [5, 4, 5, 4]},
+            checkpoint_identity(weak),
+        ),
+        evaluation_directory(
+            tmp_path / "evals",
+            "best",
+            {"emulator-5556": [11, 12, 11, 12], "emulator-5558": [12, 11, 12, 11]},
+            checkpoint_identity(best),
+        ),
+    ]
+    recorded = attached(select_checkpoint, monkeypatch)
+
+    invoke(
+        select_checkpoint,
+        [str(run), *[str(item) for item in directories], "--resamples", "200",
+         "--mlflow-run", "abc123", "--output", str(tmp_path / "selection.json")],
+        monkeypatch,
+    )
+
+    # The decisions in each checkpoint's own file name, which is the axis the
+    # training run's episode and checkpoint metrics already use.
+    assert [point.decisions for point in recorded.points] == [100, 200]
+    for point in recorded.points:
+        assert set(point.metrics) == {
+            "greedy_final_wave_iqm",
+            "greedy_final_wave_ci_low",
+            "greedy_final_wave_ci_high",
+        }
+        assert (
+            point.metrics["greedy_final_wave_ci_low"]
+            <= point.metrics["greedy_final_wave_iqm"]
+            <= point.metrics["greedy_final_wave_ci_high"]
+        )
+    assert recorded.points[1].metrics["greedy_final_wave_iqm"] > (
+        recorded.points[0].metrics["greedy_final_wave_iqm"]
+    )
+
+
+def test_the_set_b_results_are_logged_onto_the_training_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arms = arm_directories(tmp_path)
+    recorded = attached(report_arms, monkeypatch)
+
+    invoke(
+        report_arms,
+        [
+            *[f"{name}={path}" for name, path in arms.items()],
+            "--resamples", "200",
+            "--mlflow-run", "abc123",
+            "--output-directory", str(tmp_path / "pooled"),
+            "--output", str(tmp_path / "arms.json"),
+        ],
+        monkeypatch,
+    )
+
+    logged = {key: value for point in recorded.points for key, value in point.metrics.items()}
+    for name in arms:
+        low = logged[f"report_{name}_final_wave_ci_low"]
+        iqm = logged[f"report_{name}_final_wave_iqm"]
+        high = logged[f"report_{name}_final_wave_ci_high"]
+        assert low <= iqm <= high
+    # One measurement about a finished run, not a point on its budget.
+    assert {point.decisions for point in recorded.points} == {0}
+    assert logged["report_stacked-dqn_final_wave_iqm"] > logged["report_scripted_final_wave_iqm"]
+
+
+def test_nothing_is_tracked_unless_a_run_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scripts read directories; recording is an extra the caller asks for."""
+    arms = arm_directories(tmp_path)
+
+    def refuse(run_id: str, *, run_dir: Path, experiment: str) -> None:
+        raise AssertionError("no run was named; nothing may be opened")
+
+    monkeypatch.setattr(report_arms, "open_tracked_run", refuse)
+
+    assert (
+        invoke(
+            report_arms,
+            [
+                *[f"{name}={path}" for name, path in arms.items()],
+                "--resamples", "200",
+                "--output-directory", str(tmp_path / "pooled"),
+                "--output", str(tmp_path / "arms.json"),
+            ],
+            monkeypatch,
+        )
+        == 0
+    )
 
 
 def test_the_floors_go_through_the_same_selector_as_a_checkpoint(tmp_path: Path) -> None:

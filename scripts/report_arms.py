@@ -40,6 +40,7 @@ from tower_rl.experiment.arm_evaluation import (  # noqa: E402
     statistic_line,
 )
 from tower_rl.experiment.comparison import compare, stratified_bootstrap  # noqa: E402
+from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
 from tower_rl.experiment.wave_statistics import analyse_reports  # noqa: E402
 
 
@@ -71,6 +72,23 @@ def read(arms: dict[str, Path]) -> list[ArmEvaluation]:
     return evaluations
 
 
+def tracked_run(arguments: argparse.Namespace) -> TrackedRun | None:
+    """The run these results are added to, or nothing if none was named."""
+    if not arguments.mlflow_run:
+        return None
+    try:
+        return open_tracked_run(
+            arguments.mlflow_run,
+            run_dir=arguments.run_dir,
+            experiment=arguments.experiment,
+        )
+    except ImportError as missing:
+        raise SystemExit(
+            f"--mlflow-run needs MLflow installed ({missing}). "
+            "Install it with `uv sync --extra tracking`, or drop the flag."
+        ) from missing
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -85,6 +103,25 @@ def main() -> int:
         type=Path,
         default=Path("/tmp/tower-rl-arms"),
         help="where each arm's pooled episodes are written for the per-wave comparison",
+    )
+    parser.add_argument(
+        "--mlflow-run",
+        default=None,
+        help=(
+            "an existing tracked run id to add these results to, so the greedy "
+            "curve lands on the page of the training run it is about"
+        ),
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=Path.home() / ".local/state/tower-rl/runs",
+        help="where the tracking store lives; only read with --mlflow-run",
+    )
+    parser.add_argument(
+        "--experiment",
+        default="tower-rl-training",
+        help="the MLflow experiment the run belongs to; only read with --mlflow-run",
     )
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-arms.json"))
     arguments = parser.parse_args()
@@ -169,6 +206,24 @@ def main() -> int:
             print(rendered, flush=True)
             report["per_wave"][f"{left} vs {right}"] = rendered
 
+    tracked = tracked_run(arguments)
+    if tracked is not None:
+        # One measurement about a finished run rather than a point on its
+        # budget, so it sits at the origin of the same axis: the training run's
+        # page then carries what its selected checkpoint was worth against the
+        # floors, beside the curve that produced it.
+        for name, entry in report["arms"].items():
+            tracked.log_metrics(
+                {
+                    f"report_{name}_final_wave_iqm": float(entry["final_wave"]["iqm"]),
+                    f"report_{name}_final_wave_ci_low": float(entry["final_wave"]["low"]),
+                    f"report_{name}_final_wave_ci_high": float(entry["final_wave"]["high"]),
+                },
+                decisions=0,
+            )
+        print(f"\nlogged to tracked run {tracked.run_id}", flush=True)
+
+    report["mlflow_run"] = arguments.mlflow_run
     arguments.output.write_text(json.dumps(report, indent=2))
     return 0
 

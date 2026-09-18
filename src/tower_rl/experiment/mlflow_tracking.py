@@ -83,5 +83,15 @@ class MlflowExperimentTracker:
             self._client.log_param(run_id, key, value)
         return MlflowTrackedRun(self._client, run_id)
 
+    def open_run(self, run_id: str) -> TrackedRun:
+        """A handle on a run that already exists, checked to exist.
+
+        Read back rather than trusted: a mistyped run id would otherwise scatter
+        a post-hoc measurement into a run that is not the one it is about, or
+        into nothing at all, and either way it would be found months later.
+        """
+        self._client.get_run(run_id)
+        return MlflowTrackedRun(self._client, run_id)
+
 
 __all__ = ["MlflowExperimentTracker", "MlflowTrackedRun"]

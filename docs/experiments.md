@@ -26,14 +26,16 @@ confirmed by name, offline by interface). Training: `scripts/train.py --actors
 as default), epsilon/beta schedules as the script's defaults, replay ratio
 0.25 gradient-steps/decision (~126:1). Expected wall ≈ 7 h at 129–143k
 decisions/hour (`M1B-E052`). Candidates: the 10 numbered checkpoints
-`checkpoint-<decisions>.pt`. Set A (selection): each candidate evaluated
-greedily on the fleet, `run_actors.py --actors 7 --episodes 2
+`checkpoint-<decisions, 7 digits>.pt`. Set A (selection): each candidate
+evaluated greedily on the fleet, `run_actors.py --actors 7 --episodes 2
 --policy checkpoint:<path>` (14 episodes per candidate, 140 total, ≈1 h).
 Selection: `select_checkpoint.py` — highest IQM of final wave; ties broken by
-lower decisions (earlier checkpoint). Set B (report): the selected checkpoint,
-scripted, and random, each `--episodes 9` on 7 actors (≥60 valid per arm,
-≈1.3 h), fresh episodes, into separate directories; `report_arms.py` with
-`--mlflow-run` so results land in the training run.
+lower decisions (earlier checkpoint); writes `<run>/selection.json`. Set B
+(report): the selected checkpoint, scripted, and random, each `--episodes 9`
+on 7 actors (≥60 valid per arm, ≈1.3 h), fresh episodes, into separate
+directories; `report_arms.py` with `--mlflow-run` so results land in the
+training run, and `--selection <run>/selection.json` so the model arm is
+verified to be the selected checkpoint.
 
 **Skeleton first.** Before the budgeted run, the same pipeline at
 `--budget-decisions 100000 --checkpoint-every-decisions 25000`, set A

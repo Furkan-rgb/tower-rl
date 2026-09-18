@@ -122,10 +122,12 @@ class EpisodeSummary:
     #: Wall time spent inside advances alone. The rest of `elapsed_wall_seconds`
     #: is decision-boundary overhead, which is only readable as the difference.
     advance_wall_seconds: float = 0.0
-    #: Advances that returned without spending their game-time budget and
-    #: without an event: the bridge hit its own wall-clock ceiling, so the host
-    #: is too slow rather than the game too quiet. Visible because it is the
-    #: difference between a real speed-up and one that stalled.
+    #: Advances the bridge stopped mid-loop on a reading its own settled
+    #: snapshot then did not corroborate: neither the game-time budget spent nor
+    #: an event the settled state still shows. Benign - the settled state is
+    #: what the agent observes - but counted, because a rise in it says the
+    #: loop and the state it reports are drifting apart. Not the wall-time
+    #: ceiling, which fails the episode by name instead (M1B-E032).
     advances_cut_short: int = 0
     #: Why the episode ended the way it did. An outcome without its reason cannot
     #: be diagnosed later, and a rate without reasons cannot be fixed at all.

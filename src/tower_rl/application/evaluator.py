@@ -84,8 +84,9 @@ class EvaluationReport:
     #: Wall seconds spent inside advances. `total_wall_seconds` minus this is
     #: what the decision boundaries themselves cost.
     total_advance_wall_seconds: float = 0.0
-    #: Advances the bridge ended on its own wall ceiling without spending the
-    #: budget or finding an event: the difference between a speed-up and a stall.
+    #: Advances the bridge stopped mid-loop without spending the budget and
+    #: without an event the settled snapshot corroborates (M1B-E032). Not the
+    #: wall-time ceiling, which fails the episode by name instead.
     advances_cut_short: int = 0
     #: Every attempted episode, valid and invalid alike, in the order they ran.
     #: A statistical comparison needs the per-episode samples, not just the

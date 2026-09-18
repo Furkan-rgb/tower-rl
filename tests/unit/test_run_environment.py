@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fakes.fake_run_port import FakeCommandResult, FakeRunPort  # noqa: E402
 
 from tower_rl.application.run_environment import (  # noqa: E402
+    ADVANCE_TRUNCATED_BY_WALL,
     BRIDGE_EVENT_DIVERGENCE,
     GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
@@ -181,13 +182,45 @@ def test_an_unconfirmed_advance_fails_the_episode_rather_than_passing_as_a_wait(
 
 
 def test_an_advance_cut_short_of_its_budget_is_counted_not_hidden() -> None:
-    """The bridge has its own wall ceiling: stopping early is slowness, not an event."""
+    """A loop stopped on a reading its settled state does not corroborate.
+
+    It spent neither its budget nor ended on an event the settled state still
+    shows. The observation the agent receives is that settled state, so the
+    transition is genuine - but a rise in the count says the loop and the state
+    it reports are drifting apart, so it is counted (M1B-E032).
+    """
+    environment, port = _environment()
+    environment.reset()
+
+    def stopped_short_of_the_budget(**_kwargs: object) -> FakeCommandResult:
+        return FakeCommandResult(
+            "confirmed", "budget_exhausted", frames=3, game_ms=50.0,
+            state=port.read_state(),
+        )
+
+    port.advance_until_event = stopped_short_of_the_budget  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert transition.admissible, "a short advance is still a genuine transition"
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).advances_cut_short == 1
+
+
+def test_an_advance_truncated_by_wall_time_fails_the_episode_by_name() -> None:
+    """No advance may be truncated by wall time.
+
+    The bridge reports that case under its own reason rather than as a spent
+    budget, because the settled state cannot tell the two apart. An advance cut
+    off by how long the host took is load-dependent, so the episode it belongs
+    to is not comparable with one that was not, and is failed by name rather
+    than absorbed into `advances_cut_short`.
+    """
     environment, port = _environment()
     environment.reset()
 
     def stopped_on_the_wall_ceiling(**_kwargs: object) -> FakeCommandResult:
         return FakeCommandResult(
-            "confirmed", "budget_exhausted", frames=3, game_ms=50.0,
+            "confirmed", "wall_ceiling", frames=3, game_ms=50.0,
             state=port.read_state(),
         )
 
@@ -195,8 +228,13 @@ def test_an_advance_cut_short_of_its_budget_is_counted_not_hidden() -> None:
 
     transition = environment.step(WAIT)
 
-    assert transition.admissible, "a short advance is still a genuine transition"
-    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).advances_cut_short == 1
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+    assert not transition.admissible
+    assert ADVANCE_TRUNCATED_BY_WALL in transition.invalid_reasons
+    summary = environment.summarize(transition.termination)
+    assert not summary.valid, "a truncated episode may not count towards the curve"
+    assert ADVANCE_TRUNCATED_BY_WALL in summary.termination_detail
+    assert summary.advances_cut_short == 0, "the two conditions are not the same thing"
 
 
 def test_the_summary_reports_what_advancing_cost_the_game_clock() -> None:

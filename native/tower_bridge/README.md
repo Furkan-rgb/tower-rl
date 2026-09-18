@@ -114,7 +114,11 @@ The loop stops at the first decision event, or when the budget is spent. The
 events and their precedence mirror the host's own predicate exactly -
 `event:run_ended`, `event:wave_changed`, `event:newly_affordable`,
 `event:health_changed`, else `budget_exhausted` - so one socket round trip buys
-one policy decision rather than one time slice.
+one policy decision rather than one time slice. The loop also has a hard
+wall-time ceiling, and an advance it cuts off reports `wall_ceiling` rather than
+`budget_exhausted`: the settled state cannot tell the two apart, and the host
+fails an episode on the second because a truncation by host load is not part of
+the decision problem.
 
 **The observation bound to an `advance` result is settled, and the host uses
 it.** `Pause` is dispatched to Unity's main thread and lands a frame or two after

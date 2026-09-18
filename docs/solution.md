@@ -1084,9 +1084,13 @@ of the same condition will drift; this makes the drift an observation instead of
 silent change to the decision problem. An advance that comes back `ambiguous`
 (`no_frame_rendered`, `clock_unavailable`) ends the episode as
 `ACTION_PIPELINE_FAILED`; it is not treated as an ordinary wait. An advance that
-stops short of its budget with no event — the bridge's own wall-clock ceiling —
-is counted as `advances_cut_short` on the episode, because that is the difference
-between a speed-up and a stall.
+stops short of its budget with no event the settled snapshot corroborates is
+counted as `advances_cut_short` on the episode, because a rise in it says the
+bridge's mid-loop readings and the settled state it reports are drifting apart.
+An advance the bridge's own wall-time ceiling cut off is a different thing and
+is reported under its own reason, `wall_ceiling`: how long the host took is not
+part of the decision problem, so the episode is failed by name with
+`ADVANCE_TRUNCATED_BY_WALL` rather than counted.
 
 **The frame rate is display-bound, and uncapping is not available.** An earlier
 version of this section recommended `QualitySettings.vSyncCount = 0` and

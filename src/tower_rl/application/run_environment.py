@@ -80,9 +80,11 @@ MIN_ADVANCE_GAME_MS = 10
 BRIDGE_EVENT_DIVERGENCE = "the bridge and the host disagree about the decision event"
 
 #: What the bridge prefixes a reason with when it stopped on an event rather
-#: than on the budget, and the reason it gives when it stopped on neither.
+#: than on the budget, the reason it gives when it stopped on neither, and the
+#: reason it gives when its own wall-time ceiling cut the advance off.
 _BRIDGE_EVENT_PREFIX = "event:"
 _BRIDGE_BUDGET_REASON = "budget_exhausted"
+_BRIDGE_WALL_CEILING_REASON = "wall_ceiling"
 
 
 #: The most the game's own round clock may read per millisecond of game time the
@@ -132,6 +134,16 @@ GAME_TIME_INFLATED = "the game simulated more time than the advance budgeted"
 #: named distinctly so a report says which way the clock disagreed.
 GAME_TIME_DEFLATED = "the game simulated less time than the advance budgeted"
 
+#: An advance ended because the bridge ran out of wall time, not because the
+#: world did anything. No advance may be truncated that way: how long the host
+#: took to render is not part of the decision problem, so an episode containing
+#: one was measured under a different problem from every episode that was not,
+#: and is failed by name rather than counted. The ceiling is 15 s against a
+#: full advance of about 0.33 s at the measured 16.2 ms frame time (M1B-E032),
+#: a 46x margin, so this costs nothing until actor scaling changes that - which
+#: is exactly when it must be heard rather than absorbed.
+ADVANCE_TRUNCATED_BY_WALL = "an advance was cut off by the bridge's wall-time ceiling"
+
 
 class _DeathBoundaryUnresolved(RunPortError):
     """The minimal advance that should have settled the death boundary failed.
@@ -168,8 +180,12 @@ class _EpisodeTally:
     #: boundary cost.
     round_ms: float = 0.0
     advance_wall_micros: int = 0
-    #: Advances the bridge ended early, on its own wall-clock ceiling, without
-    #: either spending the budget or finding an event.
+    #: Advances the bridge stopped mid-loop on a reading the settled snapshot
+    #: then did not corroborate: it spent neither its budget nor found an event
+    #: the settled state still shows. The transition is genuine - the settled
+    #: state is what the agent observes - so it is counted, not rejected. Not
+    #: the wall-time ceiling, which is `ADVANCE_TRUNCATED_BY_WALL` and fails the
+    #: episode, and not a frame budget, of which there is none (M1B-E032).
     advances_cut_short: int = 0
     #: The speed the run was seen executing at while it was still running. The
     #: final state is always terminal and the game has stopped time by then, so
@@ -364,11 +380,17 @@ class InstrumentedRunEnvironment:
         self._tally.round_ms += result.round_ms
         self._tally.advance_wall_micros += result.wall_micros
         if result.reason == _BRIDGE_BUDGET_REASON and result.game_ms < budget:
-            # The bridge stopped on its own wall-clock ceiling rather than on the
-            # budget. The transition is genuine, so it is counted rather than
-            # rejected - but counted, because it is the difference between a
-            # speed-up and a stall.
+            # The loop stopped on a mid-loop reading that the settled snapshot
+            # does not corroborate: no event survives to the settled state and
+            # the budget was not spent. The transition is genuine - the settled
+            # state is what the agent observes - so it is counted rather than
+            # rejected.
             self._tally.advances_cut_short += 1
+        truncated = (
+            (ADVANCE_TRUNCATED_BY_WALL,)
+            if result.reason == _BRIDGE_WALL_CEILING_REASON
+            else ()
+        )
         if result.outcome != "confirmed":
             # An advance that cannot say how far it got leaves the record unable
             # to describe what happened, exactly as an unconfirmed purchase does.
@@ -380,7 +402,7 @@ class InstrumentedRunEnvironment:
                 self._read_state(),
                 (),
                 budget,
-                (f"advance was not confirmed: {result.reason}",) + clock_fidelity,
+                (f"advance was not confirmed: {result.reason}",) + clock_fidelity + truncated,
                 failure=_advance_failure(result.outcome),
             )
 
@@ -401,7 +423,9 @@ class InstrumentedRunEnvironment:
                 None,
                 (DecisionEvent.RUN_ENDED,),
                 budget,
-                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,)) + clock_fidelity,
+                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,))
+                + clock_fidelity
+                + truncated,
             )
         events = self._events_between(state, observed)
         return _Advance(
@@ -410,7 +434,8 @@ class InstrumentedRunEnvironment:
             budget,
             validate_transition(state, observed)
             + self._divergence(result.reason, events)
-            + clock_fidelity,
+            + clock_fidelity
+            + truncated,
         )
 
     def _round_clock_fidelity(self, *, advance_ended_run: bool) -> tuple[str, ...]:

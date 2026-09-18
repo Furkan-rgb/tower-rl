@@ -1159,6 +1159,12 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   uint64_t last_heartbeat = started;
   double game_millis = 0.0;
   bool connected = true;
+  // Which of the loop's exits ended it. Only `wall_ceiling` changes what the
+  // advance reports - a wall-truncated advance is a different thing from one
+  // that spent its budget, and the settled snapshot cannot tell them apart -
+  // but naming every exit costs nothing and says, in the diagnostics line,
+  // which mid-loop reading stopped a loop the settled state does not explain.
+  const char* stopped_on = "heartbeat_failed";
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
   // The round clock at three moments of the advance, so the difference between
   // the game's clock and this loop's frame arithmetic can be located rather
@@ -1182,13 +1188,31 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
       if (read) probe_t1 = after.round_time;
 #endif
-      if (!read || !after.active) break;
-      if (after.wave != before.wave) break;
-      if (BecameAvailable(before, after)) break;
-      if (std::fabs(after.health_fraction - before.health_fraction) >= health_threshold) break;
-      if (game_millis >= static_cast<double>(command.budget_game_millis)) break;
+      if (!read || !after.active) {
+        stopped_on = read ? "run_ended" : "unreadable";
+        break;
+      }
+      if (after.wave != before.wave) {
+        stopped_on = "wave_changed";
+        break;
+      }
+      if (BecameAvailable(before, after)) {
+        stopped_on = "newly_affordable";
+        break;
+      }
+      if (std::fabs(after.health_fraction - before.health_fraction) >= health_threshold) {
+        stopped_on = "health_changed";
+        break;
+      }
+      if (game_millis >= static_cast<double>(command.budget_game_millis)) {
+        stopped_on = "budget_spent";
+        break;
+      }
     }
-    if (detail->wall_micros >= kAdvanceWallBudgetMicros) break;
+    if (detail->wall_micros >= kAdvanceWallBudgetMicros) {
+      stopped_on = "wall_ceiling";
+      break;
+    }
     // A long advance must keep proving the bridge is alive, or the host cannot
     // tell a quiet world from a dead connection.
     if (now - last_heartbeat >= kHeartbeatIntervalMicros) {
@@ -1256,6 +1280,13 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
     *reason = "event:newly_affordable";
   } else if (std::fabs(settled.health_fraction - before.health_fraction) >= health_threshold) {
     *reason = "event:health_changed";
+  } else if (std::strcmp(stopped_on, "wall_ceiling") == 0) {
+    // The loop ran out of wall time, not of game time. The settled snapshot
+    // cannot show this - it looks exactly like a spent budget - so it is
+    // reported as its own reason. The host fails the episode on it: an advance
+    // cut off by how long the host took is load-dependent, and an episode
+    // measured that way is not comparable with one that was not.
+    *reason = "wall_ceiling";
   } else {
     *reason = "budget_exhausted";
   }
@@ -1281,12 +1312,12 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // reading, and after the settle window.
   __android_log_print(ANDROID_LOG_INFO, kLogTag,
                       "clockprobe t0=%.3f t1=%.3f t2=%.3f loop_frames=%d settle_frames=%d "
-                      "frame_game_ms=%.1f wall_us=%llu",
+                      "frame_game_ms=%.1f wall_us=%llu stopped_on=%s",
                       static_cast<double>(probe_t0), static_cast<double>(probe_t1),
                       static_cast<double>(readable ? settled.round_time : probe_t1),
                       probe_loop_frames, detail->frames - probe_loop_frames,
                       static_cast<double>(command.frame_game_millis),
-                      static_cast<unsigned long long>(detail->wall_micros));
+                      static_cast<unsigned long long>(detail->wall_micros), stopped_on);
 #endif
   return connected;
 }

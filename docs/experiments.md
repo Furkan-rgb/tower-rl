@@ -99,15 +99,34 @@ past four.
 | 7 actors, 360×640 | 104 | 3 |
 | 8 actors, 1080×1920 | 120 | 12 |
 
-An `advances_cut_short` event means an advance hit its frame budget rather
-than the episode's own stopping condition — it is not a wrong simulation, and
-every other health counter (`BRIDGE_EVENT_DIVERGENCE`, `stale_or_duplicate`,
+An `advances_cut_short` event means the bridge's advance loop stopped on a
+mid-loop reading that its own settled snapshot then did not corroborate: it
+spent neither its game-time budget nor ended on an event still visible in the
+settled state. There is no frame budget; an earlier version of this entry said
+there was, and that attribution is refuted. The wall-time ceiling — the one
+wall-clock-sensitive term in the loop, `kAdvanceWallBudgetMicros` at 15 s — is
+refuted as the cause too: a full advance takes about 20 frames at the measured
+16.2 ms, roughly 0.33 s, a 46x margin, and 15 of the 16 cut-short advances came
+from episodes whose entire advance wall time was under 14 s. It is therefore
+benign as to fidelity: the observation the agent receives is the settled, paused
+one, and every other health counter (`BRIDGE_EVENT_DIVERGENCE`, `stale_or_duplicate`,
 `GAME_TIME_INFLATED`, `episodes_not_started_fresh`) stayed at 0 across all
 three runs, with pooled round/budgeted ratios 1.00634–1.00867 and worst-case
 ratios 1.01105–1.01401, indistinguishable from the single- and four-actor
 baselines. But the count is not flat, and its cause relative to actor count is
-not established by this evidence — treat it as an open fidelity question
-under investigation, not as a settled benign artifact.
+not established by this evidence — treat the trend as open, while treating the
+fidelity question as answered: the settled observation is what the agent sees.
+
+**Follow-up taken (2026-09-18).** Because the two conditions the counter could
+have meant have opposite severity, the bridge now reports a wall-truncated
+advance under its own reason, `wall_ceiling`, instead of letting it fall through
+to `budget_exhausted`, and the host fails any episode containing one by name
+(`ADVANCE_TRUNCATED_BY_WALL`): an advance cut off by how long the host took is
+load-dependent and not comparable with one that was not. With a 46x margin the
+invariant should never fire; it exists so that actor scaling large enough to
+change that is heard rather than absorbed into this counter. `advances_cut_short`
+now means only the benign mid-loop case above. The diagnostics `clockprobe` line
+also names the exit that ended each loop (`stopped_on=`).
 
 Source: session scratchpad `X812-SCALING-DETAIL.md` ("Environment health"
 table).

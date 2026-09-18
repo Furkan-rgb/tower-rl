@@ -11,7 +11,7 @@ one to gate.
 Collection runs in decision blocks (`--block-decisions`), each landing on an
 episode boundary, until the budget is spent.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
+    uv run --extra tracking python scripts/train.py \\
         --budget-decisions 20000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
@@ -25,7 +25,7 @@ its instances instead: it takes them from `CloneInstance` by index exactly as
 four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \\
+    uv run --extra tracking python scripts/train.py \\
         --actors 4 --budget-decisions 100000
 
 The run records itself to the local MLflow store under `~/.local/state/tower-rl`;

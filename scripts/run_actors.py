@@ -34,7 +34,7 @@ available CPU, so the contention is entirely in the simultaneous boot.
 previous instance has signalled ready, so boots do not pile up, while episode
 collection afterwards is exactly as concurrent as before.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/run_actors.py \\
+    uv run python scripts/run_actors.py \\
         --actors 2 --episodes 20
 """
 

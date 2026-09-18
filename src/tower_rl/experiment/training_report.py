@@ -95,7 +95,16 @@ class TrainingReport:
     #: Collected episodes already reported to the tracker, and the decisions
     #: spent by the end of the last of them. The episode is the tracked unit, so
     #: both are carried rather than recomputed: an episode joins the series when
-    #: it ends, and is never reported twice.
+    #: it ends, and is never reported twice. A running sum rather than a prefix
+    #: sum over `collected`, which would re-add the whole list once per episode
+    #: over the thousands a multi-hour run collects.
+    #:
+    #: This tracks `TrainingProgressReport.decisions` exactly today - that
+    #: counter has one writer, `_record_episode`, which appends to `collected`
+    #: in the same breath, and nothing restores it. A resume that restored it
+    #: from a checkpoint would break that: this would start at zero against a
+    #: non-zero total and key the whole episode series onto the wrong part of
+    #: the budget. Initialise it from `report.decisions` when resume lands.
     episodes_logged: int = 0
     decisions_logged: int = 0
 

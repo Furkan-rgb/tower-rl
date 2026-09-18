@@ -116,6 +116,27 @@ def test_the_interquartile_mean_is_the_middle_half() -> None:
     assert iqm([9]) == pytest.approx(9.0)
 
 
+def test_the_trim_follows_scipy_rather_than_an_exact_half() -> None:
+    """`int(n * 0.25)` off each end, which is `scipy.stats.trim_mean(x, 0.25)`.
+
+    A sample whose size is not a multiple of four cannot have exactly a quarter
+    dropped from each end, and the convention resolves that by dropping fewer,
+    not by interpolating a quantile. Pinned at two such sizes because the
+    alternative readings differ there and agree at the sizes above: this is what
+    keeps a number here and a number from `rliable` the same number.
+    """
+    # n=7: one off each end, five kept - not the three or four an exact half
+    # would keep.
+    seven = [1, 2, 3, 4, 5, 6, 7]
+    assert iqm(seven) == pytest.approx(sum(seven[1:6]) / 5)
+    assert iqm(seven) == pytest.approx(4.0)
+
+    # n=14: three off each end, eight kept, which is 57% of the sample.
+    fourteen = list(range(1, 15))
+    assert iqm(fourteen) == pytest.approx(sum(fourteen[3:11]) / 8)
+    assert iqm(fourteen) == pytest.approx(7.5)
+
+
 def test_the_interquartile_mean_ignores_the_tails_the_mean_chases() -> None:
     """One runaway episode moves a mean and must not move the IQM."""
     ordinary = [5, 5, 6, 6, 6, 7, 7, 8]

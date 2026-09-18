@@ -7,13 +7,13 @@ repository. It never touches the canonical evaluation AVD, and it never taps:
 since the round boundary moved into the bridge, nothing in this path reads a
 pixel or touches the screen.
 
-    TOWER_BRIDGE_BUILD_DIR=... ./scripts/run_episodes.py --episodes 50
+    ./scripts/run_episodes.py --episodes 50
 
 `--policy` names the arm: one of the non-learned floors, or `checkpoint:<path>`
 for a checkpoint a training run left behind, which is rebuilt into the backbone
 that wrote it and played greedily. Every record says which it was.
 
-    TOWER_BRIDGE_BUILD_DIR=... ./scripts/run_episodes.py --episodes 50 \\
+    ./scripts/run_episodes.py --episodes 50 \\
         --policy checkpoint:~/.local/state/tower-rl/runs/.../checkpoint-0100000.pt
 """
 

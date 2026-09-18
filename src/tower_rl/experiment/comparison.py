@@ -121,15 +121,19 @@ def bootstrap_difference(
 
 
 def iqm(values: Sequence[float]) -> float:
-    """The interquartile mean: the mean of the middle 50% of the sample.
+    """The interquartile mean: the middle half by the trim rule of Agarwal et al. 2021.
 
-    This is the aggregate recommended by Agarwal et al. 2021, *Deep
-    Reinforcement Learning at the Edge of the Statistical Precipice*, and this
-    is the same estimator their `rliable` library computes - a symmetric 25%
-    trimmed mean. `rliable` itself is deliberately not a dependency of this
-    project: the estimator is four lines, and its interval comes from
-    `stratified_bootstrap` below rather than from a second bootstrap
-    implementation.
+    "The middle half" is the intent, not the arithmetic. The rule is the one
+    `rliable` computes, which is `scipy.stats.trim_mean(x, 0.25)`: drop
+    `int(n * 0.25)` values from each end and average the rest. That is exactly
+    half the sample only when `n` is a multiple of four - at `n = 14` it keeps 8
+    of 14, which is 57% - because a fractional value cannot be dropped. The
+    convention is followed rather than improved on, so a number here and a
+    number from `rliable` are the same number.
+
+    `rliable` itself is deliberately not a dependency of this project: the
+    estimator is four lines, and its interval comes from `stratified_bootstrap`
+    below rather than from a second bootstrap implementation.
 
     A final wave is bounded, discrete and skewed, and a handful of very long
     episodes move its mean a long way. The IQM discards those tails without

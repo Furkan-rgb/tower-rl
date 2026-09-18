@@ -317,6 +317,61 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     assert (tmp_path / "mlartifacts").is_dir()
 
 
+def test_the_mlflow_adapter_reopens_a_run_that_already_exists(tmp_path: Path) -> None:
+    """What a post-hoc selection does: attach to a finished run and add to it.
+
+    The greedy score of a checkpoint is taken hours after the run that produced
+    it, so `open_run` is the only way those numbers reach the page they are
+    about. Exercised against a real store rather than a double, because the one
+    thing it does beyond handing out a handle - reading the run back so a
+    mistyped id is refused rather than silently swallowed - is the store's
+    behaviour, not this project's.
+    """
+    pytest.importorskip("mlflow")
+    from mlflow.exceptions import MlflowException
+    from mlflow.tracking import MlflowClient
+
+    from tower_rl.experiment.mlflow_tracking import MlflowExperimentTracker
+
+    uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    tracker = MlflowExperimentTracker(
+        tracking_uri=uri,
+        experiment="reopen-experiment",
+        artifact_root=str(tmp_path / "mlartifacts"),
+    )
+    training = tracker.start_run(name="stacked-dqn-test", params={"seed": 0}, tags={})
+    training.log_metrics({"episode_final_wave": 6.0}, decisions=1000)
+    training.finish()
+
+    # Hours later, from another process: the run is addressed by its id alone.
+    reopened = MlflowExperimentTracker(
+        tracking_uri=uri,
+        experiment="reopen-experiment",
+        artifact_root=str(tmp_path / "mlartifacts"),
+    ).open_run(training.run_id)
+    reopened.log_metrics({"greedy_final_wave_iqm": 8.5}, decisions=1000)
+
+    assert reopened.run_id == training.run_id
+    client = MlflowClient(tracking_uri=uri)
+    greedy = client.get_metric_history(training.run_id, "greedy_final_wave_iqm")
+    assert [(item.step, item.value) for item in greedy] == [(1000, 8.5)]
+    # On the same run and the same axis as what training reported, which is the
+    # whole point: the greedy curve sits above the exploring one.
+    exploring = client.get_metric_history(training.run_id, "episode_final_wave")
+    assert [(item.step, item.value) for item in exploring] == [(1000, 6.0)]
+    # Terminated by training and left terminated: attaching is not restarting.
+    assert client.get_run(training.run_id).info.status == "FINISHED"
+
+    # A run id that names nothing is refused where it is typed, not by a metric
+    # disappearing into a store nobody reads again.
+    with pytest.raises(MlflowException):
+        MlflowExperimentTracker(
+            tracking_uri=uri,
+            experiment="reopen-experiment",
+            artifact_root=str(tmp_path / "mlartifacts"),
+        ).open_run("0123456789abcdef0123456789abcdef")
+
+
 #: Every key one collected episode reports. An episode is the tracked unit, so
 #: a run is readable at this resolution or it is readable only in aggregate.
 EPISODE_KEYS = {

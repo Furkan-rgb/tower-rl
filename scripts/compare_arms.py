@@ -6,7 +6,7 @@ small blocks rather than running one after another, because running arm A for an
 hour and then arm B confounds the arm with whatever drifted in between. Results
 are reported as bootstrap intervals rather than verdicts.
 
-    TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/compare_arms.py \\
+    uv run python scripts/compare_arms.py \\
         --arm scripted --arm random --episodes 25
 """
 

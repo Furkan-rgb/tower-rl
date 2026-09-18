@@ -61,15 +61,15 @@ uv sync --all-groups
 uv run ruff check . && uv run mypy && uv run pytest
 
 # one instance up, offline, with the bridge deployed
-TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/clone_session.py up \
+uv run python scripts/clone_session.py up \
   --renderer host --cores 4
 
 # a fleet of scripted actors, for throughput
-TOWER_BRIDGE_BUILD_DIR=... uv run python scripts/run_actors.py \
+uv run python scripts/run_actors.py \
   --actors 4 --episodes 20 --renderer host
 
 # a training run on that fleet
-TOWER_BRIDGE_BUILD_DIR=... uv run --extra tracking python scripts/train.py \
+uv run --extra tracking python scripts/train.py \
   --actors 4 --renderer host --budget-decisions 100000
 ```
 

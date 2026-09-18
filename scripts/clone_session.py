@@ -88,6 +88,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,20 @@ RESTORED_READY_TIMEOUT = 60.0
 #: restoring one under a different renderer would not be the state it claims
 #: anyway. Bring-up under any other renderer takes the cold path outright.
 SNAPSHOT_CAPABLE_RENDERER = "lavapipe"
+#: The rate the guest paces the game at, in Hz. The game's frame pacing is a
+#: guest-side vsync timer, so a decision's frames arrive at whatever rate the
+#: guest display runs, and raising it is what makes an advance cheaper in wall
+#: time (60 Hz -> 16.17 ms a frame, 240 Hz -> 4.14 ms). Two settings have to agree
+#: or the guest keeps 60: `-vsync-rate` below sets the display's physical vsync
+#: mode, and `raise_frame_rate` lifts SurfaceFlinger's per-uid game
+#: frame-rate override (`ro.surface_flinger.game_default_frame_rate_override=60`)
+#: that otherwise pins the game surface to 60 whatever mode the display is in.
+#: They are one constant here precisely because they cannot be allowed to drift
+#: apart: a 240 override against a 60 Hz mode still renders at 60.
+GUEST_FRAME_RATE_HZ = 120
+#: How long SurfaceFlinger is given to apply a raised rate before the instance is
+#: called unusable. Observed on device to take a beat, not to be slow.
+FRAME_RATE_CONFIRM_TIMEOUT = 20.0
 
 
 class CloneError(RuntimeError):
@@ -423,11 +438,20 @@ def emulator_command(
     image stays untouched and each instance writes to its own overlay. It is
     also incompatible with saving a snapshot, which is why it is a choice and
     not the default.
+
+    `-vsync-rate` is half of `GUEST_FRAME_RATE_HZ`; `raise_frame_rate` is the
+    other half. Every instance this builds is `-no-window`, which is why raising
+    it here is safe: the emulator warns that exceeding the host display's refresh
+    rate is undefined, and a headless instance is driving no host display at all.
+    The windowed review path (`launch_avd.sh`) keeps default pacing for that
+    reason, and because a human watching a checkpoint play wants the game's own
+    speed, not the fleet's.
     """
     command = [
         binary, f"@{instance.avd}",
         "-gpu", renderer, "-no-audio", "-no-boot-anim", "-no-window",
         "-cores", str(cores), "-port", str(instance.console_port), "-no-snapshot-save",
+        "-vsync-rate", str(GUEST_FRAME_RATE_HZ),
     ]
     if read_only:
         command.append("-read-only")
@@ -530,6 +554,80 @@ def launch_game_at_home(instance: CloneInstance) -> None:
     if reason is not None:
         raise CloneError(f"the game did not survive the network being cut: {reason}")
     print(f"{instance.serial} is at home and offline", flush=True)
+
+
+def game_uid(instance: CloneInstance) -> str:
+    """The game's Android uid, which is how SurfaceFlinger names its override."""
+    for line in adb(instance, "shell", "dumpsys", "package", PACKAGE).splitlines():
+        match = re.search(r"\bappId=(\d+)", line)
+        if match:
+            return match.group(1)
+    raise CloneError(f"{instance.serial}: {PACKAGE} has no uid; is it installed?")
+
+
+def confirm_frame_rate(instance: CloneInstance) -> None:
+    """Fail unless the display mode and the game's own override are both at the rate.
+
+    The two levers fail silently and independently: a 60 Hz display mode renders
+    at 60 whatever the override says, and a display at 240 Hz still renders the
+    game at 60 while the per-uid game default override stands. Neither `emulator
+    -vsync-rate` nor `cmd game set` reports back, so a run that quietly collected
+    at 60 would look exactly like one that collected at 240 except in its
+    throughput. SurfaceFlinger holds both readings, so they are read back here
+    before anything is measured.
+    """
+    uid = game_uid(instance)
+    rate = GUEST_FRAME_RATE_HZ
+    # SurfaceFlinger applies a new override a beat after GameManagerService takes
+    # it, so a reading taken the instant `cmd game set` returns still says 60.
+    deadline = time.monotonic() + FRAME_RATE_CONFIRM_TIMEOUT
+    while True:
+        dump = adb(instance, "shell", "dumpsys", "SurfaceFlinger")
+        mode = re.search(r"activeMode=\{[^}]*vsyncRate=([\d.]+) Hz", dump)
+        override = re.search(rf"\{{{uid}, (\d+) \d+\}}", dump)
+        applied = re.search(rf"\{{{uid}, ([\d.]+) Hz\}}", dump)
+        readings = {
+            "display vsync mode": mode.group(1) if mode else "absent",
+            f"uid {uid} game mode override": override.group(1) if override else "absent",
+            f"uid {uid} applied frame rate": applied.group(1) if applied else "absent",
+        }
+        wrong = [
+            f"{name} {value}"
+            for name, value in readings.items()
+            if value == "absent" or float(value) != float(rate)
+        ]
+        if not wrong:
+            break
+        if time.monotonic() >= deadline:
+            raise CloneError(
+                f"{instance.serial}: the guest is not at {rate} Hz: " + ", ".join(wrong)
+            )
+        time.sleep(1.0)
+    print(f"{instance.serial}: confirmed at {rate} Hz: " + ", ".join(
+        f"{name} {value}" for name, value in readings.items()
+    ), flush=True)
+
+
+def raise_frame_rate(instance: CloneInstance) -> None:
+    """Lift the per-uid game frame-rate override, so the game may use the display.
+
+    SurfaceFlinger ships a game default frame-rate override of 60 Hz that applies
+    to the game's uid whatever mode the display is in, so `-vsync-rate` on its own
+    leaves the game surface rendering at 60. `cmd game set --fps` replaces that
+    override with ours. It is a device-wide setting on the running instance, so
+    `instrumented_bridge.sh cleanup` resets it during teardown and no instance is
+    left modified.
+
+    This is deliberately *not* part of bring-up. An instance already running at a
+    high rate while a peer boots killed that peer's Vulkan surface on device
+    (`Failed to find ColorBuffer`, the game gone by the time the network was
+    cut), and every instance boots fine at 60. So a fleet brings every instance
+    up at the stock rate and calls this on each of them only once the whole fleet
+    is up (`run_actors.stagger_bring_up`); a single instance is that same fleet
+    with one member.
+    """
+    adb(instance, "shell", "cmd", "game", "set", "--fps", str(GUEST_FRAME_RATE_HZ), PACKAGE)
+    confirm_frame_rate(instance)
 
 
 def restore(
@@ -764,6 +862,8 @@ def main() -> int:
                 cores=arguments.cores,
                 force_cold=arguments.cold,
             )
+            # A single instance is a fleet of one: it is up, so it may be raised.
+            raise_frame_rate(instance)
         elif arguments.command == "snapshot":
             save_snapshot(instance, arguments.name or keyed_snapshot_name(bridge_key()))
         elif arguments.command == "restore":

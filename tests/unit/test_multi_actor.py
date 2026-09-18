@@ -254,6 +254,7 @@ def bring_up_steps(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: steps.append("require_offline"))
+    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: steps.append("raise_frame_rate"))
     monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
     monkeypatch.setattr(run_actors.subprocess, "run", episode_process)
 
@@ -282,7 +283,7 @@ def test_an_actor_is_ready_and_verified_offline_before_any_episode_runs(
     """
     steps, asked = bring_up_steps(monkeypatch, tmp_path)
 
-    assert steps == ["bring_up", "require_offline", "run_episodes.py"]
+    assert steps == ["bring_up", "require_offline", "raise_frame_rate", "run_episodes.py"]
     assert asked == [
         {
             "serial": "emulator-5556",
@@ -402,6 +403,7 @@ def test_bring_ups_are_sequenced_but_collection_still_runs_concurrently(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
     outcomes = run_fleet(
@@ -411,6 +413,95 @@ def test_bring_ups_are_sequenced_but_collection_still_runs_concurrently(
     assert bring_up_tracker.peak == 1
     assert collect_tracker.peak == len(instances)
     assert all(outcome.failure is None for outcome in outcomes)
+
+
+def test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The backstop is a per-instance timeout, not a fleet-start deadline.
+
+    On device a 7-instance cold host fleet took ~165s per bring-up against a
+    360s backstop measured from fleet start: the window had expired for the
+    later instances before their predecessors had even launched, and their
+    boots overlapped. Timed from the previous instance's own launch, a boot
+    slower than the whole backstop still cannot overlap its successor.
+    """
+    instances = [CloneInstance(index=index) for index in range(3)]
+    monkeypatch.setattr(run_actors, "BRING_UP_STAGGER_BACKSTOP", 0.3)
+    bring_up_tracker = ConcurrencyRecorder()
+
+    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
+        bring_up_tracker.enter()
+        time.sleep(0.25)
+        bring_up_tracker.exit()
+        return "restored"
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
+    monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
+
+    outcomes = run_fleet(
+        instances, stagger_bring_up(instances, stagger_arguments(tmp_path)), lambda _: None
+    )
+
+    assert bring_up_tracker.peak == 1
+    assert all(outcome.failure is None for outcome in outcomes)
+
+
+def test_no_instance_is_raised_to_the_high_frame_rate_while_a_peer_is_booting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The device defect this fixes: a 2-instance fleet lost an actor at 240 Hz.
+
+    Actor 1 died during bring-up with its Vulkan surface gone (`Failed to find
+    ColorBuffer`) while actor 0 was already running at 240 Hz; the same fleet
+    comes up cleanly when every instance boots at the stock rate. So the raise
+    is deferred: no instance may be raised until every instance's bring-up has
+    concluded, and none may collect an episode before it is raised.
+    """
+    instances = [CloneInstance(index=index) for index in range(3)]
+    events: list[str] = []
+    lock = threading.Lock()
+
+    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
+        time.sleep(0.02)
+        with lock:
+            events.append(f"up:{target.index}")
+        return "restored"
+
+    def fake_raise(target: CloneInstance) -> None:
+        with lock:
+            events.append(f"raise:{target.index}")
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        with lock:
+            events.append("episodes")
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "raise_frame_rate", fake_raise)
+    monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
+
+    outcomes = run_fleet(
+        instances, stagger_bring_up(instances, stagger_arguments(tmp_path)), lambda _: None
+    )
+
+    assert all(outcome.failure is None for outcome in outcomes)
+    last_bring_up = max(index for index, event in enumerate(events) if event.startswith("up:"))
+    first_raise = min(index for index, event in enumerate(events) if event.startswith("raise:"))
+    first_episode = events.index("episodes")
+    assert first_raise > last_bring_up
+    assert first_episode > first_raise
+    assert sum(1 for event in events if event.startswith("raise:")) == len(instances)
 
 
 def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
@@ -433,6 +524,7 @@ def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
     outcomes = run_fleet(

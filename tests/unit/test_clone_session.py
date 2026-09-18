@@ -75,6 +75,9 @@ class FakeClone:
         #: Whether a claimed `OK` actually leaves a snapshot directory behind,
         #: so the false-success path can be exercised on its own.
         self.create_snapshot_dir = create_snapshot_dir
+        #: What `cmd game set --fps` has pinned, which is what the fake
+        #: SurfaceFlinger dump then reports back for the game's uid.
+        self.pinned_rate = 60
 
     def adb(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
         command = " ".join(args)
@@ -91,6 +94,22 @@ class FakeClone:
             return "1"
         if command.startswith("shell pidof"):
             return self.pid
+        if command.startswith("shell cmd game set --fps"):
+            self.pinned_rate = int(args[args.index("--fps") + 1])
+            return ""
+        if command.startswith("shell dumpsys package"):
+            return "  Package [com.TechTreeGames.TheTower] (321faf):\n    appId=10218"
+        if command == "shell dumpsys SurfaceFlinger":
+            # The three readings `confirm_frame_rate` reads back, in the shapes
+            # the real dump writes them.
+            return (
+                f"\t\tGameFrameRateOverrides=\n\t\t\t(uid, gameModeOverride, "
+                f"gameDefaultOverride)={{10218, {self.pinned_rate} 60}}\n"
+                f"FrameRateOverrides=\n    setFrameRate=\n"
+                f"        (uid, frameRate)={{10218, {self.pinned_rate}.00 Hz}}\n"
+                f"    activeMode={{id=0, hwcId=0, resolution=360x640, vsyncRate="
+                f"{clone_session.GUEST_FRAME_RATE_HZ}.00 Hz, dpi=140.00x140.00}}\n"
+            )
         if command.startswith("emu avd snapshot save"):
             if self.snapshot_reply.startswith("OK") and self.create_snapshot_dir:
                 # A real save leaves the snapshot directory on disk; that is
@@ -635,3 +654,67 @@ def test_bring_up_under_host_takes_the_cold_path_without_attempting_a_save(
     assert deployed == ["emulator-5556"]
     assert "-no-snapshot-load" in launches[0]
     assert not [command for command in clone.commands if "snapshot save" in command]
+
+
+def test_the_display_mode_is_launched_at_the_rate_but_the_game_is_not_raised_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bring-up sets the mode and leaves the game at 60; the raise is deferred.
+
+    An instance already running at the raised rate while a peer booted killed
+    that peer's Vulkan surface on device, and `-vsync-rate` alone changes
+    nothing the game sees: the per-uid game frame-rate override still pins its
+    surface to 60. So every instance boots at the stock rate, on both paths.
+    """
+    key = bridge_build(tmp_path, monkeypatch)
+    hold_snapshot(tmp_path, clone_session.keyed_snapshot_name(key))
+    rate = str(clone_session.GUEST_FRAME_RATE_HZ)
+
+    for renderer, path in (("lavapipe", "restored"), ("host", "cold")):
+        clone = FakeClone(online=renderer == "host")
+        install(monkeypatch, clone, [IDLE])
+        launches = record_launches(monkeypatch)
+
+        assert clone_session.bring_up(CloneInstance(), renderer, deploy=lambda _: None) == path
+
+        assert launches[0][launches[0].index("-vsync-rate") + 1] == rate
+        assert not [command for command in clone.commands if "cmd game set" in command]
+        assert clone.pinned_rate == 60
+
+
+def test_raising_the_rate_pins_the_game_to_the_rate_the_display_was_launched_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding is that the mode and the override have to agree.
+
+    A raised `-vsync-rate` with the per-uid game override still in place renders
+    at 60, and an override above a 60 Hz mode does too, so the two are one
+    constant and the raise reads both back out of SurfaceFlinger before any
+    episode is collected.
+    """
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    rate = clone_session.GUEST_FRAME_RATE_HZ
+
+    clone_session.raise_frame_rate(CloneInstance())
+
+    assert f"shell cmd game set --fps {rate} {clone_session.PACKAGE}" in clone.commands
+    assert clone.pinned_rate == rate
+
+
+def test_a_guest_still_at_sixty_is_refused_rather_than_collected_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither lever reports back, so a silent 60 Hz run must not look healthy."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="the guest is not at"):
+        clone_session.confirm_frame_rate(CloneInstance())
+
+
+def test_teardown_resets_the_frame_rate_override_it_pinned() -> None:
+    """Bring-up modifies device state, so cleanup has to hand it back."""
+    script = Path(__file__).resolve().parents[2] / "scripts" / "instrumented_bridge.sh"
+    cleanup = script.read_text()
+    assert 'device shell cmd game reset "$package"' in cleanup

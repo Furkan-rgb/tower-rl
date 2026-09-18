@@ -62,6 +62,7 @@ from clone_session import (  # noqa: E402
     bring_up,
     keyed_snapshot_name,
     kill_emulator,
+    raise_frame_rate,
     require_offline,
     snapshot_exists,
 )
@@ -261,6 +262,7 @@ def collect_episodes(
     arguments: argparse.Namespace,
     *,
     signal_ready: Callable[[], None] = lambda: None,
+    await_fleet: Callable[[], None] = lambda: None,
 ) -> dict[str, Any]:
     """Bring one instance up ready and offline, and run its episodes.
 
@@ -275,6 +277,12 @@ def collect_episodes(
     bring-up begin, and a failed bring-up must release that next actor just as
     surely as a successful one, or one dead actor would stall the rest of the
     fleet from ever starting.
+
+    `await_fleet` is the other half of that sequencing, and it is why the guest
+    frame rate is raised here rather than in bring-up: every instance boots at
+    the stock 60 Hz, and the fleet is raised only once no instance is still
+    booting. An instance already collecting at 240 Hz while a peer booted killed
+    that peer on device.
     """
     try:
         bring_up(
@@ -289,6 +297,9 @@ def collect_episodes(
         require_offline(instance)
     finally:
         signal_ready()
+
+    await_fleet()
+    raise_frame_rate(instance)
 
     output = Path(arguments.output_directory) / f"{instance.serial}.json"
     result = subprocess.run(
@@ -317,7 +328,8 @@ def collect_episodes(
 
 
 #: A backstop against a readiness signal that never arrives, not the
-#: sequencing mechanism itself. `collect_episodes` always signals in a
+#: sequencing mechanism itself, and measured from the previous instance's own
+#: bring-up rather than from fleet start. `collect_episodes` always signals in a
 #: `finally`, and bring_up's own internal waits (`wait_for_boot`,
 #: `wait_until_ready`) are already bounded at 300s, so in the ordinary case —
 #: including a failed bring-up — this is never reached; it exists only so a
@@ -339,23 +351,68 @@ def stagger_bring_up(
     why only bring-up is gated here. Once an instance is up, its episode
     collection runs exactly as concurrently as it always has.
 
+    The same gates carry a second, fleet-wide rendezvous: an instance that is up
+    waits for *every* instance's bring-up to conclude before its guest frame rate
+    is raised and its episodes begin. Raising during bring-up is what broke a
+    2-instance fleet at 240 Hz — actor 1 died with its Vulkan surface gone
+    (`Failed to find ColorBuffer`) while actor 0 was already running at 240 —
+    and a boot at the stock 60 Hz is exactly the boot that works today.
+
     Sequencing on readiness rather than a fixed sleep means instance i+1 starts
     its bring-up the moment instance i's bring-up actually concludes, not after
     a guessed duration — whether instance i succeeded or failed, since one dead
     actor must not block the rest of the fleet from starting.
+
+    Every actor's thread starts at fleet start, so the backstop has to be timed
+    from the previous instance's *own* bring-up, not from when this thread began
+    waiting. Timing it from fleet start is what let a 7-instance cold host fleet
+    overlap its boots on device: bring-up took ~165s each, so one 360s window
+    measured from fleet start had already expired for instances 3-6 before their
+    predecessors had even launched, and four emulators booted at once — exactly
+    the defect this function exists to prevent.
     """
     gates = [threading.Event() for _ in instances]
+    begun = [threading.Event() for _ in instances]
+    begun_at = [0.0 for _ in instances]
+
+    def await_previous(instance: CloneInstance) -> None:
+        previous = instance.index - 1
+        if not begun[previous].wait(BRING_UP_STAGGER_BACKSTOP):
+            print(
+                f"{instance.serial}: instance {previous} never began its bring-up within "
+                f"{BRING_UP_STAGGER_BACKSTOP:.0f}s; starting anyway",
+                flush=True,
+            )
+            return
+        remaining = begun_at[previous] + BRING_UP_STAGGER_BACKSTOP - time.monotonic()
+        if not gates[previous].wait(max(remaining, 0.0)):
+            print(
+                f"{instance.serial}: instance {previous} never signalled ready within "
+                f"{BRING_UP_STAGGER_BACKSTOP:.0f}s of its own launch; starting anyway",
+                flush=True,
+            )
 
     def collect(instance: CloneInstance) -> dict[str, Any]:
         if instance.index > 0:
-            previous = gates[instance.index - 1]
-            if not previous.wait(BRING_UP_STAGGER_BACKSTOP):
-                print(
-                    f"{instance.serial}: instance {instance.index - 1} never signalled "
-                    f"ready within {BRING_UP_STAGGER_BACKSTOP:.0f}s; starting anyway",
-                    flush=True,
-                )
-        return collect_episodes(instance, arguments, signal_ready=gates[instance.index].set)
+            await_previous(instance)
+        begun_at[instance.index] = time.monotonic()
+        begun[instance.index].set()
+
+        def fleet_is_up() -> None:
+            for index, gate in enumerate(gates):
+                if not gate.wait(BRING_UP_STAGGER_BACKSTOP):
+                    print(
+                        f"{instance.serial}: instance {index} never signalled ready within "
+                        f"{BRING_UP_STAGGER_BACKSTOP:.0f}s; raising the rate anyway",
+                        flush=True,
+                    )
+
+        return collect_episodes(
+            instance,
+            arguments,
+            signal_ready=gates[instance.index].set,
+            await_fleet=fleet_is_up,
+        )
 
     return collect
 

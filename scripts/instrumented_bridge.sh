@@ -9,7 +9,8 @@ set -euo pipefail
 #
 #   verify   report package identity, libunity hash, and bridge-artifact state
 #   deploy   install the built bridge and mount the overlay, then start the game
-#   cleanup  stop the game, unmount, remove artifacts, and re-verify identity
+#   cleanup  stop the game, unmount, remove artifacts, reset the frame-rate
+#            override, and re-verify identity
 #
 # Several clone instances can run at once, so the target instance is an argument:
 #
@@ -143,6 +144,11 @@ case "$command" in
 
   cleanup)
     device shell am force-stop "$package"
+    # Bring-up pins the game's frame rate through GameManagerService (see
+    # `clone_session.pin_game_frame_rate`); that override is device state, so it
+    # is reset here and no instance is left modified by a run.
+    device shell cmd game reset "$package" > /dev/null
+    echo "game_frame_rate_override: reset"
     unmount_overlay "$target" || echo "warning: the overlay is still mounted" >&2
     su_device "rm -f /data/user/0/$package/files/libtower_bridge.so /data/local/tmp/libtower_bridge.so /data/local/tmp/libunity-tower-bridge.so"
     device forward --remove "tcp:$host_port" 2> /dev/null || true

@@ -585,8 +585,11 @@ installed, and the game identity was read back unchanged before shutdown
 SHA-256 `ffc1f3ef…0040`, no per-uid frame-rate override). Nothing about Play was
 disabled, frozen or firewalled. **The bake did not reach the fleet recipe**: a
 subsequent `-read-only` cold boot reads WebView 694313738 (133.0.6943.137)
-again, so whatever the writable session committed is not what a `-read-only`
-instance sees (`M1B-E051`). Until that is resolved, treat the kill as live. The
+again, and so does a fresh WRITABLE boot, so the update did not
+persist at all rather than being hidden from read-only instances (`M1B-E051`).
+Writes were flushed and no rollback was logged; a settings change made after the
+install did persist, so the reading is that PackageManager discarded the update
+at the next boot's package scan. Until that is resolved, treat the kill as live. The
 same writable boot also left the base image's radios enabled, which is harmless
 because every bring-up cuts them itself and verifies offline by interface. To
 repeat the bake if Play stages another component later: verify no emulator is

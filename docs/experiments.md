@@ -34,9 +34,26 @@ minutes earlier. `codePath=/data/app/~~JIhSP4kU97OQR_gDmW-xAA==/...`,
 (`userdata-qemu.img.qcow2` mtime moved to the bake's shutdown, and the radio
 state it changed persisted), so this is not a lost write in the obvious sense;
 what a `-read-only` instance sees is not what the writable session committed.
-Mechanism UNRESOLVED and out of the timebox — the candidates are the overlay a
-`-read-only` instance derives, and a PackageManager rollback of the staged
-update at the next boot.
+**Mechanism resolved (same session): the install did not persist.** A WRITABLE
+cold boot of the same AVD, reading `dumpsys package com.google.android.webview`
+before any other command, returns versionCode **694313738** with the old
+`codePath=/data/app/~~JIhSP4kU97OQR_gDmW-xAA==/...` — so this is not about which
+image a `-read-only` instance derives from (the read-only path was exonerated).
+No `RollbackManager` rollback appears in that boot's logcat (only the service's
+own start-up lines) and no `installPackageLI` runs in its first minute. Two
+facts narrow it further: `userdata-qemu.img.qcow2` mtime DID move to the bake's
+`emu kill` (16:49:59) and did not move during the read-only boot, so writes were
+flushed; and the radio-enable made about a minute AFTER the install did persist
+into later boots while the install did not. An unflushed write would have lost
+both. The reading that survives is that PackageManager discarded the update at
+the next boot's package scan, leaving the settings change intact.
+
+A repeat bake with `reboot -p` instead of `emu kill` was attempted inside the
+budget and produced no data: with the staged session consumed, Play did not
+download or stage the update again within a 180 s online window, so nothing was
+installed to test the shutdown path with. Whether `reboot -p` would persist it is
+still UNKNOWN. Game identity and `libunity.so` SHA-256 were re-read unchanged on
+both of these boots.
 
 The zero-install observation is therefore NOT attributable to the bake: a single
 ~20 s online window with ~70 s of observation after it is too little to say the

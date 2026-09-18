@@ -92,3 +92,7 @@ At the end of each milestone:
 7. report the next unmet gate or exact external blocker.
 
 The final handoff must include supported versions, selected actor count, throughput, evaluation protocol, baseline-versus-best results, soak and overnight results, limitations, and exact operating commands.
+
+## Board discipline
+
+The GitHub project board (project #3, `tower-rl Task Board`) is the single source of truth for task state; every piece of work maps to a board issue, and `.claude/hooks/board-state.sh` surfaces its open items into every turn so this cannot silently drift. Commits that complete an issue use a `Closes #n` trailer; commits that advance one without finishing it use `Refs #n`. Workers cite the issue number they are working against in their reports.

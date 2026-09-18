@@ -7,6 +7,133 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E051 — The bake does not reach a `-read-only` instance, and one clean run at 120 Hz
+
+**Date:** 2026-09-18
+**Status:** The bake is NOT established for the fleet recipe; the fleet run
+(stage 4) was not started
+**Purpose:** Verify `M1B-E050` under the normal recipe before spending a fleet
+run on it.
+
+Solo, `-read-only`, cold `-gpu host`, `--cores 4`, 120 Hz, bridge deployed,
+offline by interface, one scripted episode, logcat for the whole boot.
+
+What passed: `is at home and offline` with `lo only` by interface; `confirmed at
+120 Hz` on all three SurfaceFlinger readings, re-read after the episode and
+still 120.00 / 120 / 120.00; deployed bridge SHA-256 read from the device =
+7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a; one valid
+episode, 0 invalid, `advances_cut_short` 0, `episodes_not_started_fresh` 0, no
+termination detail; and **zero `installPackageLI` lines in the entire boot**,
+including its online window.
+
+What refutes the bake: `dumpsys package com.google.android.webview` on this
+instance reads versionCode **694313738** (133.0.6943.137), the version the clone
+already carried — NOT the 792219908 that `M1B-E050` installed and read back
+minutes earlier. `codePath=/data/app/~~JIhSP4kU97OQR_gDmW-xAA==/...`,
+`pkgFlags=[... UPDATED_SYSTEM_APP ...]`. The writable session did write to disk
+(`userdata-qemu.img.qcow2` mtime moved to the bake's shutdown, and the radio
+state it changed persisted), so this is not a lost write in the obvious sense;
+what a `-read-only` instance sees is not what the writable session committed.
+Mechanism UNRESOLVED and out of the timebox — the candidates are the overlay a
+`-read-only` instance derives, and a PackageManager rollback of the staged
+update at the next boot.
+
+The zero-install observation is therefore NOT attributable to the bake: a single
+~20 s online window with ~70 s of observation after it is too little to say the
+round would have come. The N=7 fleet run (stage 4) was not started, because its
+falsifiable expectation ("WebView 792219908 read from the device") is already
+refuted here.
+
+Teardown: cleanup per-serial on the live instance — override reset, libunity
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040, versionCode
+1199, 29.0.3, installer com.android.vending, mounts 0, artifacts removed — then
+kill; `adb devices` empty, zero qemu.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifacts `I/`.
+
+## M1B-E050 — Letting the guest's WebView update land in the clone base image once
+
+**Date:** 2026-09-18
+**Status:** The bake itself succeeded and changed nothing else; its effect on
+the fleet recipe is refuted by `M1B-E051`
+**Purpose:** Remove the recurring kill at its source by letting the one
+legitimate system update install, rather than discarding it every boot.
+
+Reversibility first: with no emulator running and `adb devices` empty, the whole
+AVD was copied to `~/.local/state/tower-rl/avd-backup-2026-09-18/` — 35 GB,
+`MANIFEST.sha256` over all 53 files, `SIZES.txt` beside it.
+
+The clone was then booted ONCE writable, solo on 5556, cold `-gpu host`,
+headless. No bridge deployed, no game launched, no frame rate raised, no taps,
+no screenshots, nothing about Play disabled or firewalled. The guest came up
+with NO routable interface (the base image carried radios off), so `svc wifi
+enable` / `svc data enable` were issued — the only device commands of the
+session besides the read-backs.
+
+Play's round ran 16:46:34-16:47:00, 25 `installPackageLI` lines, beginning with
+`PackageManager: Update system package com.google.android.webview`, and the
+first of them landed BEFORE the network was enabled: the session had been staged
+in the base image by an earlier online window and finalised locally on boot,
+which is the shape the fleet failures have. After 120 s of quiet, read back from
+the device before shutdown:
+- `com.google.android.webview` versionCode **792219908**, versionName
+  **151.0.7922.199** (the stub entry still reads 694313738, as expected);
+- the game: versionCode 1199, versionName 29.0.3, installerPackageName
+  com.android.vending — unchanged;
+- installed `libunity.so` SHA-256
+  **ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040** —
+  unchanged, so the bind-mount target is intact;
+- per-uid game frame-rate override absent, `cmd game list-configs` `Modes: {}` —
+  no game-mode state left on the image.
+Clean shutdown via `adb emu kill`, waited out; zero qemu afterwards.
+
+Side effect recorded: the radios this session enabled persist in the base image.
+Harmless — every bring-up cuts them itself and verifies offline by interface —
+but it is a change to the clone and is noted in `workstation-handoff.md`.
+
+Source: session scratchpad artifacts `I/bake.log`, `I/bake-logcat.txt`.
+
+## M1B-E049 — The offline relaunch cannot reach home, so the kill is detectable but not recoverable after the cut
+
+**Date:** 2026-09-18
+**Status:** Falsifies the premise the recovery in `M1B-E047`/`M1B-E048` was
+built on
+**Purpose:** Prove on device the relaunch that had never once fired in a fleet
+run, by forcing the fault by hand.
+
+Solo instance, clone AVD, `-read-only`, cold `-gpu host`, 120 Hz. Bring-up
+clean: `lo only` by interface, `confirmed at 120 Hz` on three readings, deployed
+bridge SHA-256 7a98f50b…f99a read from the device, pid 4132, resumed activity
+present. The fault was then forced with `adb shell am force-stop
+com.TechTreeGames.TheTower` and nothing else.
+
+Three seconds later: `pidof` empty, `game_activity_present()` False,
+`why_not_ready()` = `the game is not running`. **The corrected oracle sees the
+fault**, which the substring version of `M1B-E047` did not — this is the
+positive half of the result.
+
+`relaunch_if_activity_lost` then fired, printing its point, and re-issued the
+launcher intent offline. The game came back as a process and sat at
+`main_unavailable` for the full 180 s cap; the call raised `never became ready`.
+This is `M1B-E010` acting on the recovery path: a launch with no network stops
+at the Firebase online check and the OFFLINE modal and never reaches the battle
+home screen. The bridge answered throughout, so the game was running and `Main`
+never initialised — the modal, not a dead process.
+
+Consequences: an offline relaunch is not a recovery. The relaunch added in
+`fe63abc` can only work inside the readiness wait, where the radios are still
+up; the two points added for `M1B-E047` run after the cut and are therefore
+detection only, as is any recovery inside episode collection. A recovery that
+works needs a ruling — reopen a brief network window, or treat the instance as
+lost and re-run it — and neither is taken here.
+
+Teardown: cleanup per-serial before kill (override reset, libunity
+ffc1f3ef…0040, versionCode 1199, 29.0.3, installer com.android.vending, mounts
+0, artifacts removed); `adb devices` empty, zero qemu. No relaunch touched a
+radio, and every interface reading was `lo only`.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifact `H/proof.log`.
+
 ## M1B-E048 — Retry with a working activity oracle: 5/7, and the Play kill moves into collection
 
 **Date:** 2026-09-18
@@ -51,7 +178,9 @@ Both losses are PAST every point bring-up covers, inside collection:
   rendezvous used to prevent. Recorded as a candidate, not a conclusion.
 
 Reading: covering the two bring-up points did what it was meant to and the kill
-is now downstream of bring-up entirely. Board #21 stays open, and #22
+is now downstream of bring-up entirely. QUALIFIED by `M1B-E049`: those two
+points DETECT the kill correctly, but they cannot recover from it, because a
+relaunch after the network is cut cannot reach home. Board #21 stays open, and #22
 (behavioural equivalence) is still required before training.
 
 Teardown: per-serial cleanup before kill on all 7 — override reset from a
@@ -97,7 +226,10 @@ absent. Measured, from this run's logcat for 5558:
 Moments later the post-cut check read `pidof` empty AND the activity check True
 on the same instance. Presence now means the game holds the RESUMED activity
 (`ResumedActivity` line, package and activity both), which is a reading a dead
-record cannot satisfy. Confirmed in `M1B-E048`.
+record cannot satisfy. Confirmed in `M1B-E048`. The recovery those points then
+attempt is detection only: `M1B-E049` shows the offline relaunch cannot reach
+home, so nothing in this entry should be read as the kill being survivable
+after the cut.
 
 This run also confirms the mechanism recorded in `M1B-E045` a second time, on a
 different session: the WebView install is what kills the game, the game

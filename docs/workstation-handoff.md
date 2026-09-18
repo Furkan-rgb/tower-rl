@@ -571,6 +571,29 @@ AVDs exist outside Git:
 
 - `tower_rl_instrumented_api36` is a rooted clone with the unchanged
   Play-installed 29.0.3 package.
+
+**The guest's Google Play update round, and the WebView bake (2026-09-18).**
+The clone's Play downloads a `com.google.android.webview` update during the one
+online window of a cold bring-up and installs it moments later, killing every
+process that holds WebView — the game included (`M1B-E045`, `M1B-E047`). On
+2026-09-18 the AVD was backed up whole to
+`~/.local/state/tower-rl/avd-backup-2026-09-18/` (35 GB, `MANIFEST.sha256` over
+all 53 files, `SIZES.txt`) and booted ONCE writable and online so that update
+could land in the base image: WebView 151.0.7922.199 (versionCode 792219908)
+installed, and the game identity was read back unchanged before shutdown
+(versionCode 1199, 29.0.3, installer `com.android.vending`, `libunity.so`
+SHA-256 `ffc1f3ef…0040`, no per-uid frame-rate override). Nothing about Play was
+disabled, frozen or firewalled. **The bake did not reach the fleet recipe**: a
+subsequent `-read-only` cold boot reads WebView 694313738 (133.0.6943.137)
+again, so whatever the writable session committed is not what a `-read-only`
+instance sees (`M1B-E051`). Until that is resolved, treat the kill as live. The
+same writable boot also left the base image's radios enabled, which is harmless
+because every bring-up cuts them itself and verifies offline by interface. To
+repeat the bake if Play stages another component later: verify no emulator is
+running, re-take the backup, boot the clone once writable and online with no
+bridge and no game launch, wait for the `installPackageLI` round to finish and
+120 s of quiet, read the identity lines back, shut down cleanly, and restore
+from the backup if anything but the intended package changed.
 - `tower_rl_gadget_api36` is a throwaway re-signed-XAPK clone used only to
   isolate native instrumentation behavior.
 

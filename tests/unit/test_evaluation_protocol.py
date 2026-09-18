@@ -97,18 +97,28 @@ def evaluation_directory(
     return directory
 
 
-def checkpoint_identity(path: Path) -> dict[str, Any]:
+#: The run every synthetic checkpoint below belongs to. A run directory is named
+#: for its run id, which is what ties a record to the run that produced it.
+RUN_ID = "stacked-dqn-20260101-000000-abcdef"
+
+
+def checkpoint_identity(
+    path: Path, *, run_id: str = RUN_ID, digest: str = "abc123def456"
+) -> dict[str, Any]:
+    """What `run_episodes.policy_from` writes into every record of a checkpoint."""
     return {
         "name": path.stem,
         "checkpoint_path": str(path),
-        "checkpoint_identity": "abc123def456",
-        "run_id": "stacked-dqn-20260101-000000-abcdef",
+        "checkpoint_identity": digest,
+        "run_id": run_id,
     }
 
 
-def run_with_checkpoints(root: Path, decisions: list[int]) -> tuple[Path, list[Path]]:
+def run_with_checkpoints(
+    root: Path, decisions: list[int], *, run_id: str = RUN_ID
+) -> tuple[Path, list[Path]]:
     """A run directory holding numbered checkpoints. The files are never read."""
-    run = root / "stacked-dqn-20260101-000000-abcdef"
+    run = root / run_id
     (run / "checkpoints").mkdir(parents=True)
     paths = []
     for spent in decisions:
@@ -171,13 +181,12 @@ def test_the_selection_is_the_checkpoint_with_the_highest_interquartile_mean(
     assert f"selected {best}" in printed
 
     report = json.loads(output.read_text())
-    assert report["selected_checkpoint"] == str(best)
-    assert report["selected_on"] == "final_wave"
+    assert report["selection"]["checkpoint"] == str(best)
+    assert report["selection"]["selected_on"] == "final_wave"
+    assert report["selection"]["decisions"] == 200
     assert len(report["candidates"]) == 3
     # The table is in the order the run produced them, not the command line's.
-    assert [Path(str(item["checkpoint"])).name for item in report["candidates"]] == [
-        path.name for path in checkpoints
-    ]
+    assert [item["decisions"] for item in report["candidates"]] == [100, 200, 300]
     # Three separated arms: nothing contests the winner at this sample.
     assert report["selection_contested_by"] == []
 
@@ -225,8 +234,99 @@ def test_an_evaluation_of_another_runs_checkpoint_is_refused(
         tmp_path / "evals", "foreign", {"a": [5, 6]}, checkpoint_identity(other)
     )
 
-    with pytest.raises(SystemExit, match="not a numbered checkpoint of this run"):
+    with pytest.raises(SystemExit, match="not a numbered checkpoint this run left"):
         invoke(select_checkpoint, [str(run), str(directory)], monkeypatch)
+
+
+def test_two_runs_at_the_same_period_do_not_borrow_each_others_evaluations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file names collide; the run id is what says whose checkpoint it is.
+
+    Two runs trained at the same `--checkpoint-every-decisions` leave files
+    called exactly the same thing. Identifying a candidate by its file name
+    would accept the other run's evaluation here, and the model reported as this
+    run's work would be a model it never produced.
+    """
+    mine, my_checkpoints = run_with_checkpoints(tmp_path / "a", [100, 200])
+    theirs, their_checkpoints = run_with_checkpoints(
+        tmp_path / "b", [100, 200], run_id="stacked-dqn-20260202-000000-fedcba"
+    )
+    # The same names, in two runs.
+    assert [path.name for path in my_checkpoints] == [path.name for path in their_checkpoints]
+
+    borrowed = evaluation_directory(
+        tmp_path / "evals",
+        "borrowed",
+        {"emulator-5556": [9, 9, 9, 9]},
+        checkpoint_identity(
+            their_checkpoints[1], run_id=theirs.name, digest="ffffffffffff"
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="played a checkpoint of run"):
+        invoke(select_checkpoint, [str(mine), str(borrowed)], monkeypatch)
+
+
+def test_candidates_that_disagree_about_their_run_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One selection is made over one run's checkpoints, or over nothing."""
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals", "first", {"a": [5, 6]}, checkpoint_identity(checkpoints[0])
+        ),
+        evaluation_directory(
+            tmp_path / "evals",
+            "second",
+            {"a": [7, 8]},
+            # The same run id, a different identity: different schemas or a
+            # different source revision behind the same run directory.
+            checkpoint_identity(checkpoints[1], digest="0123456789ab"),
+        ),
+    ]
+
+    with pytest.raises(SystemExit, match="do not agree on what produced them"):
+        invoke(select_checkpoint, [str(run), *[str(item) for item in directories]], monkeypatch)
+
+
+def test_candidates_are_ordered_by_decisions_not_by_how_their_names_sort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The zero padding only orders correctly while every name is the same width.
+
+    A ten-million-decision run is about three days of collection on the fleet,
+    not a hypothetical, and at that point the widths mix: `checkpoint-10000000`
+    sorts before `checkpoint-9000000` as text and after it as a number.
+    """
+    run, checkpoints = run_with_checkpoints(tmp_path, [9_000_000, 10_000_000])
+    nine, ten = checkpoints
+    assert sorted(path.name for path in checkpoints)[0] == ten.name, (
+        "the premise: as text, the later checkpoint sorts first"
+    )
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals", "ten", {"a": [8, 9, 8, 9]}, checkpoint_identity(ten)
+        ),
+        evaluation_directory(
+            tmp_path / "evals", "nine", {"a": [4, 5, 4, 5]}, checkpoint_identity(nine)
+        ),
+    ]
+    output = tmp_path / "selection.json"
+
+    invoke(
+        select_checkpoint,
+        [str(run), *[str(item) for item in directories], "--resamples", "200",
+         "--output", str(output)],
+        monkeypatch,
+    )
+
+    report = json.loads(output.read_text())
+    assert [item["decisions"] for item in report["candidates"]] == [9_000_000, 10_000_000]
+    # The printed table reads as a curve, in the order the run produced them.
+    printed = capsys.readouterr().out
+    assert printed.index(nine.name) < printed.index(ten.name)
 
 
 def test_an_evaluation_of_a_non_checkpoint_arm_is_refused(
@@ -290,7 +390,11 @@ def arm_directories(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "arms",
             "stacked-dqn",
             {"emulator-5556": [10, 11, 10, 12, 11], "emulator-5558": [11, 10, 12, 11, 10]},
-            {"name": "checkpoint-0000300"},
+            # The full identity a checkpoint arm's records carry, which is what
+            # `--selection` is checked against.
+            checkpoint_identity(
+                Path(f"/runs/{RUN_ID}/checkpoints/checkpoint-0000300.pt")
+            ),
         ),
     }
 
@@ -339,6 +443,120 @@ def test_the_report_prints_every_section_for_every_arm(
         "scripted.json",
         "stacked-dqn.json",
     ]
+
+
+def test_an_arm_name_that_is_not_a_name_is_refused_before_anything_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The name becomes a file under --output-directory and a metric key."""
+    arms = arm_directories(tmp_path)
+    pooled = tmp_path / "pooled"
+
+    for bad in ("../escape", "two words", "stacked/dqn", "arm:one"):
+        with pytest.raises(SystemExit, match="may hold only letters"):
+            invoke(
+                report_arms,
+                [f"random={arms['random']}", f"{bad}={arms['scripted']}",
+                 "--output-directory", str(pooled)],
+                monkeypatch,
+            )
+    assert not pooled.exists(), "refused before a directory was made for it"
+
+    # The names the protocol actually uses are all accepted.
+    for good in ("random", "scripted", "stacked-dqn", "stacked_dqn", "arm2"):
+        assert report_arms.ARM_NAME.fullmatch(good)
+
+
+def selection_file(tmp_path: Path, **overrides: Any) -> Path:
+    """A selection.json of the shape `select_checkpoint.py` writes."""
+    selection = {
+        "run_id": RUN_ID,
+        "checkpoint": f"/runs/{RUN_ID}/checkpoints/checkpoint-0000300.pt",
+        "decisions": 300,
+        "checkpoint_identity": "abc123def456",
+        "selected_on": "final_wave",
+        "iqm": 10.5,
+        "interval": [9.0, 12.0],
+        "selected_at": "2026-09-18T00:00:00+00:00",
+    }
+    selection.update(overrides)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "selection.json"
+    path.write_text(json.dumps(selection, indent=2))
+    return path
+
+
+def test_the_report_accepts_a_set_b_that_played_the_selected_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The learned arm here carries exactly the identity set A chose."""
+    arms = arm_directories(tmp_path)
+    output = tmp_path / "arms.json"
+
+    code = invoke(
+        report_arms,
+        [
+            *[f"{name}={path}" for name, path in arms.items()],
+            "--selection", str(selection_file(tmp_path)),
+            "--resamples", "200",
+            "--output-directory", str(tmp_path / "pooled"),
+            "--output", str(output),
+        ],
+        monkeypatch,
+    )
+
+    assert code == 0
+    assert json.loads(output.read_text())["selection"]["decisions"] == 300
+
+
+def test_a_set_b_that_played_another_model_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale directory, or the right run's wrong checkpoint, is the hazard."""
+    arms = arm_directories(tmp_path)
+    common = [
+        *[f"{name}={path}" for name, path in arms.items()],
+        "--resamples", "200",
+        "--output-directory", str(tmp_path / "pooled"),
+        "--output", str(tmp_path / "arms.json"),
+    ]
+
+    # Another run entirely: the identity hash does not match.
+    other_run = selection_file(
+        tmp_path / "a", run_id="stacked-dqn-20260202-000000-fedcba",
+        checkpoint_identity="ffffffffffff",
+    )
+    with pytest.raises(SystemExit, match="played a checkpoint of another run"):
+        invoke(report_arms, [*common, "--selection", str(other_run)], monkeypatch)
+
+    # The right run, a different checkpoint of it: the hash cannot tell those
+    # apart, so the name of the checkpoint is what does.
+    other_checkpoint = selection_file(
+        tmp_path / "b",
+        checkpoint=f"/runs/{RUN_ID}/checkpoints/checkpoint-0000100.pt",
+        decisions=100,
+    )
+    with pytest.raises(SystemExit, match="of the same run"):
+        invoke(report_arms, [*common, "--selection", str(other_checkpoint)], monkeypatch)
+
+
+def test_a_report_with_no_checkpoint_arm_cannot_satisfy_a_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arms = arm_directories(tmp_path)
+
+    with pytest.raises(SystemExit, match="no arm here played a checkpoint"):
+        invoke(
+            report_arms,
+            [
+                f"random={arms['random']}", f"scripted={arms['scripted']}",
+                "--selection", str(selection_file(tmp_path)),
+                "--resamples", "200",
+                "--output-directory", str(tmp_path / "pooled"),
+                "--output", str(tmp_path / "arms.json"),
+            ],
+            monkeypatch,
+        )
 
 
 def test_arms_are_named_and_a_report_needs_two_of_them(
@@ -449,8 +667,12 @@ def test_train_then_select_then_report(
         )
         == 0
     )
-    chosen = Path(json.loads(selection.read_text())["selected_checkpoint"])
+    chosen = Path(json.loads(selection.read_text())["selection"]["checkpoint"])
     assert chosen in checkpoints
+    # The same decision, written beside the run for the next command to read.
+    beside = json.loads((run / "selection.json").read_text())
+    assert Path(beside["checkpoint"]) == chosen
+    assert beside["run_id"] == run.name
 
     # Set B: the selection, played again into a directory of its own, beside the
     # floors it has to be read against.

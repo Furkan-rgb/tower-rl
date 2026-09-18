@@ -20,6 +20,10 @@ The selection is by the highest interquartile mean of the final wave. The
 intervals are printed beside it, and when the leaders' intervals overlap that is
 said out loud: the selection is still made - some checkpoint has to be reported
 on set B - but a difference the sample could not resolve is not a finding.
+
+What was chosen is written to `<run directory>/selection.json`, beside the run
+rather than carried by hand into the next command: `report_arms.py --selection`
+reads it back and refuses a set B that did not play that model.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +54,34 @@ from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E
 SELECT_ON = "final_wave"
 
 
+@dataclass(frozen=True)
+class Candidate:
+    """One checkpoint of this run, and the evaluation that scored it.
+
+    The four facts travel together because every one of them is read from the
+    actor records rather than from where a file happens to sit: which run
+    produced it, which of that run's checkpoints it is, and which file on disk
+    that names.
+    """
+
+    evaluation: ArmEvaluation
+    #: The file in this run's own checkpoints directory.
+    checkpoint: Path
+    #: Decisions spent when it was written, from the name the record carries.
+    #: The budget axis every other metric of the run is keyed by, so the greedy
+    #: curve lands above the exploring one rather than beside it.
+    decisions: int
+    #: `CheckpointIdentity` hashed: the run, the profile and the three schemas.
+    #: It names the *run*, not the checkpoint - every checkpoint of one run
+    #: hashes identically, because identity holds nothing that changes as the
+    #: run proceeds. `decisions` is what separates them within the run.
+    identity_hash: str
+
+    @property
+    def name(self) -> str:
+        return self.checkpoint.name
+
+
 def run_checkpoints(run_directory: Path) -> dict[str, Path]:
     """The numbered checkpoints a run left, by file name."""
     checkpoints = sorted((run_directory / "checkpoints").glob("checkpoint-*.pt"))
@@ -59,37 +93,68 @@ def run_checkpoints(run_directory: Path) -> dict[str, Path]:
     return {path.name: path for path in checkpoints}
 
 
-def candidate(directory: Path, checkpoints: dict[str, Path]) -> ArmEvaluation:
+def candidate(directory: Path, run_directory: Path, checkpoints: dict[str, Path]) -> Candidate:
     """One evaluation, checked to be an evaluation of a checkpoint of this run.
 
-    An evaluation directory that played some other run's checkpoint is refused
-    by name. Silently including it would put a model the run never produced into
-    the selection, and the selected file would then be reported as this run's.
+    Which run produced the model played here is read from the records, not from
+    the file name they mention: `run_id` and the identity hash come from the
+    checkpoint's own `CheckpointIdentity`, and the run directory is named for
+    its run id. Two runs at the same `--checkpoint-every-decisions` leave files
+    called exactly the same thing, so a name check would accept another run's
+    evaluation as this one's and the selected file would then be reported as
+    this run's work.
+
+    The file name is still what says *which* checkpoint of the run it is, and it
+    has to be: the identity hash is constant across a run, so only the decisions
+    in the name separate one candidate from another.
     """
     try:
         evaluation = read_arm_evaluation(directory)
     except ValueError as failure:
         raise SystemExit(str(failure)) from failure
-    played = evaluation.checkpoint
-    if played is None:
+    identity = evaluation.policy_identity or {}
+    if evaluation.checkpoint is None:
         raise SystemExit(
             f"{directory} did not play a checkpoint; it played "
-            f"{(evaluation.policy_identity or {}).get('name', 'an unnamed arm')!r}"
+            f"{identity.get('name', 'an unnamed arm')!r}"
         )
-    if Path(played).name not in checkpoints:
+    played_run = identity.get("run_id")
+    if played_run != run_directory.name:
         raise SystemExit(
-            f"{directory} played {Path(played).name}, which is not a numbered "
-            f"checkpoint of this run ({sorted(checkpoints)})"
+            f"{directory} played a checkpoint of run {played_run!r}, not of "
+            f"{run_directory.name!r}; two runs leave identically named files, "
+            "so the run id is what says whose checkpoint this is"
         )
-    return evaluation
+    digest = identity.get("checkpoint_identity")
+    if not digest:
+        raise SystemExit(f"{directory} records no checkpoint identity to verify")
+    name = Path(str(evaluation.checkpoint)).name
+    if name not in checkpoints:
+        raise SystemExit(
+            f"{directory} played {name}, which is not a numbered checkpoint "
+            f"this run left ({sorted(checkpoints)})"
+        )
+    return Candidate(
+        evaluation=evaluation,
+        checkpoint=checkpoints[name],
+        decisions=checkpoint_decisions(name),
+        identity_hash=str(digest),
+    )
+
+
+def one_run(candidates: list[Candidate]) -> str:
+    """The identity every candidate agrees on, or a refusal naming the ones that do not."""
+    digests = {item.identity_hash for item in candidates}
+    if len(digests) > 1:
+        raise SystemExit(
+            "these evaluations do not agree on what produced them: "
+            + ", ".join(f"{item.name} -> {item.identity_hash}" for item in candidates)
+        )
+    return digests.pop()
 
 
 def checkpoint_decisions(name: str) -> int:
-    """The decisions a numbered checkpoint's file name records.
-
-    The budget axis every other metric of the run is keyed by, so the greedy
-    curve lands above the exploring one rather than beside it.
-    """
+    """The decisions a numbered checkpoint's file name records."""
     digits = name.removeprefix("checkpoint-").removesuffix(".pt")
     if not digits.isdigit():
         raise SystemExit(f"{name} does not name the decisions behind it")
@@ -170,24 +235,30 @@ def main() -> int:
     arguments = parser.parse_args()
 
     checkpoints = run_checkpoints(arguments.run_directory)
-    candidates = [candidate(directory, checkpoints) for directory in arguments.evaluations]
-    scored = [
-        (evaluation, score(evaluation, resamples=arguments.resamples, seed=arguments.seed))
-        for evaluation in candidates
+    candidates = [
+        candidate(directory, arguments.run_directory, checkpoints)
+        for directory in arguments.evaluations
     ]
-    # In the order the run produced them, which is the order the file names sort
-    # in, so the table reads as a curve rather than as the command line's order.
-    scored.sort(key=lambda item: Path(str(item[0].checkpoint)).name)
+    identity = one_run(candidates)
+    scored = [
+        (item, score(item.evaluation, resamples=arguments.resamples, seed=arguments.seed))
+        for item in candidates
+    ]
+    # In the order the run produced them, by the decisions behind each one
+    # rather than by how its name happens to sort: the zero padding only orders
+    # correctly while every name is the same width, and a ten-million-decision
+    # run is three days of collection, not a hypothetical.
+    scored.sort(key=lambda item: item[0].decisions)
 
     print(f"{len(scored)} checkpoints of {arguments.run_directory.name}", flush=True)
     for statistic in STATISTICS:
         print(f"\n{statistic}:", flush=True)
-        for evaluation, numbers in scored:
+        for item, numbers in scored:
             entry = numbers[statistic]
             print(
                 "  "
                 + statistic_line(
-                    Path(str(evaluation.checkpoint)).name,
+                    item.name,
                     float(entry["iqm"]),
                     float(entry["low"]),
                     float(entry["high"]),
@@ -198,10 +269,10 @@ def main() -> int:
 
     ranked = sorted(scored, key=lambda item: float(item[1][SELECT_ON]["iqm"]), reverse=True)
     best, best_numbers = ranked[0]
-    selected = checkpoints[Path(str(best.checkpoint)).name]
+    selected = best.checkpoint
     contested = [
-        Path(str(evaluation.checkpoint)).name
-        for evaluation, numbers in ranked[1:]
+        item.name
+        for item, numbers in ranked[1:]
         if overlaps(
             (float(best_numbers[SELECT_ON]["low"]), float(best_numbers[SELECT_ON]["high"])),
             (float(numbers[SELECT_ON]["low"]), float(numbers[SELECT_ON]["high"])),
@@ -228,7 +299,7 @@ def main() -> int:
         # Onto the training run's own page, on its own budget axis: the greedy
         # curve is the one question the exploring curve cannot answer, and a
         # second run holding it would have to be found by hand.
-        for evaluation, numbers in scored:
+        for item, numbers in scored:
             entry = numbers[SELECT_ON]
             tracked.log_metrics(
                 {
@@ -236,26 +307,48 @@ def main() -> int:
                     "greedy_final_wave_ci_low": float(entry["low"]),
                     "greedy_final_wave_ci_high": float(entry["high"]),
                 },
-                decisions=checkpoint_decisions(Path(str(evaluation.checkpoint)).name),
+                decisions=item.decisions,
             )
         print(f"  logged to tracked run {tracked.run_id}", flush=True)
+
+    # What set B has to be reported on, written where the run itself is rather
+    # than carried by hand between two commands. `report_arms.py --selection`
+    # reads it back and refuses records that did not play this model, which is
+    # what closes the gap between choosing on A and reporting on B.
+    selection = {
+        "run_id": arguments.run_directory.name,
+        "checkpoint": str(selected),
+        "decisions": best.decisions,
+        "checkpoint_identity": identity,
+        "selected_on": SELECT_ON,
+        "iqm": best_numbers[SELECT_ON]["iqm"],
+        "interval": [best_numbers[SELECT_ON]["low"], best_numbers[SELECT_ON]["high"]],
+        "selected_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    selection_path = arguments.run_directory / "selection.json"
+    selection_path.write_text(json.dumps(selection, indent=2))
+    print(f"  selection written to {selection_path}", flush=True)
 
     report: dict[str, Any] = {
         "run_directory": str(arguments.run_directory),
         "mlflow_run": arguments.mlflow_run,
-        "selected_on": SELECT_ON,
-        "selected_checkpoint": str(selected),
+        "selection": selection,
         "selection_contested_by": contested,
         "resamples": arguments.resamples,
         "seed": arguments.seed,
         "candidates": [
             {
-                "checkpoint": evaluation.checkpoint,
-                "evaluation_directory": str(evaluation.directory),
-                "policy_identity": evaluation.policy_identity,
-                **numbers,
+                "checkpoint": str(item.checkpoint),
+                "decisions": item.decisions,
+                "evaluation_directory": str(item.evaluation.directory),
+                "policy_identity": item.evaluation.policy_identity,
+                # Nested rather than spread: one of the reported statistics is
+                # itself called `decisions`, and spreading it here would
+                # overwrite the budget position this candidate sits at with a
+                # bootstrap of how long its episodes ran.
+                "statistics": numbers,
             }
-            for evaluation, numbers in scored
+            for item, numbers in scored
         ],
     }
     arguments.output.write_text(json.dumps(report, indent=2))

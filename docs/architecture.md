@@ -295,10 +295,14 @@ through, with the arm's identity written into every actor record.
 
 `scripts/select_checkpoint.py` reads one evaluation directory per candidate —
 set A — and names the highest interquartile mean of the final wave, with
-`experiment.comparison.stratified_bootstrap` resampling within each actor.
-Reporting the selection is another `run_actors.py` run of that one checkpoint
-into an empty directory, set B, which `scripts/report_arms.py` reads beside the
-floors: IQM with intervals per arm, pairwise bootstrap differences, and the
+`experiment.comparison.stratified_bootstrap` resampling within each actor. A
+candidate is identified by the run id and identity hash its records carry, not
+by its file name, because two runs at the same period leave identically named
+files. What it chose is written to `<run>/selection.json`. Reporting the
+selection is another `run_actors.py` run of that one checkpoint into an empty
+directory, set B, which `scripts/report_arms.py` reads beside the floors —
+given `--selection`, it refuses a set B whose records did not play the model
+that was chosen: IQM with intervals per arm, pairwise bootstrap differences, and the
 per-wave comparison handed to `experiment.wave_statistics`. Neither script
 starts an emulator, and neither decides a verdict. Given `--mlflow-run`, both
 log their results onto the training run they are about, so the greedy curve

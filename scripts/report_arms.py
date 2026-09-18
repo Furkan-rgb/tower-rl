@@ -4,7 +4,10 @@
 The second stage of the two-stage protocol, and the last thing Milestone 2 runs.
 Each argument names one arm and the directory of actor records `run_actors.py`
 left for it, so the learned arm here is the checkpoint `select_checkpoint.py`
-chose on set A, re-evaluated on a set B of its own:
+chose on set A, re-evaluated on a set B of its own. Pass `--selection
+<run>/selection.json` and that is checked rather than assumed: the records say
+which model played, the selection says which was chosen, and a mismatch is
+refused by name.
 
     uv run python scripts/report_arms.py \\
         random=/tmp/eval-random scripted=/tmp/eval-scripted \\
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,6 +47,12 @@ from tower_rl.experiment.comparison import compare, stratified_bootstrap  # noqa
 from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
 from tower_rl.experiment.wave_statistics import analyse_reports  # noqa: E402
 
+#: What an arm may be called. The name becomes a file name under
+#: `--output-directory` and a metric key on the tracked run, so anything outside
+#: this would either write somewhere it was not asked to - `../` is a name - or
+#: produce a key the store refuses halfway through a report.
+ARM_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
 
 def named_arms(requested: list[str]) -> dict[str, Path]:
     """`name=<directory>` pairs, in the order they were given."""
@@ -51,6 +61,13 @@ def named_arms(requested: list[str]) -> dict[str, Path]:
         name, separator, directory = item.partition("=")
         if not separator or not name or not directory:
             raise SystemExit(f"expected name=<directory>, not {item!r}")
+        if not ARM_NAME.fullmatch(name):
+            # Refused here, before anything is read or written, rather than by
+            # whatever the name is later used as.
+            raise SystemExit(
+                f"arm name {name!r} may hold only letters, digits, underscores "
+                "and dashes; it is used as a file name and as a metric key"
+            )
         if name in arms:
             raise SystemExit(f"arm {name!r} is named twice")
         path = Path(directory).expanduser()
@@ -60,6 +77,44 @@ def named_arms(requested: list[str]) -> dict[str, Path]:
     if len(arms) < 2:
         raise SystemExit("a report needs at least two arms")
     return arms
+
+
+def require_selection(selection_path: Path, evaluations: list[ArmEvaluation]) -> dict[str, Any]:
+    """Refuse a set B that did not play the model set A chose.
+
+    The two stages are separate commands over separate directories, so the one
+    thing that can silently go wrong between them is reporting the wrong model:
+    a stale directory, a re-run that overwrote one, the right run's wrong
+    checkpoint. The selection file says which model was chosen and the records
+    say which model played, and this is where the two are made to agree.
+    """
+    selection: dict[str, Any] = json.loads(selection_path.read_text())
+    wanted_identity = selection["checkpoint_identity"]
+    wanted_name = Path(str(selection["checkpoint"])).stem
+    played = [
+        evaluation
+        for evaluation in evaluations
+        if (evaluation.policy_identity or {}).get("checkpoint_identity")
+    ]
+    if not played:
+        raise SystemExit(
+            f"{selection_path} selected {wanted_name}, but no arm here played a "
+            "checkpoint at all; name the selected checkpoint's directory as an arm"
+        )
+    for evaluation in played:
+        identity = evaluation.policy_identity or {}
+        if identity.get("checkpoint_identity") != wanted_identity:
+            raise SystemExit(
+                f"arm {evaluation.name!r} played a checkpoint of another run "
+                f"({identity.get('run_id')!r}), not the one {selection_path} selected "
+                f"({selection['run_id']!r})"
+            )
+        if identity.get("name") != wanted_name:
+            raise SystemExit(
+                f"arm {evaluation.name!r} played {identity.get('name')!r}, but "
+                f"{selection_path} selected {wanted_name!r} of the same run"
+            )
+    return selection
 
 
 def read(arms: dict[str, Path]) -> list[ArmEvaluation]:
@@ -96,6 +151,15 @@ def main() -> int:
         nargs="+",
         help="name=<directory>, one per arm; e.g. scripted=/tmp/eval-scripted",
     )
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        default=None,
+        help=(
+            "the selection.json select_checkpoint.py left in the run directory; "
+            "the arm that played a checkpoint is checked to be the one it chose"
+        ),
+    )
     parser.add_argument("--resamples", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -127,11 +191,18 @@ def main() -> int:
     arguments = parser.parse_args()
 
     evaluations = read(named_arms(arguments.arms))
+    # Before a single interval is computed: a report of the wrong model is
+    # worse than no report, and this is the one check that can catch it.
+    selection = (
+        None if arguments.selection is None
+        else require_selection(arguments.selection, evaluations)
+    )
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {
         "resamples": arguments.resamples,
         "seed": arguments.seed,
+        "selection": selection,
         "arms": {},
         "differences": [],
         "per_wave": {},

@@ -7,6 +7,163 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E054 — Replication of the equivalence fleet in a fresh session: the rule fires nowhere, so `M1B-E053`'s REJECT is not replicated and does not stand
+
+**Date:** 2026-09-18
+**Status:** No difference detectable at this n. `M1B-E053`'s provisional REJECT
+is **not replicated**; under the rule's own replication clause it does not stand
+(board #22 stays open for the Lead's reading of the pair)
+**Purpose:** Execute `M1B-E053`'s replication clause — "any REJECT is replicated
+once, from this written recipe, in a fresh session, before it is acted on" — by
+running the same recipe again, in a session that had not seen `M1B-E053` or its
+raw analysis, and applying the pre-registered rule mechanically before reading
+either.
+
+**Recipe and parameters.** Session scratchpad `EQUIVALENCE-RECIPE.md`, the same
+document `M1B-E053` ran from; no parameter changed. Code at `1cb3e0a`.
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 9 --policy scripted \
+        --renderer host --cold --cores 4 --frame-game-ms 100 \
+        --frame-rate-hz 60,60,60,60,120,120,120 \
+        --output-directory ~/.local/state/tower-rl/equivalence-2026-09-18-replication
+
+N=7, `-read-only`, cold `-gpu host`, offline by interface per instance, scripted,
+9 episodes per actor, one deployable bridge. Fleet wall **592.6 s** against
+`M1B-E053`'s 605.9 s, inside the 30-minute timebox this run was given.
+
+**Per-instance fate**, each confirmed on all three SurfaceFlinger readings
+(display vsync mode, per-uid game mode override, per-uid applied frame rate) at
+the rate its index was assigned:
+
+| index | serial | rate | confirmed | valid/attempted | fate |
+| --- | --- | --- | --- | --- | --- |
+| 0 | emulator-5556 | 60 | yes, 60.00/60/60.00 | 9/9 | clean |
+| 1 | emulator-5558 | 60 | yes, 60.00/60/60.00 | 9/9 | clean |
+| 2 | emulator-5560 | 60 | yes, 60.00/60/60.00 | 9/9 | clean |
+| 3 | emulator-5562 | 60 | yes, 60.00/60/60.00 | 9/9 | clean |
+| 4 | emulator-5564 | 120 | yes, 120.00/120/120.00 | 9/9 | clean |
+| 5 | emulator-5566 | 120 | yes, 120.00/120/120.00 | 9/9 | clean |
+| 6 | emulator-5568 | 120 | yes, 120.00/120/120.00 | 9/9 | clean |
+
+**7 of 7 reporting, no instance lost, no episode invalid.** `M1B-E053`'s
+`RunPortError: the instance did not reach an active run` on index 0 **did not
+recur**, and neither did its one `stale_or_duplicate`. The instance-loss shape of
+the two runs therefore differs: E053 lost its first-index 60 Hz actor whole
+(0/9) and one episode at index 6; this run lost nothing. That is the fleet
+behaviour `M1B-E052` reports for this image state, not a new fix.
+
+**Arms: 36 valid at 60 Hz, 27 valid at 120 Hz**, both above the pre-registered
+floor of 25, with no hand exclusion — every record carried its own
+`confirmed at <rate> Hz` line at its assigned rate.
+
+**Fidelity, per arm.** Zero in both arms: `GAME_TIME_INFLATED`,
+`GAME_TIME_DEFLATED`, `ADVANCE_TRUNCATED_BY_WALL`, `advances_cut_short`,
+`bridge_event_divergence`, `episodes_not_started_fresh`, `stale_or_duplicate`;
+`invalid_rate` 0.0 in both. The shared host did not reach the game clock in
+either arm, so this is read as a behavioural result rather than a contended one,
+on the same grounds as `M1B-E053`.
+
+**Throughput is not a result here either** — the arms shared a host, so no
+ms/frame or episodes/hour figure from this run is comparable with `M1B-E045`,
+with `M1B-E053`, or between the arms.
+
+**Bridge digest, now confirmed per instance.** All seven instances read back the
+deployed
+`7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a` at
+`/data/user/0/<package>/files/libtower_bridge.so` while up, matching the host
+artifact verified before the fleet. `M1B-E053` and `M1B-E046` recorded this
+**unconfirmed, not passed** because `adb shell su 0 sha256sum` returned nothing;
+the form that works on this image is the repository's own `su_device`,
+`adb shell "su -c 'sha256sum <path>'"`. That is a read-back defect, not a bridge
+difference: both runs deployed the same host artifact.
+
+**Analysis**, exactly as pre-registered and applied before `M1B-E053` was read —
+records grouped by the `frame_rate_hz` each actor's own record carries, then
+`wave_statistics.analyse_reports('60hz.json', '120hz.json')`. 36/27 valid
+episodes, 95% bootstrap intervals, 80% power; **nine wave indices** reached by ≥2
+completed episodes in both arms (wave 10 named as underpowered, 1/0). A single
+wave index at this n could detect **d ≥ 0.718**.
+
+| statistic | wave indices compared | separated | pooled d |
+| --- | --- | --- | --- |
+| `game_ms` | 9 | **wave 9**, 120 Hz higher | +0.010 |
+| `decisions` | 9 | **wave 8**, 60 Hz higher | −0.073 |
+| `health_fraction` | 9 | none | +0.085 |
+| `cash_log` | 9 | **wave 8**, 60 Hz higher | +0.008 |
+
+`game_ms` separated only at wave 9 (−107.00 ms [−178.33, −35.67], d=−1.73,
+n=3/3, detectable ≥ 141.3); waves 1–8 ran −22.4 to +20.6 ms against detectable
+differences of 47.0 to 118.3 ms, every interval covering zero. `cash_log`
+separated only at wave 8 (+1.68 [+0.89, +2.38], d=+2.41, n=8/4), where
+`decisions` also separated (+2.75 [+1.88, +3.75], n=8/4) in the same direction
+while `game_ms` did not (+13.38 [−66.88, +93.62]) — the four 60 Hz episodes that
+reached wave 8 played it longer than the four 120 Hz ones, which is cadence and
+sampling at n=8/4, not the game's own clock. Per episode, `final_wave` 6.42 vs
+6.52 (detectable ≥ 1.663) and `decisions` 137.8 vs 139.5 (detectable ≥ 33.0),
+both indistinguishable. Raw output: session scratchpad
+`EQUIVALENCE-ANALYSIS-REPLICATION.txt`.
+
+**VERDICT, applied mechanically under the rule quoted verbatim in `M1B-E053`:
+no difference detectable at this n.**
+
+- **Trigger (a), timing, did not fire.** `game_ms` separated at **one** wave
+  index (9), and the rule requires more than 100 ms in the same direction at
+  **≥2** separated wave indices. The one separation does exceed 100 ms (107.00),
+  which E053's `game_ms` never approached, and it sits at the thinnest compared
+  depth (n=3/3, detectable ≥ 141.3 ms, i.e. the index could not have resolved a
+  one-frame effect at all).
+- **Trigger (b), state, did not fire.** `health_fraction` separated at **0 of 9**
+  indices (0%); `cash_log` at **1 of 9** (11.1%), at or below the 20% criterion.
+
+**Side by side with `M1B-E053`, per statistic and wave index.**
+
+| statistic | E053 (27/26, 7 indices, d ≥ 0.785) | E054 (36/27, 9 indices, d ≥ 0.718) | same indices? | same direction? |
+| --- | --- | --- | --- | --- |
+| `game_ms` | separated nowhere; pooled −0.027 | wave 9 only, −107.0 ms (120 Hz higher); pooled +0.010 | no — wave 9 was not compared in E053 (0/1) | n/a |
+| `decisions` | nowhere; +0.104 | wave 8 only, +2.75 (60 Hz higher); −0.073 | no — wave 8 was not compared in E053 (4/1) | n/a |
+| `health_fraction` | nowhere; −0.173 | nowhere; +0.085 | yes (both nowhere) | n/a |
+| `cash_log` | **waves 5 and 6**, both 60 Hz higher; +0.206 | **wave 8 only**, 60 Hz higher; +0.008 | **no** | yes, 60 Hz higher in both |
+| rule | **(b) fires, 2/7 = 28.6%** | (b) does not fire, 1/9 = 11.1% | — | — |
+
+At the two indices E053 rejected on, this run found nothing: wave 5 +0.06
+[−0.27, +0.37] (E053: +0.34 [+0.02, +0.64]) and wave 6 +0.39 [−0.07, +0.85]
+(E053: +0.46 [+0.08, +0.86]). Both point the same way as E053 (60 Hz higher) and
+wave 6 is close in magnitude, but neither interval excludes zero, and the pooled
+`cash_log` d fell from +0.206 to +0.008. **Stated honestly and without changing
+the verdict:** this run's per-index detectable differences at waves 5 and 6
+(≥ 0.485 and ≥ 0.649) are *larger* than the effects E053 reported there
+(+0.34, +0.46), so its silence at those two indices is a failure to reproduce,
+not a demonstration that the effect is absent.
+
+**The combined reading the rule permits.** The rule says a REJECT is acted on
+only once replicated from the written recipe in a fresh session. This
+replication did not reproduce it: `cash_log` did not separate at E053's indices,
+did not clear the 20% criterion anywhere, and no other trigger fired.
+**The REJECT is therefore not replicated and does not stand.** What the pair
+supports is the published result of the rule's "otherwise" branch — *no
+difference detectable at this n* — across 63 and 53 valid episodes, with the two
+runs' only separated state indices disjoint, non-monotone, and at 4–8 episodes
+per arm. It does not support "no difference": `M1B-E053`'s own caveat about the
+20% criterion having no resolution at 7–9 comparable wave indices applies to
+this run unchanged, and both runs' separations sit at the shallowest-n depths
+where a stray index is exactly what a null looks like.
+
+**What this sample could not detect.** Per-wave effects below d ≈ 0.718 (and
+below each printed per-index figure); anything at wave 10 and above (1/0 episodes
+reached it); anything about the wave an episode died in, excluded as a fragment;
+anything visible only in episode length (`final_wave` could detect ~1.66 waves);
+anything about throughput, since the arms shared a host; anything about a rate
+other than 60 and 120, a learner attached, an N other than 7, a 4/3 split other
+than this one, or a renderer other than `-gpu host`; and anything about
+stability, which here cost nothing.
+
+**Teardown:** complete on all seven serials — original `libunity.so` SHA-256
+`ffc1f3ef…dd0040` re-verified ×7, `versionCode 1199` / `29.0.3` / installer
+`com.android.vending` ×7, `libunity_mounts: 0` ×7, `bridge_artifacts: removed`
+×7, `game_frame_rate_override: reset` ×7, `teardown_failure` null ×7, no qemu
+process left (checked through `/proc/*/exe`), `adb devices` empty. Per-instance
+logcat captured for all seven. 5554 and the canonical AVD were never addressed.
+
 ## M1B-E053 — Behavioural equivalence, 60 Hz against 120 Hz, one interleaved fleet: the pre-registered rule says REJECT on cash at two of seven wave indices
 
 **Date:** 2026-09-18

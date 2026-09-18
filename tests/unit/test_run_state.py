@@ -21,7 +21,7 @@ from tower_rl.environment.run_state import (
     action_is_allowed,
     validate_transition,
 )
-from tower_rl.infrastructure.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
+from tower_rl.simulation.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
 
 BUILDER = RunStateBuilder(profile_id="tower-play-29.0.3-rooted-v1")
 

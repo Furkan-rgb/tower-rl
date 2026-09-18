@@ -11,7 +11,7 @@ belong in this directory.
 
 The bridge owns dynamic IL2CPP lookup, raw state snapshots, and main-thread
 command dispatch. The Python client in
-`src/tower_rl/infrastructure/instrumented_bridge.py` owns TCP framing, time
+`src/tower_rl/simulation/instrumented_bridge.py` owns TCP framing, time
 limits, compatibility validation, stream ordering, and clean disconnects. Neither
 component owns game rules or normalizes observations for an RL policy.
 

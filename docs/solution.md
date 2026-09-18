@@ -165,8 +165,7 @@ Tower-RL/
 │   └── adr/
 ├── src/tower_rl/
 │   ├── environment/         # what a run is: actions, state, episode, port, cost
-│   ├── ports/               # inbound/outbound protocols
-│   ├── infrastructure/      # ADB, vision, persistence, process adapters
+│   ├── simulation/          # reaching one instance: bring-up, bridge, fleet
 │   ├── cli/                 # composition root
 │   ├── policies/
 │   ├── replay/
@@ -1118,7 +1117,7 @@ proportion to the speed gained — measured at 4.8 decisions per wave at 64x
 against 12.2 at 1x (`M1B-E012`). Any throughput bought that way is paid for in
 the thing the agent is actually learning from.
 
-`infrastructure/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0` and
+`simulation/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0` and
 `_pin_game_speed` puts the game back to 1x and fails explicitly if the game
 refuses. Speed is no longer a parameter anywhere — not in the adapter, not in the
 cadence, not on any runner's command line — so there is nothing left to set it to.

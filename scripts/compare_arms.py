@@ -23,12 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_episodes import (  # noqa: E402
-    POLICIES,
-    add_cadence_arguments,
-    cadence_from,
-    compatibility,
-)
+from run_episodes import POLICIES, add_cadence_arguments, cadence_from  # noqa: E402
 
 from tower_rl.environment.episode import EpisodeSummary  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
@@ -38,10 +33,11 @@ from tower_rl.experiment.comparison import (  # noqa: E402
     interleave_schedule,
     required_episodes,
 )
-from tower_rl.infrastructure.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
-from tower_rl.infrastructure.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.evaluator import WaveDistribution, episode_record  # noqa: E402
+from tower_rl.simulation.bridge import compatibility  # noqa: E402
+from tower_rl.simulation.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
+from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
 
 def named_policies(requested: list[str]) -> list[str]:

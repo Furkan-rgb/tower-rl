@@ -25,10 +25,6 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.infrastructure.instrumented_bridge import BridgeTimeoutError
-from tower_rl.infrastructure.instrumented_run_adapter import (
-    InstrumentedRunAdapter,
-)
 from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.backbone import (
     LearnMetrics,
@@ -46,6 +42,10 @@ from tower_rl.learning.training import (
     TrainingConfig,
     TrainingRun,
     collection_windows,
+)
+from tower_rl.simulation.instrumented_bridge import BridgeTimeoutError
+from tower_rl.simulation.instrumented_run_adapter import (
+    InstrumentedRunAdapter,
 )
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)

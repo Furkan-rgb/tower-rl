@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import platform
 import shutil
 import subprocess
@@ -11,6 +10,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from tower_rl.simulation.android_sdk import find_android_tool
 from tower_rl.xapk import XapkInspectionError, inspect_xapk
 
 
@@ -31,45 +31,6 @@ class CheckResult:
         return asdict(self)
 
 
-def sdk_roots() -> tuple[Path, ...]:
-    """Where an Android SDK may live, configured roots first."""
-    configured = [
-        Path(value)
-        for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT")
-        if (value := os.environ.get(variable))
-    ]
-    conventional = [
-        Path.home() / "Library/Android/sdk",
-        Path.home() / "Android/Sdk",
-        # Where the Linux workstation bootstrap installs it. Without this an
-        # unattended run cannot find adb unless a shell happens to export the
-        # SDK on PATH, which a background process does not inherit.
-        Path.home() / ".local/share/android-sdk",
-        Path("/opt/homebrew/share/android-commandlinetools"),
-    ]
-    roots: list[Path] = []
-    for root in configured + conventional:
-        if root not in roots:
-            roots.append(root)
-    return tuple(roots)
-
-
-def find_android_tool(name: str) -> Path | None:
-    direct = shutil.which(name)
-    if direct:
-        return Path(direct).resolve()
-    relative_candidates = {
-        "adb": ("platform-tools/adb",),
-        "emulator": ("emulator/emulator",),
-        "apkanalyzer": ("cmdline-tools/latest/bin/apkanalyzer",),
-        "sdkmanager": ("cmdline-tools/latest/bin/sdkmanager",),
-    }
-    for root in sdk_roots():
-        for relative in relative_candidates.get(name, ()):
-            candidate = root / relative
-            if candidate.is_file():
-                return candidate.resolve()
-    return None
 
 
 def _run(command: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:

@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.infrastructure.instrumented_bridge import (
+from tower_rl.simulation.instrumented_bridge import (
     BridgeCommandResult,
     BridgeObservation,
     BridgeRunUnavailable,

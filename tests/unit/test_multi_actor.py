@@ -1,8 +1,11 @@
-"""Instance identity, aggregation and failure isolation for the actor fleet.
+"""What the fleet runner composes out of the simulation, and what it measures.
 
-No emulator, no adb, no bridge: the lifecycle steps are injected, so what is
-under test is the plumbing that decides which instance an actor addresses, what
-the aggregate says, and what happens to the other actors when one dies.
+No emulator, no adb, no bridge: every lifecycle step is injected, so what is
+under test is the script's own plumbing — how it sequences and tears down the
+actors it drives, what the aggregate says about them, and what happens to the
+other actors when one dies. Instance identity, snapshot preparation and the
+bridge call itself belong to the simulation and are tested under
+`tests/unit/simulation/`.
 """
 
 from __future__ import annotations
@@ -16,25 +19,14 @@ from pathlib import Path
 
 import pytest
 import run_actors
-from clone_session import (
-    CANONICAL_AVD,
-    CLONE_AVD,
-    GUEST_FRAME_RATE_HZ,
-    CloneError,
-    CloneInstance,
-    emulator_command,
-)
 from run_actors import (
-    ActorFailure,
     ActorOutcome,
     aggregate,
     collect_episodes,
     frame_rates,
     health_counters,
     run_actor,
-    run_bridge,
     run_fleet,
-    stagger_bring_up,
 )
 
 from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
@@ -42,6 +34,13 @@ from tower_rl.learning.evaluator import (
     EvaluationReport,
     WaveDistribution,
     to_record,
+)
+from tower_rl.simulation import fleet
+from tower_rl.simulation.fleet import stagger_bring_up
+from tower_rl.simulation.instance import (
+    GUEST_FRAME_RATE_HZ,
+    CloneError,
+    CloneInstance,
 )
 
 
@@ -83,54 +82,6 @@ def actor_record(summaries: list[EpisodeSummary]) -> dict[str, object]:
     )
     return to_record(report)
 
-
-def test_instance_index_derives_an_even_console_port_and_its_serial() -> None:
-    assert (CloneInstance().console_port, CloneInstance().serial) == (5556, "emulator-5556")
-    ports = [CloneInstance(index=index).console_port for index in range(4)]
-    assert ports == [5556, 5558, 5560, 5562]
-    assert all(port % 2 == 0 for port in ports)
-    assert CloneInstance(index=3).serial == "emulator-5562"
-
-
-def test_each_instance_gets_its_own_bridge_host_port() -> None:
-    ports = [CloneInstance(index=index).bridge_host_port for index in range(3)]
-    assert ports == [47652, 47653, 47654]
-    assert len(set(ports)) == 3
-
-
-def test_the_canonical_evaluation_avd_is_refused() -> None:
-    with pytest.raises(CloneError, match="canonical"):
-        CloneInstance(index=0, avd=CANONICAL_AVD)
-    with pytest.raises(CloneError):
-        CloneInstance(index=-1)
-
-
-def test_instances_share_the_clone_avd_read_only_on_their_own_port() -> None:
-    command = emulator_command(
-        CloneInstance(index=2),
-        binary="emulator",
-        renderer="lavapipe",
-        snapshot=None,
-        read_only=True,
-        cores=4,
-    )
-    assert command[1] == f"@{CLONE_AVD}"
-    assert "-read-only" in command
-    assert command[command.index("-port") + 1] == "5560"
-    assert "-no-snapshot-load" in command
-
-
-def test_a_writable_instance_is_not_launched_read_only() -> None:
-    command = emulator_command(
-        CloneInstance(),
-        binary="emulator",
-        renderer="lavapipe",
-        snapshot="home_offline",
-        read_only=False,
-        cores=8,
-    )
-    assert "-read-only" not in command
-    assert command[command.index("-snapshot") + 1] == "home_offline"
 
 
 def test_health_counters_come_from_the_per_episode_records() -> None:
@@ -266,7 +217,7 @@ def bring_up_steps(
         "raise_frame_rate",
         lambda _, rate: steps.append(f"raise_frame_rate {rate}"),
     )
-    monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
+    monkeypatch.setattr(fleet, "run_bridge", lambda command, _: steps.append(command))
     monkeypatch.setattr(run_actors.subprocess, "run", episode_process)
 
     arguments = argparse.Namespace(
@@ -386,44 +337,6 @@ def test_an_actor_can_be_made_to_cold_start(
     assert asked[0]["force_cold"] is True
 
 
-def prepare(
-    monkeypatch: pytest.MonkeyPatch, *, held: bool
-) -> tuple[list[str], list[dict[str, object]]]:
-    """Run the pre-fleet preparation against an injected snapshot registry."""
-    steps: list[str] = []
-    asked: list[dict[str, object]] = []
-
-    def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
-        steps.append("bring_up")
-        asked.append({"serial": target.serial, **keywords})
-        return "cold"
-
-    monkeypatch.setattr(run_actors, "bridge_key", lambda: "abc123")
-    monkeypatch.setattr(run_actors, "snapshot_exists", lambda *_: held)
-    monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
-    monkeypatch.setattr(
-        run_actors, "tear_down_instance", lambda instance: steps.append("tear_down")
-    )
-    name = run_actors.prepare_pinned_snapshot("lavapipe", 4)
-    assert name.endswith("abc123")
-    return steps, asked
-
-
-def test_the_pinned_snapshot_is_prepared_once_on_a_writable_instance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A read-only actor cannot save one, so the fleet would otherwise stay cold."""
-    steps, asked = prepare(monkeypatch, held=False)
-
-    assert steps == ["bring_up", "tear_down"]
-    assert asked == [{"serial": "emulator-5556", "deploy": run_actors.deploy_bridge, "cores": 4}]
-
-
-def test_nothing_is_prepared_when_the_snapshot_for_this_bridge_is_already_held(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert prepare(monkeypatch, held=True) == ([], [])
-
 
 class ConcurrencyRecorder:
     """The highest number of overlapping `enter`/`exit` pairs seen at once."""
@@ -456,6 +369,18 @@ def stagger_arguments(tmp_path: Path) -> argparse.Namespace:
         max_quiet_game_ms=2000,
         max_episode_wall_seconds=600.0,
         output_directory=tmp_path,
+    )
+
+
+def staggered_collect(
+    instances: list[CloneInstance], arguments: argparse.Namespace
+) -> object:
+    """The fleet's sequencer wrapped around one actor's collection, as main does it."""
+    return stagger_bring_up(
+        instances,
+        lambda instance, signal_ready: collect_episodes(
+            instance, arguments, signal_ready=signal_ready
+        ),
     )
 
 
@@ -493,7 +418,7 @@ def test_bring_ups_are_sequenced_but_collection_still_runs_concurrently(
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
     outcomes = run_fleet(
-        instances, stagger_bring_up(instances, stagger_arguments(tmp_path)), lambda _: None
+        instances, staggered_collect(instances, stagger_arguments(tmp_path)), lambda _: None
     )
 
     assert bring_up_tracker.peak == 1
@@ -513,7 +438,7 @@ def test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up(
     slower than the whole backstop still cannot overlap its successor.
     """
     instances = [CloneInstance(index=index) for index in range(3)]
-    monkeypatch.setattr(run_actors, "BRING_UP_STAGGER_BACKSTOP", 0.3)
+    monkeypatch.setattr(fleet, "BRING_UP_STAGGER_BACKSTOP", 0.3)
     bring_up_tracker = ConcurrencyRecorder()
 
     def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
@@ -534,7 +459,7 @@ def test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up(
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
     outcomes = run_fleet(
-        instances, stagger_bring_up(instances, stagger_arguments(tmp_path)), lambda _: None
+        instances, staggered_collect(instances, stagger_arguments(tmp_path)), lambda _: None
     )
 
     assert bring_up_tracker.peak == 1
@@ -582,7 +507,7 @@ def test_an_actor_collects_while_a_peer_is_still_booting(
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
     outcomes = run_fleet(
-        instances, stagger_bring_up(instances, stagger_arguments(tmp_path)), lambda _: None
+        instances, staggered_collect(instances, stagger_arguments(tmp_path)), lambda _: None
     )
 
     assert all(outcome.failure is None for outcome in outcomes)
@@ -620,7 +545,7 @@ def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
 
     outcomes = run_fleet(
         instances,
-        stagger_bring_up(instances, stagger_arguments(tmp_path)),
+        staggered_collect(instances, stagger_arguments(tmp_path)),
         lambda instance: torn_down.append(instance.serial),
     )
 
@@ -661,45 +586,3 @@ def test_a_game_that_lost_its_activity_before_the_raise_runs_no_episode(
     assert ran == []
 
 
-def bridge_output(
-    monkeypatch: pytest.MonkeyPatch, *, stdout: str, stderr: str = "", status: int = 0
-) -> None:
-    def script(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(command, status, stdout, stderr)
-
-    monkeypatch.setattr(run_actors.subprocess, "run", script)
-
-
-def test_the_cleanup_identity_report_reaches_the_operators_log(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Cleanup verification is a device-safety property, so it must be visible."""
-    bridge_output(
-        monkeypatch,
-        stdout=(
-            "libunity_sha256: ffc1f3ef\nversionCode=1199\n"
-            "libunity_mounts: 0\nbridge_artifacts: removed\n"
-        ),
-    )
-
-    run_bridge("cleanup", CloneInstance(index=1))
-
-    printed = capsys.readouterr().out
-    assert "emulator-5558 cleanup: libunity_sha256: ffc1f3ef" in printed
-    assert "emulator-5558 cleanup: libunity_mounts: 0" in printed
-    assert "emulator-5558 cleanup: bridge_artifacts: removed" in printed
-
-
-def test_a_failing_bridge_step_reports_its_output_as_well_as_failing(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    bridge_output(
-        monkeypatch, stdout="libunity_mounts: 1\n", stderr="warning: still mounted\n", status=1
-    )
-
-    with pytest.raises(ActorFailure, match="still mounted"):
-        run_bridge("cleanup", CloneInstance())
-
-    printed = capsys.readouterr().out
-    assert "emulator-5556 cleanup: libunity_mounts: 1" in printed
-    assert "emulator-5556 cleanup: error: warning: still mounted" in printed

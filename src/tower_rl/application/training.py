@@ -30,10 +30,18 @@ from typing import Any
 from tower_rl.application.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.application.evaluator import EvaluationReport
 from tower_rl.application.replay import PrioritizedSequenceReplay
+from tower_rl.application.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
 from tower_rl.domain.episode import EpisodeSummary
 from tower_rl.domain.features import StateFeatures
 from tower_rl.learning.backbone import Backbone, LearnMetrics, SequenceBatch, collate
 from tower_rl.ports.run_port import RunPortError
+
+#: The device's own rejection reason for a stale or duplicate command, carried
+#: into an episode's `termination_detail` free text exactly as it comes off the
+#: bridge. `scripts/run_actors.py` names the identical literal
+#: (`STALE_OR_DUPLICATE`) for its own report; it is not imported from there
+#: because the application layer does not depend on a script.
+STALE_OR_DUPLICATE = "stale_or_duplicate"
 
 
 def _mean(values: list[float]) -> float | None:
@@ -41,6 +49,83 @@ def _mean(values: list[float]) -> float | None:
     if not values:
         return None
     return sum(values) / len(values)
+
+
+@dataclass(frozen=True)
+class EpisodeHealth:
+    """Environment-honesty counters pooled over a span of episodes.
+
+    A 4.3-hour run finished with `advances_cut_short`, `episodes_not_started_fresh`
+    and the round/budgeted ratio unrecoverable, because nothing persisted them
+    per episode or aggregated them - the run could not be certified as honest for
+    its whole duration. These counters are what that certification is read from,
+    at whatever span they are pooled over: the whole run, one actor, or one
+    collection window.
+    """
+
+    episodes: int
+    valid_episodes: int
+    invalid_episodes: int
+    #: Invalid episodes by `TerminationOutcome`, coarse-grained.
+    invalid_by_reason: dict[str, int]
+    #: Invalid episodes by their free-text `termination_detail`, verbatim. A
+    #: reason like "the game did not honour speed_down: lifecycle_timeout" is
+    #: counted and named here rather than surviving only as text on one episode.
+    invalid_detail: dict[str, int]
+    bridge_event_divergence: int
+    stale_or_duplicate: int
+    game_time_inflated: int
+    advances_cut_short: int
+    episodes_not_started_fresh: int
+    #: The game's round clock over the budgeted game time, pooled across every
+    #: episode that spent measurable game time. None until one has.
+    round_budgeted_ratio: float | None
+    #: The single most inflated per-episode ratio in the span. Only inflation is
+    #: judged (see `GAME_TIME_INFLATED`'s own note), so the worst is the maximum
+    #: observed, not the extreme in either direction.
+    worst_round_budgeted_ratio: float | None
+
+
+def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
+    """Pool the honesty counters over a span of episodes, valid and invalid alike.
+
+    One definition shared by run, actor and collection-window reporting, so a
+    health problem can be found at any of those scopes without a second way of
+    counting it.
+    """
+    valid = sum(1 for summary in summaries if summary.valid)
+    by_reason: dict[str, int] = {}
+    detail: dict[str, int] = {}
+    for summary in summaries:
+        if summary.valid:
+            continue
+        by_reason[summary.termination.value] = by_reason.get(summary.termination.value, 0) + 1
+        for text in summary.termination_detail or (summary.termination.value,):
+            detail[text] = detail.get(text, 0) + 1
+    all_detail = [text for summary in summaries for text in summary.termination_detail]
+    measured = [
+        (summary.round_ms, summary.game_ms) for summary in summaries if summary.game_ms > 0
+    ]
+    pooled_ratio = (
+        sum(round_ms for round_ms, _ in measured) / sum(game_ms for _, game_ms in measured)
+        if measured
+        else None
+    )
+    worst_ratio = max((round_ms / game_ms for round_ms, game_ms in measured), default=None)
+    return EpisodeHealth(
+        episodes=len(summaries),
+        valid_episodes=valid,
+        invalid_episodes=len(summaries) - valid,
+        invalid_by_reason=by_reason,
+        invalid_detail=detail,
+        bridge_event_divergence=sum(1 for text in all_detail if BRIDGE_EVENT_DIVERGENCE in text),
+        stale_or_duplicate=sum(1 for text in all_detail if STALE_OR_DUPLICATE in text),
+        game_time_inflated=sum(1 for text in all_detail if GAME_TIME_INFLATED in text),
+        advances_cut_short=sum(summary.advances_cut_short for summary in summaries),
+        episodes_not_started_fresh=sum(1 for summary in summaries if summary.starting_wave > 1),
+        round_budgeted_ratio=pooled_ratio,
+        worst_round_budgeted_ratio=worst_ratio,
+    )
 
 
 @dataclass
@@ -212,6 +297,11 @@ class CollectionWindow:
     standard_error: float | None
     wait_fraction: float
     purchases_per_episode: float
+    #: The environment-honesty counters over every episode attempted while this
+    #: window was filling, valid and invalid alike - not only the valid ones the
+    #: wave statistics above are over. This is what locates a health problem in
+    #: time rather than only in the whole run's total.
+    health: EpisodeHealth
 
 
 def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribution | None:
@@ -245,11 +335,15 @@ def collection_windows(
         raise ValueError("a collection window needs at least one episode")
     windows: list[CollectionWindow] = []
     current: list[CollectedEpisode] = []
+    #: Every episode attempted while this window was filling, valid and invalid
+    #: alike - the span `health` is pooled over, wider than `current`.
+    attempted: list[CollectedEpisode] = []
     spent = 0
     window_decisions = 0
     for episode in collected:
         spent += episode.summary.decisions
         window_decisions += episode.summary.decisions
+        attempted.append(episode)
         if not episode.summary.valid:
             continue
         current.append(episode)
@@ -270,9 +364,11 @@ def collection_windows(
                 standard_error=None if stdev is None else stdev / len(waves) ** 0.5,
                 wait_fraction=distribution.wait_fraction,
                 purchases_per_episode=distribution.purchases_per_episode,
+                health=episode_health([item.summary for item in attempted]),
             )
         )
         current = []
+        attempted = []
         window_decisions = 0
     return windows
 
@@ -675,8 +771,10 @@ __all__ = [
     "ActorProgress",
     "CollectedEpisode",
     "CollectionWindow",
+    "EpisodeHealth",
     "action_distribution",
     "collection_windows",
+    "episode_health",
     "SharedPolicy",
     "TrainingConfig",
     "TrainingProgressReport",

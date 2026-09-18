@@ -86,7 +86,40 @@ WINDOW_KEYS = {
     "standard_error",
     "wait_fraction",
     "purchases_per_episode",
+    "health",
 }
+
+#: `EpisodeHealth`'s own fields, pooled at whatever scope names it: the whole
+#: run, one actor, or one collection window.
+HEALTH_KEYS = {
+    "episodes",
+    "valid_episodes",
+    "invalid_episodes",
+    "invalid_by_reason",
+    "invalid_detail",
+    "bridge_event_divergence",
+    "stale_or_duplicate",
+    "game_time_inflated",
+    "advances_cut_short",
+    "episodes_not_started_fresh",
+    "round_budgeted_ratio",
+    "worst_round_budgeted_ratio",
+}
+
+#: The health counters expected at zero on the fixtures below: fake runs with
+#: no injected refusal, divergence, stall or leftover run.
+ZERO_HEALTH_COUNTERS = {
+    "invalid_episodes",
+    "advances_cut_short",
+    "episodes_not_started_fresh",
+    "bridge_event_divergence",
+    "stale_or_duplicate",
+    "game_time_inflated",
+}
+
+#: Health counters that sum straightforwardly across actors. The two free-text
+#: mappings merge by reason instead, and the two ratios pool rather than sum.
+ADDITIVE_HEALTH_COUNTERS = ZERO_HEALTH_COUNTERS | {"episodes", "valid_episodes"}
 
 
 def arguments(run_dir: Path, *backbones: str, **overrides: str) -> argparse.Namespace:
@@ -208,6 +241,77 @@ def test_the_report_carries_a_well_formed_learning_curve(trained: dict[str, Any]
             assert point["versus_scripted_reference"] == pytest.approx(
                 point["mean_final_wave"] - train.SCRIPTED_REFERENCE, abs=1e-3
             )
+
+
+#: Fields `evaluator.episode_record` promises for every episode, valid or not.
+EPISODE_RECORD_KEYS = {
+    "episode_index",
+    "valid",
+    "final_wave",
+    "decisions",
+    "purchases",
+    "frames",
+    "budgeted_game_ms",
+    "round_ms",
+    "advance_wall_seconds",
+    "elapsed_wall_seconds",
+    "invalid_reasons",
+    "termination_detail",
+    "advances_cut_short",
+    "recovered_transients",
+    "starting_wave",
+}
+
+
+def test_collected_episodes_are_persisted_with_the_evaluator_shape(
+    trained: dict[str, Any],
+) -> None:
+    """A 4.3-hour run cannot be certified honest without every episode's record."""
+    for arm in trained["arms"]:
+        records = arm["collected_episodes"]
+
+        assert len(records) == arm["episodes"] - arm["failed_episodes"]
+        assert all(EPISODE_RECORD_KEYS | {"actor_id"} == set(record) for record in records)
+        assert [record["episode_index"] for record in records] == list(range(len(records)))
+        assert any(record["valid"] for record in records)
+        actor_id = arm["resolved_config"]["actor_ids"][0]
+        assert all(record["actor_id"] == actor_id for record in records)
+
+
+def test_evaluation_episodes_are_persisted_with_the_same_shape(trained: dict[str, Any]) -> None:
+    for arm in trained["arms"]:
+        for evaluation in arm["evaluations"]:
+            records = evaluation["episodes"]
+            assert records
+            assert all(set(record) == EPISODE_RECORD_KEYS for record in records)
+
+
+def test_the_health_aggregate_matches_the_collected_episode_records(
+    trained: dict[str, Any],
+) -> None:
+    """The aggregate is pooled from the same records the report persists."""
+    for arm in trained["arms"]:
+        records = arm["collected_episodes"]
+        health = arm["health"]
+
+        assert health["episodes"] == len(records)
+        assert health["valid_episodes"] == sum(1 for record in records if record["valid"])
+        assert health["invalid_episodes"] == sum(
+            1 for record in records if not record["valid"]
+        )
+        assert health["advances_cut_short"] == sum(
+            record["advances_cut_short"] for record in records
+        )
+        assert health["episodes_not_started_fresh"] == sum(
+            1 for record in records if record["starting_wave"] > 1
+        )
+        detail: dict[str, int] = {}
+        for record in records:
+            if record["valid"]:
+                continue
+            for text in record["termination_detail"]:
+                detail[text] = detail.get(text, 0) + 1
+        assert health["invalid_detail"] == detail
 
 
 def test_the_curve_is_readable_against_the_measured_baselines(trained: dict[str, Any]) -> None:
@@ -540,11 +644,15 @@ def test_the_report_accounts_for_every_actor_and_for_the_fleet(
             assert actor["valid_episodes"] + actor["invalid_episodes"] <= actor["episodes"]
             assert actor["withdrawn"] is None
             assert actor["episodes_per_hour"] > 0
-            # The health counters a fleet is watched by, per actor and summed.
-            for counter in train.health_counters([]):
+            assert set(train.health_counters([])) == HEALTH_KEYS
+            # The health counters a fleet is watched by, per actor: clean on
+            # this fixture's fake run, so every one of them is zero.
+            for counter in ZERO_HEALTH_COUNTERS:
                 assert actor[counter] == 0
-        for counter, total in arm["health"].items():
-            assert total == sum(actor[counter] for actor in actors)
+            assert actor["invalid_by_reason"] == {}
+            assert actor["invalid_detail"] == {}
+        for counter in ADDITIVE_HEALTH_COUNTERS:
+            assert arm["health"][counter] == sum(actor[counter] for actor in actors)
 
 
 def test_the_collection_curve_survives_a_fleet(fleet_trained: dict[str, Any]) -> None:
@@ -553,12 +661,31 @@ def test_the_collection_curve_survives_a_fleet(fleet_trained: dict[str, Any]) ->
         curve = arm["collection_curve"]
 
         assert curve and all(set(window) == WINDOW_KEYS for window in curve)
+        assert all(set(window["health"]) == HEALTH_KEYS for window in curve)
         assert [window["index"] for window in curve] == list(range(len(curve)))
         placements = [window["decisions_at_end"] for window in curve]
         assert placements == sorted(placements)
         assert all(window["episodes"] == 2 for window in curve)
         scored = sum(window["episodes"] for window in curve)
         assert scored <= arm["valid_episodes"] < scored + 2
+
+
+def test_a_fleet_attributes_collected_episodes_to_their_actor(
+    fleet_trained: dict[str, Any],
+) -> None:
+    """A record without its actor cannot say which emulator to look at."""
+    for arm in fleet_trained["arms"]:
+        records = arm["collected_episodes"]
+        actor_ids = set(arm["resolved_config"]["actor_ids"])
+
+        assert records
+        assert {record["actor_id"] for record in records} <= actor_ids
+        # Every actor's own episode count matches the records attributed to it.
+        for actor in arm["actors"]:
+            attributed = [
+                record for record in records if record["actor_id"] == actor["actor_id"]
+            ]
+            assert len(attributed) == actor["episodes"] - actor["failed_episodes"]
 
 
 def test_one_dead_instance_does_not_end_a_fleet_run(tmp_path: Path) -> None:

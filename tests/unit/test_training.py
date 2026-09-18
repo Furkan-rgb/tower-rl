@@ -15,10 +15,13 @@ from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.evaluator import EvaluationReport  # noqa: E402
 from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.application.run_environment import (  # noqa: E402
+    BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_INFLATED,
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
 from tower_rl.application.training import (  # noqa: E402
+    STALE_OR_DUPLICATE,
     CollectedEpisode,
     SharedPolicy,
     TrainingConfig,
@@ -26,6 +29,7 @@ from tower_rl.application.training import (  # noqa: E402
     action_distribution,
     collection_windows,
     episode_budget,
+    episode_health,
 )
 from tower_rl.domain.episode import (  # noqa: E402
     EpisodeSummary,
@@ -400,6 +404,12 @@ def _collected(
     waits: int = 50,
     purchases: int = 10,
     valid: bool = True,
+    termination_detail: tuple[str, ...] = (),
+    advances_cut_short: int = 0,
+    starting_wave: int = 0,
+    game_ms: float = 0.0,
+    round_ms: float = 0.0,
+    actor_id: str = "actor-0",
 ) -> CollectedEpisode:
     """One collected episode, as the report keeps it."""
     return CollectedEpisode(
@@ -415,8 +425,14 @@ def _collected(
             elapsed_wall_seconds=1.0,
             game_speed=8.0,
             invalid_transitions=0,
+            termination_detail=termination_detail,
+            advances_cut_short=advances_cut_short,
+            starting_wave=starting_wave,
+            game_ms=game_ms,
+            round_ms=round_ms,
         ),
         wait_decisions=waits,
+        actor_id=actor_id,
     )
 
 
@@ -469,6 +485,102 @@ def test_a_window_reports_what_the_policy_did_in_it() -> None:
 
     assert windows[0].wait_fraction == pytest.approx(0.9)
     assert windows[0].purchases_per_episode == pytest.approx(1.0)
+
+
+def test_a_window_pools_health_over_every_episode_attempted_in_it() -> None:
+    """Not only the valid episodes: the invalid one attempted inside it too.
+
+    A health problem must be locatable in time, not only in the run's total, so
+    a window's health is pooled over every episode attempted while it was
+    filling - including the invalid one that cost decisions but scored nothing.
+    """
+    collected = [
+        _collected(4),
+        _collected(99, valid=False, termination_detail=("device offline",)),
+        _collected(6),
+    ]
+
+    windows = collection_windows(collected, size=2)
+
+    assert len(windows) == 1
+    health = windows[0].health
+    assert health.episodes == 3
+    assert health.valid_episodes == 2
+    assert health.invalid_episodes == 1
+    assert health.invalid_detail == {"device offline": 1}
+
+
+def test_episode_health_names_a_lifecycle_reason_in_the_aggregate() -> None:
+    """A failure of this exact shape must not survive only as free text on one episode."""
+    reason = "the game did not honour speed_down: lifecycle_timeout"
+    summaries = [
+        _collected(4).summary,
+        _collected(6).summary,
+        _collected(99, valid=False, termination_detail=(reason,)).summary,
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.episodes == 3
+    assert health.valid_episodes == 2
+    assert health.invalid_episodes == 1
+    assert health.invalid_by_reason == {TerminationOutcome.DEVICE_FAILED.value: 1}
+    assert health.invalid_detail == {reason: 1}
+
+
+def test_episode_health_pools_the_round_budgeted_ratio_and_keeps_the_worst() -> None:
+    summaries = [
+        _collected(4, game_ms=1000.0, round_ms=1100.0).summary,
+        _collected(6, game_ms=1000.0, round_ms=1300.0).summary,
+        # No measurable game time: excluded from both the pool and the worst.
+        _collected(8, game_ms=0.0, round_ms=0.0).summary,
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.round_budgeted_ratio == pytest.approx(1.2)
+    assert health.worst_round_budgeted_ratio == pytest.approx(1.3)
+
+
+def test_episode_health_has_no_ratio_before_any_episode_measured_game_time() -> None:
+    health = episode_health([_collected(4).summary])
+
+    assert health.round_budgeted_ratio is None
+    assert health.worst_round_budgeted_ratio is None
+
+
+def test_episode_health_counts_the_named_bridge_and_device_failures() -> None:
+    summaries = [
+        _collected(4, valid=False, termination_detail=(BRIDGE_EVENT_DIVERGENCE,)).summary,
+        _collected(
+            6, valid=False, termination_detail=(f"rejected: {STALE_OR_DUPLICATE}",)
+        ).summary,
+        _collected(
+            8,
+            valid=False,
+            termination_detail=(f"{GAME_TIME_INFLATED}: round clock ran 1.4x",),
+        ).summary,
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.bridge_event_divergence == 1
+    assert health.stale_or_duplicate == 1
+    assert health.game_time_inflated == 1
+    assert health.advances_cut_short == 0
+    assert health.episodes_not_started_fresh == 0
+
+
+def test_episode_health_counts_a_leftover_run_and_cut_short_advances() -> None:
+    summaries = [
+        _collected(4, starting_wave=3).summary,
+        _collected(6, advances_cut_short=2).summary,
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.episodes_not_started_fresh == 1
+    assert health.advances_cut_short == 2
 
 
 def test_the_action_distribution_is_none_before_any_episode() -> None:

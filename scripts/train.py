@@ -53,7 +53,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch  # noqa: E402
 from clone_session import CloneInstance, bring_up, require_offline  # noqa: E402
 from run_actors import (  # noqa: E402
-    STALE_OR_DUPLICATE,
     deploy_bridge,
     prepare_pinned_snapshot,
     tear_down_instance,
@@ -66,20 +65,24 @@ from run_episodes import (  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.comparison import interleave_schedule  # noqa: E402
-from tower_rl.application.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
-from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
-from tower_rl.application.run_environment import (  # noqa: E402
-    BRIDGE_EVENT_DIVERGENCE,
-    InstrumentedRunEnvironment,
+from tower_rl.application.evaluator import (  # noqa: E402
+    EvaluationReport,
+    episode_record,
+    evaluate,
+    to_record,
 )
+from tower_rl.application.replay import PrioritizedSequenceReplay  # noqa: E402
+from tower_rl.application.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.application.training import (  # noqa: E402
     ActorProgress,
     CollectionWindow,
+    EpisodeHealth,
     TrainingConfig,
     TrainingProgressReport,
     TrainingRun,
     action_distribution,
     collection_windows,
+    episode_health,
 )
 from tower_rl.domain.episode import (  # noqa: E402
     REWARD_SCHEMA_VERSION,
@@ -230,6 +233,29 @@ def curve_metrics(
     return metrics
 
 
+def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
+    """The numeric fields of `EpisodeHealth`, keyed for MLflow.
+
+    MLflow metrics are scalars, so `invalid_by_reason` and `invalid_detail` stay
+    in the JSON report only; everything a health problem is *located* by - not
+    just named - travels to the tracker too.
+    """
+    metrics = {
+        f"{prefix}valid_episodes": float(health.valid_episodes),
+        f"{prefix}invalid_episodes": float(health.invalid_episodes),
+        f"{prefix}advances_cut_short": float(health.advances_cut_short),
+        f"{prefix}episodes_not_started_fresh": float(health.episodes_not_started_fresh),
+        f"{prefix}bridge_event_divergence": float(health.bridge_event_divergence),
+        f"{prefix}stale_or_duplicate": float(health.stale_or_duplicate),
+        f"{prefix}game_time_inflated": float(health.game_time_inflated),
+    }
+    if health.round_budgeted_ratio is not None:
+        metrics[f"{prefix}round_budgeted_ratio"] = health.round_budgeted_ratio
+    if health.worst_round_budgeted_ratio is not None:
+        metrics[f"{prefix}worst_round_budgeted_ratio"] = health.worst_round_budgeted_ratio
+    return metrics
+
+
 def window_metrics(window: CollectionWindow) -> dict[str, float]:
     """One point of the collection curve, which is what the run is read from."""
     metrics = {
@@ -242,32 +268,38 @@ def window_metrics(window: CollectionWindow) -> dict[str, float]:
     if window.stdev_final_wave is not None and window.standard_error is not None:
         metrics["collection_stdev_final_wave"] = window.stdev_final_wave
         metrics["collection_standard_error"] = window.standard_error
+    # The window's own health, so a problem can be placed on the budget axis
+    # rather than only read off the run's total.
+    metrics.update(health_metrics(window.health, prefix="collection_window_"))
     return metrics
 
 
 def window_line(window: CollectionWindow) -> str:
     error = "n/a" if window.standard_error is None else f"{window.standard_error:.2f}"
+    health = window.health
     return (
         f"window {window.index} decisions {window.decisions_at_end} "
         f"mean final wave {window.mean_final_wave:.2f} se {error} "
         f"over {window.episodes} collected episodes, "
         f"wait {window.wait_fraction:.1%} purchases/episode "
-        f"{window.purchases_per_episode:.1f}"
+        f"{window.purchases_per_episode:.1f} "
+        f"(invalid {health.invalid_episodes} cut_short {health.advances_cut_short} "
+        f"divergence {health.bridge_event_divergence})"
     )
 
 
-def invalid_episodes_by_reason(report: TrainingProgressReport) -> dict[str, int]:
-    """Why the collected episodes that were not scored ended, counted by name.
+def collected_episode_records(report: TrainingProgressReport) -> list[dict[str, object]]:
+    """Every collected episode's record, reusing the evaluator's shape.
 
-    A failed episode is an ordinary event that training survives, but survival
-    without a record would hide a device that is failing steadily, so the reasons
-    are carried in the report beside the waves.
+    `episode_record` is what `run_episodes.py` and `compare_arms.py` already
+    serialise per-episode records with; this is that same shape, plus the actor
+    id, since a fleet's episodes are one series and a health problem must be
+    traceable back to the instance that produced it.
     """
-    counts: dict[str, int] = {}
-    for summary in report.episode_summaries:
-        if not summary.valid:
-            counts[summary.termination.value] = counts.get(summary.termination.value, 0) + 1
-    return counts
+    return [
+        {**episode_record(index, episode.summary), "actor_id": episode.actor_id}
+        for index, episode in enumerate(report.collected)
+    ]
 
 
 def source_revision() -> str:
@@ -291,24 +323,14 @@ class ActorInstance:
     environment: InstrumentedRunEnvironment
 
 
-def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, int]:
-    """The health counters a fleet is watched by, summed over these episodes.
+def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, object]:
+    """`EpisodeHealth`, as a plain dict for the JSON report.
 
-    The same four `run_actors.py` reports for a scripted fleet, read from the
-    same places: two bridge-level reasons out of the per-episode termination
-    detail, and two the environment counts itself.
+    One shape shared by the whole run, each actor and each collection window
+    (`training.episode_health`); a fleet is watched by the same counters at
+    every one of those scopes.
     """
-    detail = [text for summary in summaries for text in summary.termination_detail]
-    return {
-        "bridge_event_divergence": sum(
-            1 for text in detail if BRIDGE_EVENT_DIVERGENCE in text
-        ),
-        "stale_or_duplicate": sum(1 for text in detail if STALE_OR_DUPLICATE in text),
-        "advances_cut_short": sum(summary.advances_cut_short for summary in summaries),
-        "episodes_not_started_fresh": sum(
-            1 for summary in summaries if summary.starting_wave > 1
-        ),
-    }
+    return asdict(episode_health(summaries))
 
 
 def per_hour(count: int, wall_seconds: float) -> float:
@@ -324,21 +346,27 @@ def actor_summary(
     progress: ActorProgress,
     report: TrainingProgressReport,
 ) -> dict[str, object]:
-    """What one actor of the fleet contributed, beside the aggregate."""
+    """What one actor of the fleet contributed, beside the aggregate.
+
+    `episodes` counts every attempt including the ones the port never delivered
+    a summary for; the health counters below are pooled over the summaries that
+    were delivered, which is one episode fewer whenever the port refused one.
+    """
     summaries = [episode.summary for episode in report.episodes_of(progress.actor_id)]
     return {
+        # The health counters first, so the identity and attempt-counting keys
+        # below - which count every attempt, not only the ones with a summary -
+        # are what wins where the two would otherwise collide on "episodes".
+        **health_counters(summaries),
         "actor_id": progress.actor_id,
         "episodes": progress.episodes,
         "decisions": progress.decisions,
-        "valid_episodes": progress.valid_episodes,
-        "invalid_episodes": progress.invalid_episodes,
         "failed_episodes": progress.failed_episodes,
         # Set only for an actor whose instance failed every episode the limit
         # allows; the rest of the fleet kept collecting without it.
         "withdrawn": progress.withdrawn,
         "episodes_per_hour": per_hour(progress.episodes, report.wall_seconds),
         "decisions_per_hour": per_hour(progress.decisions, report.wall_seconds),
-        **health_counters(summaries),
     }
 
 
@@ -476,6 +504,11 @@ class Arm:
     def summary(self) -> dict[str, object]:
         report = self.training.report
         distribution = action_distribution(report.collected)
+        # Pooled once over every collected episode and reused for the "health"
+        # key, the legacy by-reason mapping, and the MLflow metrics below: one
+        # count of the run's honesty, not three.
+        health = episode_health(report.episode_summaries)
+        self.run.log_metrics(health_metrics(health, prefix="health_"), decisions=report.decisions)
         return {
             "backbone": self.name,
             "run_id": self.identity.run_id,
@@ -514,15 +547,20 @@ class Arm:
             "actors_withdrawn": sum(
                 1 for progress in report.actors.values() if progress.withdrawn is not None
             ),
-            "health": health_counters(report.episode_summaries),
+            "health": asdict(health),
             "episodes_per_hour": per_hour(report.episodes, report.wall_seconds),
             "decisions_per_hour": per_hour(report.decisions, report.wall_seconds),
-            "invalid_episodes_by_reason": invalid_episodes_by_reason(report),
+            # Kept for compatibility with the report's earlier shape; identical
+            # to `health["invalid_by_reason"]`, which is where it is now pooled.
+            "invalid_episodes_by_reason": health.invalid_by_reason,
             "failed_episodes": report.failed_episodes,
             "episode_failures": report.episode_failures,
             "evaluation_failures": report.evaluation_failures,
             "checkpoints_written": report.checkpoints_written,
             "checkpoint_path": str(self.checkpoint_path),
+            # Every collected episode's own record - what certifies the run
+            # stayed honest for its whole span, not only in aggregate.
+            "collected_episodes": collected_episode_records(report),
             "evaluations": [to_record(item) for item in report.evaluations],
             "replay": self.replay.snapshot(),
         }

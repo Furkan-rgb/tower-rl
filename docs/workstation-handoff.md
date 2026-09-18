@@ -571,6 +571,22 @@ AVDs exist outside Git:
 
 - `tower_rl_instrumented_api36` is a rooted clone with the unchanged
   Play-installed 29.0.3 package.
+- `tower_rl_gadget_api36` is a throwaway re-signed-XAPK clone used only to
+  isolate native instrumentation behavior.
+
+Frida server attachment works at the x86 process level but cannot enumerate the
+translated ARM64 IL2CPP module. ARM64 Frida Gadget aborts under
+`libndk_translation`. Do not spend another iteration on those routes unless the
+host or Android ABI changes.
+
+A small custom ARM64 dependency does work under translation. It starts inside
+the Unity process, resolves IL2CPP exports, finds `Main` dynamically, and reads
+`Main.gameSpeed`. It was proven first in a temporary re-signed XAPK and then in
+the Play-installed package by placing a reversible Magisk bind mount over the
+extracted `libunity.so`. In the second proof, package version 29.0.3,
+`installerPackageName=com.android.vending`, signed APK bytes, and app data all
+remained unchanged. The mount was removed and the bridge/probe files were deleted
+afterward; no emulator is intentionally left running.
 
 **The guest's Google Play update round, and the WebView bake (2026-09-18).**
 The clone's Play downloads a `com.google.android.webview` update during the one
@@ -589,30 +605,23 @@ again, and so does a fresh WRITABLE boot, so the update did not
 persist at all rather than being hidden from read-only instances (`M1B-E051`).
 Writes were flushed and no rollback was logged; a settings change made after the
 install did persist, so the reading is that PackageManager discarded the update
-at the next boot's package scan. Until that is resolved, treat the kill as live. The
-same writable boot also left the base image's radios enabled, which is harmless
-because every bring-up cuts them itself and verifies offline by interface. To
+at the next boot's package scan. The kill nevertheless did not
+recur: `M1B-E052` came up 7/7 at 120 Hz with zero `installPackageLI` lines
+across all seven logcats, because the staged session the kill needed was
+consumed and Play did not stage another. The base image boots ROUTABLE, as run J's own
+instances show (`WifiService starting up with Wi-Fi enabled`, then a DHCP lease
+of 10.0.2.16, before each bring-up cut it). That was left over from the bake, so
+on 2026-09-18 one writable boot disabled both radios and read `ip -o -4 addr
+show` back listing only `lo`, with the game identity and `libunity.so` SHA-256
+unchanged and `reboot -p` as the shutdown: **radios are off in the base image as
+of today.** Either state is safe — every bring-up cuts the radios itself and
+verifies offline by interface — but starting offline keeps the online window
+short. To
 repeat the bake if Play stages another component later: verify no emulator is
 running, re-take the backup, boot the clone once writable and online with no
 bridge and no game launch, wait for the `installPackageLI` round to finish and
 120 s of quiet, read the identity lines back, shut down cleanly, and restore
 from the backup if anything but the intended package changed.
-- `tower_rl_gadget_api36` is a throwaway re-signed-XAPK clone used only to
-  isolate native instrumentation behavior.
-
-Frida server attachment works at the x86 process level but cannot enumerate the
-translated ARM64 IL2CPP module. ARM64 Frida Gadget aborts under
-`libndk_translation`. Do not spend another iteration on those routes unless the
-host or Android ABI changes.
-
-A small custom ARM64 dependency does work under translation. It starts inside
-the Unity process, resolves IL2CPP exports, finds `Main` dynamically, and reads
-`Main.gameSpeed`. It was proven first in a temporary re-signed XAPK and then in
-the Play-installed package by placing a reversible Magisk bind mount over the
-extracted `libunity.so`. In the second proof, package version 29.0.3,
-`installerPackageName=com.android.vending`, signed APK bytes, and app data all
-remained unchanged. The mount was removed and the bridge/probe files were deleted
-afterward; no emulator is intentionally left running.
 
 ADR 0006 now defines the separate instrumented-training and official-evaluation
 profiles. The first production bridge slice lives under `native/tower_bridge/`

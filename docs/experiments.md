@@ -48,10 +48,27 @@ today, not a guarantee: if Play stages a component again, the same race returns,
 and the handoff records how to repeat the bake.
 
 `#22` (behavioural equivalence at 120 Hz) is now runnable on a fleet that comes
-up 7/7. The relaunch machinery added for `#21` is a CANDIDATE FOR REMOVAL once
-`#22` has run — `M1B-E049` showed its recovery cannot work after the cut, so
-what it retains is the detection, and the corrected resumed-activity oracle is
-worth keeping either way. Nothing is removed yet.
+up 7/7.
+
+**Consequence taken the same day (2026-09-18), from this entry and `M1B-E049`:**
+the post-cut recovery is REMOVED. `relaunch_if_activity_lost` and both of its
+call sites are gone, with `RELAUNCH_READY_TIMEOUT` and the `point` label that
+existed only to say which of them fired. A relaunch after the network is cut
+cannot reach home (`M1B-E049`), and keeping it let one bring-up issue up to nine
+launcher intents while `MAX_RELAUNCHES` beside it said two. What stands in its
+place reports rather than repairs: the post-cut check names the lost activity in
+its failure, and `require_game_activity` refuses the instance before the frame
+rate is raised. The DETECTION stays exactly as it is — the resumed-activity
+oracle of `M1B-E047` is the part that was actually missing — and so does the one
+relaunch that works, inside the readiness wait while the radios are still up
+(`fe63abc`). `MAX_RELAUNCHES` now describes the whole budget of a bring-up.
+
+Also corrected the same day: the clone's base image booted ROUTABLE after the
+bake (`WifiService starting up with Wi-Fi enabled` and a 10.0.2.16 lease in this
+run's own logcats, before each bring-up cut it). One writable boot disabled both
+radios and read `ip -o -4 addr show` back as `lo` only, with the game identity
+and `libunity.so` SHA-256 unchanged and `reboot -p` as the shutdown, so the base
+image is offline at boot as of today.
 
 Teardown: per-serial cleanup before kill on all 7 — override reset, libunity
 ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040, versionCode

@@ -7,6 +7,382 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E044 — Fleet stagger-backstop defect fixed; 4/7 at 240 Hz persists regardless
+
+**Date:** 2026-09-18
+**Status:** Fix verified by a failing-then-passing test; the fleet-boot
+failure it targeted is NOT resolved
+**Purpose:** Determine whether `BRING_UP_STAGGER_BACKSTOP` timing explains the
+N=7 cold-boot losses seen raising the guest frame rate, and re-run the N=7
+ladder once fixed.
+
+`scripts/run_actors.py`'s `stagger_bring_up` timed the 360 s backstop from
+fleet start rather than from the previous instance's own bring-up start; every
+actor thread starts at fleet start, so `gates[i-1].wait(360)` was in effect a
+fleet-start deadline. Cold host bring-up took ~165 s per instance, so it
+expired for instances 3–6 and their boots overlapped — the same defect
+recorded in `M1B-E028`/`M1B-E029`. Fixed with a per-instance `begun` event:
+`await_previous` waits for the previous instance to begin, then waits out the
+remainder of that instance's own 360 s window. Test
+`test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up`
+(3 instances, backstop patched to 0.3 s, each bring-up 0.25 s) was confirmed
+to FAIL against the old fleet-start timing and PASS against the fix. `uv run
+pytest` 473 passed, `ruff check .` clean, `mypy` clean.
+
+Re-run, N=7, `--cold --renderer host --cores 4 --frame-game-ms 100`, 2
+episodes, `GUEST_FRAME_RATE_HZ = 240`: run-log ordering shows exactly one
+bring-up in flight at a time (each `launching` line follows the previous
+instance's bring-up conclusion), fleet wall dropped from 773 s to 373.8 s, and
+still only 4/7 instances survived — 5558, 5560, 5562 failed with `CloneError:
+the game did not survive the network being cut: the game is not running`, with
+emulator-log causes `Failed to find ColorBuffer` and `Your GPU cannot be used
+for hardware rendering`. Every instance was at the stock 60 Hz game rate for
+the whole of every bring-up (the four `confirmed at 240 Hz` lines all come
+after the last bring-up concluded), and boots did not overlap this time. So
+neither a raised peer's game rate nor simultaneous boots explains these
+deaths — both candidates raised in `M1B-E043` are excluded.
+
+**DECISION: the backstop defect is fixed and committed as a correctness fix
+in its own right, but it is not the cause of the N=7 frame-rate boot losses.**
+The 120 Hz fallback cell and a 60-Hz-with-no-`-vsync-rate`-flag control, needed
+to tell whether the launch-time `-vsync-rate 240` display mode itself is
+implicated during boot, were not run — out of timebox. The fleet-safe rate
+remains open (board #21).
+
+Survivors (4 actors, each confirmed at 240 Hz both levers): 5.599–5.931
+ms/frame (median 5.742) against 4.144 ms solo at 240 Hz — roughly 38%
+contention tax. Per-actor decisions/hour 8,624 / 14,504 / 13,724 / 11,983
+(median 12,854); the fleet-clock aggregate (9,997) is not meaningful against
+the 62,327 no-frame-rate-change baseline (3 actors dead, 2 episodes each, most
+of the wall is bring-up). Fidelity on the survivors: round/budgeted
+1.0063–1.0126, decisions/wave 20.06–25.2, zero
+`GAME_TIME_INFLATED`/`GAME_TIME_DEFLATED`/`BRIDGE_EVENT_DIVERGENCE`/
+`ADVANCE_TRUNCATED_BY_WALL`/`advances_cut_short`. Host: peak VRAM 9,925 MiB
+with at most 4 qemu alive; total qemu CPU mean 595%, max 931% of a 3,200%
+ceiling.
+
+Teardown verified per-serial on all 7 instances before kill (`cmd game reset`,
+libunity SHA-256 match, `bridge_artifacts: removed`); `adb devices` empty and
+no qemu in `/proc/*/exe` afterward. Nothing beyond the backstop fix and its
+test was committed — the frame-rate wiring itself does not reach a 7/7 gate.
+
+Source: session scratchpad `FLEET-SERIALISED-BOOT-DETAIL.md`.
+
+## M1B-E043 — Fleet N=7 at a raised game rate loses 3/7 instances to a cause that is not a raised peer
+
+**Date:** 2026-09-18
+**Status:** OPEN; the fleet-safe frame rate is not established
+**Purpose:** Find the fleet-safe game rate once the solo knee (`M1B-E042`)
+put 300 Hz within reach, by first shipping the wiring and testing it at N=7.
+
+`scripts/clone_session.py` gained `GUEST_FRAME_RATE_HZ = 240` (one constant
+driving both `-vsync-rate` at launch and `raise_frame_rate`, which pins the
+per-uid game frame-rate override via `cmd game set --fps` and confirms it by
+polling `dumpsys SurfaceFlinger` for activeMode vsyncRate, per-uid
+gameModeOverride, and per-uid applied frameRate, up to a 20 s timeout);
+`scripts/run_actors.py` gained a fleet-wide rendezvous so no instance is
+raised while a peer is still booting, then raises each actor after its own
+bring-up. Live-confirmed on one instance: `confirm_frame_rate` fails right
+after `cmd game reset` (60.00 Hz reported) and passes after `raise_frame_rate`
+(240.00 Hz reported on all three readings). `uv run pytest` 472 passed, `ruff`
+and `mypy` clean.
+
+N=7, `--cold --renderer host --cores 4 --frame-game-ms 100`, 2 episodes: 4/7
+came up. Failures: 5558 (bridge closed the stream), 5562 and 5568 (`the game
+is not running`), with emulator-log causes `Failed to find ColorBuffer` and, on
+5568, `Your GPU cannot be used for hardware rendering`. **CRITICAL finding
+that overturns the premise this run was designed to test:** every instance was
+at the stock 60 Hz game rate for the whole of every bring-up — the first
+`confirmed at 240 Hz` line in the log comes after the last bring-up concluded
+— so the ColorBuffer deaths reproduce with NO peer running at a raised game
+rate, which contradicts the hypothesis that a raised peer caused them.
+
+Two confounds were left uncontrolled by this run and were not yet separable:
+(1) this used `--cold --renderer host`, not the restore path the clean 7/7
+baseline used, and cold bring-up (~165 s/instance) let the then-unfixed
+`BRING_UP_STAGGER_BACKSTOP` (timed from fleet start) expire for instances 3–6,
+overlapping their boots — see `M1B-E044`, where fixing this alone did not
+change the outcome; (2) `-vsync-rate 240` is applied at launch, so the guest
+*display* composites at 240 Hz throughout boot even though the game surface
+stays capped at 60 — the "boot happens at 60 as today" assumption behind the
+design is false for the display, even though the game rate itself is
+confirmed unraised during every failed boot.
+
+Surviving actors (240 Hz confirmed): 5.755 / 5.911 / 6.049 / 5.767 ms/frame
+(median 5.839) against 4.144 solo; per-actor decisions/hour 10,345 / 11,026 /
+13,664 / 13,733 — not comparable to the 8,904 learner-attached baseline
+(`M1B-E031`), since this run is scripted with no learner. VRAM peaked at
+11,387 MiB with at most 5 instances alive (~2.2 GiB/instance), consistent with
+the no-frame-rate-change baseline — no sign a raised rate costs VRAM, though
+this is not a 7-instance measurement. Fidelity on the survivors: round/budgeted
+1.0105–1.0119, decisions/wave 20.19–22.22, zero
+INFLATED/DEFLATED/`BRIDGE_EVENT_DIVERGENCE`/`ADVANCE_TRUNCATED_BY_WALL`.
+
+Teardown verified per-serial on all 7 instances (`cmd game reset`, libunity
+SHA-256 match, `bridge_artifacts: removed`) before kill; `adb devices` empty
+afterward. Not committed — the fleet gate was not met.
+
+Source: session scratchpad `FLEET-FRAME-RATE-DETAIL.md`.
+
+## M1B-E042 — Solo frame-rate ladder to 300 Hz, then a cliff at 360
+
+**Date:** 2026-09-18
+**Status:** Establishes the solo knee; fleet-safe rate left to `M1B-E043`
+**Purpose:** Find how far the guest-vsync-timer dial (`M1B-E041`) can be
+turned before it stops paying, and whether the poll interval needs to change
+with it.
+
+Solo instance, both levers (`-vsync-rate N` at launch, `cmd game set --fps N`
+after bring-up) set to the same N each cell, adoption gated on
+`dumpsys SurfaceFlinger` before measuring:
+
+| cell | requested Hz | ms/frame | fps | vs nominal | qemu %CPU mean/max | decisions/wave |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60 (baseline) | 60 | 16.17–16.24 | ~61.8 | +2.8% | ~130–142 | ~21–22 |
+| 120 | 120 | 8.187 | 122.14 | +1.8% | 162.2 / 178.6 | 21.7 |
+| 144 | 144 | 6.831 | 146.39 | +1.7% | 166.2 / 190.4 | 21.706 |
+| 180 | 180 | 5.472 | 182.76 | +1.5% | 173.1 / 185.4 | 22.769 |
+| 240 | 240 | 4.144 | 241.30 | +0.5% | 199.2 / 220.0 | 22.400 |
+| 300 | 300 | 3.352 | 298.33 | −0.6% | 232.0 / 263.0 | 22.538 |
+| 360 | 360 | **10.932** | **91.48** | **−75%** | 147.9 / 162.6 | 21.278 |
+
+Every cell measured (not inferred): 3 valid episodes, 0 invalid, zero
+`GAME_TIME_INFLATED`/`GAME_TIME_DEFLATED`/`BRIDGE_EVENT_DIVERGENCE`/
+`ADVANCE_TRUNCATED_BY_WALL`. round/budgeted stayed in the same 1.009–1.011
+band across every cell up to 360.
+
+**300 Hz is the highest rate that pays; 360 Hz is a cliff, not a plateau.**
+At 360, the guest reports full adoption (mode 360, renderRate 360, uid
+gameModeOverride 360) yet delivers 91.5 fps — worse than 144 — at *lower* CPU
+(147.9% vs 232.0% at 300), i.e. the guest is waiting, not working. **Guest
+self-report of an adopted rate is therefore not sufficient evidence the
+surface is actually running at that rate; measured fps is the oracle**, the
+same lesson `M1B-E040` drew from a different symptom. The overshoot band
+also closes monotonically as the requested rate rises (+2.8% at 60 down to
+−0.6% at 300), consistent with the timer beginning to be missed just before
+it breaks outright at 360.
+
+`kFramePollMicros = 2000` was left unchanged and checked, not assumed safe:
+decisions/wave stays flat (21.3–22.8) with no monotone drift against rate —
+180 Hz (22.77) and 360 Hz (21.28) bracket the range in the wrong order for a
+poll-interval effect — so there is no evidence the poll interval needs to
+change at or below 300 Hz.
+
+A first attempt to ship this (`GUEST_FRAME_RATE_HZ` wired into
+`clone_session.py`, not committed) broke a 2-instance fleet: with actor 0
+running at 240 Hz, actor 1's cold launch died with `Failed to find
+ColorBuffer` while actor 0's own rate fell to 225.5 fps (−6%) under the
+contention — the first sighting of the fleet problem `M1B-E043` investigates
+at N=7.
+
+Source: session scratchpad `FRAME-RATE-KNEE-DETAIL.md`.
+
+## M1B-E041 — Three caps in series gate the frame rate; only the outer two matter, and `45f8ea6`'s claim is confounded
+
+**Date:** 2026-09-18
+**Status:** Resolves the mechanism; corrects `M1B-E040`'s open confound and
+the commit message of `45f8ea6`
+**Purpose:** Establish which of the layers between the guest display and the
+rendered frame binds the ~60 fps rate seen throughout prior entries, so the
+dial can be turned deliberately.
+
+**Measured.** The AVD's `hw.lcd.vsync=60` is the baseline, not compute: 58.9
+fps under lavapipe software rasterisation at 1080×1920 (`M1B-E015`) against
+61.7 fps on an RTX 4090 at 360×640, and a 9x render-target shrink moved frame
+time only 0.3% (`M1B-E030`) — none of that is a rendering-cost signature.
+`-vsync-rate 30` at launch produced exactly 30.67 fps
+(`VSYNC-RATE-PROBE-DETAIL.md`), showing the guest vsync timer binds downward
+cleanly. Frame production is that guest vsync timer, gated by three caps in
+series, of which two must both be lifted:
+
+1. **Launch-time display mode** (`-vsync-rate N` on the emulator command
+   line, or the AVD's `hw.lcd.vsync`) sets the guest's physical refresh rate.
+2. **SurfaceFlinger's per-uid game frame-rate override**
+   (`ro.surface_flinger.game_default_frame_rate_override=60` in the system
+   image, read-only) pins the game *surface*, independent of the display
+   mode, and can only be lifted at runtime per-uid via `cmd game set --fps N
+   com.TechTreeGames.TheTower` — confirmed by `dumpsys SurfaceFlinger`
+   (`GameFrameRateOverrides`), not by the write call's return code.
+3. **Unity's own pacing** (`QualitySettings.vSyncCount`, `Application.
+   targetFrameRate`) inside the app process.
+
+An ablation with the bridge `.so` held byte-identical across all four cells
+isolated the first two (`FRAME-RATE-DIAL-REPLICATION-DETAIL.md`,
+"R1–R4"): both display mode and override at 120 → 8.187 ms/frame (122.14
+fps); mode 120 with no override set → 16.177 ms (override absent, i.e. still
+pinned to 60); no mode change with override set to 120 → 16.168 ms (mode
+absent); mode and override both at 144 → 6.831 ms. **Both layer 1 and layer 2
+are necessary and neither alone suffices; they must agree.** Layer 3
+(`vSyncCount = 0`, shipped in commit `45f8ea6`) was not ablated in isolation —
+the same `.so` ran in every cell — but cell R3 (layer 2 active, `pacing
+vsync=0 target=240` confirmed in the app log, layer 1 absent, display at 60)
+measured 16.168 ms/frame, indistinguishable from the long-standing pre-`45f8ea6`
+baseline of 16.21–16.24 ms. **Layer 3 shows no independent effect in this
+data.**
+
+**Correction to commit `45f8ea6`'s message ("vSyncCount = 0 doubles the
+rate"): that claim is CONFOUNDED.** The session that produced the 8.186 ms
+result (`UNITY-FRAME-PACING-DETAIL.md`) also ran the scratchpad's
+`-vsync-rate 120` wrapper — the guest vsync moved 60→120 in the very same
+session the bridge change shipped in, and layer 2's override was found
+subsequently absent partway through that run's arm A yet the rate held at
+122 fps, which independently argues against layer 3 as the explanation. The
+measured rate tracks nominal at +1.7% to +2.8% above the requested Hz in
+every ablation cell (`FRAME-RATE-DIAL-REPLICATION-DETAIL.md`), consistent
+with layers 1+2 alone accounting for the whole effect.
+
+**None of this reaches production.** Production's `clone_session.
+emulator_command` passes no `-vsync-rate`, so the emulator vsync is 60 in
+every training run regardless of what the bridge does (`M1B-E040`).
+
+Source: session scratchpad `VSYNC-RATE-PROBE-DETAIL.md`,
+`GAME-FRAME-RATE-OVERRIDE-PROBE-DETAIL.md`, `UNITY-FRAME-PACING-DETAIL.md`,
+`FRAME-RATE-DIAL-REPLICATION-DETAIL.md`.
+
+## M1B-E040 — The 8.186 ms result did not replicate on the first two attempts; a measurement repeated once is not a replication
+
+**Date:** 2026-09-18
+**Status:** Methods finding; resolved by `M1B-E041`'s full recipe
+**Purpose:** Record why the 122 fps result from `UNITY-FRAME-PACING-DETAIL.md`
+failed to reproduce twice before it did, and what that implies for how a
+device result gets accepted.
+
+The 8.186 ms/122.16 fps figure was measured once, in one session, under a
+scratchpad wrapper (`-vsync-rate 120`, `-gpu host`) with the bridge's
+`vSyncCount = 0` change also active — two levers changed together, one
+measurement. Two independent later attempts to reproduce it, each holding
+the bridge `.so` byte-identical (sha256 `27471a77…b7ca5`) to that session's
+binary, failed:
+
+- A 4-instance fleet at `-vsync-rate 120` under `-gpu host` (matching
+  production's renderer choice) measured 16.147–16.183 ms/frame across all
+  arms, treatment and control alike — indistinguishable from the pre-change
+  60 fps baseline. Isolating one treatment instance alone on the host (no
+  fleet contention) still measured 16.00–16.22 ms/frame solo, and qemu %CPU
+  (mean 132.7, max 135.7 of a 400% ceiling) was *below* the 8.186 ms run's
+  160.8, i.e. producing half as many frames per second, not a compute knee.
+  (`VSYNC-HOST-PRODUCTION-VERIFY-DETAIL.md`)
+- Separately, under `-gpu lavapipe` (production's actual renderer; `-gpu
+  host` cannot snapshot this Vulkan app), the same 120 Hz guest vsync
+  produced 16.11–16.21 ms/frame, again unchanged from baseline — ruling out
+  host contention by also running one instance solo.
+  (`VSYNC-PRODUCTION-EQUIVALENCE-DETAIL.md`)
+
+The result only replicated (`M1B-E041`, R1: 8.187 ms, matching the original
+to three decimals) once BOTH the launch-time display mode AND the runtime
+`cmd game set --fps` override were set explicitly from the original recipe,
+under `-gpu host`, on a solo instance — the two-lever combination the
+original session had used but the reproduction attempts had not fully
+matched (the host-production-verify attempt set only the display mode, not
+the per-uid override).
+
+**Methods finding, recorded so it is not repeated:** a result measured twice
+within a single session, under a single ad hoc wrapper, is not a replication.
+Guest self-report of the requested mode (`androidboot.qemu.vsync=120` in the
+emulator's own launch log) is not evidence the game *surface* ran at 120 Hz —
+`dumpsys SurfaceFlinger`'s per-uid `renderRate`, read independently of the
+write that requested it, is the evidence that actually discriminated the
+working recipe from the two that failed.
+
+Source: session scratchpad `VSYNC-HOST-PRODUCTION-VERIFY-DETAIL.md`,
+`VSYNC-PRODUCTION-EQUIVALENCE-DETAIL.md`, `FRAME-RATE-DIAL-REPLICATION-DETAIL.md`.
+
+## M1B-E039 — The game is not deterministic under a fixed action sequence; trajectory-level equivalence is not a valid method
+
+**Date:** 2026-09-18
+**Status:** Closes trajectory-replay as an equivalence method; no frame-rate
+equivalence evidence exists yet as a result
+**Purpose:** Test whether a raised frame rate changes gameplay outcomes by
+replaying an identical recorded action sequence at two different rates.
+
+Method: record the scripted policy's action list and a per-decision state
+signature (wave, cash_log, health_fraction, max_health_log, upgrade levels,
+costs, mask) for 3 episodes on one instance, then replay the identical action
+list decision-for-decision on the same instance again, and on a second
+instance at a different guest vsync, substituting WAIT wherever the mask
+refuses a recorded action.
+
+**The control fails before the treatment can be read.** Same instance, same
+frame rate, identical starting state, identical replayed actions: episode 0
+diverged at decision 13 — cash_log 2.302585 vs 2.397895, i.e. cash 10 vs 11 —
+with one action substitution; episodes 1 and 2 started from states that had
+already drifted (a leftover run at a different wave). The 60-vs-120 comparison
+(record at 5556/60 Hz vs replay at 5558/120 Hz) diverged at the identical
+decision 13, in cash, by the identical magnitude, in all three episodes — the
+same signature as the self-divergence, not distinguishable from it.
+
+**Consequence: trajectory-level equivalence is an invalid method for this
+game.** Because the control (same instance, same rate) fails on its own,
+divergence between two arms cannot be attributed to the frame rate;
+equivalence work needs a distributional test on low-variance per-wave
+statistics instead, not a trajectory match.
+
+**No equivalence evidence for a raised rate exists as a further consequence.**
+The frame-rate arm compared here (5558 at `-vsync-rate 120`) was, independently,
+measured running at 16.1 ms/frame under `-gpu lavapipe` — not the 8.186 ms
+regime at all (`M1B-E040`) — so even setting the method problem aside, this
+run carries no evidence about a genuinely raised rate. Separately, the powered
+T1-vs-CONTROL wave-distribution run in `M1B-E038` was, by its own finding,
+inert for the same reason (both arms measured 62 fps): so across the whole
+session, no equivalence evidence for a raised frame rate exists yet (board
+#22).
+
+All arms remained inside the fidelity envelope throughout (round/budgeted
+1.0046–1.0117, zero `GAME_TIME_INFLATED`/`DEFLATED`/`BRIDGE_EVENT_DIVERGENCE`/
+`ADVANCE_TRUNCATED_BY_WALL`), so the nondeterminism is a game behavior, not a
+bridge or harness fault.
+
+Source: session scratchpad `VSYNC-PRODUCTION-EQUIVALENCE-DETAIL.md`.
+
+## M1B-E038 — `frame_game_ms` 150 and 200 rejected on fidelity, powered this time; mean final wave is the wrong instrument for equivalence
+
+**Date:** 2026-09-18
+**Status:** Supersedes the underpowered n=5 note in `M1B-E033`; 150 and 200
+are now REJECTED, not open
+**Purpose:** Re-test `frame_game_ms` 150 and 200 with enough episodes to
+detect the fidelity failure `M1B-E033` was too small to see, on a 7-instance
+fleet running old and new bridge builds side by side in the same wall-clock
+window (`FIDELITY-AB-FRAME-SWEEP-DETAIL.md`).
+
+| arm | frame_game_ms | attempted | valid | invalid | invalid reason | pooled round/budgeted |
+| --- | --- | --- | --- | --- | --- | --- |
+| CONTROL | 100 | 92 | 92 | 0 | — | 1.00985 |
+| T1 | 100 | 84 | 83 | 1 | GAME_TIME_DEFLATED | 1.01015 |
+| T2 | 150 | 56 | 10 | 46 (82%) | GAME_TIME_DEFLATED ×46 | 0.98922 |
+| T3 | 200 | 68 | 2 | 66 (97%) | GAME_TIME_DEFLATED ×66 | 0.98275 |
+
+**150 and 200 are REJECTED**, and not on wave distribution — they fail the
+round-clock fidelity invariant outright, below the 0.99 floor, in a shortfall
+that grows monotonically and systematically with `frame_game_ms` (invalid
+rate 0% → 82% → 97%). This supersedes `M1B-E033`'s n=5 "open, untested"
+verdict at 150 ms: at n=56, 150 is rejected. The admissible ceiling stays at
+100; the interval 100 < x < 150 remains untested. Mean final wave for T2/T3
+carries no weight (n=10 and n=2 valid episodes) and is not the basis for the
+rejection.
+
+**Sensitivity finding, from this session's companion T1-vs-CONTROL wave
+comparison at `frame_game_ms` 100** (both arms in fact ran at 62 fps — see
+`M1B-E039` — so this is a bridge-binary comparison with the pacing change
+inert, not a rate comparison, but its statistics bound what any wave-based
+comparison in this harness can detect): pooled sd 2.270 waves, harmonic n
+87.5 (CONTROL n=92, T1 n=83) ⇒ the smallest difference detectable at 80%
+power is **0.963 waves** (16% of the control mean, Cohen's d ≈ 0.42) —
+CONTROL−T1 = −0.543 waves, 95% CI [−1.217, +0.133], contains zero, i.e.
+indistinguishable at this n. Detecting a difference as small as 0.5 waves
+would need approximately 324 valid episodes per arm. **Mean final wave is
+therefore the wrong instrument for equivalence testing at achievable sample
+sizes; a distributional or per-wave statistic is needed instead** (see also
+`M1B-E039`'s point that trajectory-level equivalence is invalid for a
+different reason).
+
+Fidelity counters, all arms, zero across CONTROL/T1/T2/T3 except the
+GAME_TIME_DEFLATED counts above:
+`GAME_TIME_INFLATED`, `BRIDGE_EVENT_DIVERGENCE`, `ADVANCE_TRUNCATED_BY_WALL`,
+`advances_cut_short`. No FATAL EXCEPTION/ANR/tombstone in any of the 7
+instances' logcat; no actor failed; no episode hit the 240 s hang deadline.
+
+Source: session scratchpad `FIDELITY-AB-FRAME-SWEEP-DETAIL.md`.
+
 ## M1B-E037 — Fleet throughput is non-stationary within a run; the acting-lock removal's real gain is +14.3% at matched phase, not the naive −7%
 
 **Date:** 2026-09-18
@@ -61,7 +437,7 @@ an interleaved design.
 Source: session scratchpad `teardown-stray-250k.md`, Addendum 3 ("PHASE 1:
 BASELINE CAPTURE of the 7-actor run").
 
-## M1B-E036 — Per-decision wall time is 96.5% bridge round-trip with the host essentially idle; host-side optimisation is closed as a lever
+## M1B-E036 — Per-decision wall time is 96.5% bridge round-trip with the host essentially idle; host-side Python optimisation is closed as a lever
 
 **Date:** 2026-09-18
 **Status:** Decisive at N=1 and N=4; falsifies the GIL-contention candidate
@@ -107,12 +483,17 @@ its own prediction was that host-side Python work (observation decode, policy
 forward) would show growing wall/cpu divergence or blocking as actor count
 rose, and neither happened.
 
-**Consequence, stated as the decision this entry closes: host-side
-optimisation — free-threading, batched inference, process-based actors,
-observation encoding — is closed as a throughput lever.** With 96.5% of wall
-time in a bucket that is already near-zero CPU, none of those levers can move
-the number that matters; the bottleneck is the emulator's own per-advance
-wall time.
+**Consequence, stated as the decision this entry closes: host-side *Python*
+work — free-threading, batched inference, process-based actors, observation
+encoding — is closed as a throughput lever. This is NOT established for host
+CPU capacity spent on emulation itself (renderer choice, `--cores`, instance
+count, guest frame rate), which remains a live lever.** The profiler's CPU
+clock is `thread_time()` (`CLOCK_THREAD_CPUTIME_ID`), which sees only the
+actor's own Python thread; it cannot see CPU the emulator process consumes,
+so it has no bearing on emulation-side levers by construction. With 96.5% of
+wall time in a bucket that is already near-zero CPU *on the Python side*,
+none of the Python-side levers can move the number that matters; the
+bottleneck is the emulator's own per-advance wall time.
 
 **Caveat on the comparison.** The two arms did not match on episode depth:
 39.9 decisions/episode at N=1 vs 66.9 at N=4 (steps/decision matched to 4
@@ -122,6 +503,28 @@ conclusion above, because the bucket shares and wall/cpu ratios are computed
 per decision, not per episode, and depend on the emulator's per-advance cost,
 not on how many decisions accumulate before an episode ends; a deeper episode
 changes how many decisions are counted, not what each one costs.
+
+**Review findings, 2026-09-18 (independent review of the profiler).**
+1. The instrument's discrimination was measured directly, not assumed: eight
+   contending pure-Python threads show wall/cpu 6.61, and a torch matmul
+   offloading to intra-op workers shows 6.07 on the calling thread — so the
+   profiler does detect GIL/thread contention when it is present, and this
+   entry's 1.00–1.06 readings for `observation_decode`/`policy_forward` are a
+   genuine negative, not an artifact of an instrument that cannot see
+   contention. The GIL falsification above stands, and is stronger than
+   originally claimed.
+2. The profile covers N=1 and N=4 only, where `bridge_round_trip` moved
+   346.93 → 350.65 ms/decision (+1.1%). The per-actor decay recorded
+   elsewhere out to N=8 (9,498 → 8,479 decisions/hour) was not reproduced
+   within these profiled arms, so extending this entry's verdict to N=8 is
+   inference, not a measured result. Separately, per-decision CPU roughly
+   halved from N=1 to N=4 in three buckets (`observation_decode` 0.635 →
+   0.314, `policy_forward` 3.353 → 2.377, bridge CPU 1.475 → 0.774
+   ms/decision) — most plausibly warm-up and per-episode costs amortised
+   over more decisions, since every host bucket is tiny in both arms either
+   way. The "453x, busier not worse" wall/cpu phrasing above describes the
+   ratio at N=4; it should not be read as a measured contention effect, since
+   the CPU side of that ratio fell rather than held steady.
 
 Source: session scratchpad `DECISION-TIME-PROFILE-DETAIL.md`.
 

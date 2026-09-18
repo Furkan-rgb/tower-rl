@@ -1092,14 +1092,17 @@ is reported under its own reason, `wall_ceiling`: how long the host took is not
 part of the decision problem, so the episode is failed by name with
 `ADVANCE_TRUNCATED_BY_WALL` rather than counted.
 
-**The frame rate is display-bound, and uncapping is not available.** An earlier
-version of this section recommended `QualitySettings.vSyncCount = 0` and
-`Application.targetFrameRate = -1`. That is wrong on Android: with
-`targetFrameRate = -1` and vSync off, Android renders at a fixed 30 fps, and no
-in-app setting exceeds the display's 60 Hz vsync either way. The observed rate in
-the emulator is about 59 fps. Wall-clock decoupling therefore comes entirely from
-the two halves above — fixed game time per frame, and the loop inside the bridge —
-not from rendering frames faster than the display.
+**The frame rate is a guest vsync timer, gated by two caps that must be lifted
+together.** Frame production tracks the emulator's own vsync timer
+(`hw.lcd.vsync` / `-vsync-rate`), not rendering cost; on top of that,
+SurfaceFlinger's per-uid game frame-rate override pins the game surface to 60
+Hz independent of the display mode, and must be lifted at runtime (`cmd game
+set --fps`) in agreement with the display mode. Unity's own pacing
+(`vSyncCount`) showed no independent effect once those two are controlled.
+Solo, the dial holds up to 300 Hz before a cliff at 360; the fleet-safe rate
+under load is still being measured. See `M1B-E041` (mechanism and the three
+caps), `M1B-E042` (solo ladder and the 300 Hz knee), and `M1B-E043`/`M1B-E044`
+(fleet-safe rate, open) in `docs/experiments.md`.
 
 **Choosing `frame_game_ms` is empirical.** It must stay at or below
 `Time.maximumDeltaTime` (333 ms by default), above which Unity clamps and the

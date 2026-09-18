@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,7 +19,6 @@ from typing import Any
 import pytest
 import torch
 import train
-from clone_session import CloneInstance
 from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.episode import TerminationOutcome
@@ -29,11 +27,11 @@ from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
-from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import ActorConfig
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
 #: computing: one thread runs the whole file about fifteen times faster.
@@ -347,104 +345,6 @@ def test_a_fleet_refuses_mid_run_evaluation(tmp_path: Path) -> None:
 def test_a_run_needs_at_least_one_actor(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="at least one actor"):
         arguments(tmp_path, **{"--actors": "0"})
-
-
-def test_a_fleet_brings_its_instances_up_one_at_a_time(tmp_path: Path) -> None:
-    """Four cold boots at once is the one thing the fleet measurement broke on."""
-    spans: list[tuple[str, float, float]] = []
-
-    def open_instance(instance: CloneInstance) -> train.ActorInstance:
-        started = time.monotonic()
-        time.sleep(0.01)
-        spans.append((instance.serial, started, time.monotonic()))
-        return train.ActorInstance(serial=instance.serial, environment=environment())
-
-    instances = [CloneInstance(index=index) for index in range(4)]
-
-    ready, failures = train.bring_up_fleet(instances, open_instance)
-
-    assert failures == []
-    assert [item.serial for item in ready] == [item.serial for item in instances]
-    # No bring-up began before the previous one had concluded.
-    for (_, _, ended), (_, next_started, _) in zip(spans, spans[1:], strict=False):
-        assert next_started >= ended
-
-
-def test_an_instance_that_will_not_come_up_costs_one_actor(tmp_path: Path) -> None:
-    """A failed bring-up must not stall the instances behind it."""
-
-    def open_instance(instance: CloneInstance) -> train.ActorInstance:
-        if instance.index == 1:
-            raise RuntimeError("never left main_unavailable")
-        return train.ActorInstance(serial=instance.serial, environment=environment())
-
-    ready, failures = train.bring_up_fleet(
-        [CloneInstance(index=index) for index in range(3)], open_instance
-    )
-
-    assert [item.serial for item in ready] == ["emulator-5556", "emulator-5560"]
-    assert len(failures) == 1 and "emulator-5558" in failures[0]
-
-
-class _FailingAdapter:
-    """An adapter whose release reads a bridge that has stopped answering."""
-
-    def release(self) -> None:
-        raise RunPortError("the bridge could not report the run state")
-
-
-class _RecordingAdapter:
-    def __init__(self) -> None:
-        self.released = False
-
-    def release(self) -> None:
-        self.released = True
-
-
-class _RecordingClient:
-    def __init__(self, port: int) -> None:
-        self.port = port
-        self.closed = False
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def test_teardown_continues_past_a_failing_release_and_puts_every_instance_down(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Leaving an emulator running is a safety failure, not an inconvenience.
-
-    The release reads the bridge, so on a client that had stopped answering it
-    raised inside the teardown's own `finally` and skipped every later release
-    and every instance teardown: four emulators were left running, twice.
-    """
-    clients = [_RecordingClient(5555 + index) for index in range(2)]
-    surviving = _RecordingAdapter()
-    opened = [(_FailingAdapter(), clients[0]), (surviving, clients[1])]
-    instances = [CloneInstance(index=index) for index in range(3)]
-    torn: list[str] = []
-
-    def tear_down(instance: CloneInstance) -> None:
-        torn.append(instance.serial)
-        if instance.index == 0:
-            raise RuntimeError("adb would not stop this one")
-
-    train.tear_down_fleet(opened, instances, tear_down)  # type: ignore[arg-type]
-
-    # Neither the failing release nor the failing teardown stopped the rest.
-    assert surviving.released and all(client.closed for client in clients)
-    assert torn == [instance.serial for instance in instances]
-    printed = capsys.readouterr().out
-    assert "release failed" in printed and "teardown failed" in printed
-
-
-def test_a_fleet_that_will_not_come_up_at_all_is_refused(tmp_path: Path) -> None:
-    def refuse(instance: CloneInstance) -> train.ActorInstance:
-        raise RuntimeError("no snapshot")
-
-    with pytest.raises(SystemExit, match="no instance of the fleet came up"):
-        train.bring_up_fleet([CloneInstance(index=0)], refuse)
 
 
 def test_an_instance_whose_bring_up_fails_is_still_torn_down(

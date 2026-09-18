@@ -91,7 +91,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tower_rl.simulation.bridge import deploy_bridge  # noqa: E402
+from tower_rl.simulation.bridge import ActorFailure, deploy_bridge  # noqa: E402
 from tower_rl.simulation.bring_up import (  # noqa: E402
     bridge_key,
     bring_up,
@@ -205,7 +205,13 @@ def main() -> int:
             )
         else:
             report(instance)
-    except CloneError as error:
+    # Two names, not one, and deliberately not one type. `deploy_bridge` is
+    # shared with the fleet and raises `ActorFailure`, which also covers a
+    # `run_episodes.py` process that failed — not a statement about the clone's
+    # state, so it is not a `CloneError` and must not be made one. What this
+    # command owes its caller either way is the reason by name and a non-zero
+    # status, which is what a traceback out of `main` stopped giving it.
+    except (CloneError, ActorFailure) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0

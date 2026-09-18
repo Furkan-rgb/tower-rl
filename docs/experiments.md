@@ -7,6 +7,162 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M2-E001 — Walking skeleton: the pipeline runs end to end; the wall-clock budget does not
+
+**Date:** 2026-09-18
+**Status:** Pipeline PASSES end to end. M2-P001's throughput assumption is
+REFUTED, and a defect in `train.py` is part of why (`#30`). Board `#29`.
+**Purpose:** Run the whole Milestone 2 pipeline at the small budget
+pre-registered in `M2-P001` ("Skeleton first") — train, numbered checkpoint,
+set A, selection, set B, report — and prove the per-episode MLflow view.
+Commit `ef053ac`, no code changed on the device.
+
+**Every number below is pipeline evidence, not model evidence.** One training
+seed stopped at 25,184 decisions, one candidate checkpoint, 14 episodes an arm,
+no scripted arm: none of it says anything about whether `stacked-dqn` learns,
+and M2-P001's decision rule is not exercised by it.
+
+**Stage 0 — MLflow (1 min).** `train.py` resolves
+`sqlite:///~/.local/state/tower-rl/mlflow.db` from the default `--run-dir`
+(`experiment/tracking.py:tracking_uri`). The UI answered on
+`http://127.0.0.1:5000`. Pre-flight: zero qemu in `/proc/*/exe`, `adb devices`
+empty, `bridge/current` resolving and hashing to `7a98f50b…f99a`.
+
+**Deviation forced by the script, before any device work.** The pre-registered
+skeleton's `--checkpoint-every-decisions 25000` is not a whole number of
+2,000-decision blocks, so `train.py` refuses it by name. Stage 1 therefore ran
+`--block-decisions 2500`. The budgeted run's period of 100,000 is unaffected.
+
+**Stage 1 — training (65 min, 19:48-20:53).** `--actors 7 --budget-decisions
+100000 --block-decisions 2500 --checkpoint-every-decisions 25000 --renderer
+host`. Fleet 7/7 up in 4.5 min, cold under `-gpu host` as designed: `is at home
+and offline` 7/7 and `deployed bridge confirmed
+7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a` 7/7. Only
+5556-5568; no reference to 5554 or the canonical AVD.
+
+Collected **25,184 decisions in 247 episodes, 246 valid and 1 invalid** (the
+invalid one is the episode the interrupt landed in), all seven actor indices
+present, 5,193 optimisation steps, mean final wave 4.6, epsilon annealed to
+0.05. The run was **stopped at the first numbered checkpoint** rather than run
+out to 100,000, on the Lead's decision once the throughput finding below was
+in hand; the budget is a script argument, so the stop was a `SIGINT`.
+`checkpoint-0025184.pt` and its `.sha256` were written beside `latest.pt`.
+Interrupting before the budget means no session report, no arm summary and no
+post-budget evaluation: the run directory holds `checkpoints/` and
+`manifest.json` only. **The MLflow run ended `FINISHED`** — `train.py`'s
+`finally` finishes the tracked run through a `KeyboardInterrupt` — which is
+worth knowing, because a run killed this way is indistinguishable in MLflow
+from one that spent its budget.
+
+MLflow evidence, read through the client rather than the UI: every `episode_*`
+series — `episode_final_wave`, `episode_decisions`, `episode_game_ms`,
+`episode_wait_fraction`, `episode_purchases`, `episode_valid`, `episode_actor`,
+`episode_epsilon` — at **count 247, equal to the episodes collected**;
+`learner_optimisation_steps` and `learner_importance_beta` at 247, and
+`learner_gradient_norm`, `learner_weighted_loss`,
+`learner_unweighted_mean_absolute_td_error`, `learner_value_fit_correlation` at
+202 (they begin once warm-up passes); the 30 s decision-time breakdown in 17
+series. The per-episode live view M2-P001 asked for exists and is correct.
+
+**Finding 1: `train.py` never raises the guest frame rate (`#30`).**
+`raise_frame_rate` has exactly two callers, `run_actors.py` and
+`clone_session.py`; the training path has none. This fleet therefore began
+collecting with SurfaceFlinger's stock per-uid game default override of 60 Hz
+standing over a 120 Hz display — read off live instance 5556 mid-run as
+`activeMode={… vsyncRate=120.00 Hz …}` against `GameFrameRateOverrides
+(uid, gameModeOverride, gameDefaultOverride)={10218, 0 60}`. This is exactly
+the silent failure `confirm_frame_rate`'s own docstring names. **The rate was
+raised by hand during this run, at about 5,000 of the 25,184 decisions**, with
+7/7 `confirmed at 120 Hz` on all three readings; the run's throughput series is
+therefore two regimes, 60 Hz before that point and 120 Hz after, and only the
+second is comparable to anything. The effect was about a factor of two: bridge
+round trip 1,400 ms/decision to 730 ms, ~2,500 to ~5,000 decisions/hour per
+actor. Every training run before this one collected at 60 Hz and nothing said
+so.
+
+**Finding 2: learned-policy throughput is ~4.7x below what M2-P001 budgeted.**
+At a confirmed 120 Hz the fleet does **~28,000-30,000 decisions/hour
+aggregate** (end-to-end over the whole stage, bring-up and the 60 Hz opening
+included, ~24,900), against the 129,000-143,000 M2-P001 took from `M1B-E052`.
+`M1B-E052` is a **scripted** measurement. Under the learned policy
+`episode_wait_fraction` is ~0.80: most decisions are waits, each advancing the
+world until a distant event, so a decision costs far more wall clock than it
+does for a policy that buys constantly. Scripted throughput does not transfer
+to a training arm. **Consequence: the 100,000-decision skeleton is ~3.3 h, not
+~45 min, and the pre-registered 1,000,000-decision run is ~33 h, not ~7 h.**
+M2-P001's wall estimates, and the developer's approval priced on them, must be
+re-priced before the budgeted run. This is a statement about the fleet under
+this policy at this epsilon, not a ceiling: `#30` recovers about half of the
+gap on its own, and the wait fraction may fall as the policy sharpens.
+
+**Stage 2 — set A and selection (7 min, 20:56-21:03).** `run_actors.py
+--actors 7 --episodes 1 --policy checkpoint:…/checkpoint-0025184.pt --renderer
+host --frame-rate-hz 120`. **7 episodes, 7 valid, 0 invalid**, with
+`advances_cut_short` 0 and `episodes_not_started_fresh` 0 on every record,
+speed-up ~2.0 and ~23 decisions/wave. 7/7 `confirmed at 120 Hz` on all three
+readings — the contrast that isolates `#30` to the training path.
+`select_checkpoint.py` over the one candidate, `--mlflow-run` given:
+
+    1 checkpoints of stacked-dqn-20260918-195301-dde9c7
+    final_wave:
+      checkpoint-0025184.pt        IQM   6.00  [  6.00,   6.00]  n=7
+    decisions:
+      checkpoint-0025184.pt        IQM 133.80  [133.80, 133.80]  n=7
+    selected …/checkpoints/checkpoint-0025184.pt
+
+`selection.json` was written beside the run carrying `checkpoint_identity
+22867a9ca26e` and `decisions 25184`. With one candidate the interval is
+degenerate and the choice is not a choice; what this proves is the mechanism.
+
+**Stage 3 — set B and the report (19 min, 21:14-21:41, plus the report).**
+Scripted is skipped in the skeleton, as M2-P001 specifies, so the arms are the
+selected checkpoint and random, `--episodes 2` each on its own fleet:
+**14/14 valid in each arm, 0 invalid**, 7/7 frame-rate confirmations and 7/7
+bridge digests in both. `report_arms.py random=… stacked-dqn=… --selection
+…/selection.json --mlflow-run …` accepted set B against the selection — it did
+not refuse the arm — and printed:
+
+    final_wave:
+      random                       IQM   5.88  [  4.75,   7.00]  n=14
+      stacked-dqn                  IQM   6.38  [  5.12,   7.25]  n=14
+    decisions:
+      random                       IQM 129.88  [108.12, 151.00]  n=14
+      stacked-dqn                  IQM 144.25  [119.00, 163.62]  n=14
+    pairwise difference in mean final wave:
+      random 5.71 vs stacked-dqn 6.21: difference -0.50 [-2.36, +1.36] d=-0.19
+        n=14/14 — indistinguishable
+
+with the per-wave comparison over `game_ms`, `decisions`, `health_fraction` and
+`cash_log` across 8 wave indices (`decisions` separated at waves 1, 5, 7;
+`cash_log` at 3, 5; `health_fraction` at 4), and `logged to tracked run`.
+**No claim is drawn from any of it.** At 14 episodes an arm the per-episode
+comparison could only detect a 2.8-wave difference, the model arm is a single
+25,184-decision checkpoint, and M2-P001's decision rule requires ~60 valid per
+arm and a scripted arm.
+
+Post-hoc MLflow series confirmed through the client:
+`greedy_final_wave_iqm`, `greedy_final_wave_ci_low` and `_ci_high` all 6.00 at
+**step 25184**, the checkpoint's own decision count, and
+`report_random_final_wave_iqm` 5.875 and `report_stacked-dqn_final_wave_iqm`
+6.375 with their intervals at **step 0** — the greedy curve lands above the
+exploring one, as `architecture.md` §7 describes.
+
+**Teardown, after each of the four fleet stages.** Per-serial cleanup on every
+live instance before the kill, 7/7 on every line each time: `libunity_sha256
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, `game_frame_rate_override: reset`; then zero qemu
+in `/proc/*/exe` and `adb devices` empty. No taps, no screenshots, every
+artifact outside the repository.
+
+**Verdict.** The pipeline passes end to end: train → numbered checkpoint →
+set A → selection → set B → report, with MLflow carrying the live per-episode
+view and both post-hoc curves, and with the fleet coming up 7/7 and going down
+clean four times in a row. The budgeted run is not blocked by the machinery. It
+is blocked by its own arithmetic: `#30` first, then a re-priced wall estimate
+from a measured learned-policy throughput rather than a scripted one.
+
 ## M2-P001 — Milestone 2 pre-registered protocol (written before any run)
 
 **Date:** 2026-09-18

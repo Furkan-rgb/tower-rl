@@ -1167,6 +1167,17 @@ which is a faster world masquerading as a better policy. The frame's worth is
 never rescaled to compensate, because that would hide the wrong assumption and
 leave the numbers incomparable anyway.
 
+The same ratio can fall as well as climb: a 150 ms effective step measured a
+sustained 0.987 against a healthy pool of 1.007-1.014, five percent fewer
+decisions per wave, and an A/B was what caught it — a one-sided guard cannot.
+`MIN_ROUND_CLOCK_RATIO` (0.99, clear of both the pooled healthy floor and that
+measurement, with room left for ordinary float noise around exact agreement)
+names the failure `GAME_TIME_DEFLATED`, distinctly from inflation, so a report
+says which way the clock disagreed. It does not fire on the one advance that
+ends a run: the round clock resets with the round, so that advance legitimately
+reports none of it while still having spent game time reaching the end, and it
+is exempted from the lower bound alone for exactly that reason.
+
 8x free running was briefly adopted as an interim, on the evidence that it
 matches normal-speed decision density (`M1B-E014`). It does — but only because 8x
 happens to sit below the point where a frame exceeds the slice, which is a

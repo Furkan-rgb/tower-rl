@@ -1269,6 +1269,12 @@ def main() -> int:
 
     def open_instance(instance: CloneInstance) -> ActorInstance:
         """Bring one instance of the fleet up ready and offline, and connect."""
+        # Registered before bring-up is attempted, not after it succeeds: a
+        # bring-up that fails partway (or an emulator that comes up but never
+        # reaches offline) must still be torn down, so anything that might
+        # have started an emulator process has to be in `started` before that
+        # attempt, not only once it is known to have worked.
+        started.append(instance)
         bring_up(
             instance,
             arguments.renderer,
@@ -1278,7 +1284,6 @@ def main() -> int:
         )
         # By interface, per instance, before anything is collected on it.
         require_offline(instance)
-        started.append(instance)
         return connect(instance.serial, instance.bridge_host_port, arguments, expected, opened)
 
     failures: list[str] = []

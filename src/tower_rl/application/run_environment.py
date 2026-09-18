@@ -92,19 +92,40 @@ _BRIDGE_BUDGET_REASON = "budget_exhausted"
 #: nothing running at 1.5x can (M1B-E023).
 MAX_ROUND_CLOCK_RATIO = 1.25
 
+#: The least the game's own round clock may read per millisecond of game time
+#: the advances budgeted. Healthy runs pooled 1.007-1.014x across episodes,
+#: with no single episode measured above 1.0140; a 150ms-step arm that
+#: under-credited simulated time measured 0.987x, below every one of those
+#: healthy measurements. 1.0 would be the natural floor - the round clock
+#: reading less than the budgeted game time means less of the world was
+#: simulated than was asked for - but it leaves no room at all for the
+#: ordinary float noise a sum of many small deltas carries, and a run
+#: legitimately agreeing at 1.0 must not fail on that noise alone. 0.99 keeps
+#: that room, clears the lowest pooled healthy ratio by 0.017, and still sits
+#: clearly above the deflated arm's 0.987 - sustained deflation, not noise,
+#: is what crosses it.
+MIN_ROUND_CLOCK_RATIO = 0.99
+
 #: One advance is too short a window to judge a clock by, so the ratio is taken
 #: over the episode so far and only once a full backstop budget of game time has
-#: been spent. A world running at 1.5x trips it inside the first few decisions,
-#: which is the point: a faster world must not be allowed to finish an episode
-#: and report a flattering wave.
+#: been spent. A world running at 1.5x trips the upper bound inside the first
+#: few decisions, which is the point: a faster world must not be allowed to
+#: finish an episode and report a flattering wave. This threshold alone would
+#: not save the lower bound from the advance that ends a run - its round time
+#: legitimately reads zero while its game time does not, and that alone can
+#: pull an otherwise-healthy episode's pooled ratio under the floor - which is
+#: why that one advance is exempted from the lower bound explicitly rather than
+#: relied on to wash out statistically.
 MIN_RATIO_EVIDENCE_GAME_MS = 2000.0
 
-#: The episode ran in a world that simulated more time than it was asked for, so
-#: nothing it reports is comparable with anything measured at 1x. Only inflation
-#: is judged: an advance whose run ended reports no round time at all - the
-#: clock resets with the round - so a lower bound would fire on every death
-#: rather than on a defect.
+#: The episode ran in a world that simulated more time than it was asked for,
+#: so nothing it reports is comparable with anything measured at 1x.
 GAME_TIME_INFLATED = "the game simulated more time than the advance budgeted"
+
+#: The episode ran in a world that simulated less time than it was asked for -
+#: as real a fidelity failure as inflation, just in the other direction, and
+#: named distinctly so a report says which way the clock disagreed.
+GAME_TIME_DEFLATED = "the game simulated less time than the advance budgeted"
 
 
 class _DeathBoundaryUnresolved(RunPortError):
@@ -328,7 +349,6 @@ class InstrumentedRunEnvironment:
         self._tally.game_ms += result.game_ms
         self._tally.round_ms += result.round_ms
         self._tally.advance_wall_micros += result.wall_micros
-        inflated = self._inflated_game_time()
         if result.reason == _BRIDGE_BUDGET_REASON and result.game_ms < budget:
             # The bridge stopped on its own wall-clock ceiling rather than on the
             # budget. The transition is genuine, so it is counted rather than
@@ -339,12 +359,14 @@ class InstrumentedRunEnvironment:
             # An advance that cannot say how far it got leaves the record unable
             # to describe what happened, exactly as an unconfirmed purchase does.
             # It used to be ignored, which quietly attributed a bridge failure to
-            # the policy's WAIT.
+            # the policy's WAIT. Whether it also ended the run is unknown, so the
+            # lower bound stays in play here exactly as it always has.
+            clock_fidelity = self._round_clock_fidelity(advance_ended_run=False)
             return _Advance(
                 self._read_state(),
                 (),
                 budget,
-                (f"advance was not confirmed: {result.reason}",) + inflated,
+                (f"advance was not confirmed: {result.reason}",) + clock_fidelity,
                 failure=_advance_failure(result.outcome),
             )
 
@@ -352,12 +374,20 @@ class InstrumentedRunEnvironment:
         # stopped. Reading again would cost a second round trip per decision and
         # could only show a later state than the one the result describes.
         observed = self._build_state(result.state)
+        # The round clock resets with the round, so the one advance that ends a
+        # run - whether the state vanished outright or settled terminal - always
+        # reports less round time than the game time it spent getting there.
+        # That is the fidelity check's one known-legitimate zero, so this
+        # advance alone is exempted from the lower bound (see
+        # `_round_clock_fidelity`); the upper bound stays in force.
+        ended = observed is None or observed.terminal or observed.lifecycle != "active"
+        clock_fidelity = self._round_clock_fidelity(advance_ended_run=ended)
         if observed is None:
             return _Advance(
                 None,
                 (DecisionEvent.RUN_ENDED,),
                 budget,
-                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,)) + inflated,
+                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,)) + clock_fidelity,
             )
         events = self._events_between(state, observed)
         return _Advance(
@@ -366,29 +396,39 @@ class InstrumentedRunEnvironment:
             budget,
             validate_transition(state, observed)
             + self._divergence(result.reason, events)
-            + inflated,
+            + clock_fidelity,
         )
 
-    def _inflated_game_time(self) -> tuple[str, ...]:
-        """Refuse an episode whose world ran faster than the advances budgeted.
+    def _round_clock_fidelity(self, *, advance_ended_run: bool) -> tuple[str, ...]:
+        """Refuse an episode whose world ran faster or slower than budgeted.
 
         The bridge reports both clocks per advance: the game time it budgeted
         (frames times `frame_game_ms`) and the game's own round clock across the
         same frames. They are supposed to be the same time measured twice. When
-        the round clock runs away from the budget the world is simulating more
+        the round clock runs away above the budget the world is simulating more
         time per frame than it was told to - the shape a speed multiplier left
-        applied has - and every wave and decision count the episode goes on to
-        report is measured in a different unit from the runs it will be compared
-        with. The episode is failed by name rather than compensated for: scaling
-        the frame's worth to match would hide the wrong assumption and keep the
-        numbers incomparable.
+        applied has; when it falls away below, the world is simulating less -
+        the shape a step that starves the game of frames has. Either way every
+        wave and decision count the episode goes on to report is measured in a
+        different unit from the runs it will be compared with. The episode is
+        failed by name rather than compensated for: scaling the frame's worth to
+        match would hide the wrong assumption and keep the numbers incomparable.
+
+        The advance that ends a run is exempt from the lower bound alone: the
+        round clock resets with the round, so that one advance legitimately
+        reports none of it while still having spent game time reaching the end,
+        which pulls the ratio down on every death whether or not the world was
+        deflated. The upper bound is never exempt - an ending advance cannot
+        report more round time than it budgeted, only less or none.
         """
         if self._tally.game_ms < MIN_RATIO_EVIDENCE_GAME_MS:
             return ()
         ratio = self._tally.round_ms / self._tally.game_ms
-        if ratio <= MAX_ROUND_CLOCK_RATIO:
-            return ()
-        return (f"{GAME_TIME_INFLATED}: round clock ran {ratio:.3f}x the budgeted game time",)
+        if ratio > MAX_ROUND_CLOCK_RATIO:
+            return (f"{GAME_TIME_INFLATED}: round clock ran {ratio:.3f}x the budgeted game time",)
+        if ratio < MIN_ROUND_CLOCK_RATIO and not advance_ended_run:
+            return (f"{GAME_TIME_DEFLATED}: round clock ran {ratio:.3f}x the budgeted game time",)
+        return ()
 
     def _divergence(
         self, bridge_reason: str, events: tuple[DecisionEvent, ...]

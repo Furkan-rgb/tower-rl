@@ -83,6 +83,12 @@ class FakeRunPort:
     #: setting this above 1 simulates continuing a leftover run, to exercise the
     #: episode-independence check without a second fake port.
     starting_wave: int = 1
+    #: The real bridge's round clock resets with the round, so the one advance
+    #: that ends a run reports zero round time for it even though game time was
+    #: spent reaching the end. Off by default because most fakes have no reason
+    #: to model it; a test of the round-clock guard's lower bound turns it on to
+    #: exercise that legitimate zero without it being mistaken for a defect.
+    round_clock_resets_on_death: bool = False
 
     sequence: int = field(default=0, init=False)
     #: Episodes begun, the ordinal the two failure sets are matched against.
@@ -245,12 +251,15 @@ class FakeRunPort:
             ):
                 reason = "event:health_changed"
                 break
+        round_ms = self.elapsed_ms - round_time_before
+        if reason == "event:run_ended" and self.round_clock_resets_on_death:
+            round_ms = 0.0
         return FakeCommandResult(
             "confirmed",
             reason,
             frames=frames,
             game_ms=spent,
-            round_ms=self.elapsed_ms - round_time_before,
+            round_ms=round_ms,
             wall_micros=frames * 100,
             state=self._observe(),
         )

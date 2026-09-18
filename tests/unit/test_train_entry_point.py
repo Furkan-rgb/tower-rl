@@ -15,6 +15,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -873,3 +874,68 @@ def test_a_fleet_that_will_not_come_up_at_all_is_refused(tmp_path: Path) -> None
 
     with pytest.raises(SystemExit, match="no instance of the fleet came up"):
         train.bring_up_fleet([CloneInstance(index=0)], refuse)
+
+
+def test_an_instance_whose_bring_up_fails_is_still_torn_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bring-up that fails partway must not leave its emulator running.
+
+    `main`'s `open_instance` used to append to `started` only once bring-up had
+    succeeded, so an instance whose bring-up raised was never in the list
+    `tear_down_fleet` sweeps: the emulator it may already have launched
+    survived a clean `exit 0`. Registration now happens before the attempt, so
+    this exercises `main` end to end - against fakes, never a device - to prove
+    the failed instance is still handed to teardown.
+    """
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(tmp_path))
+    expected = SimpleNamespace(profile_id=PROFILE, bridge_version="v1")
+    monkeypatch.setattr(train, "compatibility", lambda build_dir: expected)
+    monkeypatch.setattr(train, "prepare_pinned_snapshot", lambda renderer, cores: "snap")
+    monkeypatch.setattr(train, "require_offline", lambda instance: None)
+    monkeypatch.setattr(
+        train,
+        "connect",
+        lambda serial, port, arguments, expected, opened: train.ActorInstance(
+            serial=serial, environment=environment()
+        ),
+    )
+
+    def fake_bring_up(
+        instance: CloneInstance, renderer: str, *, deploy: Any, read_only: bool, cores: int
+    ) -> str:
+        if instance.index == 1:
+            raise RuntimeError("cold boot never reached home")
+        return "cold"
+
+    monkeypatch.setattr(train, "bring_up", fake_bring_up)
+
+    torn: list[str] = []
+
+    def fake_tear_down(instance: CloneInstance) -> None:
+        torn.append(instance.serial)
+
+    # `tear_down_fleet`'s teardown callable is bound as a default parameter at
+    # definition time, exactly as `main` calls it with none supplied, so the
+    # spy has to replace that default rather than pass an explicit argument.
+    monkeypatch.setattr(train.tear_down_fleet, "__defaults__", (fake_tear_down,))
+
+    captured: dict[str, Any] = {}
+
+    def fake_train_session(
+        arguments: argparse.Namespace, instances: list[train.ActorInstance], **kwargs: Any
+    ) -> dict[str, Any]:
+        captured["instances"] = list(instances)
+        captured["bring_up_failures"] = kwargs["bring_up_failures"]
+        return {}
+
+    monkeypatch.setattr(train, "train_session", fake_train_session)
+    monkeypatch.setattr(sys, "argv", ["train.py", "--actors", "2", "--no-track"])
+
+    exit_code = train.main()
+
+    assert exit_code == 0
+    # Both instances are torn down, including the one whose bring-up failed.
+    assert torn == ["emulator-5556", "emulator-5558"]
+    assert captured["bring_up_failures"] and "emulator-5558" in captured["bring_up_failures"][0]
+    assert [item.serial for item in captured["instances"]] == ["emulator-5556"]

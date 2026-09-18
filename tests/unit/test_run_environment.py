@@ -11,6 +11,7 @@ from fakes.fake_run_port import FakeCommandResult, FakeRunPort  # noqa: E402
 
 from tower_rl.application.run_environment import (  # noqa: E402
     BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -507,3 +508,67 @@ def test_a_world_that_keeps_to_its_budget_is_not_accused_of_running_fast() -> No
         assert transition.admissible
         assert not any(GAME_TIME_INFLATED in reason for reason in transition.invalid_reasons)
     assert environment.summarize(TerminationOutcome.OPERATOR_STOP).invalid_transitions == 0
+
+
+def test_a_world_that_undercredits_its_budget_fails_the_episode_by_a_distinct_name() -> None:
+    """A ratio sitting well below 1.0 is a fidelity failure in the other direction.
+
+    A 150ms-step arm measured a sustained 0.987 where healthy runs pooled
+    1.007-1.014, and the guard could not see it because it only ever looked
+    upward. This is the mirror of `test_a_world_that_outruns_its_budget_...`,
+    named distinctly so a report says which direction the clock disagreed.
+    """
+    environment, _ = _environment(world_time_scale=0.95)
+    environment.reset()
+
+    for _ in range(20):
+        transition = environment.step(WAIT)
+        if transition.termination is not None:
+            break
+    else:
+        pytest.fail("the deflated clock was never noticed")
+
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+    assert not transition.admissible
+    assert any(GAME_TIME_DEFLATED in reason for reason in transition.invalid_reasons)
+    assert not any(GAME_TIME_INFLATED in reason for reason in transition.invalid_reasons)
+    summary = environment.summarize(transition.termination)
+    assert summary.invalid_transitions == 1
+    assert not summary.valid, "a deflated episode may not count towards the curve"
+    assert any(GAME_TIME_DEFLATED in reason for reason in summary.termination_detail)
+
+
+def test_a_world_that_keeps_to_its_budget_is_not_accused_of_running_slow() -> None:
+    environment, _ = _environment()
+    environment.reset()
+
+    for _ in range(20):
+        transition = environment.step(WAIT)
+        if transition.terminated:
+            break
+        assert transition.admissible
+        assert not any(GAME_TIME_DEFLATED in reason for reason in transition.invalid_reasons)
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).invalid_transitions == 0
+
+
+def test_the_final_advance_of_a_healthy_run_does_not_trip_the_lower_bound() -> None:
+    """The round clock resets with the round, so the last advance reports none.
+
+    That legitimate zero must not be mistaken for the world under-simulating
+    time: `MIN_RATIO_EVIDENCE_GAME_MS` is what keeps one advance's worth of
+    round time - lost to the reset, not to a defect - from swamping an
+    episode's worth already accumulated at 1x.
+    """
+    environment, _ = _environment(round_clock_resets_on_death=True)
+    environment.reset()
+
+    for _ in range(200):
+        transition = environment.step(WAIT)
+        if transition.termination is not None:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    assert not any(GAME_TIME_DEFLATED in reason for reason in transition.invalid_reasons)
+    summary = environment.summarize(transition.termination)
+    assert not any(GAME_TIME_DEFLATED in reason for reason in summary.termination_detail)

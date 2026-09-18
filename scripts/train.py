@@ -85,13 +85,22 @@ from tower_rl.simulation.bridge import (  # noqa: E402
     compatibility,
     deploy_bridge,
 )
-from tower_rl.simulation.bring_up import bring_up, require_offline  # noqa: E402
+from tower_rl.simulation.bring_up import (  # noqa: E402
+    bring_up,
+    require_game_activity,
+    require_offline,
+)
 from tower_rl.simulation.fleet import (  # noqa: E402
     bring_up_fleet,
     prepare_pinned_snapshot,
     tear_down_fleet,
 )
-from tower_rl.simulation.instance import CloneInstance  # noqa: E402
+from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
+from tower_rl.simulation.instance import (  # noqa: E402
+    GUEST_FRAME_RATE_HZ,
+    MAX_GUEST_FRAME_RATE_HZ,
+    CloneInstance,
+)
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
     BridgeCompatibility,
     InstrumentedBridgeClient,
@@ -416,6 +425,18 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cores", type=int, default=4, help="emulator cores per instance; fleet only"
     )
+    parser.add_argument(
+        "--frame-rate-hz",
+        type=int,
+        default=GUEST_FRAME_RATE_HZ,
+        help=(
+            "guest frame rate the fleet is raised to after bring-up, as "
+            f"run_actors.py does; default {GUEST_FRAME_RATE_HZ}, the fleet "
+            "operating rate. Read on the fleet path only: a single actor "
+            "collects on the instance the operator brought up and owns its "
+            "own rate, and nothing here raises it."
+        ),
+    )
     add_cadence_arguments(parser)
     parser.add_argument(
         "--run-dir",
@@ -462,6 +483,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
                 "mid-run evaluation needs an instance to itself and cannot run "
                 "while a fleet is collecting; leave --evaluate-every-episodes at 0"
             )
+    if not 1 <= arguments.frame_rate_hz <= MAX_GUEST_FRAME_RATE_HZ:
+        # The same measured ceiling `run_actors.py` holds its rate to: above it
+        # the guest reports a rate it is not delivering, so `confirm_frame_rate`
+        # would pass on an instance collecting at some other rate entirely.
+        raise SystemExit(
+            f"--frame-rate-hz {arguments.frame_rate_hz} is outside "
+            f"1..{MAX_GUEST_FRAME_RATE_HZ}; no measured fps supports a guest "
+            "rate above that"
+        )
     if arguments.checkpoint_every_decisions < 0:
         raise SystemExit("--checkpoint-every-decisions cannot be negative")
     if (
@@ -684,9 +714,18 @@ def main() -> int:
             deploy=deploy_bridge,
             read_only=True,
             cores=arguments.cores,
+            frame_rate_hz=arguments.frame_rate_hz,
         )
         # By interface, per instance, before anything is collected on it.
         require_offline(instance)
+        # Every instance boots at the stock 60 Hz per-uid game override; this
+        # actor raises its own instance the moment its own bring-up returns,
+        # exactly where `run_actors.collect_episodes` does it, and immediately
+        # before anything is measured. A failed raise here fails this instance
+        # by name, the same as a failed bring-up: `bring_up_fleet`'s existing
+        # per-instance failure handling applies.
+        require_game_activity(instance)
+        raise_frame_rate(instance, arguments.frame_rate_hz)
         return connect(instance.serial, instance.bridge_host_port, arguments, expected, opened)
 
     failures: list[str] = []
@@ -694,6 +733,9 @@ def main() -> int:
         if arguments.actors == 1:
             # Exactly as before there were fleets: the instance the operator
             # brought up, addressed by --serial and --port, and left running.
+            # --frame-rate-hz is not applied here: the operator owns this
+            # instance's rate along with everything else about how it was
+            # brought up, so nothing on this path raises it.
             instances = [connect(arguments.serial, arguments.port, arguments, expected, opened)]
         else:
             # A read-only fleet cannot save a snapshot, so the pinned one is

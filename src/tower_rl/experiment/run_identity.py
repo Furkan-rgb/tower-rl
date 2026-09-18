@@ -176,6 +176,11 @@ def resolved_config(
         "health_change_fraction": cadence.health_change_fraction,
         "block_decisions": arguments.block_decisions,
         "device": str(device),
+        # The guest rate this arm actually collected at: a fleet run raises
+        # every instance to it, and a single actor's is whatever the operator
+        # brought their instance up at, so a run's identity carries the rate
+        # its curve was measured under rather than leaving it to be inferred.
+        "frame_rate_hz": arguments.frame_rate_hz,
     }
 
 

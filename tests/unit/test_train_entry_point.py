@@ -456,6 +456,8 @@ def test_an_instance_whose_bring_up_fails_is_still_torn_down(
     monkeypatch.setattr(train, "compatibility", lambda build_dir: expected)
     monkeypatch.setattr(train, "prepare_pinned_snapshot", lambda renderer, cores: "snap")
     monkeypatch.setattr(train, "require_offline", lambda instance: None)
+    monkeypatch.setattr(train, "require_game_activity", lambda instance: None)
+    monkeypatch.setattr(train, "raise_frame_rate", lambda instance, frame_rate_hz: None)
     monkeypatch.setattr(
         train,
         "connect",
@@ -465,7 +467,13 @@ def test_an_instance_whose_bring_up_fails_is_still_torn_down(
     )
 
     def fake_bring_up(
-        instance: CloneInstance, renderer: str, *, deploy: Any, read_only: bool, cores: int
+        instance: CloneInstance,
+        renderer: str,
+        *,
+        deploy: Any,
+        read_only: bool,
+        cores: int,
+        frame_rate_hz: int,
     ) -> str:
         if instance.index == 1:
             raise RuntimeError("cold boot never reached home")
@@ -502,3 +510,138 @@ def test_an_instance_whose_bring_up_fails_is_still_torn_down(
     assert torn == ["emulator-5556", "emulator-5558"]
     assert captured["bring_up_failures"] and "emulator-5558" in captured["bring_up_failures"][0]
     assert [item.serial for item in captured["instances"]] == ["emulator-5556"]
+
+
+def test_a_fleet_raises_every_instance_after_its_own_bring_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every instance is raised off the stock 60 Hz right after its bring-up.
+
+    `run_actors.collect_episodes` raises an instance's rate itself, the moment
+    its own bring-up returns, in the order bring-up -> offline -> game activity
+    -> raised. `train.py`'s fleet path is the same composition inside
+    `open_instance`, so this pins the call order per instance rather than only
+    the fact that the calls happen.
+    """
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(tmp_path))
+    expected = SimpleNamespace(profile_id=PROFILE, bridge_version="v1")
+    monkeypatch.setattr(train, "compatibility", lambda build_dir: expected)
+    monkeypatch.setattr(train, "prepare_pinned_snapshot", lambda renderer, cores: "snap")
+    monkeypatch.setattr(
+        train,
+        "connect",
+        lambda serial, port, arguments, expected, opened: train.ActorInstance(
+            serial=serial, environment=environment()
+        ),
+    )
+    monkeypatch.setattr(train.tear_down_fleet, "__defaults__", (lambda instance: None,))
+    monkeypatch.setattr(
+        train,
+        "train_session",
+        lambda arguments, instances, **kwargs: {"instances": list(instances)},
+    )
+
+    calls: list[tuple[str, int]] = []
+
+    def fake_bring_up(
+        instance: CloneInstance,
+        renderer: str,
+        *,
+        deploy: Any,
+        read_only: bool,
+        cores: int,
+        frame_rate_hz: int,
+    ) -> str:
+        assert frame_rate_hz == 90, "the parsed --frame-rate-hz threads into bring-up"
+        calls.append(("bring_up", instance.index))
+        return "cold"
+
+    def fake_require_offline(instance: CloneInstance) -> None:
+        calls.append(("require_offline", instance.index))
+
+    def fake_require_game_activity(instance: CloneInstance) -> None:
+        calls.append(("require_game_activity", instance.index))
+
+    def fake_raise_frame_rate(instance: CloneInstance, frame_rate_hz: int) -> None:
+        assert frame_rate_hz == 90
+        calls.append(("raise_frame_rate", instance.index))
+
+    monkeypatch.setattr(train, "bring_up", fake_bring_up)
+    monkeypatch.setattr(train, "require_offline", fake_require_offline)
+    monkeypatch.setattr(train, "require_game_activity", fake_require_game_activity)
+    monkeypatch.setattr(train, "raise_frame_rate", fake_raise_frame_rate)
+    monkeypatch.setattr(
+        sys, "argv", ["train.py", "--actors", "2", "--frame-rate-hz", "90", "--no-track"]
+    )
+
+    exit_code = train.main()
+
+    assert exit_code == 0
+    # Bring-up, offline, game activity, then the raise - per instance, before
+    # the next instance's bring-up begins.
+    assert calls == [
+        ("bring_up", 0),
+        ("require_offline", 0),
+        ("require_game_activity", 0),
+        ("raise_frame_rate", 0),
+        ("bring_up", 1),
+        ("require_offline", 1),
+        ("require_game_activity", 1),
+        ("raise_frame_rate", 1),
+    ]
+
+
+def test_a_single_actor_run_raises_no_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator's own instance owns its rate; the connect path never raises it.
+
+    `--actors 1` addresses the instance the operator already brought up by
+    hand, so nothing on this path may call `require_game_activity` or
+    `raise_frame_rate` - those belong to the fleet's own bring-up.
+    """
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(tmp_path))
+    expected = SimpleNamespace(profile_id=PROFILE, bridge_version="v1")
+    monkeypatch.setattr(train, "compatibility", lambda build_dir: expected)
+    monkeypatch.setattr(
+        train,
+        "connect",
+        lambda serial, port, arguments, expected, opened: train.ActorInstance(
+            serial=serial, environment=environment()
+        ),
+    )
+    monkeypatch.setattr(
+        train,
+        "train_session",
+        lambda arguments, instances, **kwargs: {"instances": list(instances)},
+    )
+
+    activity_calls: list[CloneInstance] = []
+    raise_calls: list[CloneInstance] = []
+    monkeypatch.setattr(
+        train, "require_game_activity", lambda instance: activity_calls.append(instance)
+    )
+    monkeypatch.setattr(
+        train, "raise_frame_rate", lambda instance, frame_rate_hz: raise_calls.append(instance)
+    )
+    monkeypatch.setattr(sys, "argv", ["train.py", "--no-track"])
+
+    exit_code = train.main()
+
+    assert exit_code == 0
+    assert activity_calls == []
+    assert raise_calls == []
+
+
+def test_frame_rate_hz_is_bounded(tmp_path: Path) -> None:
+    """The same ceiling `run_actors.py` holds its rate to, refused by name."""
+    with pytest.raises(SystemExit, match="frame-rate-hz"):
+        arguments(tmp_path, **{"--frame-rate-hz": "301"})
+    with pytest.raises(SystemExit, match="frame-rate-hz"):
+        arguments(tmp_path, **{"--frame-rate-hz": "0"})
+
+
+def test_resolved_config_carries_the_frame_rate(tmp_path: Path) -> None:
+    """A run's identity carries the rate it actually trained at."""
+    report = session(tmp_path, settings={"--frame-rate-hz": "90"})
+    assert report["arm"]["resolved_config"]["frame_rate_hz"] == 90

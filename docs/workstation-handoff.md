@@ -47,13 +47,14 @@ measured, not what to do next.
   ran at 100 percent validity (`M1B-E009`). That clears M2's *reliability*
   clauses. **M2 is not complete**: its speed/actor-count comparison clause and
   its visual-evidence clause are both open.
-- **The learning pipeline, end to end on the real game.** Both backbones,
+- **The learning pipeline, end to end on the real game.** Two backbones,
   interleaved on one device, 54 episodes, 614 optimisation steps, no replay
   rejections, checkpoints round-tripping with identity and checksums
   (`M1B-E011`). This proves plumbing, not learning.
-- **Two backbones behind one contract suite**: `recurrent-q` and `stacked-dqn`
-  (the rank-1 candidate from `docs/rl-candidates.md`). They share the trunk,
-  the dueling heads and the n-step double-Q targets, so only the core differs.
+- **One backbone behind the contract suite**: `stacked-dqn`, the rank-1
+  candidate from `docs/rl-candidates.md`. `recurrent-q` was the second arm the
+  `M1B-E011` run above used; it was removed with the multi-backbone goal (`#7`),
+  so `learning/` holds `stacked_dqn.py` alone and `BACKBONE` names it.
 - **The comparison machinery**: interleaved scheduling, bootstrap intervals,
   Cohen's d, and `required_episodes` for power.
 - **Frame-exact stepping** (`M1B-E016`) and **the advance loop inside the

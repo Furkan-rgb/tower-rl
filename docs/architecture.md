@@ -73,8 +73,11 @@ Owns the decision problem, and nothing about how a device is reached.
 - `features.py` — `encode_state` to a `StateFeatures` (scalars plus one row per
   upgrade action). The only place raw state becomes network input.
 - `episode.py` — `TerminationOutcome`, `ActionOutcome`, `DecisionEvent`,
-  `RunTransition`, `WaveRecord`, `EpisodeSummary`, `wave_progress_reward`,
-  `REWARD_SCHEMA_VERSION`.
+  `DecisionView`, `RunTransition`, `WaveRecord`, `EpisodeSummary`,
+  `wave_progress_reward`, `REWARD_SCHEMA_VERSION`. `DecisionEvent` is the
+  cadence condition an advance stopped on; `DecisionView` is the unrelated
+  thing a spectator reads — one decision as a human sees it, emitted by
+  `InstrumentedRunEnvironment.on_decision`.
 - `run_port.py` — the `RunPort` protocol and `RunPortError`: the whole surface a
   run is driven through.
 - `run_environment.py` — `InstrumentedRunEnvironment` and `CadenceConfig`. It
@@ -307,3 +310,32 @@ per-wave comparison handed to `experiment.wave_statistics`. Neither script
 starts an emulator, and neither decides a verdict. Given `--mlflow-run`, both
 log their results onto the training run they are about, so the greedy curve
 lands above the exploring one.
+
+### The spectate path
+
+`scripts/spectate.py` is the one path composed for a human. It brings up a
+single instance through exactly the fleet's bring-up — canonical AVD refused,
+`-read-only`, `-gpu host`, bridge deployed with its digest confirmed, offline
+verified by interface, `tear_down_instance` in a `finally` — with two
+differences, both of which are the point. The instance is launched **windowed**
+(`emulator_command(..., windowed=True)`, the one caller that omits `-no-window`),
+and it runs at 60 Hz, which is real time; the fleet's 120 Hz buys throughput,
+which is worth nothing to somebody watching. It refuses to start while any
+emulator is running at all, because a windowed real-time session must never
+share a host with a measurement.
+
+The seam it watches through is the decision stream.
+`InstrumentedRunEnvironment.on_decision` is an optional observer called once per
+`step` with a frozen `DecisionView`: episode and decision number, wave, cash,
+health, the action as a domain description (`wait`, or `attack:3`), reward,
+whether the episode just ended and why. `None` is the default and every
+collecting and evaluating path leaves it there, so nothing is built per decision
+unless somebody is watching. The panel is therefore a *view* of the same
+decisions the episode records are built from, never a second account of them:
+the episodes a session plays are written with the evaluator's own
+`episode_record`, and the panel's own model — the pure functions that turn
+accumulated views into the lines to draw — lives in the script beside the
+`curses` rendering, because a terminal panel owns no domain concept. Optional
+`--record` runs `adb shell screenrecord` on the guest in three-minute chunks
+(the Android tool's own limit) and pulls them at the end; no training or
+evaluation path reaches for it, which `tests/unit/test_spectate.py` holds.

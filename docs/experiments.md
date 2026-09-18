@@ -7,6 +7,334 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M1B-E052 — 7/7 at 120 Hz with no install round at all: the kill is absent for this image state
+
+**Date:** 2026-09-18
+**Status:** 7/7. The equivalence gate `#22` is now runnable; board `#21` stays
+open pending it
+**Purpose:** Let the fleet arbitrate whether the Play-update kill is still live,
+after the staged WebView session was consumed and not re-staged (`M1B-E051`).
+
+Exactly the `M1B-E048` recipe: N=7, `-read-only`, cold `-gpu host`, `--cores 4
+--frame-game-ms 100`, 120 Hz, scripted, 2 episodes per instance, boot stagger
+with its per-instance backstop, offline verified by interface per instance,
+per-instance `adb logcat` captured from boot.
+
+**7/7 reporting, 14 valid episodes, 0 invalid.** Every instance: 2 valid
+episodes, `is at home and offline`, `confirmed at 120 Hz` on all three
+SurfaceFlinger readings (7 of 7 confirmations in the log), and the deployed
+bridge SHA-256 read back from the device as
+7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a (7 of 7).
+Per instance (index / serial / wall s / valid per hour): 0 / 5556 / 139.0 /
+51.8; 1 / 5558 / 159.8 / 45.1; 2 / 5560 / 191.5 / 37.6; 3 / 5562 / 213.6 / 33.7;
+4 / 5564 / 288.7 / 24.9; 5 / 5566 / 297.6 / 24.2; 6 / 5568 / 367.0 / 19.6.
+Aggregate 137.3 valid episodes/hour; 18,504-20,476 decisions/hour per actor.
+Fidelity: `bridge_event_divergence` 0, `stale_or_duplicate` 0,
+`advances_cut_short` 0, `episodes_not_started_fresh` 0, `invalid_episodes` 0.
+
+**Install-line count: `installPackageLI` appears ZERO times in all seven
+logcats** — 0, 0, 0, 0, 0, 0, 0 — and `Update system package
+com.google.android.webview` appears in none of them. The only Finsky lines in
+any instance (11-12 each) are `SettingNotFoundException for
+download_manager_*`, i.e. settings lookups, not a download. **Zero relaunches
+fired**, which this time means nothing needed one rather than that the check was
+blind (`M1B-E047`).
+
+Verdict: for this image state the kill is ABSENT, and it is absent at its
+source — no install round runs at all. The mechanism the fleet lost actors to
+needed a WebView session staged in the base image; `M1B-E051` consumed it and
+Play did not stage another. This is a statement about the image as it stands
+today, not a guarantee: if Play stages a component again, the same race returns,
+and the handoff records how to repeat the bake.
+
+`#22` (behavioural equivalence at 120 Hz) is now runnable on a fleet that comes
+up 7/7.
+
+**Consequence taken the same day (2026-09-18), from this entry and `M1B-E049`:**
+the post-cut recovery is REMOVED. `relaunch_if_activity_lost` and both of its
+call sites are gone, with `RELAUNCH_READY_TIMEOUT` and the `point` label that
+existed only to say which of them fired. A relaunch after the network is cut
+cannot reach home (`M1B-E049`), and keeping it let one bring-up issue up to nine
+launcher intents while `MAX_RELAUNCHES` beside it said two. What stands in its
+place reports rather than repairs: the post-cut check names the lost activity in
+its failure, and `require_game_activity` refuses the instance before the frame
+rate is raised. The DETECTION stays exactly as it is — the resumed-activity
+oracle of `M1B-E047` is the part that was actually missing — and so does the one
+relaunch that works, inside the readiness wait while the radios are still up
+(`fe63abc`). `MAX_RELAUNCHES` now describes the whole budget of a bring-up.
+
+Also corrected the same day: the clone's base image booted ROUTABLE after the
+bake (`WifiService starting up with Wi-Fi enabled` and a 10.0.2.16 lease in this
+run's own logcats, before each bring-up cut it). One writable boot disabled both
+radios and read `ip -o -4 addr show` back as `lo` only, with the game identity
+and `libunity.so` SHA-256 unchanged and `reboot -p` as the shutdown, so the base
+image is offline at boot as of today.
+
+Teardown: per-serial cleanup before kill on all 7 — override reset, libunity
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040, versionCode
+1199, versionName 29.0.3, installer com.android.vending, libunity_mounts 0,
+bridge_artifacts removed, 7/7 each; then `adb devices` empty, zero qemu in
+/proc/*/exe, samplers and logcat captures reaped. Only 5556-5568 addressed; no
+reference to emulator-5554 or the canonical AVD.
+
+Source: session scratchpad artifacts `J/` (fleet.log, fleet.json, actors/,
+attend.log, seven `emulator-55xx-logcat.txt`).
+
+## M1B-E051 — The bake does not reach a `-read-only` instance, and one clean run at 120 Hz
+
+**Date:** 2026-09-18
+**Status:** The bake is NOT established for the fleet recipe; the fleet run
+(stage 4) was not started
+**Purpose:** Verify `M1B-E050` under the normal recipe before spending a fleet
+run on it.
+
+Solo, `-read-only`, cold `-gpu host`, `--cores 4`, 120 Hz, bridge deployed,
+offline by interface, one scripted episode, logcat for the whole boot.
+
+What passed: `is at home and offline` with `lo only` by interface; `confirmed at
+120 Hz` on all three SurfaceFlinger readings, re-read after the episode and
+still 120.00 / 120 / 120.00; deployed bridge SHA-256 read from the device =
+7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a; one valid
+episode, 0 invalid, `advances_cut_short` 0, `episodes_not_started_fresh` 0, no
+termination detail; and **zero `installPackageLI` lines in the entire boot**,
+including its online window.
+
+What refutes the bake: `dumpsys package com.google.android.webview` on this
+instance reads versionCode **694313738** (133.0.6943.137), the version the clone
+already carried — NOT the 792219908 that `M1B-E050` installed and read back
+minutes earlier. `codePath=/data/app/~~JIhSP4kU97OQR_gDmW-xAA==/...`,
+`pkgFlags=[... UPDATED_SYSTEM_APP ...]`. The writable session did write to disk
+(`userdata-qemu.img.qcow2` mtime moved to the bake's shutdown, and the radio
+state it changed persisted), so this is not a lost write in the obvious sense;
+what a `-read-only` instance sees is not what the writable session committed.
+**Mechanism resolved (same session): the install did not persist.** A WRITABLE
+cold boot of the same AVD, reading `dumpsys package com.google.android.webview`
+before any other command, returns versionCode **694313738** with the old
+`codePath=/data/app/~~JIhSP4kU97OQR_gDmW-xAA==/...` — so this is not about which
+image a `-read-only` instance derives from (the read-only path was exonerated).
+No `RollbackManager` rollback appears in that boot's logcat (only the service's
+own start-up lines) and no `installPackageLI` runs in its first minute. Two
+facts narrow it further: `userdata-qemu.img.qcow2` mtime DID move to the bake's
+`emu kill` (16:49:59) and did not move during the read-only boot, so writes were
+flushed; and the radio-enable made about a minute AFTER the install did persist
+into later boots while the install did not. An unflushed write would have lost
+both. The reading that survives is that PackageManager discarded the update at
+the next boot's package scan, leaving the settings change intact.
+
+A repeat bake with `reboot -p` instead of `emu kill` was attempted inside the
+budget and produced no data: with the staged session consumed, Play did not
+download or stage the update again within a 180 s online window, so nothing was
+installed to test the shutdown path with. Whether `reboot -p` would persist it is
+still UNKNOWN. Game identity and `libunity.so` SHA-256 were re-read unchanged on
+both of these boots.
+
+The zero-install observation is therefore NOT attributable to the bake: a single
+~20 s online window with ~70 s of observation after it is too little to say the
+round would have come. The N=7 fleet run (stage 4) was not started, because its
+falsifiable expectation ("WebView 792219908 read from the device") is already
+refuted here.
+
+Teardown: cleanup per-serial on the live instance — override reset, libunity
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040, versionCode
+1199, 29.0.3, installer com.android.vending, mounts 0, artifacts removed — then
+kill; `adb devices` empty, zero qemu.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifacts `I/`.
+
+## M1B-E050 — Letting the guest's WebView update land in the clone base image once
+
+**Date:** 2026-09-18
+**Status:** The bake itself succeeded and changed nothing else; its effect on
+the fleet recipe is refuted by `M1B-E051`
+**Purpose:** Remove the recurring kill at its source by letting the one
+legitimate system update install, rather than discarding it every boot.
+
+Reversibility first: with no emulator running and `adb devices` empty, the whole
+AVD was copied to `~/.local/state/tower-rl/avd-backup-2026-09-18/` — 35 GB,
+`MANIFEST.sha256` over all 53 files, `SIZES.txt` beside it.
+
+The clone was then booted ONCE writable, solo on 5556, cold `-gpu host`,
+headless. No bridge deployed, no game launched, no frame rate raised, no taps,
+no screenshots, nothing about Play disabled or firewalled. The guest came up
+with NO routable interface (the base image carried radios off), so `svc wifi
+enable` / `svc data enable` were issued — the only device commands of the
+session besides the read-backs.
+
+Play's round ran 16:46:34-16:47:00, 25 `installPackageLI` lines, beginning with
+`PackageManager: Update system package com.google.android.webview`, and the
+first of them landed BEFORE the network was enabled: the session had been staged
+in the base image by an earlier online window and finalised locally on boot,
+which is the shape the fleet failures have. After 120 s of quiet, read back from
+the device before shutdown:
+- `com.google.android.webview` versionCode **792219908**, versionName
+  **151.0.7922.199** (the stub entry still reads 694313738, as expected);
+- the game: versionCode 1199, versionName 29.0.3, installerPackageName
+  com.android.vending — unchanged;
+- installed `libunity.so` SHA-256
+  **ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040** —
+  unchanged, so the bind-mount target is intact;
+- per-uid game frame-rate override absent, `cmd game list-configs` `Modes: {}` —
+  no game-mode state left on the image.
+Clean shutdown via `adb emu kill`, waited out; zero qemu afterwards.
+
+Side effect recorded: the radios this session enabled persist in the base image.
+Harmless — every bring-up cuts them itself and verifies offline by interface —
+but it is a change to the clone and is noted in `workstation-handoff.md`.
+
+Source: session scratchpad artifacts `I/bake.log`, `I/bake-logcat.txt`.
+
+## M1B-E049 — The offline relaunch cannot reach home, so the kill is detectable but not recoverable after the cut
+
+**Date:** 2026-09-18
+**Status:** Falsifies the premise the recovery in `M1B-E047`/`M1B-E048` was
+built on
+**Purpose:** Prove on device the relaunch that had never once fired in a fleet
+run, by forcing the fault by hand.
+
+Solo instance, clone AVD, `-read-only`, cold `-gpu host`, 120 Hz. Bring-up
+clean: `lo only` by interface, `confirmed at 120 Hz` on three readings, deployed
+bridge SHA-256 7a98f50b…f99a read from the device, pid 4132, resumed activity
+present. The fault was then forced with `adb shell am force-stop
+com.TechTreeGames.TheTower` and nothing else.
+
+Three seconds later: `pidof` empty, `game_activity_present()` False,
+`why_not_ready()` = `the game is not running`. **The corrected oracle sees the
+fault**, which the substring version of `M1B-E047` did not — this is the
+positive half of the result.
+
+`relaunch_if_activity_lost` then fired, printing its point, and re-issued the
+launcher intent offline. The game came back as a process and sat at
+`main_unavailable` for the full 180 s cap; the call raised `never became ready`.
+This is `M1B-E010` acting on the recovery path: a launch with no network stops
+at the Firebase online check and the OFFLINE modal and never reaches the battle
+home screen. The bridge answered throughout, so the game was running and `Main`
+never initialised — the modal, not a dead process.
+
+Consequences: an offline relaunch is not a recovery. The relaunch added in
+`fe63abc` can only work inside the readiness wait, where the radios are still
+up; the two points added for `M1B-E047` run after the cut and are therefore
+detection only, as is any recovery inside episode collection. A recovery that
+works needs a ruling — reopen a brief network window, or treat the instance as
+lost and re-run it — and neither is taken here.
+
+Teardown: cleanup per-serial before kill (override reset, libunity
+ffc1f3ef…0040, versionCode 1199, 29.0.3, installer com.android.vending, mounts
+0, artifacts removed); `adb devices` empty, zero qemu. No relaunch touched a
+radio, and every interface reading was `lo only`.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifact `H/proof.log`.
+
+## M1B-E048 — Retry with a working activity oracle: 5/7, and the Play kill moves into collection
+
+**Date:** 2026-09-18
+**Status:** Recorded; board #21 NOT closed
+**Purpose:** Repeat `M1B-E047` with the activity oracle corrected, and see where
+the kill lands once bring-up covers it.
+
+Same recipe as `M1B-E047` (N=7, cold `-gpu host`, `--cores 4 --frame-game-ms
+100`, 120 Hz, scripted, 2 episodes per instance), with `game_activity_present`
+reading the RESUMED activity line rather than the whole dump. 5/7 reporting, 10
+valid episodes, 0 invalid.
+
+All SEVEN instances reached `is at home and offline` and `confirmed at 120 Hz`
+on all three SurfaceFlinger readings (display vsync 120.00, uid 10218 game mode
+override 120, uid 10218 applied frame rate 120.00), each immediately after its
+own bring-up: 5556 was raised and collecting at 16:20:37 while 5558-5568 were
+still booting, which is the rendezvous removal visible in the log. Bring-ups ran
+37-40 s apart under the retained stagger. The deployed bridge SHA-256 was
+confirmed ON ALL SEVEN instances from the device
+(7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a), sampled right
+after readiness — the first run in which that check produced a digest. No
+relaunch fired at any point.
+
+Reporting actors: 18,603-21,053 decisions/hour; 21.8-50.7 valid episodes/hour;
+109.2 aggregate. Every fidelity counter zero: `bridge_event_divergence`,
+`stale_or_duplicate`, `advances_cut_short`, `episodes_not_started_fresh`,
+`invalid_episodes`, with `ADVANCE_TRUNCATED_BY_WALL`, `GAME_TIME_INFLATED` and
+`GAME_TIME_DEFLATED` absent. Host peak load 8.15, peak 4 concurrent qemu (a
+2-episode actor finishes before the last instance boots), VRAM 5.2 GB.
+
+Both losses are PAST every point bring-up covers, inside collection:
+- emulator-5558: bring-up clean, 120 Hz confirmed 16:21:16; killed at
+  16:21:16.03 by `Killing ...TheTower (adj 0): stop com.google.android.webview
+  due to installPackageLI` mid-episode; `run_episodes.py` died with
+  `BridgeDisconnectedError: bridge is not connected`. Nothing watches the game
+  during an episode, so no recovery point exists there.
+- emulator-5564: bring-up clean, 120 Hz confirmed 16:23:12; NO Play kill in its
+  logcat; `run_episodes.py` failed with `the game did not honour speed_max:
+  lifecycle_timeout`. The only kill in its log is our own teardown force-stop.
+  UNEXPLAINED and the first occurrence of this failure here; its bring-up
+  overlapped four actors already collecting at 120 Hz, an overlap the removed
+  rendezvous used to prevent. Recorded as a candidate, not a conclusion.
+
+Reading: covering the two bring-up points did what it was meant to and the kill
+is now downstream of bring-up entirely. QUALIFIED by `M1B-E049`: those two
+points DETECT the kill correctly, but they cannot recover from it, because a
+relaunch after the network is cut cannot reach home. Board #21 stays open, and #22
+(behavioural equivalence) is still required before training.
+
+Teardown: per-serial cleanup before kill on all 7 — override reset from a
+reading (7/7), libunity_sha256
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040 (7/7),
+versionCode 1199, 29.0.3, installer com.android.vending, libunity_mounts 0,
+bridge artifacts removed (7/7); then `adb devices` empty and zero qemu. Only
+5556-5568 addressed; emulator-5554 and the canonical AVD untouched.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifacts `G/`.
+
+## M1B-E047 — Rendezvous removed, bring-up covered: 6/7, and the relaunch that never fires is a blind oracle
+
+**Date:** 2026-09-18
+**Status:** Recorded; the fix in `fe63abc` is CORRECTED by this entry
+**Purpose:** Verify the removal of the fleet-wide rendezvous and the two new
+recovery points at N=7, and find out why the relaunch added in `fe63abc` had
+never once fired.
+
+N=7, cold `-gpu host`, `--cores 4 --frame-game-ms 100`, 120 Hz, scripted, 2
+episodes per instance, per-instance `adb logcat` captured from boot. 6/7
+reporting, 12 valid episodes, 0 invalid, every fidelity counter zero. The six
+reporting actors each confirmed 120 Hz on all three SurfaceFlinger readings.
+
+emulator-5558 (index 1) failed at the post-cut check —  `the game did not
+survive the network being cut: the game is not running` — and the NEW recovery
+declined to fire, which is the finding of this entry.
+
+**Correction to `fe63abc` (and to the reading in `M1B-E045`).** The relaunch
+added there tested `"UnityPlayerActivity" in dumpsys activity activities`, a
+substring of the WHOLE dump. `dumpsys` keeps the killed `ActivityRecord` in its
+task history, so the game's component name stays in the dump long after the
+activity is gone, and the check reported an activity that did not exist. That is
+why the relaunch never fired across three fleet runs — not because the kill was
+absent. Measured, from this run's logcat for 5558:
+
+    16:12:32.4 START ...UnityPlayerActivity   16:12:33.8 Displayed +1s500ms
+    16:12:59.02 Force stopping com.google.android.webview ...: installPackageLI
+    16:12:59.06 Killing 4028:com.TechTreeGames.TheTower (adj 0): stop
+                com.google.android.webview due to installPackageLI
+    16:12:59.06 Force removing ActivityRecord{...UnityPlayerActivity}: app died
+
+Moments later the post-cut check read `pidof` empty AND the activity check True
+on the same instance. Presence now means the game holds the RESUMED activity
+(`ResumedActivity` line, package and activity both), which is a reading a dead
+record cannot satisfy. Confirmed in `M1B-E048`. The recovery those points then
+attempt is detection only: `M1B-E049` shows the offline relaunch cannot reach
+home, so nothing in this entry should be read as the kill being survivable
+after the cut.
+
+This run also confirms the mechanism recorded in `M1B-E045` a second time, on a
+different session: the WebView install is what kills the game, the game
+identity is untouched, and the kill lands wherever the instance happens to be
+rather than only inside the online window.
+
+The deployed-bridge SHA sampler misfired in this run (it matched the
+`sha256sum: ... No such file` text), so the per-instance digest is from
+`M1B-E048`, not this one.
+
+Teardown: per-serial cleanup before kill on all 7, every identity line as in
+`M1B-E048`; `adb devices` empty and zero qemu afterwards.
+
+Source: session scratchpad `RENDEZVOUS-REMOVAL-DETAIL.md`, artifacts `F/`.
+
 ## M1B-E046 — Play-update relaunch fix and two 7-actor cold runs: the relaunch never fired, and the fault moved to the fleet rendezvous
 
 **Date:** 2026-09-18

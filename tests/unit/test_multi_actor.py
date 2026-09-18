@@ -250,6 +250,11 @@ def bring_up_steps(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: steps.append("require_offline"))
+    monkeypatch.setattr(
+        run_actors,
+        "require_game_activity",
+        lambda *_, **__: bool(steps.append("require_game_activity")),
+    )
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: steps.append("raise_frame_rate"))
     monkeypatch.setattr(run_actors, "run_bridge", lambda command, _: steps.append(command))
     monkeypatch.setattr(run_actors.subprocess, "run", episode_process)
@@ -275,11 +280,20 @@ def test_an_actor_is_ready_and_verified_offline_before_any_episode_runs(
     """Bring-up is one decision now: restore the pinned snapshot, or cold-start.
 
     Whichever path it takes, it ends ready and offline, and offline is re-checked
-    by interface immediately before the driver starts.
+    by interface immediately before the driver starts. The game's activity is
+    re-checked there too: nothing has watched it since bring-up returned, and a
+    game the guest's Play killed in between has no surface, so the raise that
+    follows would fail with no applied rate rather than put the game back.
     """
     steps, asked = bring_up_steps(monkeypatch, tmp_path)
 
-    assert steps == ["bring_up", "require_offline", "raise_frame_rate", "run_episodes.py"]
+    assert steps == [
+        "bring_up",
+        "require_offline",
+        "require_game_activity",
+        "raise_frame_rate",
+        "run_episodes.py",
+    ]
     assert asked == [
         {
             "serial": "emulator-5556",
@@ -399,6 +413,7 @@ def test_bring_ups_are_sequenced_but_collection_still_runs_concurrently(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -439,6 +454,7 @@ def test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -450,23 +466,24 @@ def test_a_slow_boot_does_not_let_the_backstop_overlap_the_next_bring_up(
     assert all(outcome.failure is None for outcome in outcomes)
 
 
-def test_no_instance_is_raised_to_the_high_frame_rate_while_a_peer_is_booting(
+def test_an_actor_collects_while_a_peer_is_still_booting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The device defect this fixes: a 2-instance fleet lost an actor at 240 Hz.
+    """There is no fleet rendezvous: a ready actor raises and collects at once.
 
-    Actor 1 died during bring-up with its Vulkan surface gone (`Failed to find
-    ColorBuffer`) while actor 0 was already running at 240 Hz; the same fleet
-    comes up cleanly when every instance boots at the stock rate. So the raise
-    is deferred: no instance may be raised until every instance's bring-up has
-    concluded, and none may collect an episode before it is raised.
+    The barrier this replaces held every ready instance idle until the last
+    bring-up concluded — on the refuted reading that a raised peer killed a
+    booting one (`M1B-E043`) — and that idle window is when the guest's Play
+    installs the update it downloaded and kills the game. So the only thing an
+    actor waits for is its own bring-up.
     """
     instances = [CloneInstance(index=index) for index in range(3)]
     events: list[str] = []
     lock = threading.Lock()
 
     def fake_bring_up(target: CloneInstance, renderer: str, **keywords: object) -> str:
-        time.sleep(0.02)
+        # The last instance boots slowly, so its peers must not be waiting on it.
+        time.sleep(0.4 if target.index == 2 else 0.01)
         with lock:
             events.append(f"up:{target.index}")
         return "restored"
@@ -476,14 +493,16 @@ def test_no_instance_is_raised_to_the_high_frame_rate_while_a_peer_is_booting(
             events.append(f"raise:{target.index}")
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        serial = command[command.index("--serial") + 1]
         with lock:
-            events.append("episodes")
+            events.append(f"episodes:{serial}")
         output = Path(command[command.index("--output") + 1])
         output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", fake_raise)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -492,12 +511,12 @@ def test_no_instance_is_raised_to_the_high_frame_rate_while_a_peer_is_booting(
     )
 
     assert all(outcome.failure is None for outcome in outcomes)
-    last_bring_up = max(index for index, event in enumerate(events) if event.startswith("up:"))
-    first_raise = min(index for index, event in enumerate(events) if event.startswith("raise:"))
-    first_episode = events.index("episodes")
-    assert first_raise > last_bring_up
-    assert first_episode > first_raise
+    assert events.index("raise:0") < events.index("up:2")
+    assert events.index("episodes:emulator-5556") < events.index("up:2")
+    # Each instance is still raised exactly once, and never after its episodes.
     assert sum(1 for event in events if event.startswith("raise:")) == len(instances)
+    for index, instance in enumerate(instances):
+        assert events.index(f"raise:{index}") < events.index(f"episodes:{instance.serial}")
 
 
 def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
@@ -520,6 +539,7 @@ def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
 
     monkeypatch.setattr(run_actors, "bring_up", fake_bring_up)
     monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "require_game_activity", lambda *_, **__: False)
     monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: None)
     monkeypatch.setattr(run_actors.subprocess, "run", fake_run)
 
@@ -535,6 +555,35 @@ def test_a_bring_up_failure_does_not_block_the_rest_of_the_fleet_from_starting(
     assert len(failed) == 1
     assert failed[0].index == 1
     assert "cold boot refused" in (failed[0].failure or "")
+
+
+def test_a_game_that_lost_its_activity_before_the_raise_runs_no_episode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The instance is lost, and the actor says so instead of measuring it.
+
+    `M1B-E049`: after the network is cut there is no relaunch that reaches home,
+    so a game the guest's Play killed between bring-up and the first episode
+    cannot be put back. What must not happen is an episode collected from it, or
+    the bare `applied frame rate absent` the raise would otherwise report.
+    """
+    ran: list[str] = []
+
+    def refuse(instance: CloneInstance) -> None:
+        raise CloneError(f"{instance.serial}: the game has lost its activity")
+
+    monkeypatch.setattr(run_actors, "bring_up", lambda *_, **__: "cold")
+    monkeypatch.setattr(run_actors, "require_offline", lambda *_: None)
+    monkeypatch.setattr(run_actors, "require_game_activity", refuse)
+    monkeypatch.setattr(run_actors, "raise_frame_rate", lambda *_: ran.append("raise"))
+    monkeypatch.setattr(
+        run_actors.subprocess, "run", lambda *_, **__: ran.append("episodes")
+    )
+
+    with pytest.raises(CloneError, match="lost its activity"):
+        collect_episodes(CloneInstance(), stagger_arguments(tmp_path))
+
+    assert ran == []
 
 
 def bridge_output(

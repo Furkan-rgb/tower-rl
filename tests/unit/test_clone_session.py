@@ -9,6 +9,7 @@ and the device-safety properties that hang off it.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,10 @@ class FakeClone:
         create_snapshot_dir: bool = True,
     ) -> None:
         self.online = online
-        self.pid = pid
+        #: What `pidof` answers, one reading per call, the last repeating — the
+        #: same scripting as `activities`, because a Play update takes the
+        #: process away and gives it back moments later as a job service.
+        self.pids = [pid]
         self.commands: list[str] = []
         #: The emulator console's reply to `snapshot save`. Real replies are
         #: `OK` on success or `KO: <reason>` on refusal (for example
@@ -122,7 +126,7 @@ class FakeClone:
         if command == "shell getprop sys.boot_completed":
             return "1"
         if command.startswith("shell pidof"):
-            return self.pid
+            return self.pids[0] if len(self.pids) == 1 else self.pids.pop(0)
         if command == "shell dumpsys activity activities":
             present = self.activities[0] if len(self.activities) == 1 else self.activities.pop(0)
             if not present:
@@ -520,7 +524,7 @@ class RestoredWithoutItsGame(FakeClone):
     def adb(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str:
         answer = super().adb(instance, *args, timeout=timeout)
         if " ".join(args).startswith("shell monkey"):
-            self.pid = "4242"
+            self.pids = ["4242"]
         return answer
 
 
@@ -859,3 +863,114 @@ def test_a_reading_a_hair_off_the_rate_is_still_the_rate(
     )
 
     clone_session.raise_frame_rate(CloneInstance())
+
+
+def test_a_game_killed_as_the_network_is_cut_fails_by_name_and_stays_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kill lands after the cut too, and there it is fatal, not recoverable.
+
+    `M1B-E049` forced this on device: re-issuing the launcher intent with the
+    network gone leaves the game at `main_unavailable` until the timeout,
+    because a launch without a network stops at the Firebase check and the
+    OFFLINE modal (`M1B-E010`). So the instance is lost; what the run must carry
+    is the cause, by name, and no attempt to reopen the network.
+    """
+    clone = FakeClone(online=False)
+    # Ready, then no process at the post-cut check, and no activity behind it.
+    clone.pids = ["4242", ""]
+    clone.activities = [False]
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="did not survive the network being cut") as error:
+        launch_game_at_home(CloneInstance())
+
+    assert clone_session.GAME_ACTIVITY_LOST in str(error.value)
+    # The launcher intent that started it, and nothing after it.
+    assert clone.launches == 1
+    assert not clone.online
+    after_the_cut = clone.index_of("shell svc wifi disable")
+    assert not [
+        command
+        for command in clone.commands[after_the_cut:]
+        if command.startswith("shell svc") and command.endswith("enable")
+    ]
+
+
+def test_a_game_that_survived_the_cut_is_not_blamed_for_a_lost_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A game that is present but unready is a different fault and keeps its own message."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+
+    assert clone_session.lost_activity_cause(CloneInstance()) == ""
+    clone_session.require_game_activity(CloneInstance())
+
+
+def test_a_lost_activity_before_the_rate_is_raised_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gap between bring-up and the first episode: reported, never restarted.
+
+    A game with no activity has no surface, so the raise would otherwise fail
+    with a bare `applied frame rate absent`. Nothing is relaunched here: after
+    the cut there is no launch that reaches home.
+    """
+    clone = FakeClone(online=False)
+    clone.activities = [False]
+    install(monkeypatch, clone, [IDLE])
+
+    with pytest.raises(CloneError, match="lost its activity"):
+        clone_session.require_game_activity(CloneInstance())
+
+    assert clone.launches == 0
+
+
+def test_an_absent_applied_rate_names_the_missing_game_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare `applied frame rate absent` cost a fleet run its diagnosis."""
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    monkeypatch.setattr(
+        clone_session,
+        "adb",
+        lambda instance, *args, **kwargs: re.sub(
+            r"\(uid, frameRate\)=\{10218, [\d.]+ Hz\}",
+            "",
+            clone.adb(instance, *args, **kwargs),
+        ),
+    )
+
+    with pytest.raises(CloneError, match="lost its activity"):
+        clone_session.raise_frame_rate(CloneInstance())
+
+
+def test_the_activity_a_kill_left_in_the_task_history_is_not_a_present_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why the relaunch never fired on device: the dump keeps the dead record.
+
+    `emulator-5558` (run F) was killed by the guest's Play at 16:12:59 —
+    `Killing ...TheTower ... due to installPackageLI`, `Force removing
+    ActivityRecord{... UnityPlayerActivity}: app died` — and moments later
+    `pidof` answered nothing while the component name was still in the dump.
+    Whatever else is in the history, only the resumed activity is the game
+    being on screen.
+    """
+    clone = FakeClone(online=False)
+    install(monkeypatch, clone, [IDLE])
+    monkeypatch.setattr(
+        clone_session,
+        "adb",
+        lambda instance, *args, **kwargs: (
+            "  topResumedActivity=ActivityRecord{NexusLauncher}\n"
+            "  * Hist #0: ActivityRecord{u0 com.TechTreeGames.TheTower/"
+            "com.unity3d.player.UnityPlayerActivity t70 f}}\n"
+            if " ".join(args) == "shell dumpsys activity activities"
+            else clone.adb(instance, *args, **kwargs)
+        ),
+    )
+
+    assert not clone_session.game_activity_present(CloneInstance())

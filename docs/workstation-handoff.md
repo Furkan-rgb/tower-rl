@@ -588,6 +588,41 @@ extracted `libunity.so`. In the second proof, package version 29.0.3,
 remained unchanged. The mount was removed and the bridge/probe files were deleted
 afterward; no emulator is intentionally left running.
 
+**The guest's Google Play update round, and the WebView bake (2026-09-18).**
+The clone's Play downloads a `com.google.android.webview` update during the one
+online window of a cold bring-up and installs it moments later, killing every
+process that holds WebView — the game included (`M1B-E045`, `M1B-E047`). On
+2026-09-18 the AVD was backed up whole to
+`~/.local/state/tower-rl/avd-backup-2026-09-18/` (35 GB, `MANIFEST.sha256` over
+all 53 files, `SIZES.txt`) and booted ONCE writable and online so that update
+could land in the base image: WebView 151.0.7922.199 (versionCode 792219908)
+installed, and the game identity was read back unchanged before shutdown
+(versionCode 1199, 29.0.3, installer `com.android.vending`, `libunity.so`
+SHA-256 `ffc1f3ef…0040`, no per-uid frame-rate override). Nothing about Play was
+disabled, frozen or firewalled. **The bake did not reach the fleet recipe**: a
+subsequent `-read-only` cold boot reads WebView 694313738 (133.0.6943.137)
+again, and so does a fresh WRITABLE boot, so the update did not
+persist at all rather than being hidden from read-only instances (`M1B-E051`).
+Writes were flushed and no rollback was logged; a settings change made after the
+install did persist, so the reading is that PackageManager discarded the update
+at the next boot's package scan. The kill nevertheless did not
+recur: `M1B-E052` came up 7/7 at 120 Hz with zero `installPackageLI` lines
+across all seven logcats, because the staged session the kill needed was
+consumed and Play did not stage another. The base image boots ROUTABLE, as run J's own
+instances show (`WifiService starting up with Wi-Fi enabled`, then a DHCP lease
+of 10.0.2.16, before each bring-up cut it). That was left over from the bake, so
+on 2026-09-18 one writable boot disabled both radios and read `ip -o -4 addr
+show` back listing only `lo`, with the game identity and `libunity.so` SHA-256
+unchanged and `reboot -p` as the shutdown: **radios are off in the base image as
+of today.** Either state is safe — every bring-up cuts the radios itself and
+verifies offline by interface — but starting offline keeps the online window
+short. To
+repeat the bake if Play stages another component later: verify no emulator is
+running, re-take the backup, boot the clone once writable and online with no
+bridge and no game launch, wait for the `installPackageLI` round to finish and
+120 s of quiet, read the identity lines back, shut down cleanly, and restore
+from the backup if anything but the intended package changed.
+
 ADR 0006 now defines the separate instrumented-training and official-evaluation
 profiles. The first production bridge slice lives under `native/tower_bridge/`
 with its strict host client in

@@ -175,14 +175,18 @@ FRAME_RATE_CONFIRM_TIMEOUT = 20.0
 #: surface still at 60, not a rounding difference.
 FRAME_RATE_TOLERANCE_HZ = 0.5
 #: The game's Unity activity, as `dumpsys activity activities` names it. Its
-#: absence is what separates a game that is merely slow to start from one the
-#: guest's Google Play has killed: the process comes back for a job service, so
-#: `pidof` answers, but nothing is on screen and the in-process bridge is frozen.
+#: absence from the *resumed* activity is what separates a game that is merely
+#: slow to start from one the guest's Google Play has killed: the process comes
+#: back for a job service, so `pidof` answers, but nothing is on screen and the
+#: in-process bridge is frozen.
 GAME_ACTIVITY = "UnityPlayerActivity"
-#: How many times one bring-up re-issues the launcher intent after that kill.
-#: Two, because the hazard is a batch of Play installs passing through, not a
-#: standing condition: if two relaunches do not outlast it, something else is
-#: wrong and the readiness timeout should report it rather than loop forever.
+#: How many times the one readiness wait re-issues the launcher intent after
+#: that kill. Two, because the hazard is a batch of Play installs passing
+#: through, not a standing condition: if two relaunches do not outlast it,
+#: something else is wrong and the readiness timeout should report it rather
+#: than loop forever. This is the whole budget of a bring-up: the wait inside
+#: `launch_game_at_home` is the only place a relaunch happens, because it is the
+#: only place the radios are still up (`M1B-E049`).
 MAX_RELAUNCHES = 2
 #: How often readiness is re-read. The online window is held open until the
 #: bridge calls the game ready, so the poll interval is time the instance spends
@@ -279,8 +283,22 @@ def game_pid(instance: CloneInstance) -> str:
 
 
 def game_activity_present(instance: CloneInstance) -> bool:
-    """Whether the game holds an activity, rather than only a background service."""
-    return GAME_ACTIVITY in adb(instance, "shell", "dumpsys", "activity", "activities")
+    """Whether the game holds the resumed activity, rather than a stale record.
+
+    Not a substring of the whole dump: `dumpsys activity activities` keeps the
+    killed `ActivityRecord` in its task history, so the game's component name is
+    still in the dump long after the activity is gone. That is why the relaunch
+    added for the Play-update kill never once fired across three 7-actor runs —
+    on `emulator-5558` the name was in the dump at a moment `pidof` answered
+    nothing at all. The resumed line is the reading that separates a game that is
+    on screen from one whose process Play took away and gave back as a job
+    service.
+    """
+    dump = adb(instance, "shell", "dumpsys", "activity", "activities")
+    return any(
+        "ResumedActivity" in line and PACKAGE in line and GAME_ACTIVITY in line
+        for line in dump.splitlines()
+    )
 
 
 def launch_game(instance: CloneInstance) -> None:
@@ -416,8 +434,12 @@ def wait_until_ready(
     Only a *lost* activity counts: the game is watched until it has an activity
     at least once, which is also what keeps the intent that started it from
     being re-sent before the activity appears. Re-issuing an intent is not a
-    network operation, so a relaunch after the radios are down stays offline;
-    nothing here touches a radio.
+    Re-issuing an intent is not a network operation, so nothing here touches a
+    radio. This is nevertheless the ONLY place a relaunch can work: it runs
+    while the radios are still up, and `M1B-E049` measured a relaunch after the
+    cut sitting at `main_unavailable` until its timeout, because a launch with
+    no network stops at the Firebase check and the OFFLINE modal (`M1B-E010`).
+    Everywhere else the loss of the activity is reported, not repaired.
     """
     deadline = time.monotonic() + timeout
     last = "nothing observed yet"
@@ -636,7 +658,11 @@ def launch_game_at_home(instance: CloneInstance) -> None:
     `ONLINE_POLL_SECONDS` rather than on the ordinary poll: the game is ready
     seconds after it is launched, and every second between being ready and being
     read is a second the guest's Google Play spends installing updates over a
-    running game. `wait_until_ready` relaunches the game if Play kills it anyway.
+    running game. `wait_until_ready` relaunches the game if Play kills it inside
+    that window, which is the only place a relaunch can reach home. The check
+    after the cut has no such remedy: Play installs what it downloaded at a time
+    of its choosing, and when that lands after the network is gone the instance
+    is lost and says so by name.
     """
     print("enabling radios for the startup check only", flush=True)
     set_radios(instance, True)
@@ -653,7 +679,10 @@ def launch_game_at_home(instance: CloneInstance) -> None:
     require_offline(instance)
     reason = why_not_ready(instance)
     if reason is not None:
-        raise CloneError(f"the game did not survive the network being cut: {reason}")
+        raise CloneError(
+            f"the game did not survive the network being cut: {reason}"
+            + lost_activity_cause(instance)
+        )
     print(f"{instance.serial} is at home and offline", flush=True)
 
 
@@ -664,6 +693,52 @@ def game_uid(instance: CloneInstance) -> str:
         if match:
             return match.group(1)
     raise CloneError(f"{instance.serial}: {PACKAGE} has no uid; is it installed?")
+
+
+#: What a lost activity is called wherever bring-up finds one. Named because the
+#: instance cannot be recovered from it — a relaunch without a network stops at
+#: the OFFLINE modal (`M1B-E049`) — so the fleet log has to carry the cause
+#: rather than a bare symptom.
+GAME_ACTIVITY_LOST = (
+    "the game has lost its activity (the guest's Play kills it to install an update)"
+)
+
+
+def lost_activity_cause(instance: CloneInstance) -> str:
+    """The named reason appended when the game has no activity left."""
+    return f"; {GAME_ACTIVITY_LOST}" if not game_activity_present(instance) else ""
+
+
+def require_game_activity(instance: CloneInstance) -> None:
+    """Fail by name unless the game still holds its activity.
+
+    The last reading before an instance is measured. There is nothing to repair
+    here: `M1B-E049` forced the kill on device and found that re-issuing the
+    launcher intent after the network is cut leaves the game at
+    `main_unavailable` until the timeout, because a launch with no network stops
+    at the Firebase check and the OFFLINE modal (`M1B-E010`). So the fleet loses
+    this instance either way, and what matters is that its log says why.
+    """
+    if not game_activity_present(instance):
+        raise CloneError(f"{instance.serial}: {GAME_ACTIVITY_LOST}")
+
+
+def missing_surface_cause(applied_reading: str) -> str:
+    """Name the likely cause when SurfaceFlinger publishes no applied rate at all.
+
+    An absent per-uid applied rate is not the same failure as a rate that reads
+    60: SurfaceFlinger publishes an entry per *surface*, so a game whose activity
+    Play has killed leaves no entry to read rather than a wrong one. Two fleet
+    runs lost an actor to a bare `applied frame rate absent` and the cause had to
+    be reconstructed from logcat afterwards, so the message says it.
+    """
+    if applied_reading != "absent":
+        return ""
+    return (
+        "; SurfaceFlinger publishes no applied rate for a uid with no surface, so "
+        "the likely cause is that the game has lost its activity — see whether the "
+        "guest's Play installed an update over it"
+    )
 
 
 def confirm_frame_rate(instance: CloneInstance) -> None:
@@ -678,6 +753,7 @@ def confirm_frame_rate(instance: CloneInstance) -> None:
     before anything is measured.
     """
     uid = game_uid(instance)
+    applied_name = f"uid {uid} applied frame rate"
     rate = GUEST_FRAME_RATE_HZ
     # SurfaceFlinger applies a new override a beat after GameManagerService takes
     # it, so a reading taken the instant `cmd game set` returns still says 60.
@@ -690,7 +766,7 @@ def confirm_frame_rate(instance: CloneInstance) -> None:
         readings = {
             "display vsync mode": mode.group(1) if mode else "absent",
             f"uid {uid} game mode override": override.group(1) if override else "absent",
-            f"uid {uid} applied frame rate": applied.group(1) if applied else "absent",
+            applied_name: applied.group(1) if applied else "absent",
         }
         wrong = [
             f"{name} {value}"
@@ -701,7 +777,9 @@ def confirm_frame_rate(instance: CloneInstance) -> None:
             break
         if time.monotonic() >= deadline:
             raise CloneError(
-                f"{instance.serial}: the guest is not at {rate} Hz: " + ", ".join(wrong)
+                f"{instance.serial}: the guest is not at {rate} Hz: "
+                + ", ".join(wrong)
+                + missing_surface_cause(readings[applied_name])
             )
         time.sleep(1.0)
     print(f"{instance.serial}: confirmed at {rate} Hz: " + ", ".join(
@@ -719,14 +797,14 @@ def raise_frame_rate(instance: CloneInstance) -> None:
     `instrumented_bridge.sh cleanup` resets it during teardown and no instance is
     left modified.
 
-    This is deliberately *not* part of bring-up, though no longer because a
-    raised peer was shown to kill a booting one: `M1B-E043` refuted that reading
-    — every instance was at the stock 60 Hz through bring-up and the same deaths
-    reproduced. The deferral is kept because it is harmless and keeps the boot
-    the fleet has most evidence for. So a fleet brings every instance up at the
-    stock rate and calls this on each of them only once the whole fleet is up
-    (`run_actors.stagger_bring_up`); a single instance is that same fleet with
-    one member.
+    This is not part of bring-up: every instance boots at the stock 60 Hz and is
+    raised once its own bring-up has concluded, immediately before its first
+    episode (`run_actors.collect_episodes`). It is not deferred any further than
+    that. It once waited for the *whole fleet* to be up, on the reading that a
+    raised peer killed a booting one; `M1B-E043` refuted that, and the wait was
+    not harmless — it parked each ready instance idle for as long as the rest of
+    the fleet took to boot, which is exactly the window the guest's Play uses to
+    install what it downloaded, over a game nothing was watching.
     """
     adb(instance, "shell", "cmd", "game", "set", "--fps", str(GUEST_FRAME_RATE_HZ), PACKAGE)
     confirm_frame_rate(instance)

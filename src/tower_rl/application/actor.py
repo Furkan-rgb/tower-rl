@@ -15,6 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from tower_rl.application.decision_time import (
+    OBSERVATION_DECODE,
+    POLICY_FORWARD,
+    DecisionTimeProfile,
+)
 from tower_rl.application.policies import Policy
 from tower_rl.application.replay import (
     PrioritizedSequenceReplay,
@@ -84,6 +89,11 @@ class Actor:
     config: ActorConfig = field(default_factory=ActorConfig)
     replay: PrioritizedSequenceReplay | None = None
     model_version: int = 0
+    #: Where this actor's decision time goes, accumulated on its own thread and
+    #: never shared with another actor. Most of a decision is spent inside the
+    #: environment, so a training run points the environment's profile at this
+    #: one (`TrainingRun.__post_init__`) and the two charge the same buckets.
+    profile: DecisionTimeProfile = field(default_factory=DecisionTimeProfile)
 
     def run_episode(self) -> EpisodeResult:
         """Play one episode to its classified end and emit its sequences."""
@@ -97,15 +107,17 @@ class Actor:
         termination = TerminationOutcome.OPERATOR_STOP
 
         for _ in range(self.config.max_decisions_per_episode):
-            features = encode_state(state)
+            with self.profile.span(OBSERVATION_DECODE):
+                features = encode_state(state)
             if not any(features.mask):
                 # No action is available, which means the run is already over.
                 termination = TerminationOutcome.GAME_OVER
                 break
             entering = self.policy.stored_recurrent_state(recurrent)
-            action_index, recurrent = self.policy.act(
-                features, recurrent, epsilon=self.config.epsilon
-            )
+            with self.profile.span(POLICY_FORWARD):
+                action_index, recurrent = self.policy.act(
+                    features, recurrent, epsilon=self.config.epsilon
+                )
             transition = self.environment.step(action_at(action_index))
             total_reward += transition.reward
             carried.append(entering)
@@ -159,7 +171,7 @@ class Actor:
         # one buffer while the learner samples it, and replay leaves that
         # discipline to its callers (see `PrioritizedSequenceReplay.lock`).
         # Uncontended for a single actor, which is the fleet of one.
-        with self.replay.lock:
+        with self.profile.acquiring(self.replay.lock):
             for start, window in self._windows(steps):
                 offered += 1
                 # Replay is the authority on admissibility; a window containing a

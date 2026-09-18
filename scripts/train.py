@@ -65,6 +65,12 @@ from run_episodes import (  # noqa: E402
 
 from tower_rl.application.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.application.comparison import interleave_schedule  # noqa: E402
+from tower_rl.application.decision_time import (  # noqa: E402
+    BUCKETS,
+    EMPTY_BREAKDOWN,
+    DecisionTimeBreakdown,
+    pooled,
+)
 from tower_rl.application.evaluator import (  # noqa: E402
     EvaluationReport,
     episode_record,
@@ -333,6 +339,76 @@ def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, object]:
     return asdict(episode_health(summaries))
 
 
+#: How often the decision-time decomposition is emitted, in seconds of the
+#: run's wall clock, checked at episode boundaries. Deliberately a time cadence
+#: rather than the collection window: a window is a hundred episodes and closes
+#: about once an hour, and the question this measurement exists to answer - is
+#: the host idle on its emulators or contended in Python - has to be readable
+#: from a few minutes of steady state, not from a whole run.
+DECISION_TIME_INTERVAL_SECONDS = 30.0
+
+
+def fleet_decision_time(report: TrainingProgressReport) -> dict[str, DecisionTimeBreakdown]:
+    """Each actor's cumulative time decomposition, as it last published it.
+
+    Read on an actor's thread while it holds the run's progress lock, which is
+    the same lock every actor publishes its own snapshot under.
+    """
+    return {
+        actor_id: progress.decision_time or EMPTY_BREAKDOWN
+        for actor_id, progress in report.actors.items()
+    }
+
+
+def decision_time_metrics(fleet: DecisionTimeBreakdown, actors: int) -> dict[str, float]:
+    """The decomposition as MLflow scalars, in milliseconds per decision.
+
+    `busy_fraction` is the headline: the share of an actor thread's wall time
+    that was executing Python at all. A fleet idle on its emulators sits low
+    and flat as actors are added; a fleet contending for the interpreter does
+    not.
+    """
+    per_decision = 1000.0 / fleet.decisions if fleet.decisions else 0.0
+    metrics = {
+        "decision_wall_ms": round(fleet.elapsed_seconds * per_decision, 3),
+        "decision_cpu_ms": round(fleet.cpu_seconds * per_decision, 3),
+        "decision_busy_fraction": round(fleet.busy_fraction, 4),
+        "decision_accounting_error_ms": round(fleet.accounting_error_seconds * 1000, 6),
+        "decisions_per_hour_per_actor": (
+            round(fleet.decisions_per_hour, 1) if actors else 0.0
+        ),
+    }
+    for name in BUCKETS:
+        bucket = fleet.buckets[name]
+        metrics[f"decision_wall_ms_{name}"] = round(bucket.wall_seconds * per_decision, 3)
+        metrics[f"decision_cpu_ms_{name}"] = round(bucket.cpu_seconds * per_decision, 3)
+    return metrics
+
+
+def decision_time_line(name: str, fleet: DecisionTimeBreakdown, actors: int) -> str:
+    per_decision = 1000.0 / fleet.decisions if fleet.decisions else 0.0
+    parts = " ".join(
+        f"{label} {fleet.buckets[key].wall_seconds * per_decision:.1f}"
+        f"/{fleet.buckets[key].cpu_seconds * per_decision:.1f}"
+        for key, label in (
+            ("bridge_round_trip", "bridge"),
+            ("observation_decode", "observe"),
+            ("policy_forward", "policy"),
+            ("learner_step", "learn"),
+            ("blocked", "blocked"),
+            ("residual", "residual"),
+        )
+    )
+    return (
+        f"[{name}] decision time over {fleet.decisions} decisions on {actors} actors: "
+        f"total {fleet.elapsed_seconds * per_decision:.1f}ms wall "
+        f"{fleet.cpu_seconds * per_decision:.1f}ms cpu, "
+        f"busy {fleet.busy_fraction:.1%}, "
+        f"{fleet.decisions_per_hour:.0f} decisions/hour per actor; "
+        f"wall/cpu ms per decision: {parts}"
+    )
+
+
 def per_hour(count: int, wall_seconds: float) -> float:
     """A rate over the fleet's wall clock, which is the device time it cost.
 
@@ -367,6 +443,14 @@ def actor_summary(
         "withdrawn": progress.withdrawn,
         "episodes_per_hour": per_hour(progress.episodes, report.wall_seconds),
         "decisions_per_hour": per_hour(progress.decisions, report.wall_seconds),
+        # This actor's own wall time, decomposed. `decisions_per_hour` above is
+        # taken over the fleet's clock; the one inside this record is taken over
+        # the actor's own collecting time, which is what a per-actor rate means.
+        "decision_time": (
+            progress.decision_time.as_record()
+            if progress.decision_time is not None
+            else EMPTY_BREAKDOWN.as_record()
+        ),
     }
 
 
@@ -401,6 +485,14 @@ class Arm:
     evaluation: Callable[[bool], EvaluationReport] | None = None
     #: The point that evaluation produced, which is the headline number.
     final_point: LearningCurvePoint | None = None
+    #: The decision-time decomposition, one record per emission interval. Each
+    #: record is a delta, so it describes that interval alone rather than the
+    #: run's average, which is what makes a short measurement readable.
+    decision_time_curve: list[dict[str, object]] = field(default_factory=list)
+    #: Each actor's cumulative decomposition at the last emission, which the
+    #: next one is measured against.
+    decision_time_baseline: dict[str, DecisionTimeBreakdown] = field(default_factory=dict)
+    decision_time_emitted: float = 0.0
 
     @property
     def checkpoint_path(self) -> Path:
@@ -501,8 +593,55 @@ class Arm:
             self.run.log_metrics(window_metrics(window), decisions=window.decisions_at_end)
             print(f"[{self.name}] collection: {window_line(window)}", flush=True)
 
+    def record_decision_time(self, *, final: bool = False) -> None:
+        """Emit where the fleet's decision time went since the last emission.
+
+        Called per episode on the collecting thread, under the run's progress
+        lock, and cheap: it reads snapshots the actors have already published
+        and does no timing of its own. `final` flushes the tail so a short run
+        still reports the interval it ended in.
+        """
+        now = time.monotonic()
+        if not final and now - self.decision_time_emitted < DECISION_TIME_INTERVAL_SECONDS:
+            return
+        report = self.training.report
+        current = fleet_decision_time(report)
+        interval = {
+            actor_id: breakdown.since(
+                self.decision_time_baseline.get(actor_id, EMPTY_BREAKDOWN)
+            )
+            for actor_id, breakdown in current.items()
+        }
+        fleet = pooled(list(interval.values()))
+        if fleet.decisions < 1:
+            # Nothing was collected in this interval; an empty decomposition
+            # would divide by zero and say nothing.
+            return
+        self.decision_time_baseline = current
+        self.decision_time_emitted = now
+        self.decision_time_curve.append(
+            {
+                "index": len(self.decision_time_curve),
+                "decisions_at_end": report.decisions,
+                "episodes_at_end": report.episodes,
+                "collection_windows_closed": len(self.collection_curve),
+                "actors": {
+                    actor_id: breakdown.as_record() for actor_id, breakdown in interval.items()
+                },
+                "fleet": fleet.as_record(),
+            }
+        )
+        self.run.log_metrics(
+            decision_time_metrics(fleet, len(interval)), decisions=report.decisions
+        )
+        print(decision_time_line(self.name, fleet, len(interval)), flush=True)
+
     def summary(self) -> dict[str, object]:
         report = self.training.report
+        # Flush the interval the run ended in, so a short measurement is not
+        # lost for having finished between emissions.
+        self.record_decision_time(final=True)
+        cumulative = fleet_decision_time(report)
         distribution = action_distribution(report.collected)
         # Pooled once over every collected episode and reused for the "health"
         # key, the legacy by-reason mapping, and the MLflow metrics below: one
@@ -548,6 +687,17 @@ class Arm:
                 1 for progress in report.actors.values() if progress.withdrawn is not None
             ),
             "health": asdict(health),
+            # Where the fleet's wall time went: one record per emission
+            # interval, and the run's totals per actor and pooled.
+            "decision_time_curve": self.decision_time_curve,
+            "decision_time": {
+                "interval_seconds": DECISION_TIME_INTERVAL_SECONDS,
+                "actors": {
+                    actor_id: breakdown.as_record()
+                    for actor_id, breakdown in cumulative.items()
+                },
+                "fleet": pooled(list(cumulative.values())).as_record(),
+            },
             "episodes_per_hour": per_hour(report.episodes, report.wall_seconds),
             "decisions_per_hour": per_hour(report.decisions, report.wall_seconds),
             # Kept for compatibility with the report's earlier shape; identical
@@ -778,6 +928,7 @@ def build_arm(
 
     def on_episode(report: TrainingProgressReport) -> None:
         arm.record_collection_windows()
+        arm.record_decision_time()
         print(
             f"[{name}] episode {report.episodes} decisions {report.decisions}/"
             f"{config.budget_decisions} steps {report.optimisation_steps}",

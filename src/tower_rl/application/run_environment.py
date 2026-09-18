@@ -12,6 +12,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from tower_rl.application.decision_time import (
+    BRIDGE_ROUND_TRIP,
+    OBSERVATION_DECODE,
+    DecisionTimeProfile,
+)
 from tower_rl.domain.episode import (
     ActionOutcome,
     DecisionEvent,
@@ -193,6 +198,10 @@ class InstrumentedRunEnvironment:
     port: RunPort
     builder: RunStateBuilder
     cadence: CadenceConfig = field(default_factory=CadenceConfig)
+    #: Where this instance's decision time goes. One profile per instance,
+    #: mutated only by the actor thread that drives it (see
+    #: `application/decision_time.py`); a run publishes snapshots of it.
+    profile: DecisionTimeProfile = field(default_factory=DecisionTimeProfile)
     _state: RunState | None = field(default=None, init=False)
     _episode_id: str = field(default="", init=False)
     _tally: _EpisodeTally = field(default_factory=_EpisodeTally, init=False)
@@ -202,7 +211,8 @@ class InstrumentedRunEnvironment:
 
     def reset(self) -> RunState:
         """Begin an episode and return its first valid active state."""
-        self.port.begin_episode()
+        with self.profile.span(BRIDGE_ROUND_TRIP):
+            self.port.begin_episode()
         state = self._read_state()
         if state is None or state.lifecycle != "active":
             raise RunPortError("the instance did not reach an active run")
@@ -269,9 +279,12 @@ class InstrumentedRunEnvironment:
         try:
             if not action.is_wait:
                 assert action.family is not None and action.slot is not None
-                purchase_result = self.port.buy_upgrade(
-                    action.family.value, action.slot, expected_sequence=state.source_sequence
-                )
+                with self.profile.span(BRIDGE_ROUND_TRIP):
+                    purchase_result = self.port.buy_upgrade(
+                        action.family.value,
+                        action.slot,
+                        expected_sequence=state.source_sequence,
+                    )
                 outcome = _purchase_outcome(purchase_result.outcome)
                 if outcome is ActionOutcome.EXECUTED:
                     self._tally.purchases += 1
@@ -339,12 +352,13 @@ class InstrumentedRunEnvironment:
             )
 
         budget = self.cadence.max_quiet_game_ms
-        result = self.port.advance_until_event(
-            expected_sequence=state.source_sequence,
-            budget_game_ms=budget,
-            frame_game_ms=self.cadence.frame_game_ms,
-            health_change_fraction=self.cadence.health_change_fraction,
-        )
+        with self.profile.span(BRIDGE_ROUND_TRIP):
+            result = self.port.advance_until_event(
+                expected_sequence=state.source_sequence,
+                budget_game_ms=budget,
+                frame_game_ms=self.cadence.frame_game_ms,
+                health_change_fraction=self.cadence.health_change_fraction,
+            )
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
         self._tally.round_ms += result.round_ms
@@ -459,12 +473,15 @@ class InstrumentedRunEnvironment:
         return tuple(events)
 
     def _read_state(self) -> RunState | None:
-        return self._build_state(self.port.read_state())
+        with self.profile.span(BRIDGE_ROUND_TRIP):
+            reading = self.port.read_state()
+        return self._build_state(reading)
 
     def _build_state(self, reading: ExactRunReadingLike | None) -> RunState | None:
         if reading is None:
             return None
-        state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
+        with self.profile.span(OBSERVATION_DECODE):
+            state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
         if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
             return self._settle_death_boundary(state)
         return state
@@ -482,12 +499,13 @@ class InstrumentedRunEnvironment:
         moved on is a real failure, and it keeps its reasons so the episode is
         classified invalid rather than quietly accepted.
         """
-        result = self.port.advance_until_event(
-            expected_sequence=state.source_sequence,
-            budget_game_ms=max(MIN_ADVANCE_GAME_MS, int(self.cadence.frame_game_ms)),
-            frame_game_ms=self.cadence.frame_game_ms,
-            health_change_fraction=self.cadence.health_change_fraction,
-        )
+        with self.profile.span(BRIDGE_ROUND_TRIP):
+            result = self.port.advance_until_event(
+                expected_sequence=state.source_sequence,
+                budget_game_ms=max(MIN_ADVANCE_GAME_MS, int(self.cadence.frame_game_ms)),
+                frame_game_ms=self.cadence.frame_game_ms,
+                health_change_fraction=self.cadence.health_change_fraction,
+            )
         # This frame really was stepped, so it is charged to the episode like any
         # other: the speed-up is measured from what the game clock actually cost.
         self._tally.frames += result.frames
@@ -501,7 +519,8 @@ class InstrumentedRunEnvironment:
                 _advance_failure(result.outcome),
                 f"the death boundary did not settle: {result.reason}",
             )
-        settled = self.builder.build(result.state, captured_at_monotonic=time.monotonic())
+        with self.profile.span(OBSERVATION_DECODE):
+            settled = self.builder.build(result.state, captured_at_monotonic=time.monotonic())
         if settled.valid:
             self._tally.recovered_transients += 1
         return settled

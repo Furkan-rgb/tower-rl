@@ -32,6 +32,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from tower_rl.application.actor import Actor, ActorConfig, EpisodeResult
+from tower_rl.application.decision_time import (
+    LEARNER_STEP,
+    DecisionTimeBreakdown,
+    DecisionTimeProfile,
+)
 from tower_rl.application.evaluator import EvaluationReport
 from tower_rl.application.replay import PrioritizedSequenceReplay
 from tower_rl.application.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
@@ -413,6 +418,11 @@ class ActorProgress:
     #: Failures since this actor's last delivered episode, which is what the
     #: per-actor limit is measured against.
     consecutive_failures: int = 0
+    #: Where this actor's wall time went, cumulative over the run and published
+    #: by the actor itself at its own episode boundaries. None until it has
+    #: finished an episode. See `application/decision_time.py`: this is what
+    #: separates an actor idle on its emulator from one contending in Python.
+    decision_time: DecisionTimeBreakdown | None = None
     #: Why this actor stopped collecting, or None while it is still collecting.
     #: A withdrawn actor is never restarted: its instance failed every episode
     #: the limit allows, and the fleet carries on without it.
@@ -577,6 +587,11 @@ class TrainingRun:
             )
             self.acting[actor_id] = copy
             actor.policy = copy
+            # One time-accounting profile per actor, shared with the instance it
+            # drives so a decision's environment time and its policy time land
+            # in the same buckets. Wired here like the acting copy above, for
+            # the same reason: the run owns what an actor is attached to.
+            actor.environment.profile = actor.profile
             self._since_sync[actor_id] = self.config.parameter_sync_episodes
             self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
@@ -650,8 +665,27 @@ class TrainingRun:
         actor_id = actor.config.actor_id
         progress = self.report.actors[actor_id]
         acting = self.acting[actor_id]
+        profile = actor.profile
+        with profile.collecting():
+            self._collect_until(actor, progress, acting, profile, target)
+
+    def _collect_until(
+        self,
+        actor: Actor,
+        progress: ActorProgress,
+        acting: Backbone,
+        profile: DecisionTimeProfile,
+        target: int,
+    ) -> None:
+        """The collection loop itself, with its time charged to `profile`.
+
+        Split out only so the total the buckets decompose is the whole of this
+        loop: the wall time of this actor's thread, from its first lock to its
+        last episode, and nothing else.
+        """
+        actor_id = actor.config.actor_id
         while True:
-            with self._lock:
+            with profile.acquiring(self._lock):
                 if self.report.decisions >= target:
                     return
                 epsilon = self.config.epsilon(self.report.decisions)
@@ -662,7 +696,8 @@ class TrainingRun:
             # the only order locks are ever taken in is progress, then replay,
             # then learner.
             if self._since_sync[actor_id] >= self.config.parameter_sync_episodes:
-                self.learner.publish_to(acting)
+                with profile.span(LEARNER_STEP):
+                    self.learner.publish_to(acting)
                 self._since_sync[actor_id] = 0
             # Exploration is set per episode rather than per step, so a stored
             # sequence has one epsilon and its provenance stays meaningful.
@@ -679,8 +714,9 @@ class TrainingRun:
                 # outcome, not the end of the run: an episode classified
                 # invalid by the environment already continues, and an episode
                 # the port refused outright must not be treated more harshly.
-                with self._lock:
+                with profile.acquiring(self._lock):
                     self._record_failure(progress, failure)
+                    progress.decision_time = profile.snapshot()
                     withdrawn = progress.withdrawn is not None
                     if withdrawn:
                         if self.on_withdrawal is not None:
@@ -690,9 +726,13 @@ class TrainingRun:
                 if withdrawn:
                     raise
                 continue
-            with self._lock:
+            with profile.acquiring(self._lock):
                 self._record_episode(progress, result)
-                self._learn(result.summary.decisions)
+                with profile.span(LEARNER_STEP):
+                    self._learn(result.summary.decisions)
+                # Published before the hooks, so a hook reading the fleet's
+                # decomposition sees this episode's learning in it.
+                progress.decision_time = profile.snapshot()
                 self._after_episode()
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:

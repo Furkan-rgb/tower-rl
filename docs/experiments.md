@@ -29,10 +29,11 @@ records to `state/records/` instead of `/tmp`.
 ## M2-E007 — Milestone 2, run 2 under `M2-P002`: the baselines, and the kill threshold they set
 
 **Date:** 2026-09-19
-**Status:** **in progress — stage 1 of 5 complete.** The random and scripted
-baselines are collected under the choice-point cadence and `observation-v2`;
-training, evaluation, recordings and the verdict are not. Nothing here is a
-verdict on the model. Board `#46`; protocol `M2-P002`, which is authoritative
+**Status:** **in progress — stage 1 of 5 complete; stage 2 (training) run
+for seed 0 and stopped at the kill criterion, seed 1 not run.** The random and
+scripted baselines are collected under the choice-point cadence and
+`observation-v2`; evaluation, recordings and the verdict are not. Nothing here
+is a verdict on the model. Board `#46`; protocol `M2-P002`, which is authoritative
 and is not restated.
 
 Code at `66082dd`, bridge `662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b`
@@ -136,6 +137,83 @@ no attached device and no `qemu` process on the host.
 **Limits of this stage.** Two arms, one image state, one frame rate, one account
 progression, one session. These are baselines, not a comparison against any
 model; the arms the verdict needs do not exist yet.
+
+### Stage 2 — seed 0: stopped at the kill criterion
+
+**The reported outcome is `M2-P002`'s "stopped at the kill criterion".** The
+first from-scratch `stacked-dqn` of run 2 was launched on the option-B training
+line (7 actors, host renderer, 120 Hz, choice points, ε ladder, anneal 2,500
+decisions, budget 360,000 game-s, blocks of 4,000, checkpoints every 60,000,
+early stop 2 periods / 0.2 waves, `--seed 0`) and stopped at the pre-registered
+check after **24,872 of the 360,000 game-seconds**, 6.9% of the budget. Code at
+`0feeabe`, bridge `662cba09…8902b`, MLflow run
+`ef2c983ad9bf43c9b25813e9584aff93`, run directory
+`state/runs/session-20260919-153857/stacked-dqn-20260919-153857-a60334`.
+
+| | |
+| --- | --- |
+| wall time | **0.87 h** total (15:33:50 launch → teardown complete); collection 15:38:59–16:14:25, **0.59 h** |
+| game seconds | **24,872** / 360,000 (fleet throughput ≈42,100 game-s an hour) |
+| decisions | **5,662** (26.9 an episode) |
+| optimisation steps | 558, first step at episode 94 (replay warm-up) |
+| episodes valid / attempted | **210 / 210** while the run was collecting |
+| numbered checkpoints | **none** — the first crossing is at 60,000 game-s |
+
+The 14 further episodes the log shows after the stop are the bridges going away
+under the interrupt (`BridgeDisconnectedError`, three actors withdrawn); they
+are an artifact of the teardown, not of the run, and nothing is read from them.
+
+**The kill check, on the two conditions this entry fixed before training
+started.** The window read is the first 100-episode collection window that lies
+entirely **after** the ε anneal (the anneal completes at 2,500 fleet decisions,
+around episode 68), spanning decisions 3,537–5,186, with **64 near-greedy
+episodes** in it from actors 3–6 (ε 0.0162, 0.0056, 0.0019, 0.00066 — the four
+rungs at ε ≤ 0.02, exactly as pre-registered).
+
+| window | decisions | near-greedy episodes | `near_greedy_mean_final_wave` | `wait_fraction` | mean final wave (all actors) |
+| --- | --- | --- | --- | --- | --- |
+| 0 (spans the anneal) | 3,537 | 64 | 3.672 | 0.664 | 3.95 ± 0.25 |
+| **1 (post-anneal, the check)** | 5,186 | 64 | **3.188** | **0.157** | 3.57 ± 0.22 |
+
+- **Condition 1 fails:** 3.188 is not > **5.195** (the random baseline's 5.495 −
+  0.3). It misses by **2.01 waves**, and it is *below* the random arm's mean by
+  2.31 — at the point its exploration had annealed the policy was worse than
+  chance, which is the exact failure the condition exists to catch. The
+  anneal-spanning window before it, 3.672, fails the same way.
+- **Condition 2 passes:** the wait share is 0.157, far under 0.9, and it fell
+  from 0.664 to 0.157 across the anneal — the policy is buying, not refusing, so
+  this is not the degenerate-WAIT failure mode.
+
+Per `M2-P002` the run was stopped rather than finished, and **is not diagnosed
+here**. What the stage did and did not observe, and nothing more: the learner
+was alive at the stop (weighted loss 0.460, unweighted mean |TD error| 0.788,
+gradient norm 6.17, `learner_value_fit_correlation` 0.557, all finite and all
+moving), the device side was clean (**zero** `bridge_event_divergence`, zero
+invalid episodes, zero `stale_or_duplicate`, one `advances_cut_short` in window
+0, `round_budgeted_ratio` 1.06), and the fleet ran at 120 Hz offline on all
+seven instances. So the stop is not a device or schema failure by any of the
+three triggers `M2-P002` names — it is the policy's own number.
+
+The only weights this stage leaves are the rolling
+`checkpoints/latest.pt`, sha256
+`09d48343ad7406abf08ac50593b902d5dd78b343c62c8b4611dbad0fa94c8700`; no numbered
+checkpoint exists, so stage 2 produces **no arm for evaluation and no
+recordings** for this seed.
+
+**Pre-registration amendment, before this stage.** `M2-P002` carries a dated
+amendment written after the baselines and before any model data: at the sd
+stage 1 actually measured, `required_episodes(2.3, 0.5, power=0.8)` = 333 valid
+episodes an arm (`--episodes 48` on 7 instances) becomes the evaluation set
+size. No model number had been produced when it was written, and the verdict
+rule is untouched.
+
+**Cleanup, seed 0.** On every one of the seven live serials, before its emulator
+was killed: `libunity_sha256`
+`ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, `game_frame_rate_override: reset`. After the run:
+no attached device and no `qemu` process on the host.
 
 ## M2-P002 — Milestone 2, run 2: pre-registered protocol (written before any run)
 

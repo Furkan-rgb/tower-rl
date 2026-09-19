@@ -551,7 +551,10 @@ Document exact schemas in `docs/environment-contract.md` and encode them in type
 
 ### 7.1 Observation
 
-Initial structured observation:
+Initial structured observation — the design intent this section was written
+with, not the schema that ships: the field-by-field table of what the policy
+actually sees is the `Observation` section of
+[`docs/environment-contract.md`](environment-contract.md).
 
 ```text
 progress

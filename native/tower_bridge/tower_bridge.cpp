@@ -519,6 +519,268 @@ bool ReadUpgradeEvidence(const Il2CppApi& api, const MainFields& fields, const c
          evidence->tier_unlocked <= 1 && evidence->maxed <= 1;
 }
 
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+// Value sampling for a named list of `Main` fields, so a candidate observation
+// field is judged by what it actually reads on the device rather than by its
+// name. Which fields are sampled is a device-side input, not a build-time one:
+// the bridge reads a whitespace-separated list of names from
+// `kFieldSampleListPath` at runtime initialization, so trying another list
+// costs a push rather than a rebuild. The file is pushed exactly the way the
+// deploy script pushes the overlay - `/data/local/tmp` relabelled
+// `apk_data_file` - which is what makes it readable from the game's process.
+//
+// Every read is taken at the width the field's own declared IL2CPP type names.
+// A `Single` read as a double returns plausible-looking garbage - that is how
+// `gameplayTimeThisRound` read 0.0 for a whole run (M1B-E017) - so a field whose
+// declared type is not one this sampler handles is reported by type name and
+// skipped, never read at a guessed width.
+constexpr char kFieldSampleListPath[] = "/data/local/tmp/tower_bridge_fields.txt";
+constexpr size_t kMaxSampledFields = 128;
+// One upgrade family's slot width, so a per-slot array is sampled across
+// exactly the slots the host's action schema addresses.
+constexpr size_t kSampleArrayElements = kMaskSlotsPerFamily;
+// Enough of a string to recognize which upgrade a slot is, without turning a
+// per-snapshot line into a paragraph.
+constexpr size_t kMaxSampledStringChars = 32;
+
+enum class SampleKind {
+  kInt32,
+  kInt64,
+  kSingle,
+  kDouble,
+  kBoolean,
+  kInt32Array,
+  kDoubleArray,
+  kStringArray,
+  kUnsupported,
+};
+
+struct SampledField {
+  std::string name;
+  std::string type_name;
+  FieldInfo* field = nullptr;
+  SampleKind kind = SampleKind::kUnsupported;
+};
+
+std::vector<SampledField> g_sampled_fields;
+
+struct Il2CppStringApi {
+  uint16_t* (*chars)(void*) = nullptr;
+  int32_t (*length)(void*) = nullptr;
+};
+
+Il2CppStringApi g_string_api;
+
+SampleKind KindFromTypeName(const char* type_name) {
+  if (type_name == nullptr) return SampleKind::kUnsupported;
+  if (std::strcmp(type_name, "System.Int32") == 0) return SampleKind::kInt32;
+  if (std::strcmp(type_name, "System.Int64") == 0) return SampleKind::kInt64;
+  if (std::strcmp(type_name, "System.Single") == 0) return SampleKind::kSingle;
+  if (std::strcmp(type_name, "System.Double") == 0) return SampleKind::kDouble;
+  if (std::strcmp(type_name, "System.Boolean") == 0) return SampleKind::kBoolean;
+  if (std::strcmp(type_name, "System.Int32[]") == 0) return SampleKind::kInt32Array;
+  if (std::strcmp(type_name, "System.Double[]") == 0) return SampleKind::kDoubleArray;
+  if (std::strcmp(type_name, "System.String[]") == 0) return SampleKind::kStringArray;
+  return SampleKind::kUnsupported;
+}
+
+// UTF-16 to UTF-8, surrogate pairs included, truncated to `max_chars` code
+// units. A control character would break the one-line-per-field format, so it
+// is replaced rather than emitted.
+std::string Utf8FromUtf16(const uint16_t* chars, int32_t length, size_t max_chars) {
+  std::string out;
+  if (chars == nullptr || length <= 0) return out;
+  const size_t count = static_cast<size_t>(length);
+  const size_t limit = count < max_chars ? count : max_chars;
+  for (size_t index = 0; index < limit; ++index) {
+    uint32_t code = chars[index];
+    if (code >= 0xD800 && code <= 0xDBFF && index + 1 < count) {
+      const uint32_t low = chars[index + 1];
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+        ++index;
+      }
+    }
+    if (code < 0x20 || code == 0x7F) {
+      out.push_back('.');
+    } else if (code < 0x80) {
+      out.push_back(static_cast<char>(code));
+    } else if (code < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else if (code < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    }
+  }
+  if (count > limit) out.append("...");
+  return out;
+}
+
+// Resolve the declared type of each named field once, so the per-snapshot path
+// only reads values. A name the class does not carry, and a type this sampler
+// does not handle, are both reported here and then never touched again.
+// Returns whether the list file was there to read: the list is pushed to a
+// running device, so the first snapshots of a session can precede it, and the
+// caller retries until it lands rather than binding the sampler to the instant
+// IL2CPP resolves.
+bool LoadSampledFields(const Il2CppApi& api, Il2CppClass* main) {
+  g_sampled_fields.clear();
+  if (main == nullptr) return false;
+  FILE* list = std::fopen(kFieldSampleListPath, "r");
+  if (list == nullptr) return false;
+  void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+  void* (*field_get_type)(FieldInfo*) = nullptr;
+  char* (*type_get_name)(void*) = nullptr;
+  void (*free_string)(void*) = nullptr;
+  const bool types_readable = il2cpp != nullptr &&
+                              Resolve(il2cpp, "il2cpp_field_get_type", &field_get_type) &&
+                              Resolve(il2cpp, "il2cpp_type_get_name", &type_get_name) &&
+                              Resolve(il2cpp, "il2cpp_free", &free_string);
+  if (il2cpp != nullptr) {
+    Resolve(il2cpp, "il2cpp_string_chars", &g_string_api.chars);
+    Resolve(il2cpp, "il2cpp_string_length", &g_string_api.length);
+  }
+  char name[128];
+  while (g_sampled_fields.size() < kMaxSampledFields && std::fscanf(list, "%127s", name) == 1) {
+    SampledField sampled;
+    sampled.name = name;
+    sampled.field = api.class_get_field_from_name(main, name);
+    if (sampled.field == nullptr) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "fieldsample %s absent", name);
+      continue;
+    }
+    void* type = types_readable ? field_get_type(sampled.field) : nullptr;
+    char* type_name = type == nullptr ? nullptr : type_get_name(type);
+    sampled.type_name = type_name == nullptr ? "type_unavailable" : type_name;
+    sampled.kind = KindFromTypeName(type_name);
+    if (type_name != nullptr) free_string(type_name);
+    if (sampled.kind == SampleKind::kUnsupported) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "fieldsample %s unsupported type %s", name,
+                          sampled.type_name.c_str());
+      continue;
+    }
+    if (sampled.kind == SampleKind::kStringArray &&
+        (g_string_api.chars == nullptr || g_string_api.length == nullptr)) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "fieldsample %s skipped: no string exports",
+                          name);
+      continue;
+    }
+    g_sampled_fields.push_back(sampled);
+  }
+  std::fclose(list);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "fieldsample loaded %zu fields from %s",
+                      g_sampled_fields.size(), kFieldSampleListPath);
+  return true;
+}
+
+std::string SampleArray(const Il2CppApi& api, Il2CppArray* array, SampleKind kind) {
+  if (array == nullptr) return "null";
+  const size_t length = api.array_length(array);
+  char header[32];
+  std::snprintf(header, sizeof(header), "len=%zu[", length);
+  std::string out = header;
+  const size_t shown = length < kSampleArrayElements ? length : kSampleArrayElements;
+  for (size_t index = 0; index < shown; ++index) {
+    if (index > 0) out.push_back(',');
+    char formatted[64];
+    if (kind == SampleKind::kInt32Array) {
+      int32_t value = 0;
+      if (!ReadPrimitiveArray(api, array, index, &value)) return out + "unreadable]";
+      std::snprintf(formatted, sizeof(formatted), "%d", value);
+      out.append(formatted);
+    } else if (kind == SampleKind::kDoubleArray) {
+      double value = 0.0;
+      if (!ReadPrimitiveArray(api, array, index, &value)) return out + "unreadable]";
+      std::snprintf(formatted, sizeof(formatted), "%.10g", value);
+      out.append(formatted);
+    } else {
+      void* element = nullptr;
+      if (!ReadPrimitiveArray(api, array, index, &element)) return out + "unreadable]";
+      if (element == nullptr) {
+        out.append("null");
+        continue;
+      }
+      out.push_back('"');
+      out.append(Utf8FromUtf16(g_string_api.chars(element), g_string_api.length(element),
+                               kMaxSampledStringChars));
+      out.push_back('"');
+    }
+  }
+  out.push_back(']');
+  return out;
+}
+
+// One line per sampled field per decision snapshot, `name=type:value`, so the
+// episode is a table once the log is filtered on the prefix.
+void LogFieldSamples(const Il2CppApi& api, const MainFields& fields, Il2CppClass* main_class,
+                     uint64_t sequence) {
+  static bool list_loaded = false;
+  if (!list_loaded) {
+    if (!LoadSampledFields(api, main_class)) return;
+    list_loaded = true;
+  }
+  if (g_sampled_fields.empty()) return;
+  Il2CppObject* main = nullptr;
+  api.field_static_get_value(fields.instance, &main);
+  if (!NativeHandleIsAlive(api, main)) return;
+  for (const SampledField& sampled : g_sampled_fields) {
+    char value[1024];
+    switch (sampled.kind) {
+      case SampleKind::kInt32: {
+        int32_t read = 0;
+        api.field_get_value(main, sampled.field, &read);
+        std::snprintf(value, sizeof(value), "%d", read);
+        break;
+      }
+      case SampleKind::kInt64: {
+        int64_t read = 0;
+        api.field_get_value(main, sampled.field, &read);
+        std::snprintf(value, sizeof(value), "%lld", static_cast<long long>(read));
+        break;
+      }
+      case SampleKind::kSingle: {
+        float read = 0.0F;
+        api.field_get_value(main, sampled.field, &read);
+        std::snprintf(value, sizeof(value), "%.6g", static_cast<double>(read));
+        break;
+      }
+      case SampleKind::kDouble: {
+        double read = 0.0;
+        api.field_get_value(main, sampled.field, &read);
+        std::snprintf(value, sizeof(value), "%.10g", read);
+        break;
+      }
+      case SampleKind::kBoolean: {
+        uint8_t read = 0;
+        api.field_get_value(main, sampled.field, &read);
+        std::snprintf(value, sizeof(value), "%u", read);
+        break;
+      }
+      case SampleKind::kInt32Array:
+      case SampleKind::kDoubleArray:
+      case SampleKind::kStringArray: {
+        Il2CppArray* array = nullptr;
+        api.field_get_value(main, sampled.field, &array);
+        std::snprintf(value, sizeof(value), "%s", SampleArray(api, array, sampled.kind).c_str());
+        break;
+      }
+      case SampleKind::kUnsupported:
+        continue;
+    }
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "fieldsample seq=%llu %s=%s:%s",
+                        static_cast<unsigned long long>(sequence), sampled.name.c_str(),
+                        sampled.type_name.c_str(), value);
+  }
+}
+#endif
+
 bool AppendFamily(const Il2CppApi& api, Il2CppObject* main, const FamilyFields& fields,
                   std::string* json) {
   Il2CppArray *costs = nullptr, *levels = nullptr, *unlocked = nullptr, *tier_unlocked = nullptr,
@@ -988,6 +1250,7 @@ bool SendState(int client, const Il2CppApi& api, const MainFields& fields, uint6
     case ObservationResult::kOk:
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
       LogClockCandidates(api, g_diagnostic_main);
+      LogFieldSamples(api, fields, g_diagnostic_main, sequence);
 #endif
       return SendFrame(client, payload);
     case ObservationResult::kNoRun: {

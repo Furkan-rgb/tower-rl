@@ -212,7 +212,11 @@ would never reach - and reports, because the near-greedy actors at the bottom
 still produce a collection curve that reads as the policy's own performance.
 `CollectionWindow` carries that split: the pooled window, each actor's own mean
 final wave, and a mean pooled over the near-greedy actors alone, which under a
-uniform schedule is every actor and therefore the pooled series itself.
+uniform schedule is every actor and therefore the pooled series itself. In the
+tracking store those are `collection_window_near_greedy_mean_final_wave` for the
+episode-cut window, and `checkpoint_period_near_greedy_mean_final_wave` with
+`checkpoint_period_best_near_greedy_mean_final_wave` for the game-time-cut
+periods early stopping is judged on.
 
 **Stopping early.** A run may end before its budget is spent. The interval
 between two numbered-checkpoint crossings

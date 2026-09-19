@@ -114,5 +114,8 @@ carry exactly the declared set is refused by the host.
 - The wire grows by about 1.5 KB per state message, well inside the frame bound.
 - Value verification is a device stage, not a unit test. The panel shows every
   live reading in the game's own unit precisely so it can be held beside the
-  HUD; until that comparison has been made, the schema is implemented but not
-  confirmed against the game.
+  HUD.
+
+- **Confirmed on device, `M2-E006` (2026-09-19):** the schema's values were held
+  beside the game — zero out-of-range readings, zero invalid episodes, `#39`'s
+  capture reproduced field for field.

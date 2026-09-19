@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-09-15
 - **Supersedes:** ADR 0003 for training throughput only
+- **Superseded in part, 2026-09-19:** headed watch mode is `scripts/spectate.py`
+  on the instrumented profile, not the official one (`#12`, `M2-E003`)
 
 ## Context
 

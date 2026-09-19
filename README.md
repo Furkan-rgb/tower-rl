@@ -4,7 +4,7 @@ Tower-RL is a local reinforcement-learning project that trains an agent to play 
 
 The target system has two primary modes:
 
-- **Train:** multiple headless Android actors collect real gameplay for a central recurrent Q-learning agent.
+- **Train:** multiple headless Android actors collect real gameplay for one central agent — a single backbone, `stacked-dqn`.
 - **Watch:** the best evaluated model controls one visible Android instance with learning and exploration disabled.
 
 ## Project status
@@ -37,6 +37,8 @@ Future orchestrators and contributors must read these documents completely befor
 3. [docs/architecture.md](docs/architecture.md) — concise component, interaction, runtime, and dependency view.
 4. [docs/experiments.md](docs/experiments.md) — feasibility evidence, benchmarks, and failed experiments.
 5. [docs/workstation-handoff.md](docs/workstation-handoff.md) — machine-local snapshot location and workstation reprovisioning procedure.
+6. [docs/setup.md](docs/setup.md) — host, AVD and emulator setup, the `state/` directory every artifact is written under, and how the native bridge is rebuilt and deployed.
+7. [docs/environment-contract.md](docs/environment-contract.md) — the observation, action and transition contract the policy is written against.
 
 The task defines **what must be achieved**. The solution defines **how it will be achieved**. A technical discovery may justify updating the solution; it must not silently weaken the task.
 

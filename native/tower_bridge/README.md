@@ -1,7 +1,9 @@
 # Tower bridge (M1B instrumented-training adapter)
 
 This is original ARM64 source for the private `instrumented-training` profile.
-It is not used by official evaluation or watch mode. It dynamically discovers the
+It is not used by official evaluation. Watch mode (`scripts/spectate.py`) runs
+on the instrumented clone with this bridge deployed, at 60 Hz through
+`-gpu lavapipe`. It dynamically discovers the
 unnamespaced IL2CPP `Main` class and allowlisted field names, then exposes exact
 observations and a bounded semantic command path on device loopback TCP port
 `47651`. No game bytes, offsets, assets, signatures, dumps, or runtime outputs
@@ -275,7 +277,3 @@ and the patched `libunity-bridge.so` whose only change is an added `DT_NEEDED`
 entry for the bridge, and defaults to the installed bridge at
 `state/bridge/current`. Do not commit the resulting `.so`, extracted libraries,
 overlays, APKs, device data, or logs.
-
-A live deployment still needs the remaining M1B gates: family cost coverage,
-normal-speed parity against the visible controller, pixel-watchdog and
-quarantine behavior, and the speed equivalence gate.

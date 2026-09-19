@@ -10,8 +10,12 @@ Before planning, editing code, or delegating work, read these files completely:
 3. `docs/solution.md`
 4. `docs/architecture.md` — the packages that exist, what each owns, and the
    dependency rule between them
-5. Any relevant ADRs under `docs/adr/`
-6. The current implementation and tests for the affected area
+5. `docs/environment-contract.md` — the observation, action and transition
+   contract the policy is written against
+6. `docs/setup.md` — host and AVD setup, the `state/` directory every artifact
+   is written under, and how the native bridge is rebuilt and deployed
+7. Any relevant ADRs under `docs/adr/`
+8. The current implementation and tests for the affected area
 
 Do not rely on conversation context as a substitute for the repository documents.
 

@@ -29,10 +29,10 @@ records to `state/records/` instead of `/tmp`.
 ## M2-P002 — Milestone 2, run 2: pre-registered protocol (written before any run)
 
 **Date:** 2026-09-19
-**Status:** Pre-registered, **awaiting the developer's approval to run**. No run
-has started and no device time has been spent. This entry records the plan, its
-prices and its decision rule before any data exists; it is not a result. Board
-`#44`.
+**Status:** Pre-registered, **option B approved 2026-09-19** (two seeds,
+sequential). No run has started and no device time has been spent. This entry
+records the plan, its prices and its decision rule before any data exists; it is
+not a result. Board `#44`.
 
 **Prerequisites, before this protocol can be run.** Two, both outstanding at
 the time of writing. `observation-v2` must be on `main`: this entry links
@@ -136,6 +136,20 @@ a later question; they are not arms of this run.
     scripts/report_arms.py random=<...> scripted=<...> stacked-dqn=<...> \
         --mlflow-run <the training run>
 
+**Checkpoint recordings, after the evaluations.** Every numbered checkpoint of
+each seed plays one round to death, in checkpoint order:
+
+    scripts/spectate.py --policy checkpoint:<path> --episodes 1 \
+        --frame-rate-hz 60 --renderer lavapipe --record <seed>-<checkpoint>.mp4
+
+Real time and lavapipe, because the point is a watchable picture rather than
+throughput. About 5 min each; under option B that is 12 recordings (two seeds ×
+six numbered checkpoints), **≈1 h**, written under `state/recordings/` and never
+into the repository. These recordings are **not evidence for the verdict** — a
+round watched is one episode of a policy whose own sd is over a wave — and no
+claim in this entry may rest on one. They exist so the developer can see what
+each checkpoint actually does, which no statistic reports.
+
 **Primary statistic.** Pairwise **IQM difference** of final wave, (model −
 scripted) and (model − random), by `comparison.stratified_bootstrap_difference`
 — each arm resampled within its own actors, the two IQMs differenced *inside*
@@ -211,11 +225,11 @@ found a budget estimate must include and that run 1's estimate missed by 44 min.
 Each evaluation arm is 16 episodes an actor at ~108 wall-s plus bring-up and
 teardown, ≈0.65 h.
 
-| | budget | training (arm + session) | baselines | evaluation | **total** |
-| --- | --- | --- | --- | --- | --- |
-| **A** one seed | 360,000 game-s | 7.8 h + 0.9 h = **8.7 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | **≈10.9 h** |
-| **B** two seeds, sequential | 360,000 game-s each | 2 × 8.7 h = **17.4 h** | 2 arms, **1.3 h** (once) | 2 arms + 2 probes, **1.8 h** | **≈20.5 h** |
-| **C** one seed, pilot | 180,000 game-s | 3.9 h + 0.9 h = **4.8 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | **≈7.0 h** |
+| | budget | training (arm + session) | baselines | evaluation | recordings | **total** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **A** one seed | 360,000 game-s | 7.8 h + 0.9 h = **8.7 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | 6, **0.5 h** | **≈11.4 h** |
+| **B** two seeds, sequential — **approved** | 360,000 game-s each | 2 × 8.7 h = **17.4 h** | 2 arms, **1.3 h** (once) | 2 arms + 2 probes, **1.8 h** | 12, **1.0 h** | **≈21.5 h** |
+| **C** one seed, pilot | 180,000 game-s | 3.9 h + 0.9 h = **4.8 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | 3, **0.25 h** | **≈7.3 h** |
 
 Flags per option, everything else as the protocol above:
 
@@ -249,13 +263,14 @@ What each can and cannot conclude:
   a null result is uninterpretable, because a budget that produced no separation
   is not evidence that a full budget would not. It buys de-risking, not a claim.
 
-**Recommendation: B.** The milestone goal says *reproducibly*, and A cannot say
-it however well it goes. The marginal cost of B over A is one more training run
-and one more evaluation arm, ~9.6 h, against the alternative of running A,
-getting a result, and then needing a second seed anyway before the word can be
-used. C is worth taking instead only if the developer wants a cheap gate on four
-simultaneous changes before committing 20 device-hours — in which case C then B
-is ~27 h and C's own numbers enter no claim.
+**Recommendation: B — approved by the developer on 2026-09-19, and it is what
+runs.** The milestone goal says *reproducibly*, and A cannot say it however well
+it goes. The marginal cost of B over A is one more training run, one more
+evaluation arm and six more recordings, ~10.1 h, against the alternative of
+running A, getting a result, and then needing a second seed anyway before the
+word can be used. C was the cheap gate on four simultaneous changes; it was not
+taken, so the kill criterion above is the whole of what stands between the run
+and ~21.5 h of device time.
 
 ### Falsifiable predictions, written before the run
 

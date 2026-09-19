@@ -63,6 +63,33 @@ re-measured under this cadence and this schema and set the kill threshold
 (`M2-E007`, board `#46`). Training, evaluation, recordings and the verdict are
 not, and nothing measured so far is a verdict on the model.
 
+### How a stage is run
+
+Every device stage — a training seed, an evaluation batch, a recording
+session — is launched once through `scripts/run_stage.sh` and then left alone,
+rather than watched by whoever started it:
+
+```text
+nohup ./scripts/run_stage.sh --name m2-run2-train-seed0 --instances 7 -- \
+  uv run --extra tracking python scripts/train.py --actors 7 ... &
+```
+
+The stage command after `--` runs exactly as written — the runners still bring
+up and tear down their own fleet — and the script guarantees what happens on the
+way out. On success, on failure, and on `SIGINT`/`SIGTERM` alike it interrupts
+the stage so the runner can tear its own fleet down, runs
+`instrumented_bridge.sh cleanup` on every serial still live, kills every
+emulator still attached, and verifies the host is empty of qemu processes and
+adb devices. It refuses to start against an instance that is not the
+instrumented clone, not `-read-only`, or not offline by interface. Everything
+lands in `state/logs/<name>-<timestamp>.log`, ending in one summary line
+carrying the stage's exit code, the cleanup result, how many instances were
+cleaned and the wall time; the script's own exit status is non-zero if either
+the stage or the cleanup failed. `docs/setup.md` section 10 has the detail.
+
+Do not hand-run a stage and then hand-run its cleanup: the abort path is exactly
+where that has been got wrong before.
+
 ### The goal
 
 A reproducible benchmark on the real game in which a learned model, trained

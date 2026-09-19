@@ -445,3 +445,37 @@ frame arrives an adb round trip and a `screenrecord` process start later — a
 few hundred milliseconds, under a second. Each chunk seam loses about a second
 the same way, which is why a decision is placed by its chunk rather than by
 `video_s`. Close enough to watch; not something to measure from.
+
+## 10. Running a device stage unattended
+
+A stage — a training seed, an evaluation batch, a recording session — is hours
+of device time, so it is launched once and left alone rather than watched:
+
+```text
+nohup ./scripts/run_stage.sh --name m2-run2-train-seed0 --instances 7 -- \
+  uv run --extra tracking python scripts/train.py --actors 7 ... &
+```
+
+The stage command after `--` is run exactly as written; `run_stage.sh` does not
+bring the fleet up, because `train.py` and `run_actors.py` bring up and tear
+down their own instances. What it adds is the guarantee on the way out. On
+**every** exit path — success, failure, `SIGINT`, `SIGTERM` — it interrupts the
+stage command so the runner can tear its own fleet down, then runs
+`scripts/instrumented_bridge.sh cleanup` on each of the stage's serials that is
+still live, kills every emulator that is still attached, and verifies the host
+is empty: no qemu process (counted through `/proc/*/exe`) and no adb device.
+Before it launches anything it refuses a host that is already running something
+it should not — an instance that is not `tower_rl_instrumented_api36`, not
+`-read-only`, not on an even console port from 5556, or still holding a routable
+interface, and `emulator-5554` or the canonical evaluation AVD at all.
+
+Everything the stage and the script write goes to `state/logs/<name>-<timestamp>.log`
+and to stdout, ending in one summary line:
+
+```text
+stage m2-run2-train-seed0: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12:44
+```
+
+The exit status is the stage command's, or non-zero if cleanup or the
+verification failed while the stage itself succeeded — so a stage that left the
+device dirty cannot be read as a stage that passed.

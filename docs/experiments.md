@@ -278,7 +278,8 @@ Flags per option, everything else as the protocol above:
   collected once and serve both seeds; the image state, cadence and schema are
   identical across the two, which is what makes them shareable.
 - **C** — `--budget-game-seconds 180000 --block-game-seconds 4000
-  --checkpoint-every-game-seconds 60000 --seed 0`. Three numbered checkpoints.
+  --checkpoint-every-game-seconds 60000 --seed 0`. Three numbered checkpoints,
+  so the early stop could fire only at the last of them and buys C nothing.
 
 The checkpoint period must be a whole multiple of the block, which `train.py`
 validates before a device is touched: 60,000 = 15 × 4,000.
@@ -306,7 +307,7 @@ it goes. The marginal cost of B over A is one more training run, one more
 evaluation arm and six more recordings, ~10.1 h, against the alternative of
 running A, getting a result, and then needing a second seed anyway before the
 word can be used. C was the cheap gate on four simultaneous changes; it was not
-taken, so the kill criterion above is the whole of what stands between the run
+taken, so the kill criterion and the early stop are what stand between the run
 and up to ~21.5 h of device time.
 
 ### Falsifiable predictions, written before the run

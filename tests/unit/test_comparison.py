@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 
 import pytest
 
@@ -12,6 +13,7 @@ from tower_rl.experiment.comparison import (
     iqm,
     required_episodes,
     stratified_bootstrap,
+    stratified_bootstrap_difference,
 )
 
 
@@ -204,3 +206,91 @@ def test_a_stratum_may_not_be_empty_and_a_bootstrap_needs_strata() -> None:
         stratified_bootstrap({})
     with pytest.raises(ValueError, match="no values"):
         stratified_bootstrap({"a": [1.0], "b": []})
+
+
+def test_the_pairwise_difference_is_exact_when_every_stratum_is_constant() -> None:
+    """A hand-checkable gap: the IQM of each pool is arithmetic, and so is their difference.
+
+    Left pools eight 6s and eight 8s; the trim drops four from each end and
+    leaves [6, 6, 6, 6, 8, 8, 8, 8], an IQM of 7.0. Right is sixteen 5s, an IQM
+    of 5.0. The gap is 2.0, and because resampling within a constant stratum can
+    only redraw the same value, every resample reproduces it - so the interval
+    is the point, and any leakage between the strata or between the arms would
+    show up as an interval that moved.
+    """
+    left = {"a": [6.0] * 8, "b": [8.0] * 8}
+    right = {"a": [5.0] * 8, "b": [5.0] * 8}
+
+    difference, low, high = stratified_bootstrap_difference(
+        left, right, resamples=200, seed=1
+    )
+
+    assert difference == pytest.approx(2.0)
+    assert low == pytest.approx(2.0) and high == pytest.approx(2.0)
+
+
+def test_the_pairwise_interval_covers_a_known_interquartile_gap() -> None:
+    """Two arms two waves apart: the interval brackets the gap and excludes zero."""
+    generator = random.Random(13)
+    weak = {f"a{index}": [generator.gauss(5.0, 1.0) for _ in range(30)] for index in range(3)}
+    strong = {f"a{index}": [generator.gauss(7.0, 1.0) for _ in range(30)] for index in range(3)}
+
+    difference, low, high = stratified_bootstrap_difference(
+        strong, weak, resamples=2_000, seed=3
+    )
+
+    assert difference == pytest.approx(2.0, abs=0.4)
+    assert low < 2.0 < high, "the interval must cover the gap it was drawn around"
+    assert low > 0.0, "a two-wave gap at this n must exclude zero"
+
+
+def test_the_pairwise_interval_does_not_separate_two_samples_of_one_arm() -> None:
+    generator = random.Random(17)
+    left = {f"a{index}": [generator.gauss(6.0, 1.2) for _ in range(30)] for index in range(3)}
+    right = {f"a{index}": [generator.gauss(6.0, 1.2) for _ in range(30)] for index in range(3)}
+
+    _, low, high = stratified_bootstrap_difference(left, right, resamples=2_000, seed=5)
+
+    assert low < 0.0 < high, "identical arms must be indistinguishable"
+
+
+def test_the_pairwise_difference_resamples_each_arm_within_its_own_strata() -> None:
+    """One arm's strata are its own: a lopsided arm keeps its proportions.
+
+    The left arm's two strata differ in size and in value, so a flat resample of
+    its pool would mix them in varying proportions and widen the difference. Here
+    they are constant, so a stratified resample cannot move - and the mean
+    statistic makes the proportions visible: 30 zeros and 10 tens is 2.5, not 5.
+    """
+    def mean(values: Sequence[float]) -> float:
+        return sum(values) / len(values)
+
+    left = {"a": [0.0] * 30, "b": [10.0] * 10}
+    right = {"only": [1.0] * 12}
+
+    difference, low, high = stratified_bootstrap_difference(
+        left, right, mean, resamples=500, seed=1
+    )
+
+    assert difference == pytest.approx(1.5)
+    assert low == pytest.approx(1.5) and high == pytest.approx(1.5)
+
+
+def test_the_pairwise_difference_is_determined_by_its_seed() -> None:
+    left = {f"a{index}": [4.0, 5.0, 6.0, 7.0, 8.0] for index in range(2)}
+    right = {f"a{index}": [3.0, 4.0, 5.0, 6.0, 7.0] for index in range(2)}
+
+    first = stratified_bootstrap_difference(left, right, resamples=400, seed=2)
+    again = stratified_bootstrap_difference(left, right, resamples=400, seed=2)
+    other = stratified_bootstrap_difference(left, right, resamples=400, seed=9)
+
+    assert first == again
+    assert first[0] == other[0], "the observed difference does not depend on the seed"
+    assert first[1:] != other[1:], "the interval is a resample and does depend on it"
+
+
+def test_a_pairwise_difference_needs_strata_with_values_on_both_sides() -> None:
+    with pytest.raises(ValueError, match="at least one stratum"):
+        stratified_bootstrap_difference({}, {"a": [1.0]})
+    with pytest.raises(ValueError, match="no values"):
+        stratified_bootstrap_difference({"a": [1.0]}, {"b": []})

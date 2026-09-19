@@ -419,7 +419,8 @@ def test_the_report_prints_every_section_for_every_arm(
     assert code == 0
     printed = capsys.readouterr().out
     assert "interquartile mean, stratified by actor" in printed
-    assert "pairwise difference in mean final wave" in printed
+    assert "pairwise difference in final wave IQM, stratified by actor" in printed
+    assert "secondary, on the mean" in printed
     assert "per wave index" in printed
     for name in arms:
         assert name in printed
@@ -435,7 +436,13 @@ def test_the_report_prints_every_section_for_every_arm(
         report["arms"]["scripted"]["final_wave"]["high"]
     )
     assert len(report["differences"]) == 3
+    # The pre-registered statistic is the IQM difference; the mean difference is
+    # kept beside it as secondary. Three arms this far apart separate on both.
+    assert all(item["iqm_separated"] for item in report["differences"])
     assert all(item["separated"] for item in report["differences"])
+    for item in report["differences"]:
+        low, high = item["iqm_interval"]
+        assert low <= item["iqm_difference"] <= high
     assert len(report["per_wave"]) == 3
     # The pooled files the per-wave comparison was run over are kept beside it.
     assert sorted(p.name for p in (tmp_path / "pooled").glob("*.json")) == [
@@ -794,6 +801,17 @@ def test_the_set_b_results_are_logged_onto_the_training_run(
         iqm = logged[f"report_{name}_final_wave_iqm"]
         high = logged[f"report_{name}_final_wave_ci_high"]
         assert low <= iqm <= high
+    # The pre-registered statistic, per pair, beside the per-arm ones: this is
+    # what the decision rule is read off.
+    for pair in ("random_minus_scripted", "random_minus_stacked-dqn",
+                 "scripted_minus_stacked-dqn"):
+        low = logged[f"report_{pair}_final_wave_iqm_ci_low"]
+        difference = logged[f"report_{pair}_final_wave_iqm_diff"]
+        high = logged[f"report_{pair}_final_wave_iqm_ci_high"]
+        assert low <= difference <= high
+    # The model is the stronger arm, so both of its differences are negative.
+    assert logged["report_scripted_minus_stacked-dqn_final_wave_iqm_diff"] < 0.0
+    assert logged["report_random_minus_stacked-dqn_final_wave_iqm_diff"] < 0.0
     # One measurement about a finished run, not a point on its budget.
     assert {point.decisions for point in recorded.points} == {0}
     assert logged["report_stacked-dqn_final_wave_iqm"] > logged["report_scripted_final_wave_iqm"]

@@ -20,6 +20,13 @@ instrument: a final wave's variance is dominated by how many waves an episode
 survives, so half a wave needs hundreds of episodes to see, while what one wave
 index cost carries a fraction of that variance (`experiment/wave_statistics.py`).
 
+The pairwise difference is reported on the **IQM**, stratified by actor, because
+that is the statistic M2-P001 pre-registered its decision rule on: "the pairwise
+interval of (model - scripted) final-wave IQM excludes zero". The difference in
+means, with Cohen's d, is printed beneath it as secondary - it answers a
+different question (the whole distribution, tails included) and it is not what
+any rule here is written about.
+
 This decides no verdict. It prints intervals, and an interval that contains zero
 means this sample could not tell the arms apart - which is not the same as their
 being equal, and is never reported as if it were.
@@ -43,7 +50,11 @@ from tower_rl.experiment.arm_evaluation import (  # noqa: E402
     read_arm_evaluation,
     statistic_line,
 )
-from tower_rl.experiment.comparison import compare, stratified_bootstrap  # noqa: E402
+from tower_rl.experiment.comparison import (  # noqa: E402
+    compare,
+    stratified_bootstrap,
+    stratified_bootstrap_difference,
+)
 from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
 from tower_rl.experiment.wave_statistics import analyse_reports  # noqa: E402
 
@@ -239,17 +250,39 @@ def main() -> int:
                 flush=True,
             )
 
-    print("\npairwise difference in mean final wave:", flush=True)
+    print("\npairwise difference in final wave IQM, stratified by actor:", flush=True)
+    by_name = {evaluation.name: evaluation for evaluation in evaluations}
     differences = compare(
         {evaluation.name: evaluation.values("final_wave") for evaluation in evaluations},
         seed=arguments.seed,
     )
     for difference in differences:
-        print(f"  {difference.describe()}", flush=True)
+        # The pre-registered statistic: each arm resampled within its own
+        # actors, the IQMs differenced inside the resample.
+        point, low, high = stratified_bootstrap_difference(
+            by_name[difference.left].strata["final_wave"],
+            by_name[difference.right].strata["final_wave"],
+            resamples=arguments.resamples,
+            seed=arguments.seed,
+        )
+        separated = low > 0.0 or high < 0.0
+        verdict = "separated" if separated else "indistinguishable"
+        print(
+            f"  {difference.left} - {difference.right}: IQM difference "
+            f"{point:+.2f} [{low:+.2f}, {high:+.2f}] "
+            f"n={difference.left_episodes}/{difference.right_episodes} — {verdict}",
+            flush=True,
+        )
+        print(f"    secondary, on the mean: {difference.describe()}", flush=True)
         report["differences"].append(
             {
                 "left": difference.left,
                 "right": difference.right,
+                "iqm_difference": round(point, 3),
+                "iqm_interval": [round(low, 3), round(high, 3)],
+                "iqm_separated": separated,
+                # Secondary, kept under the names it has always had: the
+                # difference in means, which is a different statistic.
                 "difference": round(difference.difference, 3),
                 "interval": [round(difference.low, 3), round(difference.high, 3)],
                 "effect_size": round(difference.effect_size, 3),
@@ -289,6 +322,18 @@ def main() -> int:
                     f"report_{name}_final_wave_iqm": float(entry["final_wave"]["iqm"]),
                     f"report_{name}_final_wave_ci_low": float(entry["final_wave"]["low"]),
                     f"report_{name}_final_wave_ci_high": float(entry["final_wave"]["high"]),
+                },
+                decisions=0,
+            )
+        for item in report["differences"]:
+            # The pre-registered statistic lands on the run page beside the
+            # per-arm ones, so the rule can be read off the run it is about.
+            pair = f"report_{item['left']}_minus_{item['right']}_final_wave_iqm"
+            tracked.log_metrics(
+                {
+                    f"{pair}_diff": float(item["iqm_difference"]),
+                    f"{pair}_ci_low": float(item["iqm_interval"][0]),
+                    f"{pair}_ci_high": float(item["iqm_interval"][1]),
                 },
                 decisions=0,
             )

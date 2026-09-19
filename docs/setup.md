@@ -36,6 +36,9 @@ uv run mypy
 uv run pytest
 ```
 
+`uv run pytest` enforces a 120 s per-test timeout (`pytest-timeout`, thread
+method) so a hang fails loudly instead of running unbounded.
+
 Python 3.12 is selected by the project metadata. The proprietary XAPK must remain
 under `local/`, which is ignored by Git.
 

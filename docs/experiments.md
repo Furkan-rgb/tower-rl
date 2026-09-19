@@ -7,6 +7,123 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M2-E004 — Plasticity diagnostic across run-1 checkpoints
+
+**Date:** 2026-09-19
+**Status:** The plasticity-loss signature is **absent** across the four
+checkpoints of the `M2-E002` run, against a rule written before the numbers
+were seen. No reset A/B is justified by this evidence. Board `#33`.
+**Purpose:** `M2-E002` found greedy final-wave IQM roughly flat across the
+50k/100k/150k/200k checkpoints. Plasticity loss / primacy bias (Nikishin et
+al. 2022) is one hypothesis for a flat curve, and an A/B designed around it
+would cost tens of device-hours. This measures the hypothesis' own signature
+offline first, on checkpoints that already exist: minutes of CPU, one short
+device session for the observations.
+
+`scripts/diagnose_plasticity.py` over
+`~/.local/state/tower-rl/runs/session-20260918-215839/stacked-dqn-20260918-215839-e3c6ba/checkpoints/`;
+JSON at `~/.local/state/tower-rl/m2-run1/plasticity/diagnosis-50k-batch.json`.
+
+### The rule, written before the numbers
+
+- **Present** — dormancy at τ=0.1 rises monotonically in at least one layer by
+  ≥ 10 percentage points from 50k to 200k, **or** the core stable rank falls
+  monotonically by ≥ 25% of its 50k value.
+- **Absent** — dormancy at τ=0.1 stays within ±3 points of its 50k value in
+  every layer **and** the core stable rank stays within ±10% of its 50k value.
+- **Inconclusive** — anything else: non-monotone movement, or movement between
+  those bands.
+
+Parameter norms decide nothing on their own: a norm that grows while dormancy
+and rank are flat is not the signature this asked about.
+
+### Definitions
+
+- **τ-dormant fraction** (Sokar et al. 2023, arXiv:2302.12902): a unit scores
+  `s_i = E|h_i| / mean_k E|h_k|`, the expectation over the observation batch,
+  and is τ-dormant when `s_i ≤ τ`. Reported at τ = 0.025 and τ = 0.1, that
+  paper's two thresholds, on the post-activation outputs of
+  `trunk.row_encoder`, `trunk.scalar_encoder` and `core` — each an
+  `nn.Sequential` ending in its `SiLU`, so the module output is the
+  post-activation one. A row encoder is shared across upgrade rows, so its
+  samples are one per row per step.
+- **Stable rank**: `‖F‖_F² / ‖F‖_2²` of the `core` output, the pooled feature
+  matrix the dueling heads are handed.
+- **srank_99** (Kumar et al. 2021, arXiv:2010.14498): the fewest leading
+  **singular values** whose sum reaches 99% of their total — the paper's own
+  form, on the singular values themselves rather than on their squares.
+- **Parameter norm**: the L2 norm of each parameter tensor, and of the whole
+  parameter vector (not the sum of the per-tensor norms).
+
+### The observation batch
+
+No observation is stored anywhere in this project — actor records hold episode
+summaries, a checkpoint holds `replay_provenance` rather than the buffer, and
+`DecisionView` carries none — so one session was played to record some.
+`run_actors.py --actors 1 --episodes 8 --policy checkpoint:…-0050123.pt
+--frame-rate-hz 120 --renderer host --record-observations …` on
+`emulator-5556`, cold, `-read-only`, offline verified by interface, confirmed
+at 120 Hz, cleanup before kill.
+
+- Policy identity `8344a482eede`, `checkpoint-0050123.pt` of run
+  `stacked-dqn-20260918-215839-e3c6ba`, played greedily.
+- **8 of 8 episodes valid**, 1,141 decisions, mean final wave 6.375
+  (median 6.0, sd 1.92, range 4-10), 22.4 decisions a wave, 916 s wall.
+- **800 observations**: 10 windows of 80 steps, cut from episode starts and
+  never straddling two episodes, because the stacked history returns to zeros
+  at an episode start. Batch at
+  `~/.local/state/tower-rl/m2-run1/plasticity/observations-50k.pt`.
+
+### The three curves
+
+| decisions | opt. steps | dormant τ=.025 / τ=.1, all three layers | core stable rank | core srank_99 | ‖θ‖ |
+|---|---|---|---|---|---|
+| 50,123 | 11,379 | 0.000 / 0.000 | 1.097 | 98 | 48.965 |
+| 100,080 | 23,869 | 0.000 / 0.000 | 1.139 | 103 | 49.272 |
+| 150,002 | 36,349 | 0.000 / 0.000 | 1.156 | 104 | 49.501 |
+| 200,174 | 48,892 | 0.000 / 0.000 | 1.179 | 104 | 49.681 |
+
+- **Dormancy is zero everywhere**, at both thresholds, in all three layers, at
+  all four checkpoints — and with headroom, not because the measure cannot
+  fire: the quietest unit of any layer scores between 0.22 and 0.57 of its
+  layer's mean, two to five times τ=0.1. The widest drift is
+  `trunk.row_encoder`, whose quietest unit falls 0.567 → 0.316 over the run,
+  still far above dormant.
+- **Rank does not collapse; it rises slightly.** Stable rank 1.097 → 1.179
+  (+7.5%), srank_99 98 → 104 of 128 available. The stable rank sits near 1
+  because the matrix is uncentred and the features carry a large common mean;
+  subtracting the mean gives 2.49 / 2.26 / 2.48 / 2.30 across the four, flat
+  and non-monotone. Either way there is no fall.
+- **Parameter norms grow monotonically but slightly**: ‖θ‖ 48.965 → 49.681,
+  +1.5% over 37,513 gradient steps. The total is damped by the 96x16 identity
+  embedding, most of whose rows are never trained and which alone carries
+  40.26 of the 48.97: it *falls* 40.264 → 40.214. The trained tensors grow
+  more — `core.3.weight` 7.234 → 8.434 (+16.6%),
+  `heads.row_advantage.0.weight` 7.087 → 8.103 (+14.3%) — while two head
+  output layers shrink (`heads.wait_advantage.2.weight` 0.523 → 0.380). Any
+  norm-growth claim about this run must be made on the per-tensor numbers; the
+  total understates the trained trunk by a factor of ten.
+
+### Verdict
+
+**Absent.** Dormancy is 0.000 at both thresholds in every layer at every
+checkpoint, which is within the ±3 points the rule allows, and the core stable
+rank moves +7.5%, inside the ±10% band. Neither clause of *present* is
+approached: nothing rises 10 points and nothing falls 25%.
+
+A reset A/B has no support from this evidence. What is here is a network whose
+units all stay active, whose feature rank is low but stable, and whose trained
+weights grow modestly — the picture of a learner that is not losing capacity,
+not one that has lost it.
+
+Two limits on how far this reaches. The batch is the 50k policy's own state
+distribution, so the three later checkpoints are measured off-policy on it; a
+representation that collapsed only on states those checkpoints themselves
+visit would not show here. And `M2-E002` puts this learner ~0.7 waves above a
+random baseline, so an alternative reading of the flat greedy curve — that
+little was learned for plasticity to be lost — remains open and is not
+addressed by this measurement.
+
 ## M2-E003 — Spectate mode on device
 
 **2026-09-19 note:** this recording was made under the host renderer and may show the glitching the developer reports; recordings from this change on are lavapipe by default (board `#36`).

@@ -155,10 +155,27 @@ environment and nothing that observes or drives it.
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
   `TrainingProgressReport`, `episode_health`, `collection_windows`.
+- `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
+  explores at, at each point of the budget.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
   `EvaluationReport`.
 - `checkpoint.py` — `Checkpoint`, `CheckpointIdentity`, `save`/`load`, the
   checksum sidecar and `write_manifest`.
+
+**Exploration.** One run has one anneal and, under `--exploration ladder`, a
+floor of its own for each actor. `ExplorationSchedule` owns both numbers -
+nothing else in `learning` holds an exploration rate - and `TrainingRun` asks it
+per actor per episode: an actor acts at `max(annealed, floor_i)`, so no actor
+explores less than the fleet's current rate or less than its own floor. The
+default, `uniform`, has no per-actor floors at all and puts every actor on the
+annealed rate, which is what every run so far collected under. The ladder is
+Ape-X's (Horgan et al. 2018): actor `i` of `N` at `0.4 ** (1 + 7 i / (N - 1))`,
+so one fleet both searches - the top actors play build orders the greedy policy
+would never reach - and reports, because the near-greedy actors at the bottom
+still produce a collection curve that reads as the policy's own performance.
+`CollectionWindow` carries that split: the pooled window, each actor's own mean
+final wave, and a mean pooled over the near-greedy actors alone, which under a
+uniform schedule is every actor and therefore the pooled series itself.
 
 **State.** `TrainingRun` owns everything the fleet shares: one
 `PrioritizedSequenceReplay` all actors write into, one `Backbone` inside

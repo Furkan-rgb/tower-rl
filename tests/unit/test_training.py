@@ -20,6 +20,7 @@ from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.evaluator import EvaluationReport
+from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
@@ -104,31 +105,37 @@ def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
     """
     config = TrainingConfig(
         budget_decisions=20_000,
-        epsilon_start=1.0,
-        epsilon_end=0.05,
-        epsilon_anneal_decisions=10_000,
+        exploration=ExplorationSchedule(
+            epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
+        ),
     )
+    epsilon = config.exploration.annealed
 
-    assert config.epsilon(0) == pytest.approx(1.0)
-    assert config.epsilon(5_000) == pytest.approx(0.525)
-    assert config.epsilon(10_000) == pytest.approx(0.05)
+    assert epsilon(0) == pytest.approx(1.0)
+    assert epsilon(5_000) == pytest.approx(0.525)
+    assert epsilon(10_000) == pytest.approx(0.05)
     # Held for the whole second half of the budget, not annealed further.
-    assert config.epsilon(15_000) == pytest.approx(0.05)
-    assert config.epsilon(20_000) == pytest.approx(0.05)
+    assert epsilon(15_000) == pytest.approx(0.05)
+    assert epsilon(20_000) == pytest.approx(0.05)
 
 
 def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
     """The same horizon means the same exploration whatever the budget is."""
-    short = TrainingConfig(budget_decisions=12_000, epsilon_anneal_decisions=10_000)
-    long = TrainingConfig(budget_decisions=200_000, epsilon_anneal_decisions=10_000)
+    schedule = ExplorationSchedule(anneal_decisions=10_000)
+    short = TrainingConfig(budget_decisions=12_000, exploration=schedule)
+    long = TrainingConfig(budget_decisions=200_000, exploration=schedule)
 
-    assert short.epsilon(5_000) == pytest.approx(long.epsilon(5_000))
-    assert long.epsilon(10_001) == pytest.approx(long.epsilon_end)
+    assert short.exploration.annealed(5_000) == pytest.approx(
+        long.exploration.annealed(5_000)
+    )
+    assert long.exploration.annealed(10_001) == pytest.approx(schedule.epsilon_end)
 
 
 def test_a_horizon_of_no_decisions_is_refused() -> None:
     with pytest.raises(ValueError, match="anneal horizon"):
-        TrainingConfig(budget_decisions=100, epsilon_anneal_decisions=0)
+        TrainingConfig(
+            budget_decisions=100, exploration=ExplorationSchedule(anneal_decisions=0)
+        )
 
 
 def test_importance_sampling_correction_anneals_the_other_way() -> None:
@@ -147,7 +154,10 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
     its own and arrive at a value the run never used.
     """
     training = _run(
-        budget_decisions=150, epsilon_start=1.0, epsilon_end=0.05, epsilon_anneal_decisions=150
+        budget_decisions=150,
+        exploration=ExplorationSchedule(
+            epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=150
+        ),
     )
 
     # Before a decision is spent: exactly where the schedules start.
@@ -159,9 +169,10 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
     assert report.optimisation_steps > 0
     # The value of the last episode it started, which is the last one it acted
     # at: drawn once per episode, so it lags the schedule by that episode.
-    assert training.config.epsilon(report.decisions) <= report.epsilon < 1.0
+    annealed = training.config.exploration.annealed
+    assert annealed(report.decisions) <= report.epsilon < 1.0
     assert report.epsilon == pytest.approx(
-        training.config.epsilon(report.decisions - report.collected[-1].summary.decisions)
+        annealed(report.decisions - report.collected[-1].summary.decisions)
     )
     assert training.config.beta_start <= report.importance_beta <= training.config.beta_end
     assert report.importance_beta > training.config.beta_start
@@ -509,6 +520,48 @@ def test_a_window_reports_what_the_policy_did_in_it() -> None:
 
     assert windows[0].wait_fraction == pytest.approx(0.9)
     assert windows[0].purchases_per_episode == pytest.approx(1.0)
+
+
+def test_a_window_is_also_cut_per_actor_and_over_the_near_greedy_ones() -> None:
+    """The pooled mean of a laddered fleet is nobody's performance.
+
+    Actors exploring at rates two orders of magnitude apart are averaged into
+    the pooled series, so the window carries each actor's own mean beside it and
+    a pooled mean over the actors that are near-greedy - the one a readout of
+    what the policy itself reaches can cite.
+    """
+    collected = [
+        _collected(2, actor_id="searcher"),
+        _collected(4, actor_id="greedy-a"),
+        _collected(8, actor_id="greedy-b"),
+        _collected(6, actor_id="greedy-a"),
+    ]
+
+    windows = collection_windows(
+        collected, size=4, near_greedy_actor_ids={"greedy-a", "greedy-b"}
+    )
+
+    window = windows[0]
+    assert window.mean_final_wave == pytest.approx(5.0), "the pooled series is unchanged"
+    assert window.mean_final_wave_by_actor == {
+        "searcher": pytest.approx(2.0),
+        "greedy-a": pytest.approx(5.0),
+        "greedy-b": pytest.approx(8.0),
+    }
+    # Pooled over the near-greedy episodes, not averaged over per-actor means:
+    # the actors need not have played the same number of episodes.
+    assert window.near_greedy_episodes == 3
+    assert window.near_greedy_mean_final_wave == pytest.approx(6.0)
+
+
+def test_a_uniform_fleet_s_near_greedy_series_is_its_pooled_series() -> None:
+    """Every actor draws the one rate, so naming none of them names all of them."""
+    collected = [_collected(4, actor_id="actor-0"), _collected(6, actor_id="actor-1")]
+
+    window = collection_windows(collected, size=2)[0]
+
+    assert window.near_greedy_episodes == window.episodes == 2
+    assert window.near_greedy_mean_final_wave == pytest.approx(window.mean_final_wave)
 
 
 def test_a_window_pools_health_over_every_episode_attempted_in_it() -> None:

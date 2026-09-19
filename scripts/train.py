@@ -86,6 +86,10 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     write_manifest,
 )
 from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
+from tower_rl.learning.exploration import (  # noqa: E402
+    EXPLORATION_OPTIONS,
+    ExplorationSchedule,
+)
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
@@ -209,9 +213,13 @@ def build_arm(
         warmup_sequences=arguments.warmup_sequences,
         batch_size=arguments.batch_size,
         gradient_steps_per_decision=arguments.gradient_steps_per_decision,
-        epsilon_start=arguments.epsilon_start,
-        epsilon_end=arguments.epsilon_end,
-        epsilon_anneal_decisions=arguments.epsilon_anneal_decisions,
+        exploration=ExplorationSchedule.for_option(
+            arguments.exploration,
+            actors=len(instances),
+            epsilon_start=arguments.epsilon_start,
+            epsilon_end=arguments.epsilon_end,
+            anneal_decisions=arguments.epsilon_anneal_decisions,
+        ),
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
@@ -450,6 +458,18 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
+    parser.add_argument(
+        "--exploration",
+        choices=EXPLORATION_OPTIONS,
+        default="uniform",
+        help=(
+            "uniform puts every actor on the annealed rate, which is what every "
+            "run so far collected under; ladder gives actor i of N the Ape-X "
+            "floor 0.4 ** (1 + 7 i / (N - 1)), so one fleet searches and reports "
+            "at once. An actor acts at the higher of the annealed rate and its "
+            "own floor, so every rung below --epsilon-end is held at it"
+        ),
+    )
     parser.add_argument(
         "--epsilon-anneal-decisions",
         type=int,

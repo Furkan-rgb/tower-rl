@@ -122,6 +122,21 @@ class TrainingReport:
         self.decisions_logged = self.resumed_decisions
 
     @property
+    def near_greedy_actor_ids(self) -> frozenset[str]:
+        """The actors whose episodes read as the policy's performance, not search.
+
+        The whole fleet under a uniform schedule, where every actor draws the one
+        annealed rate; under a ladder, the ones at or under
+        `NEAR_GREEDY_EPSILON`.
+        """
+        exploration = self.training.config.exploration
+        return frozenset(
+            actor_id
+            for actor_id, index in self.training.actor_index.items()
+            if exploration.is_near_greedy(index)
+        )
+
+    @property
     def checkpoint_path(self) -> Path:
         return self.run_dir / "checkpoints" / "latest.pt"
 
@@ -243,9 +258,7 @@ class TrainingReport:
         lock. It reads what has already been measured and measures nothing.
         """
         report = self.training.report
-        actors = {
-            actor.config.actor_id: index for index, actor in enumerate(self.training.actors)
-        }
+        actors = self.training.actor_index
         learner = learner_metrics(report)
         for episode in report.collected[self.episodes_logged :]:
             # The decisions at the end of this episode, not the run's current
@@ -282,10 +295,14 @@ class TrainingReport:
             # run trained in two sittings is one series, and a window keyed from
             # zero would land underneath the parent's own points.
             spent_before=self.resumed_decisions,
+            near_greedy_actor_ids=self.near_greedy_actor_ids,
         )
         for window in windows[len(self.collection_curve) :]:
             self.collection_curve.append(window)
-            self.run.log_metrics(window_metrics(window), decisions=window.decisions_at_end)
+            self.run.log_metrics(
+                window_metrics(window, actor_index=self.training.actor_index),
+                decisions=window.decisions_at_end,
+            )
             print(f"[{self.name}] collection: {window_line(window)}", flush=True)
 
     def record_decision_time(self, *, final: bool = False) -> None:

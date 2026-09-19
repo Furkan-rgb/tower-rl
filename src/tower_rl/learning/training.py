@@ -27,7 +27,7 @@ from __future__ import annotations
 import statistics
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -49,6 +49,7 @@ from tower_rl.learning.backbone import (
     collate,
 )
 from tower_rl.learning.evaluator import EvaluationReport
+from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 
 #: The device's own rejection reason for a stale or duplicate command, carried
@@ -191,15 +192,10 @@ class TrainingConfig:
     #: 10 and batch 8 that is about 504 per step, so 0.25 puts the run at 126:1,
     #: between SPR (64) and BBF (256). The 2.0 of the first run was 1087:1.
     gradient_steps_per_decision: float = 0.25
-    #: Exploration anneals from start to end over `epsilon_anneal_decisions` and
-    #: is held at `epsilon_end` afterwards.
-    epsilon_start: float = 1.0
-    epsilon_end: float = 0.05
-    #: The horizon of the anneal, in decisions, and deliberately not the budget:
-    #: annealing across the whole budget spent over half the first run at an
-    #: epsilon above 0.5, so most of what was collected was near-random and the
-    #: collection curve could not be read as a policy's performance at all.
-    epsilon_anneal_decisions: int = 10_000
+    #: What each actor explores at, at each point of the budget: the fleet's
+    #: anneal and, under a ladder, a floor of its own for every actor. The one
+    #: owner of those numbers - nothing else here holds an exploration rate.
+    exploration: ExplorationSchedule = field(default_factory=ExplorationSchedule)
     #: Episodes per point of the collection curve. The curve is read from the
     #: collection episodes themselves rather than from exploration-free
     #: evaluations: at epsilon 0.05 they are almost on-policy, they cost no
@@ -247,8 +243,6 @@ class TrainingConfig:
             raise ValueError("batch size and warm-up must be positive")
         if self.gradient_steps_per_decision <= 0:
             raise ValueError("gradient steps per decision must be positive")
-        if self.epsilon_anneal_decisions < 1:
-            raise ValueError("the epsilon anneal horizon must be positive")
         if self.collection_window_episodes < 1:
             raise ValueError("a collection window needs at least one episode")
         if self.max_consecutive_episode_failures < 1:
@@ -260,11 +254,6 @@ class TrainingConfig:
 
     def progress(self, decisions: int) -> float:
         return min(1.0, decisions / self.budget_decisions)
-
-    def epsilon(self, decisions: int) -> float:
-        """Anneal over the horizon, then hold - never over the whole budget."""
-        fraction = min(1.0, decisions / self.epsilon_anneal_decisions)
-        return self.epsilon_start + (self.epsilon_end - self.epsilon_start) * fraction
 
     def beta(self, decisions: int) -> float:
         fraction = self.progress(decisions)
@@ -336,6 +325,16 @@ class CollectionWindow:
     #: wave statistics above are over. This is what locates a health problem in
     #: time rather than only in the whole run's total.
     health: EpisodeHealth
+    #: The same window per actor, by actor id: an actor with no valid episode in
+    #: it is absent rather than zero. Under an exploration ladder the pooled mean
+    #: above is an average over actors exploring at rates two orders of magnitude
+    #: apart, which is not any policy's performance; these are.
+    mean_final_wave_by_actor: dict[str, float] = field(default_factory=dict)
+    #: The window over the near-greedy actors only - the series a readout that
+    #: asks what the policy itself reaches has to cite. Equal to the pooled
+    #: numbers under a uniform schedule, where every actor is near-greedy.
+    near_greedy_episodes: int = 0
+    near_greedy_mean_final_wave: float | None = None
 
 
 def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribution | None:
@@ -353,8 +352,22 @@ def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribut
     )
 
 
+def _mean_final_wave_by_actor(
+    episodes: Sequence[CollectedEpisode],
+) -> dict[str, float]:
+    """Mean final wave per actor over these episodes, in first-seen order."""
+    waves: dict[str, list[int]] = {}
+    for episode in episodes:
+        waves.setdefault(episode.actor_id, []).append(episode.summary.final_wave)
+    return {actor_id: statistics.fmean(values) for actor_id, values in waves.items()}
+
+
 def collection_windows(
-    collected: Sequence[CollectedEpisode], *, size: int, spent_before: int = 0
+    collected: Sequence[CollectedEpisode],
+    *,
+    size: int,
+    spent_before: int = 0,
+    near_greedy_actor_ids: Collection[str] | None = None,
 ) -> list[CollectionWindow]:
     """Cut the collection episodes into consecutive non-overlapping windows.
 
@@ -364,6 +377,10 @@ def collection_windows(
     trailing partial window is not emitted at all: a point averaged over fewer
     episodes than the rest has a different standard error and would be read as
     if it did not.
+
+    `near_greedy_actor_ids` names the actors whose episodes are read as the
+    policy's own performance rather than as search; None means every actor is,
+    which is what a uniform schedule's fleet is.
 
     `spent_before` is the budget position these episodes start from, which is
     not zero for a run resumed from a checkpoint: the episode list is this
@@ -390,6 +407,11 @@ def collection_windows(
         if len(current) < size:
             continue
         waves = [item.summary.final_wave for item in current]
+        near_greedy = [
+            item
+            for item in current
+            if near_greedy_actor_ids is None or item.actor_id in near_greedy_actor_ids
+        ]
         distribution = action_distribution(current)
         assert distribution is not None  # a full window is never empty
         stdev = statistics.stdev(waves) if len(waves) > 1 else None
@@ -404,6 +426,13 @@ def collection_windows(
                 standard_error=None if stdev is None else stdev / len(waves) ** 0.5,
                 wait_fraction=distribution.wait_fraction,
                 purchases_per_episode=distribution.purchases_per_episode,
+                mean_final_wave_by_actor=_mean_final_wave_by_actor(current),
+                near_greedy_episodes=len(near_greedy),
+                near_greedy_mean_final_wave=(
+                    statistics.fmean(item.summary.final_wave for item in near_greedy)
+                    if near_greedy
+                    else None
+                ),
                 health=episode_health([item.summary for item in attempted]),
             )
         )
@@ -617,6 +646,11 @@ class TrainingRun:
     #: episode; this records which of them have already been answered so a
     #: crossing produces exactly one checkpoint.
     _numbered_at: int = field(default=0, init=False)
+    #: Where each actor stands in the fleet, by id. The order actors were given
+    #: in is the order the exploration ladder is read in and the order a
+    #: per-actor metric series is keyed by, so it is resolved once here rather
+    #: than re-derived by everything that reports per actor.
+    actor_index: dict[str, int] = field(default_factory=dict, init=False)
     #: Episodes each actor has played since its copy was last refreshed. Starts
     #: at the cadence so every actor publishes before its first episode, which
     #: is also what picks up a checkpoint loaded into the backbone after the run
@@ -632,6 +666,18 @@ class TrainingRun:
             # Per-actor reporting is keyed by identity; two actors under one
             # name would report as one instance and hide a dead one.
             raise ValueError("every actor of a fleet needs an id of its own")
+        self.actor_index = {
+            actor.config.actor_id: index for index, actor in enumerate(self.actors)
+        }
+        floors = self.config.exploration.floors
+        if floors and len(floors) != len(self.actors):
+            # A ladder is built for a fleet of a particular size: read against a
+            # different one, actor 3 of 7 would act at actor 3 of 4's rate, and
+            # the run's own record of what it explored at would be wrong.
+            raise ValueError(
+                f"the exploration ladder has {len(floors)} rates for "
+                f"{len(self.actors)} actors"
+            )
         self.learner = Learner(self.backbone)
         # The cadence is continued rather than restarted: a run resumed at
         # 50,123 decisions of a 100,000-decision period has already answered the
@@ -641,7 +687,7 @@ class TrainingRun:
         if self.config.checkpoint_every_decisions:
             period = self.config.checkpoint_every_decisions
             self._numbered_at = self.report.decisions // period * period
-        self.report.epsilon = self.config.epsilon(self.report.decisions)
+        self.report.epsilon = self.config.exploration.annealed(self.report.decisions)
         self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}
         for index, actor in enumerate(self.actors):
@@ -779,8 +825,16 @@ class TrainingRun:
             with profile.acquiring(self._lock):
                 if self.report.decisions >= target:
                     return
-                epsilon = self.config.epsilon(self.report.decisions)
-                self.report.epsilon = epsilon
+                # The fleet's annealed rate is the run's and is published as
+                # that; what this actor acts at is that rate raised to its own
+                # floor, which under a ladder is the only one of the two that
+                # still moves once the anneal is over.
+                self.report.epsilon = self.config.exploration.annealed(
+                    self.report.decisions
+                )
+                epsilon = self.config.exploration.epsilon_for(
+                    self.actor_index[actor_id], self.report.decisions
+                )
             # Refreshed between episodes and never inside one: the copy's
             # parameters hold still for a whole episode, and the history window
             # the actor carries through that episode was produced by exactly the

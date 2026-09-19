@@ -34,6 +34,7 @@ from tower_rl.experiment.tracking import NoExperimentTracker
 from tower_rl.learning.actor import ActorConfig
 from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
 from tower_rl.learning.evaluator import evaluate
+from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.simulation.instance import CloneInstance
 
@@ -231,6 +232,7 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     assert defaults.target_ema_decay == 0.995
     assert (defaults.epsilon_start, defaults.epsilon_end) == (1.0, 0.05)
     assert defaults.epsilon_anneal_decisions == 10_000
+    assert defaults.exploration == "uniform", "run 1's schedule is the default"
     assert defaults.priority_alpha == 0.0, "importance weights of exactly one"
     assert defaults.replay_capacity == 4096
     assert defaults.collection_window_episodes == 100
@@ -698,7 +700,9 @@ def resume_from(
     )
 
 
-def resumed_arm(run_dir: Path, checkpoint: Path, budget: int) -> tuple[Any, Any]:
+def resumed_arm(
+    run_dir: Path, checkpoint: Path, budget: int, **overrides: str
+) -> tuple[Any, Any]:
     """`build_arm` alone, so what a resume restored can be read before a decision.
 
     Everything under test here is settled at construction - the counters, the
@@ -711,6 +715,7 @@ def resumed_arm(run_dir: Path, checkpoint: Path, budget: int) -> tuple[Any, Any]
             "--budget-decisions": str(budget),
             "--resume": str(checkpoint),
             "--checkpoint-every-decisions": str(RESUME_PERIOD),
+            **overrides,
         },
     )
     resume = train.resume_point(settings, profile_id=PROFILE, revision="test")
@@ -730,6 +735,51 @@ def resumed_arm(run_dir: Path, checkpoint: Path, budget: int) -> tuple[Any, Any]
             resume=resume,
         )
     return arm, resume
+
+
+def test_the_exploration_a_run_collected_under_is_on_its_record(
+    tmp_path: Path,
+) -> None:
+    """A curve read months later cannot be told from a uniform one without it."""
+    uniform = session(tmp_path / "uniform", actors=2)["arm"]["resolved_config"]
+    assert uniform["exploration"] == "uniform"
+    assert uniform["exploration_epsilon_floors"] == []
+
+    ladder = session(
+        tmp_path / "ladder", actors=2, settings={"--exploration": "ladder"}
+    )["arm"]["resolved_config"]
+    assert ladder["exploration"] == "ladder"
+    assert ladder["exploration_epsilon_floors"] == pytest.approx(list(ape_x_floors(2)))
+    # The ladder is the fleet's exploration, not its identity: everything a
+    # checkpoint is compatibility-checked on is untouched by it.
+    assert ladder["parent_checkpoint"] is None
+    assert {key: ladder[key] for key in ("backbone", "actors", "actor_ids")} == {
+        key: uniform[key] for key in ("backbone", "actors", "actor_ids")
+    }
+
+
+def test_a_run_can_be_resumed_onto_the_ladder(tmp_path: Path) -> None:
+    """A second sitting may explore differently from the one it continues.
+
+    Exploration is not part of what a checkpoint is refused for, so a segment
+    collected uniformly can be continued under the ladder: what the resume
+    restores is the weights and the counters, and what the ladder changes is
+    only how the fleet collects from here on.
+    """
+    first = numbered(tmp_path / "first", 300)
+    checkpoint = latest_checkpoint(first)
+
+    arm, resume = resumed_arm(
+        tmp_path / "second", checkpoint, budget=600, **{"--exploration": "ladder"}
+    )
+
+    exploration = arm.training.config.exploration
+    assert exploration.option == "ladder"
+    assert exploration.floors == pytest.approx(list(ape_x_floors(1)))
+    assert arm.resolved["exploration"] == "ladder"
+    # The identity the resume was accepted on is the parent's, unchanged.
+    assert resume.parent_checkpoint == arm.resolved["parent_checkpoint"]
+    assert arm.training.report.decisions == resume.decisions > 0
 
 
 def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) -> None:
@@ -752,7 +802,11 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
     # Exploration and the importance exponent are derived from the counter
     # rather than restored, so they are where a run that never stopped would
     # have them - and not at the start of their schedules.
-    assert progress.epsilon == config.epsilon(spent) != config.epsilon(0)
+    assert (
+        progress.epsilon
+        == config.exploration.annealed(spent)
+        != config.exploration.annealed(0)
+    )
     assert progress.importance_beta == config.beta(spent) != config.beta(0)
     # The optimizer's moments come back with the weights: one state dict, and a
     # resume that took only the weights would restart Adam silently mid-run.

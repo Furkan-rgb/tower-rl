@@ -11,7 +11,7 @@ mapping, a detail string) stays in the JSON report the same functions produce.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 
 from tower_rl.environment.decision_time import (
@@ -212,15 +212,51 @@ def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
     return {name: value for name, value in measured.items() if value is not None}
 
 
-def window_metrics(window: CollectionWindow) -> dict[str, float]:
-    """One point of the collection curve, which is what the run is read from."""
+def window_metrics(
+    window: CollectionWindow, *, actor_index: Mapping[str, int]
+) -> dict[str, float]:
+    """One point of the collection curve, which is what the run is read from.
+
+    The keys, all on the window's `decisions_at_end`:
+
+    - `collection_mean_final_wave`, `collection_versus_scripted_reference`,
+      `collection_episodes`, `collection_stdev_final_wave`,
+      `collection_standard_error` - the pooled window over every actor;
+    - `collection_window_wait_fraction`,
+      `collection_window_purchases_per_episode` - what the policy did in it;
+    - `collection_window_mean_final_wave_actor{i}` - the same window for actor
+      `i` of the fleet alone, absent for an actor with no valid episode in it.
+      Under an exploration ladder the actors sit at rates two orders of
+      magnitude apart and the pooled mean above is nobody's performance;
+    - `collection_window_near_greedy_mean_final_wave` and
+      `collection_window_near_greedy_episodes` - the window pooled over the
+      near-greedy actors only, which is the series a readout of what the policy
+      itself reaches cites. Identical to the pooled series under a uniform
+      schedule, where every actor is near-greedy;
+    - `collection_window_*` health counters, from `health_metrics`.
+
+    `actor_index` places each actor id on the series index it reports under -
+    the fleet's own order, the same one `episode_actor` uses.
+    """
     metrics = {
         "collection_mean_final_wave": window.mean_final_wave,
         "collection_versus_scripted_reference": window.mean_final_wave - SCRIPTED_REFERENCE,
         "collection_episodes": float(window.episodes),
         "collection_window_wait_fraction": window.wait_fraction,
         "collection_window_purchases_per_episode": window.purchases_per_episode,
+        "collection_window_near_greedy_episodes": float(window.near_greedy_episodes),
     }
+    if window.near_greedy_mean_final_wave is not None:
+        metrics["collection_window_near_greedy_mean_final_wave"] = (
+            window.near_greedy_mean_final_wave
+        )
+    for actor_id, mean in window.mean_final_wave_by_actor.items():
+        index = actor_index.get(actor_id)
+        if index is None:
+            # An id the fleet does not know has no series to go on; the pooled
+            # numbers above already carry its episodes.
+            continue
+        metrics[f"collection_window_mean_final_wave_actor{index}"] = mean
     if window.stdev_final_wave is not None and window.standard_error is not None:
         metrics["collection_stdev_final_wave"] = window.stdev_final_wave
         metrics["collection_standard_error"] = window.standard_error

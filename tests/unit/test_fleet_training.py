@@ -32,6 +32,7 @@ from tower_rl.learning.backbone import (
     acting_copy,
     parameters_are_equal,
 )
+from tower_rl.learning.exploration import ExplorationSchedule, ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import (
@@ -491,6 +492,38 @@ def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, Watche
 def copies(training: TrainingRun) -> list[WatchedBackbone]:
     """The acting copies, which are deepcopies of the watched learner."""
     return [cast(WatchedBackbone, copy) for copy in training.acting.values()]
+
+
+def test_a_ladder_puts_every_actor_of_the_fleet_on_a_rate_of_its_own() -> None:
+    """Ape-X's arrangement: one fleet searches and reports at the same time.
+
+    The anneal is spent here, so what is left is the ladder itself - which is
+    what a segment resumed past the anneal collects under.
+    """
+    schedule = ExplorationSchedule.for_option(
+        "ladder", actors=3, epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+    )
+    training = fleet(
+        [environment() for _ in range(3)], exploration=schedule, budget_decisions=200
+    )
+
+    training.run()
+
+    assert [actor.config.epsilon for actor in training.actors] == pytest.approx(
+        list(ape_x_floors(3))
+    )
+    # The run's own published rate stays the fleet's annealed one: it is what a
+    # checkpoint restores a resume to, and no single actor's rate is the run's.
+    assert training.report.epsilon == pytest.approx(0.0)
+
+
+def test_a_ladder_built_for_another_fleet_is_refused() -> None:
+    """Read against the wrong fleet, actor 3 of 7 would act at actor 3 of 4's rate."""
+    with pytest.raises(ValueError, match="exploration ladder"):
+        fleet(
+            [environment() for _ in range(2)],
+            exploration=ExplorationSchedule.for_option("ladder", actors=7),
+        )
 
 
 def test_every_actor_acts_from_a_copy_of_its_own_and_not_from_the_learner() -> None:

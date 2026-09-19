@@ -43,10 +43,10 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import IO, Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -193,6 +193,35 @@ TOWER_STATS: tuple[tuple[str, str, str], ...] = (
     ("defenseRel", "def%", "{:.1f}"),
     ("wallHealth", "wall", "{:.1f}"),
 )
+
+
+#: The wave-and-enemy readings the panel's second line is built from, under the
+#: game's own `Main` names.
+WAVE_BLOCK_WIRES: tuple[str, ...] = (
+    "closestEnemyDistance",
+    "enemiesKilledThisWave",
+    "enemiesSpawnedThisWave",
+    "estimatedEnemiesToSpawnThisWave",
+    "waveTimer",
+    "waveLengthSeconds",
+    "waveCooldownSeconds",
+    "currentWaveBaseHealth",
+    "currentWaveBaseDamage",
+    "gameplayTimeThisRound",
+    "bossWaveBool",
+    "bossSpawnedBool",
+    "miniBossWaveBool",
+)
+
+#: Every reading the panel puts on screen: the tower stats and the wave block.
+#: This is what `DecisionTrack` writes beside a recording, so the rendered panel
+#: shows the watcher's own two lines rather than a second selection of readings
+#: - `observation-v2` carries far more, and none of the rest is on the panel.
+PANEL_HUD_WIRES: tuple[str, ...] = tuple(wire for wire, _, _ in TOWER_STATS) + WAVE_BLOCK_WIRES
+
+#: What a decision that bought nothing is called. The slot labels name what was
+#: bought; waiting has no slot, so it is named here.
+HOLD_LABEL = "Hold"
 
 
 def hud_lines(view: DecisionView) -> list[str]:
@@ -514,21 +543,48 @@ class GuestRecording:
     #: How a guest command is run. `adb` is the only implementation; it is a
     #: field so the lifecycle above can be tested without a device.
     run: RunGuestCommand = adb
+    #: The clock every time here is read from. A field for the same reason `run`
+    #: is one: the timing below is what a decision is placed in the video by,
+    #: and it has to be assertable without a device.
+    clock: Callable[[], float] = time.monotonic
+    #: When the recording began, on `clock`: `None` until `start`. Everything
+    #: written beside the video is timed from this instant.
+    anchor: float | None = field(default=None, init=False)
+    #: When each chunk began, on the same clock, in the order they were started.
+    #: Appended by the recording thread and read by the session's thread, which
+    #: is safe for a list of floats and is all that is asked of it: a reader
+    #: that misses the newest entry by a moment places that decision in the
+    #: chunk before, one seam early.
+    chunk_starts: list[float] = field(default_factory=list, init=False)
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     #: The guest path of every chunk started, in order, which is also the order
     #: they are pulled and removed in.
     _chunks: list[str] = field(default_factory=list, init=False)
 
-    def start(self) -> None:
+    def start(self) -> float:
+        """Begin recording, and answer the instant everything is timed from.
+
+        The anchor is taken here, immediately before the guest is asked to
+        record, because that is the earliest moment the host can name. What the
+        guest does next - an adb round trip and a `screenrecord` process start -
+        happens after it, so the video begins slightly *later* than the anchor
+        says and every `video_s` is early by that much. Measured against a
+        session's own seams this is a few hundred milliseconds, under a second;
+        the same order as the second already lost at each chunk seam, and the
+        reason nothing measured is ever read off this timing.
+        """
+        self.anchor = self.clock()
         self._thread = threading.Thread(target=self._record, daemon=True)
         self._thread.start()
+        return self.anchor
 
     def _record(self) -> None:
         """Record chunk after chunk until asked to stop. Never raises."""
         while not self._stop.is_set():
             guest_path = f"/sdcard/tower-rl-spectate-{len(self._chunks):03d}.mp4"
             self._chunks.append(guest_path)
+            self.chunk_starts.append(self.clock())
             try:
                 self.run(
                     self.instance,
@@ -571,6 +627,136 @@ class GuestRecording:
         return pulled
 
 
+@dataclass(frozen=True)
+class VideoPosition:
+    """Where a moment lands in a recording: overall, and inside which chunk.
+
+    Both are needed and neither substitutes for the other. `video_s` is time
+    since the recording began, which is what a human reads; `chunk`/`chunk_s`
+    is where the frame actually is, because a chunk seam loses about a second
+    of wall time that the concatenated video does not contain. A renderer
+    places a decision from the chunk pair, never from `video_s`.
+    """
+
+    video_s: float
+    chunk: int
+    chunk_s: float
+
+
+def video_position(now: float, anchor: float, chunk_starts: Sequence[float]) -> VideoPosition:
+    """Place `now` in the recording anchored at `anchor`, by chunk.
+
+    The chunk is the last one started at or before `now`; a moment before the
+    first chunk started - the window between the anchor and the guest process
+    coming up - is placed at the start of chunk zero rather than before it,
+    because there is no earlier frame for it to belong to.
+    """
+    video_s = max(0.0, now - anchor)
+    chunk = 0
+    began = anchor
+    for index, start in enumerate(chunk_starts):
+        if start > now:
+            break
+        chunk, began = index, start
+    return VideoPosition(
+        video_s=round(video_s, 3),
+        chunk=chunk,
+        chunk_s=round(max(0.0, now - began), 3),
+    )
+
+
+@dataclass
+class DecisionTrack:
+    """Every decision of a recorded session, timed against the video.
+
+    One JSON object per line beside the mp4, written as the decision happens
+    and flushed, so a session that ended in a crash still says what the agent
+    did up to it. This is not a second account of the run - the durable record
+    is still `EpisodeSummary` - it is the decision stream with a timestamp
+    added, which is the one thing a video needs and an episode record does not
+    carry: *when*.
+
+    The timing is the part to be honest about. Times are read from the same
+    monotonic clock the recording was anchored on, and the anchor is the moment
+    the host asked the guest to record, not the moment the guest captured its
+    first frame: the adb round trip and the `screenrecord` process start fall
+    between them, so the picture is a few hundred milliseconds - under a second
+    - behind what is written here, and the panel leads the video by that much.
+    That is the same order as the second lost at each chunk seam. Watching is a
+    human-facing path and nothing measured is read off this timing.
+    """
+
+    path: Path
+    #: The recording's anchor, on `clock`: what every time here is relative to.
+    anchor: float
+    #: The recording's chunk starts, on the same clock. The live list from
+    #: `GuestRecording`, so a chunk begun after this was built still counts.
+    chunk_starts: Sequence[float] = ()
+    #: What the game calls each upgrade slot, so a line says `Critical Chance`
+    #: and not only `attack:2`. Set once the bridge has been asked, which is
+    #: after the recording has already started.
+    labels: Sequence[UpgradeSlotLabel] = ()
+    clock: Callable[[], float] = time.monotonic
+    _file: IO[str] | None = field(default=None, init=False)
+
+    def label_for(self, action: str) -> str:
+        """The game's name for what this action bought, or `Hold` for a wait."""
+        family, _, index = action.partition(":")
+        if not index:
+            return HOLD_LABEL
+        for label in self.labels:
+            if label.family == family and str(label.index) == index:
+                return label.name or action
+        return action
+
+    def write(self, view: DecisionView) -> None:
+        """Append one decision, placed in the video."""
+        position = video_position(self.clock(), self.anchor, self.chunk_starts)
+        line: dict[str, Any] = {
+            "video_s": position.video_s,
+            "chunk": position.chunk,
+            "chunk_s": position.chunk_s,
+            "episode": view.episode,
+            "decision": view.decision,
+            "wave": view.wave,
+            "cash": round(view.cash, 1),
+            "health_fraction": round(view.health_fraction, 4),
+            "action": view.action,
+            "label": self.label_for(view.action),
+            # Game time, which is what the agent held the choice for; at 60 Hz
+            # that is also wall time, and at 120 it is half of it.
+            "held_s": round(view.game_ms / 1000, 3),
+            "hud": {
+                wire: round(float(view.hud[wire]), 4)
+                for wire in PANEL_HUD_WIRES
+                if wire in view.hud
+            },
+            "ended": view.done,
+        }
+        if view.done:
+            line["reason"] = view.termination.value if view.termination is not None else "unknown"
+        if self._file is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = self.path.open("w")
+        self._file.write(json.dumps(line) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+
+def decisions_beside(video: Path) -> Path:
+    """Where the decision track for `video` lives: beside it, on its stem.
+
+    The chunks are `<stem>-000.mp4`, `<stem>-001.mp4`, and the track is
+    `<stem>.decisions.jsonl` - one per session rather than one per chunk,
+    because each line already says which chunk it is in.
+    """
+    return video.with_name(f"{video.stem}.decisions.jsonl")
+
+
 # -- the session -----------------------------------------------------------
 
 
@@ -586,6 +772,7 @@ def spectate_session(
     actor_id: str,
     renderer: str,
     labels: Sequence[UpgradeSlotLabel] = (),
+    track: DecisionTrack | None = None,
 ) -> None:
     """Play episodes, drawing the panel once per decision, until told to stop.
 
@@ -605,6 +792,11 @@ def spectate_session(
 
     def observe(view: DecisionView) -> None:
         spectator.observe(view)
+        # Written before the panel is drawn: a line the video can be read
+        # against is worth more than the redraw that follows it, and the draw
+        # is what raises the stop.
+        if track is not None:
+            track.write(view)
         panel.draw(
             panel_lines(
                 spectator,
@@ -644,6 +836,7 @@ def session_record(
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
     live_ranges: Mapping[str, Sequence[float]] | None = None,
+    recording: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The same per-episode rows the fleet writes, for the episodes just played.
 
@@ -679,6 +872,12 @@ def session_record(
             name: dict(zip(("min", "max", "first", "last"), seen, strict=True))
             for name, seen in sorted((live_ranges or {}).items())
         },
+        # The recording this session left, if it left one: where the chunks
+        # and the decision track are, and the monotonic instant both are timed
+        # from. The anchor is here rather than only in the track because it is
+        # what says how the two files line up, and a record read afterwards is
+        # where that question is asked.
+        **({"recording": dict(recording)} if recording is not None else {}),
         "episodes": [episode_record(index, summary) for index, summary in enumerate(summaries)],
     }
 
@@ -784,6 +983,7 @@ def run(arguments: argparse.Namespace) -> int:
         windowed=True,
     )
     recording: GuestRecording | None = None
+    track: DecisionTrack | None = None
     started = time.monotonic()
     summaries: list[EpisodeSummary] = []
     spectator = Spectator()
@@ -794,7 +994,14 @@ def run(arguments: argparse.Namespace) -> int:
         raise_frame_rate(instance, arguments.frame_rate_hz)
         if arguments.record is not None:
             recording = GuestRecording(instance, arguments.record)
-            recording.start()
+            # The anchor comes back from `start` rather than being read off the
+            # clock again here: what the video is timed from is the instant the
+            # guest was asked to record, and only `start` knows it.
+            track = DecisionTrack(
+                path=decisions_beside(arguments.record),
+                anchor=recording.start(),
+                chunk_starts=recording.chunk_starts,
+            )
 
         client = InstrumentedBridgeClient(
             "127.0.0.1",
@@ -810,6 +1017,10 @@ def run(arguments: argparse.Namespace) -> int:
         # adapter's own initiative may be issued: the labels are constant for
         # the build, so once is all this session needs.
         labels = adapter.slot_labels()
+        if track is not None:
+            # The rows are read after the recording starts, so the track is
+            # told their names now rather than being built with them.
+            track.labels = labels
         environment = InstrumentedRunEnvironment(
             port=adapter,
             builder=RunStateBuilder(profile_id=expected.profile_id),
@@ -817,7 +1028,9 @@ def run(arguments: argparse.Namespace) -> int:
             decision_cadence=decision_cadence_from(arguments),
         )
         try:
-            watch(environment, policy, spectator, summaries, arguments, identity, labels)
+            watch(
+                environment, policy, spectator, summaries, arguments, identity, labels, track
+            )
         finally:
             adapter.release()
             client.close()
@@ -826,9 +1039,13 @@ def run(arguments: argparse.Namespace) -> int:
         # and `summaries` is owned here rather than returned, so it holds them.
         print("stopped", flush=True)
     finally:
+        if track is not None:
+            track.close()
         if recording is not None:
             for path in recording.finish():
                 print(f"recording: {path}", flush=True)
+            if track is not None and track.path.exists():
+                print(f"decisions: {track.path}", flush=True)
         tear_down_instance(instance)
 
     if arguments.output_directory is not None and summaries:
@@ -841,6 +1058,21 @@ def run(arguments: argparse.Namespace) -> int:
             wall_seconds=time.monotonic() - started,
             labels=labels,
             live_ranges=spectator.live_ranges,
+            recording=(
+                {
+                    "video": str(arguments.record),
+                    "decisions": str(track.path),
+                    "anchor_monotonic": round(track.anchor, 3),
+                    # Each chunk's start as an offset from the anchor, which is
+                    # what the seams cost: the gap between one chunk's start
+                    # and the last is a chunk's length plus the lost second.
+                    "chunk_start_offsets_s": [
+                        round(start - track.anchor, 3) for start in recording.chunk_starts
+                    ],
+                }
+                if track is not None and recording is not None
+                else None
+            ),
         )
         output = arguments.output_directory / f"{instance.serial}.json"
         output.write_text(json.dumps(record, indent=2))
@@ -858,6 +1090,7 @@ def watch(
     arguments: argparse.Namespace,
     identity: dict[str, object],
     labels: Sequence[UpgradeSlotLabel] = (),
+    track: DecisionTrack | None = None,
 ) -> None:
     """Run the session inside whichever panel was asked for, and hold at the end.
 
@@ -882,6 +1115,7 @@ def watch(
             actor_id=actor_id,
             renderer=arguments.renderer,
             labels=labels,
+            track=track,
         )
         panel.draw(
             panel_lines(

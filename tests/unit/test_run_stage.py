@@ -57,7 +57,7 @@ esac
 
 #: `timeout` is resolved through `PATH` like every other tool the script runs,
 #: so the suite can put one in front of it: this records the real invocation —
-#: the production bound is 600s and no test can wait that out — and then applies
+#: the production bound is 120s and no test can wait that out — and then applies
 #: a bound of its own through the real binary.
 TIMEOUT_STUB = """#!/usr/bin/env bash
 set -uo pipefail
@@ -402,10 +402,10 @@ def test_a_cleanup_that_never_returns_is_given_up_on_and_the_rest_still_runs(
     result = run_stage(shims, str(stage))
 
     assert result.returncode != 0
-    assert "cleanup: emulator-5556 did not finish cleaning up within 600s" in result.stdout
+    assert "cleanup: emulator-5556 did not finish cleaning up within 120s" in result.stdout
     # The bound the supervisor actually asked for, whatever the suite shortened
-    # it to: a TERM at 600s and a KILL ten seconds after that.
-    assert "timeout -k 10 600" in shims.adb_calls
+    # it to: a TERM at 120s and a KILL ten seconds after that.
+    assert "timeout -k 10 120" in shims.adb_calls
     # The instance that hung is still killed, the next one is still cleaned,
     # and the host is still verified.
     assert "emu kill" in shims.adb_calls

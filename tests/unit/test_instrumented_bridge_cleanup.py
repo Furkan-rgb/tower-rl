@@ -1,4 +1,7 @@
-"""What `instrumented_bridge.sh cleanup` reports when a post-condition fails.
+"""What `instrumented_bridge.sh` reports when a post-condition or a reading fails.
+
+Mostly `cleanup`, which is the step that decides whether an instance was left as
+it was found; `verify` appears once, for the one thing it does decide.
 
 Cleanup is the one step that decides whether an instance was left as it was
 found, and its readbacks are only worth having if a caller can act on them.
@@ -53,9 +56,13 @@ case "$*" in
   *"grep -c libunity.so"*) reading mounts ;;
   *"rm -f"*) ;;
   *"forward --remove"*) ;;
+  *"bridge_artifacts: none"*)
+    [ -e "$state/artifacts_survive" ] || echo "bridge_artifacts: none"
+    ;;
   *"test ! -e"*)
     [ -e "$state/artifacts_survive" ] || echo "bridge_artifacts: removed"
     ;;
+  *"shell ip -o -4 addr show"*) echo "1: lo    inet 127.0.0.1/8 scope host lo" ;;
   *) echo "stub adb: unexpected $*" >&2; exit 1 ;;
 esac
 """
@@ -76,11 +83,17 @@ class Device:
     def calls(self) -> str:
         return (self.state / "calls").read_text()
 
-    def cleanup(self) -> subprocess.CompletedProcess[str]:
+    def run(self, command: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(BRIDGE), "cleanup", "emulator-5556"],
+            [str(BRIDGE), command, "emulator-5556"],
             env=self.environment, capture_output=True, text=True, timeout=60, check=False,
         )
+
+    def cleanup(self) -> subprocess.CompletedProcess[str]:
+        return self.run("cleanup")
+
+    def verify(self) -> subprocess.CompletedProcess[str]:
+        return self.run("verify")
 
 
 @pytest.fixture
@@ -180,3 +193,15 @@ def test_an_installer_that_is_not_play_fails_the_cleanup(device: Device) -> None
 
     assert result.returncode != 0
     assert "installerPackageName is com.example.sideload, not com.android.vending" in result.stderr
+
+
+def test_verify_fails_when_a_reading_comes_back_empty(device: Device) -> None:
+    """A blank reading is not a confirmation, and must not be reported as one."""
+    assert device.verify().returncode == 0
+    device.reads(version_code="")
+
+    result = device.verify()
+
+    assert result.returncode != 0
+    assert "versionCode read back empty on emulator-5556" in result.stderr
+    assert "verify_checks: 1 failed on emulator-5556" in result.stderr

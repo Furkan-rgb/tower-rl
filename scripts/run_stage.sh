@@ -60,8 +60,11 @@ verify_timeout=30
 #: a dozen adb round trips against a guest that may have stopped answering, and
 #: teardown ignores the signals that would otherwise have freed the supervisor
 #: from a hung one, so the bound is what keeps "ignore signals" from meaning
-#: "hang forever". Generous: a healthy instance's cleanup is seconds.
-cleanup_timeout=600
+#: "hang forever". A healthy instance's cleanup is seconds, so this is already
+#: generous, and it is what holds the worst case a whole fleet can spend
+#: uninterruptible — the grace period plus one bound an instance — near half an
+#: hour rather than over an hour.
+cleanup_timeout=120
 #: How long the stage command is given to tear its own fleet down after SIGINT,
 #: before it is killed outright. A seven-instance fleet's teardown is minutes,
 #: not seconds: each instance is force-stopped, unmounted and re-verified.

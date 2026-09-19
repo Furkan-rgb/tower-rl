@@ -493,7 +493,7 @@ stage m2-run2-train-seed1: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12
 
 Once the teardown has begun, `SIGINT` and `SIGTERM` are **ignored**, so a second
 Ctrl-C cannot leave the device half cleaned; each instance's cleanup is bounded
-at 600 s so that ignoring them cannot hang the stage. `SIGKILL` of the
+at 120 s so that ignoring them cannot hang the stage. `SIGKILL` of the
 supervisor is the one signal that abandons the teardown, and it leaves the
 cleanup and the verification to be run by hand.
 

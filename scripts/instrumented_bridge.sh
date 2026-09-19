@@ -111,8 +111,15 @@ libunity_mount_count() {
 #: the instance was clean when it was not.
 failures=0
 fail() {
-  echo "cleanup failed: $1" >&2
+  echo "check failed: $1" >&2
   failures=$((failures + 1))
+}
+
+#: A reading that came back empty is not a reading, and a report of one is
+#: worse than no report: `verify` printing `versionCode=` at exit 0 says the
+#: identity was confirmed when the device answered nothing at all.
+require_reading() {
+  [ -n "$2" ] || fail "$1 read back empty on $serial"
 }
 
 target_sha256() {
@@ -213,9 +220,21 @@ target="$(lib_path)"
 case "$command" in
   verify)
     report_identity "$target"
+    # `verify` reports rather than decides — except about its own readings. An
+    # empty one means the device answered nothing, and reporting that as
+    # identity would be a confirmation nobody made.
+    require_reading libunity_sha256 "$identity_sha256"
+    require_reading versionName "$identity_version_name"
+    require_reading versionCode "$identity_version_code"
+    require_reading installerPackageName "$identity_installer"
     device shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | grep -v ' lo ' |
       sed 's/^/routable_interface: /' || echo "routable_interfaces: none"
-    su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: none"
+    su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: none" ||
+      fail "bridge artifacts survive on $serial"
+    if [ "$failures" -gt 0 ]; then
+      echo "verify_checks: $failures failed on $serial" >&2
+      exit 1
+    fi
     ;;
 
   deploy)

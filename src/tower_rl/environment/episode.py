@@ -128,12 +128,13 @@ class RunTransition:
     #: Game time the environment *requested*, not measured: this build exposes no
     #: live in-run clock (see M1B-E003), so the honest record is the request.
     requested_game_ms: int
-    #: Internal advances this one decision covers: one for an ordinary
-    #: decision, more when forced WAIT slices were advanced through to reach
-    #: the next choice point (ADR 0009), and zero for a decision the
-    #: environment refused before the game was touched - a masked action, or a
-    #: purchase that was never confirmed.
-    advances: int = 1
+    #: Times the world was advanced for this one decision: one for an ordinary
+    #: wait, more when forced WAIT slices were advanced through to reach the
+    #: next choice point (ADR 0009), and zero when the decision moved nothing -
+    #: a masked action, an unconfirmed purchase, or a confirmed purchase whose
+    #: settled state was already worth deciding at. Never more than the port
+    #: was actually asked to advance.
+    advances: int = 0
     #: Measured game time across the same span: the game's own round clock,
     #: summed over its advances. Beside `requested_game_ms`, which is a budget.
     game_ms: float = 0.0

@@ -709,3 +709,37 @@ def test_the_weighted_loss_and_the_unweighted_td_error_are_reported_apart() -> N
     # none did it is absent rather than zero.
     fit = report.mean_recent_value_fit_correlation
     assert fit is None or -1.0 <= fit <= 1.0
+
+
+def test_a_zero_decision_episode_is_collected_as_an_episode_not_a_failure() -> None:
+    """Under choice points a run can die before it ever offers a purchase.
+
+    The port delivered that episode, so the collection loop counts it as an
+    episode with no decisions in it - not as a port failure, which is what
+    would eventually withdraw the actor (ADR 0009).
+    """
+
+    class DiesBeforeItsFirstChoice(FakeRunPort):
+        """The first episode ends before any upgrade becomes affordable."""
+
+        def begin_episode(self) -> None:
+            super().begin_episode()
+            if self.episodes == 1:
+                # One frame of damage ends it, long before cash reaches a price.
+                self.cash = 0.0
+                self.health = 0.01
+
+    training = _run()
+    training.actors[0].environment = InstrumentedRunEnvironment(
+        port=DiesBeforeItsFirstChoice(damage_per_second=2.0, start_cash=0.0),
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+
+    report = training.run()
+
+    assert report.failed_episodes == 0, "the port delivered every episode it was asked for"
+    first = report.collected[0]
+    assert first.summary.decisions == 0 and first.summary.valid
+    assert report.episodes == len(report.collected)
+    assert report.decisions >= 150, "the budget is still spent in decisions"

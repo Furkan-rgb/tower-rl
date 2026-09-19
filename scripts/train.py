@@ -202,11 +202,16 @@ def build_arm(
     # one place that knows which schemas this code is. A resumed segment gets a
     # run id and a directory of its own - it must not overwrite the resume point
     # it was started from - and says which checkpoint it continues instead.
+    # The cadence is the run's, not an instance's: one argument fixes it for
+    # every actor, for the identity its checkpoints are keyed on and for the
+    # snapshot it records. Reading it back off an instance would let a fleet
+    # whose instances somehow disagreed name one of them and say nothing.
+    decision_cadence = decision_cadence_from(arguments)
     identity = RunIdentity.started_now(
         name,
         profile_id=profile_id,
         source_revision=revision,
-        decision_cadence=instances[0].environment.decision_cadence,
+        decision_cadence=decision_cadence,
     )
     run_id = identity.run_id
     run_dir = parent / run_id
@@ -269,7 +274,7 @@ def build_arm(
         learner=learner,
         network=network,
         cadence=instances[0].environment.cadence,
-        decision_cadence=instances[0].environment.decision_cadence,
+        decision_cadence=decision_cadence,
         burn_in=burn_in,
         stride=stride,
         device=device,

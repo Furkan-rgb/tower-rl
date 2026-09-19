@@ -71,6 +71,12 @@ every file written before this ADR is one.
   `decisions` counts choice points and `advances` counts the slices played
   through, per episode and per wave, so a run collected under either cadence can
   be read in the other's terms.
+- **An episode can now take no decision at all.** A run that dies before it
+  ever offers a purchase is the world ending, not the pipeline breaking: the
+  reset hands back the terminal state, and the episode is a valid, scored,
+  zero-decision episode that submits nothing to replay. The evaluator counts it
+  and its final wave; the collection loop counts it as an episode rather than a
+  port failure.
 - **The budget unit moves to game time in a follow-up.** Spending a budget in
   decisions was already a proxy for spending it in experience; with forced
   slices gone, a decision's game-time cost varies by an order of magnitude

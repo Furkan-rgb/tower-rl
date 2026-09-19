@@ -80,9 +80,24 @@ def identity_hash(identity: CheckpointIdentity) -> str:
     same code and profile are legitimately interchangeable for a resume, and a
     record that only carried a path would stop meaning anything the moment the
     file was copied.
+
+    `decision_cadence` is deliberately not hashed. This token names a run, and a
+    run collects under one cadence from beginning to end, so the field can never
+    distinguish two identities that share a run id - while hashing it would
+    re-key every checkpoint and record written before the field existed, and the
+    tokens already cited in selection records and reports would stop resolving.
+    Using a checkpoint under the wrong cadence is refused by
+    `incompatibilities`, which says which field differs; that is the instrument
+    for the refusal, and this is the instrument for naming the run.
     """
-    payload = json.dumps(asdict(identity), sort_keys=True)
+    payload = json.dumps(_hashed_fields(identity), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _hashed_fields(identity: CheckpointIdentity) -> dict[str, Any]:
+    fields = asdict(identity)
+    del fields["decision_cadence"]
+    return fields
 
 
 @dataclass(frozen=True)

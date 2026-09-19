@@ -300,10 +300,12 @@ class _Advance:
     #: action's own outcome so the episode is classified as a pipeline failure
     #: rather than as an ordinary wait.
     failure: ActionOutcome | None = None
-    #: Measured round-clock game time across this advance, and how many
-    #: advances it covers.
+    #: Measured round-clock game time across this advance, and how many times
+    #: the world was actually advanced to produce it. Zero for the settles that
+    #: advance nothing - a confirmed purchase, the wall deadline - so the count
+    #: a transition carries can never exceed the advances the port made.
     round_ms: float = 0.0
-    advances: int = 1
+    advances: int = 0
 
     def followed_by(self, step: _Advance) -> _Advance:
         """This span extended by the advance that continued it."""
@@ -470,7 +472,10 @@ class InstrumentedRunEnvironment:
             advanced = self._advance_to_choice_point(state, action, purchase_result)
         except _DeathBoundaryUnresolved as unresolved:
             # A death boundary the world would not settle is a pipeline failure,
-            # not a wait: nothing here can say what the game did next.
+            # not a wait: nothing here can say what the game did next. Only the
+            # purchase settle can raise this far - an advance inside the span
+            # returns the failure with the advance it really made - and a
+            # purchase settle advances nothing, so this span is empty.
             return self._finish(
                 state, None, action, unresolved.outcome, started, 0, (), (unresolved.reason,),
                 advances=0, game_ms=0.0,
@@ -508,24 +513,14 @@ class InstrumentedRunEnvironment:
         inadmissible, because a span may not be built across a state the record
         cannot describe.
         """
-        span = self._advance(state, action, purchase_result)
+        span = self._advance_to_decision(state, action, purchase_result)
         if self.decision_cadence is DecisionCadence.EVERY_SLICE:
             return span
         while self._span_continues(span):
             assert span.state is not None
             self._enter(span.state)
-            span = span.followed_by(self._advance(span.state, WAIT))
+            span = span.followed_by(self._advance_to_decision(span.state, WAIT))
         return span
-
-    def _advance(
-        self,
-        state: RunState,
-        action: RunActionId,
-        purchase_result: AdvanceResultLike | None = None,
-    ) -> _Advance:
-        """One advance of a decision span, counted against the episode."""
-        self._tally.charge_span_advance()
-        return self._advance_to_decision(state, action, purchase_result)
 
     def _span_continues(self, span: _Advance) -> bool:
         """Whether the environment may withhold the decision and advance again."""
@@ -542,26 +537,23 @@ class InstrumentedRunEnvironment:
     def _first_choice_point(self, state: RunState) -> RunState:
         """Advance a freshly begun run to the first state worth deciding at.
 
-        The same loop `step` runs, from the state `begin_episode` left. It
-        fails rather than returns when the run ends or goes invalid on the way:
-        an episode whose first observation is not a state a policy can act in
-        never began, exactly as one that never reached an active run did not.
+        The same loop `step` runs, from the state `begin_episode` left. A run
+        that ends before it ever offers a choice is the *world* ending, not the
+        pipeline breaking: the terminal state is returned and the episode is an
+        ordinary, valid one that took no decision. Only a port that produced no
+        state at all leaves nothing to return, and that is the same failure a
+        run which never became active is.
         """
         if self.decision_cadence is DecisionCadence.EVERY_SLICE:
             return state
-        span = _Advance(state, (), 0, (), advances=0)
+        span = _Advance(state, (), 0, ())
         while self._span_continues(span):
             assert span.state is not None
             self._enter(span.state)
-            span = span.followed_by(self._advance(span.state, WAIT))
-        if (
-            span.reasons
-            or span.state is None
-            or not span.state.valid
-            or span.state.lifecycle != "active"
-        ):
-            detail = "; ".join(span.reasons) or "the run ended"
-            raise RunPortError(f"the run reached no choice point: {detail}")
+            span = span.followed_by(self._advance_to_decision(span.state, WAIT))
+        if span.state is None:
+            detail = "; ".join(span.reasons) or "the port returned no state"
+            raise RunPortError(f"the run reached no first observation: {detail}")
         self._enter(span.state)
         return span.state
 
@@ -615,6 +607,7 @@ class InstrumentedRunEnvironment:
                 frame_game_ms=self.cadence.frame_game_ms,
                 health_change_fraction=self.cadence.health_change_fraction,
             )
+        self._tally.charge_span_advance()
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
         self._tally.round_ms += result.round_ms
@@ -632,55 +625,74 @@ class InstrumentedRunEnvironment:
             if result.reason == _BRIDGE_WALL_CEILING_REASON
             else ()
         )
-        if result.outcome != "confirmed":
-            # An advance that cannot say how far it got leaves the record unable
-            # to describe what happened, exactly as an unconfirmed purchase does.
-            # It used to be ignored, which quietly attributed a bridge failure to
-            # the policy's WAIT. Whether it also ended the run is unknown, so the
-            # lower bound stays in play here exactly as it always has.
-            clock_fidelity = self._round_clock_fidelity(advance_ended_run=False)
-            return _Advance(
-                self._read_state(),
-                (),
-                budget,
-                (f"advance was not confirmed: {result.reason}",) + clock_fidelity + truncated,
-                failure=_advance_failure(result.outcome),
-                round_ms=result.round_ms,
-            )
+        try:
+            if result.outcome != "confirmed":
+                # An advance that cannot say how far it got leaves the record unable
+                # to describe what happened, exactly as an unconfirmed purchase does.
+                # It used to be ignored, which quietly attributed a bridge failure to
+                # the policy's WAIT. Whether it also ended the run is unknown, so the
+                # lower bound stays in play here exactly as it always has.
+                clock_fidelity = self._round_clock_fidelity(advance_ended_run=False)
+                return _Advance(
+                    self._read_state(),
+                    (),
+                    budget,
+                    (f"advance was not confirmed: {result.reason}",) + clock_fidelity + truncated,
+                    failure=_advance_failure(result.outcome),
+                    round_ms=result.round_ms,
+                    advances=1,
+                )
 
-        # The advance already carries the state the world settled at when it
-        # stopped. Reading again would cost a second round trip per decision and
-        # could only show a later state than the one the result describes.
-        observed = self._build_state(result.state)
-        # The round clock resets with the round, so the one advance that ends a
-        # run - whether the state vanished outright or settled terminal - always
-        # reports less round time than the game time it spent getting there.
-        # That is the fidelity check's one known-legitimate zero, so this
-        # advance alone is exempted from the lower bound (see
-        # `_round_clock_fidelity`); the upper bound stays in force.
-        ended = observed is None or observed.terminal or observed.lifecycle != "active"
-        clock_fidelity = self._round_clock_fidelity(advance_ended_run=ended)
-        if observed is None:
+            # The advance already carries the state the world settled at when it
+            # stopped. Reading again would cost a second round trip per decision and
+            # could only show a later state than the one the result describes.
+            observed = self._build_state(result.state)
+            # The round clock resets with the round, so the one advance that ends a
+            # run - whether the state vanished outright or settled terminal - always
+            # reports less round time than the game time it spent getting there.
+            # That is the fidelity check's one known-legitimate zero, so this
+            # advance alone is exempted from the lower bound (see
+            # `_round_clock_fidelity`); the upper bound stays in force.
+            ended = observed is None or observed.terminal or observed.lifecycle != "active"
+            clock_fidelity = self._round_clock_fidelity(advance_ended_run=ended)
+            if observed is None:
+                return _Advance(
+                    None,
+                    (DecisionEvent.RUN_ENDED,),
+                    budget,
+                    self._divergence(result.reason, (DecisionEvent.RUN_ENDED,))
+                    + clock_fidelity
+                    + truncated,
+                    round_ms=result.round_ms,
+                    advances=1,
+                )
+            events = self._events_between(state, observed)
             return _Advance(
-                None,
-                (DecisionEvent.RUN_ENDED,),
+                observed,
+                events or (DecisionEvent.SLICE_ELAPSED,),
                 budget,
-                self._divergence(result.reason, (DecisionEvent.RUN_ENDED,))
+                validate_transition(state, observed)
+                + self._divergence(result.reason, events)
                 + clock_fidelity
                 + truncated,
                 round_ms=result.round_ms,
+                advances=1,
             )
-        events = self._events_between(state, observed)
-        return _Advance(
-            observed,
-            events or (DecisionEvent.SLICE_ELAPSED,),
-            budget,
-            validate_transition(state, observed)
-            + self._divergence(result.reason, events)
-            + clock_fidelity
-            + truncated,
-            round_ms=result.round_ms,
-        )
+        except _DeathBoundaryUnresolved as unresolved:
+            # A boundary the world would not settle, reached *inside* a span:
+            # the advance that found it really happened, so the transition says
+            # so rather than reporting a span of nothing. The episode is
+            # classified from the failure exactly as it is when the boundary is
+            # met on the first advance of a decision.
+            return _Advance(
+                None,
+                (),
+                budget,
+                (unresolved.reason,),
+                failure=unresolved.outcome,
+                round_ms=result.round_ms,
+                advances=1,
+            )
 
     def _round_clock_fidelity(self, *, advance_ended_run: bool) -> tuple[str, ...]:
         """Refuse an episode whose world ran faster or slower than budgeted.

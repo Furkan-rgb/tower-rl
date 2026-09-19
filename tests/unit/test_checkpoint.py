@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -276,3 +276,28 @@ def test_fingerprint_handles_the_integer_keys_a_stepped_optimizer_uses() -> None
 
     assert digest == fingerprint(state), "the digest must be stable"
     assert len(digest) == 64
+
+
+def test_run_1_still_hashes_to_the_token_its_selection_record_cites() -> None:
+    """The identity token names a run, so adding a field must not re-key it.
+
+    `8344a482eede` is what run 1's own `selection.json` cites for
+    `stacked-dqn-20260918-215839-e3c6ba`, written before the decision cadence
+    was part of an identity. A token that changed under it would strand every
+    record and report that already quotes one, and it could not tell two
+    identities apart anyway: a run collects under one cadence throughout. The
+    cross-cadence refusal is `incompatibilities`, not this.
+    """
+    run_one = CheckpointIdentity(
+        run_id="stacked-dqn-20260918-215839-e3c6ba",
+        backbone="stacked-dqn",
+        profile_id="tower-play-29.0.3-rooted-readonly-v1",
+        observation_schema="observation-v1",
+        action_schema="run-action-v1",
+        reward_schema="reward-v1",
+        source_revision="3c494b7",
+    )
+
+    assert identity_hash(run_one) == "8344a482eede"
+    assert identity_hash(replace(run_one, decision_cadence="choice-points")) == "8344a482eede"
+    assert identity_hash(replace(run_one, profile_id="other")) != "8344a482eede"

@@ -106,6 +106,11 @@ the wave and episode tallies exactly as a decided one is; only the decision is
 withheld. 68% of run 1's decisions were such forced slices (`M2-E004`); see
 [ADR 0009](adr/0009-decisions-at-choice-points.md).
 
+A run that ends before it offers any purchase is the world ending, not the
+pipeline breaking: the reset returns the terminal state and the episode is an
+ordinary valid episode that took no decision and submits nothing to replay.
+Only a port that produces no state at all fails the reset.
+
 **`every-slice` is the legacy mode.** `DecisionCadence.EVERY_SLICE`, selected by
 `--decision-cadence every-slice`, asks at every cadence stop, which is what run
 1 collected under. It exists to reproduce run 1's protocol and to replay its
@@ -126,9 +131,10 @@ record is the request, `M1B-E003`), invalid reasons, and
 states valid, a next state present, and no invalid reason.
 
 A transition covers the span between two decisions, which under choice points
-may be several advances. `advances` says how many — one for an ordinary
-decision, zero for one the environment refused before the game was touched — and
-`game_ms` is the measured round-clock game time across them; `events` names
+may be several advances. `advances` says how many the world was actually given
+— zero for a decision that moved nothing, such as a purchase whose settled state
+was already a choice point — and `game_ms` is the measured round-clock game time
+across them; `events` names
 every cadence condition the span met, each once, in the order they were first
 met. The reward is the wave progress across the whole span, so a decision held
 through two wave boundaries while nothing was affordable is paid for both. A run

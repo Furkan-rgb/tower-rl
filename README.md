@@ -19,7 +19,7 @@ tree. The validated runtime is the Play-installed 29.0.3 build on an x86_64 API
 several `-read-only` instances share.
 
 A fleet of actors collects concurrently, a `stacked-dqn` learner trains against
-one prioritized sequence replay under a decision budget, and runs are
+one prioritized sequence replay under a game-time budget, and runs are
 checkpointed and evaluated exploration-free. Multi-actor scaling, renderer
 equivalence, game-time fidelity and frame-rate limits are all measured; every
 claim above has a dated entry in [docs/experiments.md](docs/experiments.md).
@@ -70,7 +70,7 @@ uv run python scripts/run_actors.py \
 
 # a training run on that fleet
 uv run --extra tracking python scripts/train.py \
-  --actors 4 --renderer host --budget-decisions 100000
+  --actors 4 --renderer host --budget-game-seconds 100000
 ```
 
 For a new workstation, start with the preflight and AVD helpers in

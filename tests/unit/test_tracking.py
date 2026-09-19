@@ -44,7 +44,7 @@ def tracked_session(
     tracker: RecordingTracker,
     **overrides: str,
 ) -> dict[str, Any]:
-    settings = {"--budget-decisions": "120", **overrides}
+    settings = {"--budget-game-seconds": "600", **overrides}
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
@@ -88,14 +88,15 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         report = train.train_session(
-            arguments(tmp_path, **{"--budget-decisions": "120"}),
+            arguments(tmp_path, **{"--budget-game-seconds": "600"}),
             fleet(),
             profile_id=PROFILE,
             revision="test",
             device=torch.device("cpu"),
         )
 
-    assert report["arm"]["decisions"] >= 120
+    assert report["arm"]["game_seconds"] >= 600
+    assert report["arm"]["decisions"] > 0
     assert report["arm"]["learning_curve"]
 
 
@@ -157,12 +158,21 @@ def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -
 
 
 def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
+    """The step stays decisions: one monotone axis every series shares.
+
+    The budget is game time, and the game time each point sits at travels as a
+    metric beside it (`learner_game_seconds`, `episode_game_seconds_cumulative`)
+    - so the same curves can be read in the unit the run was spent in without
+    the store holding two step axes.
+    """
     steps = [point.decisions for point in recorded.points]
 
     assert steps == sorted(steps) and steps[0] > 0
-    # A point sits where the budget had actually been spent to, which is past
-    # the limit by whatever the last episode needed to reach a classified end.
-    assert steps[-1] >= 120
+    learner = [
+        point for point in recorded.points if "learner_game_seconds" in point.metrics
+    ]
+    assert learner, "the budget position is readable beside the decision axis"
+    assert learner[-1].metrics["learner_game_seconds"] >= 600
     evaluations = [
         point for point in recorded.points if "eval_mean_final_wave" in point.metrics
     ]
@@ -205,7 +215,7 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
     assert params["backbone"] == "stacked-dqn"
     for key in (
         "seed",
-        "budget_decisions",
+        "budget_game_seconds",
         "gradient_steps_per_decision",
         "sequence_length",
         "burn_in",
@@ -419,10 +429,10 @@ def per_episode(tmp_path_factory: pytest.TempPathFactory) -> tuple[RecordedRun, 
         tmp_path_factory.mktemp("episodes"),
         tracker,
         **{
-            "--budget-decisions": EPISODE_BUDGET,
+            "--budget-game-seconds": EPISODE_BUDGET,
             # Numbered checkpoints on, so the artifacts and the metrics can be
             # checked to land on the one run.
-            "--checkpoint-every-decisions": "400",
+            "--checkpoint-every-game-seconds": "400",
             # The episode series is the point here; mid-run evaluation only adds
             # episodes that are not collection.
             "--evaluate-every-episodes": "0",

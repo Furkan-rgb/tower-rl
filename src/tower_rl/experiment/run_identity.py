@@ -141,7 +141,7 @@ def resolved_config(
     """
     return {
         "backbone": name,
-        "budget_decisions": arguments.budget_decisions,
+        "budget_game_seconds": arguments.budget_game_seconds,
         # The checkpoint this run continues, as `learning.checkpoint.ResumeState`
         # cites it: the file and the identity hash of the run that wrote it.
         # None for a run that started from scratch. The budget beside it is the
@@ -193,7 +193,7 @@ def resolved_config(
         "evaluate_every_episodes": arguments.evaluate_every_episodes,
         "evaluation_episodes": arguments.evaluation_episodes,
         "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
-        "checkpoint_every_decisions": config.checkpoint_every_decisions,
+        "checkpoint_every_game_seconds": config.checkpoint_every_game_seconds,
         # The parameter lag the fleet acted under, which a later reading of the
         # collection curve needs as much as the replay ratio.
         "parameter_sync_episodes": config.parameter_sync_episodes,
@@ -202,11 +202,12 @@ def resolved_config(
         "frame_game_ms": cadence.frame_game_ms,
         "max_quiet_game_ms": cadence.max_quiet_game_ms,
         "health_change_fraction": cadence.health_change_fraction,
-        # Which of those cadence stops the policy was actually asked about. The
-        # unit `budget_decisions` is spent in depends on it: run 1 counted
-        # slices, a choice-point run counts choices (ADR 0009).
+        # Which of those cadence stops the policy was actually asked about.
+        # What a decision means depends on it: run 1 counted slices, a
+        # choice-point run counts choices (ADR 0009) - which is why the budget
+        # beside it is game time, a unit the cadence cannot move.
         "decision_cadence": str(decision_cadence),
-        "block_decisions": arguments.block_decisions,
+        "block_game_seconds": arguments.block_game_seconds,
         "device": str(device),
         # The guest rate this arm actually collected at: a fleet run raises
         # every instance to it, and a single actor's is whatever the operator

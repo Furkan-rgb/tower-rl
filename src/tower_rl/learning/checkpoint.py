@@ -27,8 +27,19 @@ from tower_rl.environment.run_environment import DecisionCadence
 #: optimizer moments and the target network travel inside `backbone_state`, and
 #: the decision counter inside `progress` - which is why version 1 is still read
 #: rather than refused: the first M2 run's checkpoints are resumable.
-CHECKPOINT_FORMAT_VERSION = 2
-SUPPORTED_FORMAT_VERSIONS = (1, 2)
+#: Version 3 added `environment_game_ms`: the budget is cumulative game time
+#: across the fleet, so the counter a resume continues the budget from is game
+#: time rather than decisions. Versions 1 and 2 are still read - their weights,
+#: optimizer moments and decision counter are all still there, and every
+#: evaluation path wants exactly those - but they record no game time, so a
+#: resume that continues a game-time budget refuses them by name rather than
+#: reading their spent budget as zero.
+CHECKPOINT_FORMAT_VERSION = 3
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)
+#: The first format that records game time. Named rather than compared against
+#: the current version, so a later format does not silently make version 3
+#: files unresumable.
+GAME_TIME_FORMAT_VERSION = 3
 
 
 class CheckpointError(RuntimeError):
@@ -104,17 +115,26 @@ def _hashed_fields(identity: CheckpointIdentity) -> dict[str, Any]:
 class TrainingProgress:
     """The counters a restart resumes from, and what the run last acted at.
 
-    The three counters are what a resume reads: the budget position, and the
-    episodes and optimisation steps behind it. `epsilon` and `importance_beta`
-    are not restored from here and must not be - both are functions of
-    `environment_decisions`, and a run derives them from it again, so a stored
-    value would silently outrank a changed anneal horizon. They are recorded
-    because a checkpoint should say what the run was actually acting and
-    sampling at when it was written.
+    The counters are what a resume reads: the budget position
+    (`environment_game_ms`), and the decisions, episodes and optimisation steps
+    behind it. `epsilon` and `importance_beta` are not restored from here and
+    must not be - epsilon is a function of `environment_decisions` and beta a
+    function of the budget position, and a run derives both again, so a stored
+    value would silently outrank a changed anneal horizon or a changed budget.
+    They are recorded because a checkpoint should say what the run was actually
+    acting and sampling at when it was written.
+
+    `environment_decisions` stays beside the game time rather than being
+    replaced by it: the replay ratio and the exploration anneal are both
+    counted in decisions by design, so a resumed run needs the decision counter
+    to put itself back on those schedules.
     """
 
     optimisation_steps: int = 0
     environment_decisions: int = 0
+    #: The budget position: measured game time across every actor. Zero in a
+    #: version 1 or 2 file, which was written when the budget was decisions.
+    environment_game_ms: float = 0.0
     episodes: int = 0
     epsilon: float = 0.0
     importance_beta: float = 0.4
@@ -272,12 +292,21 @@ class ResumeState:
     #: identity hash of the run that wrote it. The path alone would stop meaning
     #: anything the moment the file moved.
     parent_checkpoint: str
-    #: The schedule position. Epsilon and beta are functions of it, so they are
-    #: derived again rather than restored - a stored epsilon would silently
+    #: The exploration schedule's position. Epsilon is a function of it, so it
+    #: is derived again rather than restored - a stored epsilon would silently
     #: outrank a changed anneal horizon.
     decisions: int
+    #: The budget position: what the parent had already spent of the run's
+    #: cumulative game time. Zero in a version 1 or 2 file, which recorded
+    #: none - see `format_version`.
+    game_ms: float
     episodes: int
     optimisation_steps: int
+    #: The format the parent was written in. Carried so the caller that knows
+    #: what the resume is for can refuse a file that cannot answer it: a file
+    #: below version 3 says nothing about game time, and a run budgeted in game
+    #: seconds would read its whole spent budget as zero.
+    format_version: int
     #: None when the parent was untracked, and for every version 1 checkpoint.
     tracking_run_id: str | None
     backbone_state: Mapping[str, Any]
@@ -289,8 +318,10 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
     return ResumeState(
         parent_checkpoint=f"{path}@{identity_hash(checkpoint.identity)}",
         decisions=checkpoint.progress.environment_decisions,
+        game_ms=checkpoint.progress.environment_game_ms,
         episodes=checkpoint.progress.episodes,
         optimisation_steps=checkpoint.progress.optimisation_steps,
+        format_version=checkpoint.format_version,
         tracking_run_id=checkpoint.tracking_run_id,
         backbone_state=checkpoint.backbone_state,
     )

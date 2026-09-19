@@ -209,7 +209,7 @@ def fleet(count: int) -> TrainingRun:
         replay=replay,
         backbone=learner,
         config=TrainingConfig(
-            budget_decisions=200,
+            budget_game_seconds=200,
             # Any schedule at all: nothing here is about exploration.
             exploration=ExplorationSchedule(
                 epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000

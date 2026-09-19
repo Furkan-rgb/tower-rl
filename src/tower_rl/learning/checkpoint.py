@@ -76,7 +76,16 @@ def identity_hash(identity: CheckpointIdentity) -> str:
 
 @dataclass(frozen=True)
 class TrainingProgress:
-    """Counters and schedules that must survive a restart to resume honestly."""
+    """The counters a restart resumes from, and what the run last acted at.
+
+    The three counters are what a resume reads: the budget position, and the
+    episodes and optimisation steps behind it. `epsilon` and `importance_beta`
+    are not restored from here and must not be - both are functions of
+    `environment_decisions`, and a run derives them from it again, so a stored
+    value would silently outrank a changed anneal horizon. They are recorded
+    because a checkpoint should say what the run was actually acting and
+    sampling at when it was written.
+    """
 
     optimisation_steps: int = 0
     environment_decisions: int = 0
@@ -246,11 +255,6 @@ class ResumeState:
     #: None when the parent was untracked, and for every version 1 checkpoint.
     tracking_run_id: str | None
     backbone_state: Mapping[str, Any]
-
-    @property
-    def has_optimizer_state(self) -> bool:
-        """Whether the moments come back, or a fresh optimizer has to be started."""
-        return "optimizer" in self.backbone_state
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:

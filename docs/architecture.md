@@ -285,8 +285,9 @@ and the collection windows that smooth them.
 
 `--resume <checkpoint>` makes the run a second segment of an earlier one:
 `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
-device is touched — refusing a checkpoint that has already spent
-`--budget-decisions`, which stays the whole run's total — and `build_arm`
+device is touched — refusing one whose `CheckpointIdentity` names another arm,
+profile or schema, and one that has already spent `--budget-decisions`, which
+stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the
 `TrainingProgressReport` at the parent's counters so epsilon, beta and the
 numbered-checkpoint cadence are derived where a run that never stopped would

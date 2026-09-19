@@ -29,6 +29,7 @@ from tower_rl.environment.run_environment import (
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.metrics import per_hour
 from tower_rl.experiment.tracking import NoExperimentTracker
 from tower_rl.learning.actor import ActorConfig
 from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
@@ -679,13 +680,21 @@ def latest_checkpoint(report: dict[str, Any]) -> Path:
     return Path(report["session"]) / report["arm"]["run_id"] / "checkpoints" / "latest.pt"
 
 
-def resume_from(run_dir: Path, checkpoint: Path, budget: int) -> Any:
-    """The parsed `--resume` of a second segment, as `main` reads it."""
+def resume_from(
+    run_dir: Path, checkpoint: Path, budget: int, profile_id: str = PROFILE
+) -> Any:
+    """The parsed `--resume` of a second segment, as `main` reads it.
+
+    The profile is the one the bridge reported, which is what the checkpoint's
+    identity is checked against before anything is brought up.
+    """
     return train.resume_point(
         arguments(
             run_dir,
             **{"--budget-decisions": str(budget), "--resume": str(checkpoint)},
-        )
+        ),
+        profile_id=profile_id,
+        revision="test",
     )
 
 
@@ -704,7 +713,7 @@ def resumed_arm(run_dir: Path, checkpoint: Path, budget: int) -> tuple[Any, Any]
             "--checkpoint-every-decisions": str(RESUME_PERIOD),
         },
     )
-    resume = train.resume_point(settings)
+    resume = train.resume_point(settings, profile_id=PROFILE, revision="test")
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         arm, _ = train.build_arm(
@@ -753,6 +762,10 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
     for key, state in moments.items():
         assert torch.equal(state["exp_avg"], restored[key]["exp_avg"])
         assert torch.equal(state["exp_avg_sq"], restored[key]["exp_avg_sq"])
+        # Adam's own step count per parameter: it is what the bias correction
+        # divides by, so moments restored under a step count of zero would be
+        # scaled as if the run had just started.
+        assert float(state["step"]) == float(restored[key]["step"]) > 0
     # The parent is named by file and by identity hash, not by path alone.
     assert arm.resolved["parent_checkpoint"] == resume.parent_checkpoint
     assert str(checkpoint) in resume.parent_checkpoint
@@ -787,6 +800,14 @@ def test_a_resumed_run_spends_the_rest_of_the_budget(tmp_path: Path) -> None:
     _, _, written = numbered_checkpoints(second)
     assert written and min(written) > spent
     assert min(written) // RESUME_PERIOD > spent // RESUME_PERIOD
+    # Throughput is this sitting's: the counters above are the whole run's and
+    # came back restored, but the wall clock is this segment's alone, so the
+    # parent's decisions must not be charged to it.
+    assert arm["decisions_per_hour"] == per_hour(arm["decisions"] - spent, arm["wall_seconds"])
+    assert arm["episodes_per_hour"] == per_hour(
+        arm["episodes"] - first["arm"]["episodes"], arm["wall_seconds"]
+    )
+    assert arm["decisions_per_hour"] < per_hour(arm["decisions"], arm["wall_seconds"])
 
 
 def test_a_checkpoint_that_has_already_spent_the_budget_is_refused(tmp_path: Path) -> None:
@@ -804,22 +825,69 @@ def test_a_checkpoint_that_has_already_spent_the_budget_is_refused(tmp_path: Pat
 
 def test_a_missing_resume_point_is_refused_by_name(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="no checkpoint"):
-        train.resume_point(arguments(tmp_path, **{"--resume": str(tmp_path / "absent.pt")}))
+        resume_from(tmp_path, tmp_path / "absent.pt", 400)
 
 
-def test_a_checkpoint_without_optimizer_state_resumes_with_a_notice(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_a_checkpoint_from_another_profile_is_refused_before_bring_up(
+    tmp_path: Path,
 ) -> None:
-    """The earlier format is still resumable; what it lacks is said out loud.
+    """Identity is checked, not assumed: the episodes behind a checkpoint from
+    another device profile or another schema are not experience this run can go
+    on from, and the refusal has to come before an emulator is started."""
+    first = numbered(tmp_path / "first", 200)
+
+    with pytest.raises(SystemExit, match="profile_id differs"):
+        resume_from(
+            tmp_path / "second",
+            latest_checkpoint(first),
+            400,
+            profile_id="some-other-profile-v1",
+        )
+
+
+def test_a_checkpoint_in_the_earlier_format_still_resumes(tmp_path: Path) -> None:
+    """The first run's files are resumable; what they lack is the tracked series.
 
     A checkpoint written before the format carried a tracking run id is read
-    rather than refused - a run of hours must not become unusable for its age -
-    and anything a resume cannot recover from it, such as the optimizer's
-    moments, is named where an operator reading the log will see it.
+    rather than refused - a run of hours must not become unusable for its age.
+    Everything else a resume needs was already in it, so the only consequence
+    is that the segment opens a tracked run of its own, with the parent named
+    in its resolved config.
     """
     first = numbered(tmp_path / "first", 200)
     parent = load(latest_checkpoint(first))
     legacy = tmp_path / "legacy.pt"
+    save(
+        Checkpoint(
+            identity=parent.identity,
+            progress=parent.progress,
+            backbone_state=parent.backbone_state,
+            resolved_config=parent.resolved_config,
+            format_version=1,
+        ),
+        legacy,
+    )
+
+    arm, resume = resumed_arm(tmp_path / "second", legacy, budget=400)
+
+    assert resume.tracking_run_id is None, "no run id to continue; a new one is started"
+    assert arm.training.report.decisions == parent.progress.environment_decisions
+    assert arm.backbone.state_dict()["steps"] == parent.backbone_state["steps"]
+    assert str(legacy) in arm.resolved["parent_checkpoint"]
+
+
+def test_a_checkpoint_without_optimizer_state_is_a_truncated_file(
+    tmp_path: Path,
+) -> None:
+    """Every checkpoint this project has written carries the optimizer.
+
+    One that does not is truncated, not old, so it raises on the missing key
+    rather than resuming on fresh moments - which would change how the next
+    steps are taken without saying so.
+    """
+    first = numbered(tmp_path / "first", 200)
+    parent = load(latest_checkpoint(first))
+    truncated = tmp_path / "truncated.pt"
     save(
         Checkpoint(
             identity=parent.identity,
@@ -829,25 +897,12 @@ def test_a_checkpoint_without_optimizer_state_resumes_with_a_notice(
                 for key, value in parent.backbone_state.items()
                 if key != "optimizer"
             },
-            resolved_config=parent.resolved_config,
-            format_version=1,
         ),
-        legacy,
+        truncated,
     )
 
-    arm, resume = resumed_arm(tmp_path / "second", legacy, budget=400)
-
-    assert resume.has_optimizer_state is False
-    assert resume.tracking_run_id is None, "no run id to continue; a new one is started"
-    assert arm.training.report.decisions == parent.progress.environment_decisions
-    # The weights themselves did come back.
-    assert arm.backbone.state_dict()["steps"] == parent.backbone_state["steps"]
-    notice = next(
-        line
-        for line in capsys.readouterr().out.splitlines()
-        if "no optimizer state" in line
-    )
-    assert str(legacy) in notice and "fresh optimizer" in notice
+    with pytest.raises(KeyError, match="optimizer"):
+        resumed_arm(tmp_path / "second", truncated, budget=400)
 
 
 def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) -> None:
@@ -927,6 +982,16 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
 
     assert whole["arm"]["decisions"] >= 300, "one sitting spends the budget"
     assert second["arm"]["decisions"] >= 300, "two sittings spend the same budget"
+    # The collection curve is one series across the two sittings: every window
+    # is keyed by a position on the whole run's budget, so none of the second
+    # segment's points falls at or below where the first segment stopped.
+    resumed_at = first["arm"]["decisions"]
+    early_windows = [window["decisions_at_end"] for window in first["arm"]["collection_curve"]]
+    late_windows = [window["decisions_at_end"] for window in second["arm"]["collection_curve"]]
+    assert early_windows and late_windows, "both sittings closed a window"
+    assert min(late_windows) > resumed_at
+    windows = early_windows + late_windows
+    assert windows == sorted(windows) and len(set(windows)) == len(windows)
     # Both arrangements answer each crossing once, in order, and the split run
     # answers none of them twice across its two segments - the cadence went on
     # through the resume instead of starting again from it.

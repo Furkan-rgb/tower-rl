@@ -199,12 +199,6 @@ def build_arm(
         # they are one `state_dict`, and a resume that took only the weights
         # would restart Adam's moments silently mid-run.
         backbone.load_state_dict(dict(resume.backbone_state))
-        if not resume.has_optimizer_state:
-            print(
-                f"[{name}] {resume.parent_checkpoint} carries no optimizer state; "
-                "resuming with a fresh optimizer, whose moments start empty",
-                flush=True,
-            )
     replay = PrioritizedSequenceReplay(
         capacity=arguments.replay_capacity,
         alpha=arguments.priority_alpha,
@@ -301,10 +295,10 @@ def build_arm(
         run=run,
         identity=checkpoint_identity(identity),
         resolved=resolved,
-        # The episode series continues on the budget rather than restarting at
-        # zero: the episodes themselves are not restored, but the decisions
-        # behind them are, and that is the key every point is placed on.
-        decisions_logged=progress.decisions,
+        # What the parent had spent, which is where this segment's series start
+        # on the run's budget and what its own throughput is measured net of.
+        resumed_decisions=progress.decisions,
+        resumed_episodes=progress.episodes,
         tracking_run_id=tracked_run_id,
     )
 
@@ -629,19 +623,30 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return arguments
 
 
-def resume_point(arguments: argparse.Namespace) -> ResumeState | None:
+def resume_point(
+    arguments: argparse.Namespace, *, profile_id: str, revision: str
+) -> ResumeState | None:
     """The checkpoint this run continues, read and checked before a device is touched.
 
-    `--budget-decisions` is the whole run's total, not this segment's: a
-    checkpoint at 50,123 of a 200,000-decision budget continues to 200,000, and
-    raising the budget extends the run. A checkpoint that has already spent the
-    budget is therefore nothing this run can add to, and is refused by name
-    rather than starting a fleet that would finish its first block.
+    Two refusals, both here rather than an hour into collection. The identity
+    is the checkpoint's own: a file from another arm, another device profile or
+    another observation, action or reward schema is not experience this run can
+    go on from, and `CheckpointIdentity.incompatibilities` names which. The
+    budget is the second: `--budget-decisions` is the whole run's total, not
+    this segment's, so a checkpoint at 50,123 of 200,000 continues to 200,000
+    and a larger budget extends the run - but a checkpoint that has already
+    spent the budget is nothing this run can add to.
     """
     if arguments.resume is None:
         return None
+    # Built exactly as the fresh-run path builds it, from the profile the bridge
+    # reported and the schema versions this code is; the run id and the source
+    # revision in it are deliberately not compared.
+    expected = checkpoint_identity(
+        RunIdentity.started_now(BACKBONE, profile_id=profile_id, source_revision=revision)
+    )
     try:
-        state = resume_state(arguments.resume)
+        state = resume_state(arguments.resume, expected=expected)
     except CheckpointError as failure:
         raise SystemExit(f"--resume {arguments.resume}: {failure}") from failure
     if state.decisions >= arguments.budget_decisions:
@@ -820,9 +825,7 @@ def connect(
 
 def main() -> int:
     arguments = parse_arguments()
-    # Read before the device is touched, for the same reason the tracker is: a
-    # resume that cannot be honoured must fail now, not an hour into collection.
-    resume = resume_point(arguments)
+    revision = source_revision()
 
     # Built before the device is touched: a session that cannot be recorded
     # should fail now rather than an hour into collection.
@@ -837,6 +840,17 @@ def main() -> int:
         print(f"artifacts: {artifact_root(arguments.run_dir)}", flush=True)
 
     expected = compatibility(bridge_build_directory())
+    # Read once the profile the checkpoint is checked against is known, and
+    # still before anything is brought up: a resume that cannot be honoured
+    # must fail now, not an hour into collection.
+    resume = resume_point(arguments, profile_id=expected.profile_id, revision=revision)
+    if resume is not None and resume.tracking_run_id is not None:
+        # The parent run is read back here, where a missing one costs nothing,
+        # rather than at `build_arm` - which runs with the fleet already up.
+        # The handle is discarded; the arm opens its own.
+        tracker.open_run(resume.tracking_run_id)
+        print(f"resuming tracked run {resume.tracking_run_id}", flush=True)
+
     opened: list[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]] = []
     started: list[CloneInstance] = []
 
@@ -890,7 +904,7 @@ def main() -> int:
             arguments,
             instances,
             profile_id=expected.profile_id,
-            revision=source_revision(),
+            revision=revision,
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             tracker=tracker,
             bridge_version=expected.bridge_version,

@@ -184,7 +184,7 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
     assert state.decisions == 900 and state.episodes == 12
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
-    assert state.has_optimizer_state, "the moments travel with the weights"
+    assert "optimizer" in state.backbone_state, "the moments travel with the weights"
     # Identified by what it is as well as by where it is: a path alone stops
     # meaning anything the moment the file is copied.
     assert state.parent_checkpoint == f"{path}@{identity_hash(_identity())}"

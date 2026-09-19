@@ -240,11 +240,9 @@ class StackedDqnBackbone:
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self.online.load_state_dict(state["online"])
         self.target.load_state_dict(state["target"])
-        if "optimizer" in state:
-            self.optimizer.load_state_dict(state["optimizer"])
-        # A state written before the optimizer was persisted carries no moments.
-        # The fresh optimizer built in `__post_init__` stands instead, which is
-        # a real difference in how the next steps are taken - so the resume path
-        # says so by name rather than leaving it to be inferred. Every state
-        # this project writes today carries one.
+        # Every state this project has ever written carries the optimizer, so a
+        # state that does not is a truncated file rather than an old one. It
+        # raises here on the missing key: resuming on fresh moments instead
+        # would change how the next steps are taken without saying so.
+        self.optimizer.load_state_dict(state["optimizer"])
         self._steps = int(state["steps"])

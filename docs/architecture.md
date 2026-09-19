@@ -193,7 +193,8 @@ and no script.
 - `metrics.py` — learning-curve points, health counters, collection-window and
   decision-time lines.
 - `training_report.py` — `TrainingReport`, which writes a run's artifacts.
-- `comparison.py` — `interleave_schedule`, `bootstrap_difference`, `cohens_d`,
+- `comparison.py` — `interleave_schedule`, `iqm`, `stratified_bootstrap`,
+  `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`,
   `required_episodes`.
 - `wave_statistics.py` — per-wave equivalence analysis between two arms.
 
@@ -305,8 +306,11 @@ files. What it chose is written to `<run>/selection.json`. Reporting the
 selection is another `run_actors.py` run of that one checkpoint into an empty
 directory, set B, which `scripts/report_arms.py` reads beside the floors —
 given `--selection`, it refuses a set B whose records did not play the model
-that was chosen: IQM with intervals per arm, pairwise bootstrap differences, and the
-per-wave comparison handed to `experiment.wave_statistics`. Neither script
+that was chosen: IQM with stratified intervals per arm, the pairwise difference
+of those IQMs with its own stratified interval — the statistic M2-P001's
+decision rule is written about, each arm resampled within its own actors — the
+difference in means with Cohen's d beneath it as secondary, and the per-wave
+comparison handed to `experiment.wave_statistics`. Neither script
 starts an emulator, and neither decides a verdict. Given `--mlflow-run`, both
 log their results onto the training run they are about, so the greedy curve
 lands above the exploring one.

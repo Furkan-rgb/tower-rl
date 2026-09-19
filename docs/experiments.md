@@ -10,9 +10,12 @@ personal screenshots, bulk logs, replay, or model artifacts.
 ## M2-E002 — First budgeted run: 200k decisions, post-hoc evaluation
 
 **Date:** 2026-09-19
-**Status:** The pre-registered rule FIRES on both comparisons. On set B
-`stacked-dqn` beats scripted and beats random on final wave; random and
-scripted remain indistinguishable from each other. Board `#31`.
+**Status:** On the pre-registered statistic (see the addendum of 2026-09-19 at
+the end of this entry, which supersedes the verdict below for the purpose of
+the claim) the rule fires on **one** comparison: on set B `stacked-dqn` beats
+scripted on final-wave IQM; beats random is withdrawn to *not detectable at
+this n*; random and scripted remain indistinguishable from each other. Board
+`#31`.
 **Purpose:** Execute `M2-P001` as corrected — the 200,000-decision budgeted
 training run, then set A selection and set B report — and apply its decision
 rule mechanically. Repository at `10722c7` for the evaluation, `3c494b7` for
@@ -252,6 +255,57 @@ reference to 5554 or the canonical AVD anywhere in any log. No taps, no
 screenshots, every artifact under `~/.local/state/tower-rl/`, none in the
 repository. Two actor losses in 56 actor-stages, both named by their own
 error: one `RunPortError` at reset, one host-side port collision on deploy.
+
+**Addendum 2026-09-19 — the pre-registered statistic, computed:** the
+instrument note above — `report_arms.py` printed the per-arm statistic as the
+stratified IQM but computed the *pairwise* difference on the **mean**, while
+M2-P001 names the IQM in both places — is now fixed rather than only recorded.
+`comparison.stratified_bootstrap_difference` resamples each arm within its own
+actors and differences the two IQMs *inside* the resample; `report_arms.py`
+reports that as the primary pairwise line. The set-B command was re-run
+verbatim over the same records. **No episode was re-collected and no record
+changed; only the statistic did.**
+
+    pairwise difference in final wave IQM, stratified by actor:
+      random - scripted:      IQM difference +0.25 [-0.79, +1.06] n=62/63 — indistinguishable
+      random - stacked-dqn:   IQM difference -0.43 [-1.40, +0.33] n=62/61 — indistinguishable
+      scripted - stacked-dqn: IQM difference -0.67 [-1.38, -0.03] n=63/61 — separated
+
+**The rule of M2-P001, applied to these intervals** (stated model-first, as the
+rule states it):
+
+- (model − scripted) = **+0.67, interval [+0.03, +1.38]** — excludes zero.
+  **"`stacked-dqn` beats scripted" stands, as pre-registered.** The lower end is
+  +0.03 waves, so what is established is the sign and not the size.
+- (model − random) = **+0.43, interval [−0.33, +1.40]** — contains zero.
+  **"`stacked-dqn` beats random" is withdrawn**, to *not detectable at this n*.
+  That is not a claim the two are equal. The mean-based separation
+  (+0.98, [+0.13, +1.83], d=−0.41) is **retained as secondary evidence** and is
+  not the pre-registered statistic.
+- (random − scripted) = +0.25, [−0.79, +1.06] — contains zero, as the
+  mean-based line also found: the comparison floor is not separated at this
+  sample, as in `M1B-E021`.
+
+The mean difference and Cohen's d remain in the report, printed beneath the IQM
+line and labelled secondary; `report_<a>_minus_<b>_final_wave_iqm_diff`,
+`_ci_low` and `_ci_high` are logged at step 0 of the same MLflow run beside the
+per-arm keys, and were confirmed through the client.
+
+**This addendum supersedes the verdict paragraph above it for the purpose of
+the claim.** One headline claim of the two stands. The rest of the entry — the
+training run, the selection, the per-wave evidence, the device hygiene — is
+unaffected, and so is the reading of M2-P001's stated expectation, except in
+degree: the expectation that no headline claim would be reachable at 200k
+decisions is refuted on scripted only, not on both comparisons.
+
+Why the two statistics disagree on random: the gap is in the lower tail, which
+the mean counts and the IQM trims away. Random's five worst episodes are five
+wave-1 deaths and the model's are 2, 2, 3, 3, 4; both arms top out at 10-11. So
+random's *mean* (5.79) sits below its *IQM* (6.19) while the model's mean (6.77)
+sits above its IQM (6.61), and the gap of means is 0.98 where the gap of IQMs is
+0.42. Most of the mean-based separation from random is the model not dying in
+wave 1, not the model reaching further. The pre-registered statistic is the
+trimmed one, and it is the one that decides.
 
 ## M2-E001 — Walking skeleton: the pipeline runs end to end; the wall-clock budget does not
 

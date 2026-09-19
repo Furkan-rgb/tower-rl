@@ -943,10 +943,10 @@ class TrainingRun:
                 if barren is not None and self.on_withdrawal is not None:
                     self.on_withdrawal(progress)
             if barren is not None:
-                # Episode after episode that reaches no choice point: the
-                # actor is spending game time and collecting nothing to learn
-                # from, so it leaves the fleet exactly as one on a failing port
-                # does.
+                # Episode after episode that reaches no choice point, or that
+                # advances no game time at all: the actor is collecting nothing
+                # to learn from, or nothing the budget is counted in, so it
+                # leaves the fleet exactly as one on a failing port does.
                 raise RunPortError(barren)
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:
@@ -985,20 +985,28 @@ class TrainingRun:
         progress.episodes += 1
         progress.decisions += summary.decisions
         progress.game_ms += summary.round_ms
-        if summary.decisions:
+        if summary.decisions and summary.round_ms:
             progress.consecutive_failures = 0
         else:
-            # A run that ended before it offered a single choice is a real,
-            # valid episode (ADR 0009) - and an actor whose every run ends that
-            # way is collecting nothing to learn from, whatever game time it
-            # spends. It counts toward the same streak a
-            # failing port does, under its own name, so the condition is loud
-            # rather than an unattended run that never finishes.
+            # Two barren outcomes, both delivered episodes rather than port
+            # failures, and each named for what it was. A run that ended before
+            # it offered a single choice is a real, valid episode (ADR 0009),
+            # and an actor whose every run ends that way is collecting nothing
+            # to learn from. An episode that advanced no game time at all is
+            # the one that could also stall the run: the budget is game time,
+            # so an actor producing only those would never reach a target. Both
+            # count toward the same streak a failing port does, so the
+            # condition is loud rather than an unattended run that never
+            # finishes.
             progress.consecutive_failures += 1
             if progress.consecutive_failures >= self.config.max_consecutive_episode_failures:
+                reason = (
+                    "advanced no game time"
+                    if not summary.round_ms
+                    else "ended before a choice point"
+                )
                 progress.withdrawn = (
-                    f"{progress.consecutive_failures} consecutive episodes ended "
-                    "before a choice point"
+                    f"{progress.consecutive_failures} consecutive episodes {reason}"
                 )
         if summary.valid:
             progress.valid_episodes += 1
@@ -1060,7 +1068,13 @@ class TrainingRun:
             return len(self.replay) >= self.config.warmup_sequences
 
     def _periodic(self, report: TrainingProgressReport) -> None:
-        """Evaluate and checkpoint on their episode periods, if configured."""
+        """Evaluate and checkpoint on their episode periods, if configured.
+
+        The numbered checkpoint below is written once per crossing rather than
+        once per multiple crossed, and the two cannot come apart here: the
+        period is a whole number of blocks and a block is at least one episode,
+        so a single episode cannot span two multiples in practice.
+        """
         period = self.config.evaluate_every_episodes
         if self.evaluate is not None and period and report.episodes % period == 0:
             try:

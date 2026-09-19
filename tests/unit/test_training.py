@@ -19,7 +19,7 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.network import NetworkConfig
@@ -830,3 +830,46 @@ def test_an_actor_whose_runs_never_reach_a_choice_point_is_withdrawn() -> None:
     assert training.report.episodes == 3, "each one was a real episode, and counted"
     assert training.report.failed_episodes == 0, "the port delivered every one of them"
     assert withdrawn == ["3 consecutive episodes ended before a choice point"]
+
+
+def test_an_actor_whose_episodes_advance_no_game_time_is_withdrawn() -> None:
+    """The budget is game time, so an episode that spends none can stall the run.
+
+    A delivered episode whose round clock never moved is the case a decision
+    counter used to hide: the actor keeps handing back episodes, the budget
+    never advances, and an unattended run would collect forever. It counts
+    toward the same streak a failing port does, under a name of its own.
+    """
+    training = _run(max_consecutive_episode_failures=3)
+    withdrawn: list[str] = []
+    training.on_withdrawal = lambda progress: withdrawn.append(progress.withdrawn or "")
+    actor = training.actors[0]
+    frozen = EpisodeSummary(
+        episode_id="frozen",
+        profile_id="fake-profile-v1",
+        final_wave=1,
+        # Decided, and valid: what it did not do is advance the game's clock.
+        decisions=12,
+        purchases=0,
+        termination=TerminationOutcome.GAME_OVER,
+        elapsed_wall_seconds=1.0,
+        game_speed=8.0,
+        invalid_transitions=0,
+        round_ms=0.0,
+    )
+    actor.run_episode = lambda: EpisodeResult(  # type: ignore[method-assign]
+        summary=frozen,
+        sequences_offered=0,
+        sequences_accepted=0,
+        total_reward=0.0,
+        wait_decisions=12,
+    )
+
+    with pytest.raises(RunPortError, match="advanced no game time"):
+        training.run()
+
+    report = training.report
+    assert report.episodes == 3, "each one was a real episode, and counted"
+    assert report.failed_episodes == 0, "the port delivered every one of them"
+    assert report.game_ms == 0.0 and report.decisions == 36
+    assert withdrawn == ["3 consecutive episodes advanced no game time"]

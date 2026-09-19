@@ -162,14 +162,16 @@ environment and nothing that observes or drives it.
 - `checkpoint.py` — `Checkpoint`, `CheckpointIdentity`, `save`/`load`, the
   checksum sidecar and `write_manifest`.
 
-**Exploration.** One run has one anneal and, under `--exploration ladder`, a
-floor of its own for each actor. `ExplorationSchedule` owns both numbers -
-nothing else in `learning` holds an exploration rate - and `TrainingRun` asks it
-per actor per episode: an actor acts at `max(annealed, floor_i)`, so no actor
-explores less than the fleet's current rate or less than its own floor. The
-default, `uniform`, has no per-actor floors at all and puts every actor on the
-annealed rate, which is what every run so far collected under. The ladder is
-Ape-X's (Horgan et al. 2018): actor `i` of `N` at `0.4 ** (1 + 7 i / (N - 1))`,
+**Exploration.** Every actor's rate falls linearly from `epsilon_start` over
+`--epsilon-anneal-decisions` and is held afterwards; what it falls *to* is the
+actor's own floor. `ExplorationSchedule` owns those numbers - nothing else in
+`learning` holds an exploration rate - and `TrainingRun` asks it per actor, once
+per episode. The default, `uniform`, has no per-actor floors at all and anneals
+every actor to `--epsilon-end`, which is what every run so far collected under.
+`--exploration ladder` replaces that destination per actor, so `--epsilon-end`
+is the uniform schedule's floor only and passing it with a ladder is refused.
+The ladder is Ape-X's (Horgan et al. 2018): actor `i` of `N` anneals to
+`0.4 ** (1 + 7 i / (N - 1))`,
 so one fleet both searches - the top actors play build orders the greedy policy
 would never reach - and reports, because the near-greedy actors at the bottom
 still produce a collection curve that reads as the policy's own performance.

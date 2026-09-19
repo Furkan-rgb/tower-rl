@@ -758,6 +758,16 @@ def test_the_exploration_a_run_collected_under_is_on_its_record(
     }
 
 
+def test_an_epsilon_end_passed_with_the_ladder_is_refused(tmp_path: Path) -> None:
+    """The ladder replaces the end of the anneal, so the flag would go unused."""
+    with pytest.raises(SystemExit, match="--epsilon-end"):
+        arguments(tmp_path, **{"--exploration": "ladder", "--epsilon-end": "0.001"})
+
+    # Either alone is ordinary.
+    assert arguments(tmp_path, **{"--exploration": "ladder"}).exploration == "ladder"
+    assert arguments(tmp_path, **{"--epsilon-end": "0.001"}).epsilon_end == 0.001
+
+
 def test_a_run_can_be_resumed_onto_the_ladder(tmp_path: Path) -> None:
     """A second sitting may explore differently from the one it continues.
 
@@ -804,8 +814,8 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
     # have them - and not at the start of their schedules.
     assert (
         progress.epsilon
-        == config.exploration.annealed(spent)
-        != config.exploration.annealed(0)
+        == config.exploration.epsilon_for(0, spent)
+        != config.exploration.epsilon_for(0, 0)
     )
     assert progress.importance_beta == config.beta(spent) != config.beta(0)
     # The optimizer's moments come back with the weights: one state dict, and a

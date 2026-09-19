@@ -497,11 +497,11 @@ def copies(training: TrainingRun) -> list[WatchedBackbone]:
 def test_a_ladder_puts_every_actor_of_the_fleet_on_a_rate_of_its_own() -> None:
     """Ape-X's arrangement: one fleet searches and reports at the same time.
 
-    The anneal is spent here, so what is left is the ladder itself - which is
-    what a segment resumed past the anneal collects under.
+    The anneal is spent here, so every actor is at its own rung - which is what
+    a run collects under for all but the first few thousand decisions.
     """
     schedule = ExplorationSchedule.for_option(
-        "ladder", actors=3, epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+        "ladder", actors=3, epsilon_start=0.9, anneal_decisions=1
     )
     training = fleet(
         [environment() for _ in range(3)], exploration=schedule, budget_decisions=200
@@ -509,12 +509,15 @@ def test_a_ladder_puts_every_actor_of_the_fleet_on_a_rate_of_its_own() -> None:
 
     training.run()
 
-    assert [actor.config.epsilon for actor in training.actors] == pytest.approx(
-        list(ape_x_floors(3))
-    )
-    # The run's own published rate stays the fleet's annealed one: it is what a
-    # checkpoint restores a resume to, and no single actor's rate is the run's.
-    assert training.report.epsilon == pytest.approx(0.0)
+    rungs = ape_x_floors(3)
+    rates = [actor.config.epsilon for actor in training.actors]
+    # Exploration is drawn once per episode, so an actor whose only episode
+    # began at decision zero is still at the start of the anneal; every other
+    # actor is at its own rung and at nobody else's.
+    assert rates == [
+        pytest.approx(rung) if rate != 0.9 else 0.9 for rate, rung in zip(rates, rungs, strict=True)
+    ]
+    assert any(rate != 0.9 for rate in rates), "the anneal is one decision long"
 
 
 def test_a_ladder_built_for_another_fleet_is_refused() -> None:

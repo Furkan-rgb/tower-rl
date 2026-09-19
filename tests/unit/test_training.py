@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import statistics
 
 import pytest
@@ -109,7 +110,7 @@ def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
             epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
         ),
     )
-    epsilon = config.exploration.annealed
+    epsilon = functools.partial(config.exploration.epsilon_for, 0)
 
     assert epsilon(0) == pytest.approx(1.0)
     assert epsilon(5_000) == pytest.approx(0.525)
@@ -125,10 +126,12 @@ def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
     short = TrainingConfig(budget_decisions=12_000, exploration=schedule)
     long = TrainingConfig(budget_decisions=200_000, exploration=schedule)
 
-    assert short.exploration.annealed(5_000) == pytest.approx(
-        long.exploration.annealed(5_000)
+    assert short.exploration.epsilon_for(0, 5_000) == pytest.approx(
+        long.exploration.epsilon_for(0, 5_000)
     )
-    assert long.exploration.annealed(10_001) == pytest.approx(schedule.epsilon_end)
+    assert long.exploration.epsilon_for(0, 10_001) == pytest.approx(
+        schedule.epsilon_end
+    )
 
 
 def test_a_horizon_of_no_decisions_is_refused() -> None:
@@ -169,7 +172,8 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
     assert report.optimisation_steps > 0
     # The value of the last episode it started, which is the last one it acted
     # at: drawn once per episode, so it lags the schedule by that episode.
-    annealed = training.config.exploration.annealed
+    def annealed(decisions: int) -> float:
+        return training.config.exploration.epsilon_for(0, decisions)
     assert annealed(report.decisions) <= report.epsilon < 1.0
     assert report.epsilon == pytest.approx(
         annealed(report.decisions - report.collected[-1].summary.decisions)

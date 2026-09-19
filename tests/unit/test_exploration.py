@@ -51,7 +51,6 @@ def test_uniform_is_the_rate_run_one_collected_at(
     assert schedule.floors == (), "a uniform schedule has no per-actor floor"
     for decisions in (0, 1, 999, horizon - 1, horizon, horizon + 1, 200_000):
         expected = old_uniform_epsilon(decisions, start, end, horizon)
-        assert schedule.annealed(decisions) == pytest.approx(expected)
         assert schedule.epsilon_for(actor, decisions) == pytest.approx(expected)
 
 
@@ -84,29 +83,30 @@ def test_a_fleet_of_one_takes_the_base_rate() -> None:
         ape_x_floors(0)
 
 
-def test_the_anneal_is_the_fleet_s_and_the_floor_is_the_actor_s() -> None:
-    """The two compose by max, so a continuation past the anneal is the ladder."""
+def test_every_actor_anneals_to_its_own_rung_and_is_held_there() -> None:
+    """The ladder replaces the end of the anneal, per actor.
+
+    Same shape as the uniform anneal - linear from the start rate over the
+    horizon in decisions, held afterwards - but seven different destinations,
+    so `epsilon_end` plays no part in a laddered run at all.
+    """
     schedule = ExplorationSchedule.for_option(
         "ladder", actors=7, epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
     )
 
-    # Inside the anneal every actor is carried by the fleet's rate, which is
-    # above all but the top of the ladder.
-    assert schedule.epsilon_for(6, 0) == pytest.approx(1.0)
-    assert schedule.epsilon_for(0, 5_000) == pytest.approx(0.525)
-    # Past it the anneal holds at 0.05 and the ladder is what is left: the top
-    # actors above that floor, the bottom ones far below it.
-    assert schedule.epsilon_for(0, 200_000) == pytest.approx(0.4)
-    assert schedule.epsilon_for(2, 200_000) == pytest.approx(0.05), "annealed rate wins"
-    assert schedule.epsilon_for(6, 200_000) == pytest.approx(0.05), "annealed rate wins"
-    # A segment resumed past the anneal with no anneal left to run - which is
-    # what a continuation of run 1 is - collects on the ladder alone.
-    resumed = ExplorationSchedule.for_option(
-        "ladder", actors=7, epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+    # Every actor starts where the anneal starts, and is half way to its own
+    # rung half way through the horizon.
+    assert [schedule.epsilon_for(index, 0) for index in range(7)] == pytest.approx(
+        [1.0] * 7
     )
-    assert [resumed.epsilon_for(index, 200_000) for index in range(7)] == pytest.approx(
-        LADDER_OF_SEVEN, rel=1e-4
-    )
+    assert schedule.epsilon_for(0, 5_000) == pytest.approx(0.7)
+    assert schedule.epsilon_for(6, 5_000) == pytest.approx((1.0 + LADDER_OF_SEVEN[6]) / 2)
+    # At the end of the horizon, and for the whole rest of the budget, exactly
+    # the ladder - `epsilon_end` nowhere in it.
+    for spent in (10_000, 200_000):
+        assert [
+            schedule.epsilon_for(index, spent) for index in range(7)
+        ] == pytest.approx(LADDER_OF_SEVEN, rel=1e-4)
 
 
 def test_the_near_greedy_actors_of_a_ladder_are_the_bottom_of_it() -> None:

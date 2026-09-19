@@ -88,6 +88,7 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
 from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.learning.exploration import (  # noqa: E402
     EXPLORATION_OPTIONS,
+    LADDER,
     ExplorationSchedule,
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
@@ -463,11 +464,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         choices=EXPLORATION_OPTIONS,
         default="uniform",
         help=(
-            "uniform puts every actor on the annealed rate, which is what every "
-            "run so far collected under; ladder gives actor i of N the Ape-X "
-            "floor 0.4 ** (1 + 7 i / (N - 1)), so one fleet searches and reports "
-            "at once. An actor acts at the higher of the annealed rate and its "
-            "own floor, so every rung below --epsilon-end is held at it"
+            "uniform anneals every actor to --epsilon-end, which is what every "
+            "run so far collected under; ladder anneals actor i of N to the "
+            "Ape-X rate 0.4 ** (1 + 7 i / (N - 1)) instead, so one fleet "
+            "searches and reports at once. --epsilon-end is the uniform "
+            "schedule's floor only and is ignored under ladder, where each "
+            "actor has a floor of its own"
         ),
     )
     parser.add_argument(
@@ -583,6 +585,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
+    if arguments.exploration == LADDER and "--epsilon-end" in (
+        sys.argv[1:] if argv is None else argv
+    ):
+        # The ladder replaces the end of the anneal per actor, so a value given
+        # here would be silently unused - and the one thing an exploration
+        # setting may not be is silently unused.
+        raise SystemExit(
+            "--epsilon-end is the uniform schedule's floor and is ignored under "
+            "--exploration ladder, where every actor anneals to its own rung"
+        )
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
     if arguments.actors < 1:

@@ -687,7 +687,7 @@ class TrainingRun:
         if self.config.checkpoint_every_decisions:
             period = self.config.checkpoint_every_decisions
             self._numbered_at = self.report.decisions // period * period
-        self.report.epsilon = self.config.exploration.annealed(self.report.decisions)
+        self.report.epsilon = self.config.exploration.epsilon_for(0, self.report.decisions)
         self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}
         for index, actor in enumerate(self.actors):
@@ -825,16 +825,15 @@ class TrainingRun:
             with profile.acquiring(self._lock):
                 if self.report.decisions >= target:
                     return
-                # The fleet's annealed rate is the run's and is published as
-                # that; what this actor acts at is that rate raised to its own
-                # floor, which under a ladder is the only one of the two that
-                # still moves once the anneal is over.
-                self.report.epsilon = self.config.exploration.annealed(
-                    self.report.decisions
-                )
+                # This actor's own rate, which under a ladder is not the rate
+                # any other actor is drawing. The run publishes the one it last
+                # handed out: with a ladder no single number is the fleet's, and
+                # what a report of one is for is saying where the schedule had
+                # reached, which every rung shares.
                 epsilon = self.config.exploration.epsilon_for(
                     self.actor_index[actor_id], self.report.decisions
                 )
+                self.report.epsilon = epsilon
             # Refreshed between episodes and never inside one: the copy's
             # parameters hold still for a whole episode, and the history window
             # the actor carries through that episode was produced by exactly the

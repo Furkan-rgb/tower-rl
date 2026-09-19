@@ -1,10 +1,10 @@
 """How much of the fleet's collection is spent off the greedy policy, per actor.
 
-One run has one anneal - the fleet's exploration rate falls from `epsilon_start`
-to `epsilon_end` over a horizon in decisions and is held there - and, optionally,
-a floor of its own for each actor.  The two compose by `max`: an actor never
-explores less than the fleet's current rate, and never less than its own floor,
-so a segment resumed past the end of the anneal collects at the floors alone.
+One run has one anneal: every actor's rate falls linearly from `epsilon_start`
+over `anneal_decisions` and is held afterwards.  What it falls *to* is the
+actor's own floor.  Under the uniform schedule that floor is `epsilon_end` for
+every actor, which is the one rate every run so far collected under; under a
+ladder each actor has a floor of its own and `epsilon_end` is not used at all.
 
 The floors are Ape-X's (Horgan et al. 2018, arXiv:1803.00933): actor `i` of `N`
 acts at `epsilon_i = 0.4 ** (1 + 7 * i / (N - 1))`, spanning 0.4 down to 0.00066
@@ -96,24 +96,25 @@ class ExplorationSchedule:
         """Which of `EXPLORATION_OPTIONS` this schedule is, for the record."""
         return UNIFORM if not self.floors else LADDER
 
-    def annealed(self, decisions: int) -> float:
-        """The fleet's rate: anneal over the horizon, then hold.
-
-        Deliberately not over the budget - annealing across the whole budget
-        spent over half the first run above 0.5, so most of what it collected
-        was near-random and its collection curve could not be read as a policy's
-        performance at all.
-        """
-        fraction = min(1.0, decisions / self.anneal_decisions)
-        return self.epsilon_start + (self.epsilon_end - self.epsilon_start) * fraction
-
     def floor_for(self, actor_index: int) -> float:
-        """This actor's own rate, below which it never drops."""
+        """The rate this actor anneals to and is then held at.
+
+        `epsilon_end` for every actor of a uniform schedule; its own rung of the
+        ladder otherwise, in which case `epsilon_end` plays no part at all.
+        """
         return self.epsilon_end if not self.floors else self.floors[actor_index]
 
     def epsilon_for(self, actor_index: int, decisions: int) -> float:
-        """What actor `actor_index` acts at, this far into the budget."""
-        return max(self.annealed(decisions), self.floor_for(actor_index))
+        """What actor `actor_index` acts at, this far into the budget.
+
+        The horizon is in decisions and is deliberately not the budget:
+        annealing across the whole budget spent over half of run 1 above 0.5, so
+        most of what it collected was near-random and its collection curve could
+        not be read as a policy's performance at all.
+        """
+        fraction = min(1.0, decisions / self.anneal_decisions)
+        floor = self.floor_for(actor_index)
+        return self.epsilon_start + (floor - self.epsilon_start) * fraction
 
     def is_near_greedy(self, actor_index: int) -> bool:
         """Whether this actor's episodes are read as performance, not search.

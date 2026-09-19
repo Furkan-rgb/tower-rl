@@ -240,5 +240,11 @@ class StackedDqnBackbone:
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self.online.load_state_dict(state["online"])
         self.target.load_state_dict(state["target"])
-        self.optimizer.load_state_dict(state["optimizer"])
+        if "optimizer" in state:
+            self.optimizer.load_state_dict(state["optimizer"])
+        # A state written before the optimizer was persisted carries no moments.
+        # The fresh optimizer built in `__post_init__` stands instead, which is
+        # a real difference in how the next steps are taken - so the resume path
+        # says so by name rather than leaving it to be inferred. Every state
+        # this project writes today carries one.
         self._steps = int(state["steps"])

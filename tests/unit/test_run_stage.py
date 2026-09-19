@@ -16,6 +16,7 @@ that really did empty out rather than one that was asserted to have.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import time
@@ -169,6 +170,20 @@ def run_stage(
     )
 
 
+def wall_seconds(written: str) -> int:
+    """The wall time the summary line reports, in seconds.
+
+    Worth asserting on, because the difference between "the stage was
+    interrupted and the teardown followed it" and "the teardown waited out the
+    whole grace period against a stage that had already exited" is visible in
+    nothing else: every other assertion in these tests passes either way.
+    """
+    summary = re.search(r"wall (\d+):(\d+):(\d+)", written)
+    assert summary is not None, written
+    hours, minutes, seconds = (int(part) for part in summary.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
 def log_text(shims: Shims) -> str:
     logs = sorted(shims.logs.glob("test-stage-*.log"))
     assert logs, "the stage wrote no log"
@@ -252,6 +267,8 @@ def test_a_stage_killed_mid_run_is_still_cleaned_up(shims: Shims, tmp_path: Path
     assert returncode != 0, written
     assert shims.cleaned == ["emulator-5556", "emulator-5558"], written
     assert "stage test-stage: exit 143, cleanup ok, instances 2/2 cleaned" in written
+    # The stage answered the interrupt; nothing waited out the 10s grace.
+    assert wall_seconds(written) < 5, written
 
 
 def test_a_stage_whose_work_is_a_child_process_is_still_interrupted(
@@ -298,6 +315,7 @@ def test_a_stage_whose_work_is_a_child_process_is_still_interrupted(
     assert returncode != 0, written
     assert "did not exit within" not in written
     assert "stage test-stage: exit 143, cleanup ok, instances 2/2 cleaned" in written
+    assert wall_seconds(written) < 10, written
 
 
 def test_an_instance_that_is_not_read_only_is_refused_before_launch(shims: Shims) -> None:

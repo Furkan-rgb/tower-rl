@@ -1060,7 +1060,7 @@ def run(arguments: argparse.Namespace) -> int:
     def write_session_record() -> None:
         """The episodes this session played, as the record the fleet writes.
 
-        A closure rather than a block at the end of `main`, because it has to
+        A closure rather than a block at the end of `run`, because it has to
         run on the way out of the teardown as well as after a clean session.
         """
         if arguments.output_directory is None or not summaries:

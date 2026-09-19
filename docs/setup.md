@@ -479,3 +479,8 @@ stage m2-run2-train-seed0: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12
 The exit status is the stage command's, or non-zero if cleanup or the
 verification failed while the stage itself succeeded — so a stage that left the
 device dirty cannot be read as a stage that passed.
+
+It needs **bash 5.1 or newer** (the workstation runs 5.3) and refuses to start
+otherwise: it waits on the stage and on the grace timer at once through
+`wait -n -p`, and a shell that cannot do that would read a running stage as a
+finished one and clean the device up underneath it.

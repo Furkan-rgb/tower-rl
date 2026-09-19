@@ -37,6 +37,16 @@ set -euo pipefail
 #   TOWER_STAGE_PROC_ROOT      the /proc to count qemu processes in
 #   TOWER_STAGE_LOG_DIRECTORY  where the stage log is written
 
+# `stop_stage` waits on the stage and on a timer at once through `wait -n -p`,
+# which is bash 5.1 or newer. Under 5.0 the option is rejected, the variable it
+# would have named stays empty, and the script reads that as "the stage
+# finished": it would clean the device up underneath a stage that is still
+# collecting. A refusal is the only safe reading of a shell that cannot do this.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+  echo "refusing: run_stage.sh needs bash 5.1 or newer for 'wait -n -p'; this is $BASH_VERSION" >&2
+  exit 2
+fi
+
 clone_avd="tower_rl_instrumented_api36"
 canonical_avd="tower_rl_api36_play_x86_64"
 canonical_serial="emulator-5554"
@@ -217,24 +227,34 @@ cleanup_ok=yes
 # one that knows which instances the run actually brought up. This script's own
 # cleanup below is the backstop for what that teardown did not reach.
 #
-# Waiting is `wait -n -p` (bash 5.1 or newer) against the stage and a timer,
-# rather than a poll on `kill -0`: a child that has exited but not been reaped
-# is a zombie, and `kill -0` reports a zombie as alive, so a poll waits out the
-# whole grace period against a stage that finished immediately.
+# Waiting is `wait -n -p` (bash 5.1 or newer, refused at the top of this script
+# otherwise) against the stage and a timer, rather than a poll on `kill -0`: a
+# child that has exited but not been reaped is a zombie, and `kill -0` reports a
+# zombie as alive, so a poll waits out the whole grace period against a stage
+# that finished immediately.
+#
+# The signal goes to the stage's whole process group, not to the one process
+# this script started. A stage is `uv run ... python scripts/train.py`, and
+# measured on this host `kill -INT` at the `uv` process moved neither `uv` nor
+# the python it started — both were still running minutes later, so the run's
+# own fleet teardown would never have run and every stage would have ended in
+# the SIGKILL below. The group reaches the python directly: it printed its
+# `KeyboardInterrupt` and `uv` then exited 0. `set -m` is what makes the group
+# exist, and its id is the pid of the process this script started.
 stop_stage() {
   local finished="" timer
   if ! kill -0 "$stage_pid" 2>/dev/null; then
     wait "$stage_pid" 2>/dev/null || true
     return 0
   fi
-  echo "stage $name: interrupting the stage command (pid $stage_pid) so it can tear its own fleet down"
-  kill -INT "$stage_pid" 2>/dev/null || true
+  echo "stage $name: interrupting the stage command (group $stage_pid) so it can tear its own fleet down"
+  kill -INT -"$stage_pid" 2>/dev/null || true
   sleep "$shutdown_grace" &
   timer=$!
   wait -n -p finished "$stage_pid" "$timer" 2>/dev/null || true
   if [ "$finished" = "$timer" ]; then
     echo "stage $name: the stage command did not exit within ${shutdown_grace}s; killing it" >&2
-    kill -KILL "$stage_pid" 2>/dev/null || true
+    kill -KILL -"$stage_pid" 2>/dev/null || true
     wait "$stage_pid" 2>/dev/null || true
     cleanup_ok=no
   else

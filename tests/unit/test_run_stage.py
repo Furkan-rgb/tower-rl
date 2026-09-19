@@ -75,9 +75,9 @@ class Shims:
         record = self.state / "cleaned"
         return record.read_text().split() if record.exists() else []
 
-    def stage(self, script: str) -> Path:
+    def stage(self, script: str, name: str = "stage.sh") -> Path:
         """A stage command of the suite's own, to be supervised."""
-        path = self.state / "stage.sh"
+        path = self.state / name
         path.write_text(f"#!/usr/bin/env bash\n{script}\n")
         path.chmod(0o755)
         return path
@@ -223,6 +223,52 @@ def test_a_stage_killed_mid_run_is_still_cleaned_up(shims: Shims, tmp_path: Path
     written = output.read_text()
     assert returncode != 0, written
     assert shims.cleaned == ["emulator-5556", "emulator-5558"], written
+    assert "stage test-stage: exit 143, cleanup ok, instances 2/2 cleaned" in written
+
+
+def test_a_stage_whose_work_is_a_child_process_is_still_interrupted(
+    shims: Shims, tmp_path: Path
+) -> None:
+    """The real stage is `uv run … python train.py`: the work is a grandchild.
+
+    Measured on this host, `uv` neither acts on SIGINT nor passes it on, so a
+    signal sent to the process this script started reaches nothing that can tear
+    a fleet down. The shape is modelled here — a leader that ignores the signal
+    and a child that acts on it — and what proves the signal arrived is that the
+    stage ends well inside its grace period rather than being killed at the end
+    of one.
+    """
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    started = tmp_path / "started"
+    interrupted = tmp_path / "interrupted"
+    child = shims.stage(
+        f'trap "touch {interrupted}; exit 0" INT\ntouch {started}\nsleep 60 &\nwait $!',
+        name="child.sh",
+    )
+    # `trap ":"` rather than `trap ""`: a shell that *ignores* a signal hands
+    # SIG_IGN to its children, which a child cannot then trap - and `uv` does
+    # not ignore SIGINT, it simply does not act on it or pass it on.
+    stage = shims.stage(f'trap ":" INT\n{child}')
+    output = tmp_path / "supervisor.out"
+
+    with output.open("w") as sink:
+        supervisor = subprocess.Popen(
+            [str(RUN_STAGE), "--name", "test-stage", "--instances", "2",
+             "--shutdown-grace", "30", "--", str(stage)],
+            env=shims.environment, stdout=sink, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 30
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert started.exists(), "the stage command never started"
+        supervisor.send_signal(signal.SIGTERM)
+        returncode = supervisor.wait(timeout=60)
+
+    written = output.read_text()
+    assert interrupted.exists(), written
+    assert returncode != 0, written
+    assert "did not exit within" not in written
     assert "stage test-stage: exit 143, cleanup ok, instances 2/2 cleaned" in written
 
 

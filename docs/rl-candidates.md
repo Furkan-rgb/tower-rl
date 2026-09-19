@@ -155,15 +155,21 @@ the latency objection to using a learned model at decision time.
 
 Third, under the choice-point cadence (ADR 0009) that section 2.2's cadence
 change produced, the "shallow search does not reach the reward" argument no
-longer holds. `M2-E007` measures **5.00 decisions per wave under random play
-and 3.23 under scripted play**, against a mean legal action set near 2
-(rarely above 7). A 5-ply tree therefore spans a whole wave and reaches a
-reward event at its leaves, rather than stopping short of one. At that
-branching factor a depth-5 tree is only about 32 nodes, so EZ-V2's 32
-simulations are exhaustive enumeration to that depth here, not a sample of a
-much larger tree the way they are on Atari's larger action sets. The argument
-that demoted the MuZero family to rank 5 in section 3.5 has been removed by
-the cadence work; section 9 reverses that ranking.
+longer holds as originally stated, though an honest recompute is weaker than
+a first read suggests. The mean legal action set differs by which state set
+it is measured over: at a choice point it is **≈4.2 actions including WAIT**
+(`M2-E004`, measured over choice-point states); averaged over every
+every-slice state, 68% of which were WAIT-only, it falls to ≈2.0. Under
+ADR 0009 the agent decides only at choice points, so ≈4.2 is the branching
+factor a search method actually faces. At that branching factor, 32
+simulations reach a depth k where 4^k ≤ 32, i.e. k ≈ 2.5 — EZ-V2's 32
+simulations are exhaustive enumeration to a depth of about **2 to 3**, not
+the 5 plies the original argument assumed. `M2-E007` measures 5.00 decisions
+per wave under random play and 3.23 under scripted play, so a tree of that
+depth spans roughly half to three-quarters of a wave, not a whole one, and
+does not reliably reach a reward event at its leaves. The argument that
+demoted the MuZero family to rank 5 in section 3.5 is weakened by the
+cadence work, not simply removed; section 9 revises the ranking accordingly.
 
 ### 2.5 Why published margins should not be expected to transfer
 
@@ -1071,7 +1077,10 @@ this document could do:
 This ranking was re-cut on 2026-09-19 for the regime the project actually
 runs in: choice-point cadence (ADR 0009), `observation-v2`, a budget of
 360,000 game-seconds ≈ 40,000 decisions ≈ 1,400 episodes, 20.7–27.5 decisions
-an episode and 3.2–5.0 a wave (`M2-E007`), a mean legal set near 2, and a
+an episode and 3.2–5.0 a wave (`M2-E007`), a mean legal set at a choice
+point of ≈4.2 actions including WAIT (`M2-E004`; ≈2.0 averaged over every
+every-slice state, 68% of which were WAIT-only — ≈4.2 is the branching
+factor that applies under ADR 0009's choice points), and a
 learner that is ~3% busy. Sections 2.2 and 2.4 were written before the cadence
 work landed and their conclusions no longer follow; section 3.5's demotion of
 the MuZero family rested on section 2.4 and is reversed here.
@@ -1080,7 +1089,7 @@ the MuZero family rested on section 2.4 and is reversed here.
 | --- | --- | --- | --- | --- | --- |
 | 1 | **Finish the BBF recipe on the existing `stacked-dqn`** — weight decay 0.1, width, shrink-and-perturb resets, 10→3 n-step and 0.97→0.997 γ anneals, prioritized replay on | Atari-100k IQM 1.045 at RR 8; +0.45 IQM over SR-SPR at *every* replay ratio; every component validated on 29 held-out ALE games (Schwarzer 2023) | Exact masking; replay ratio already between 54:1 and 126:1 depending on the counting convention (see #53), so what is missing is the regularisation and capacity, not the gradient count | 3–5 d | Low |
 | 2 | **Offline bootstrap from the logged baselines** (RLPD symmetric sampling + LayerNorm value net) | RLPD reports up to 2.5× from symmetric sampling with no pretraining and no offline-RL constraint (Ball 2023) | Costs **no new device time**: 223 valid baseline episodes already exist from `M2-E007`. Highest expected gain per device-hour in the list, and still never built | 2–3 d | Low |
-| 3 | **Gumbel MuZero / EfficientZero-V2 with full Reanalyse**, via LightZero (Apache-2.0) — *the different-paradigm candidate* | EZ-V2 Proprio Control **50k**: mean 723.2 vs DreamerV3 517.1 and SAC 552.0, TD-MPC2 740.9 (Wang 2024) — the only published vector-observation result at our budget. Atari-100k mean 2.428 / median 1.286 | Best structural fit of any candidate: branching ~2 makes 32 simulations exhaustive to depth 5; 5 plies ≈ one wave ≈ one reward event; `action_mask` is first-class in LightZero's env dict; Reanalyse converts idle compute into better targets on scarce data, which is exactly this project's asymmetry | 15–20 d | High |
+| 3 | **Gumbel MuZero / EfficientZero-V2 with full Reanalyse**, via LightZero (Apache-2.0) — *the different-paradigm candidate* | EZ-V2 Proprio Control **50k**: mean 723.2 vs DreamerV3 517.1 and SAC 552.0, TD-MPC2 740.9 (Wang 2024) — the only published vector-observation result at our budget. Atari-100k mean 2.428 / median 1.286 | Good structural fit: at the choice-point branching factor of ≈4.2, 32 simulations are exhaustive to a depth of ~2 to 3 (4^k ≤ 32 gives k ≈ 2.5) — roughly half to three-quarters of a wave (3.2–5.0 decisions, `M2-E007`), not a full wave; `action_mask` is first-class in LightZero's env dict; Reanalyse converts idle compute into better targets on scarce data, which is exactly this project's asymmetry | 15–20 d | High |
 | 4 | **DreamerV3** (NM512/dreamerv3-torch, MIT; danijar/dreamerv3 JAX, MIT) | One hyperparameter set over 150+ tasks (Nature 2025); but **weakest of the three** on Proprio Control 50k at 517.1, and Atari-100k mean 1.120 / median 0.490 | Robustness is still its real argument, and tuning is unaffordable here. Against it: no native masking, a bespoke mask head in imagination with no reference, and the worst low-dimensional number of the model-based options | 8–12 d | High |
 | 5 | Recurrent value-based agent, R2D2 skeleton | Ni et al. 2022 | Further demoted: an episode is now ~27 decisions and `history_length=8` already spans a quarter of one | 5–8 d | Moderate |
 | 6 | Masked PPO | Huang & Ontañón 2022 | Control instrument only, unchanged | 2 d | Lowest |
@@ -1152,8 +1161,9 @@ scripted 6.429):
     existing `Backbone` protocol (R6, SOTA-BACKBONES §4). Expected effect
     (pre-registered): beats the best model-free arm at matched game-seconds;
     falsified by failing to do so, or by the search's recommended action
-    agreeing with the raw prior on >95% of decisions, which at branching ~2
-    would mean the search buys nothing. Gated on run 2's verdict.
+    agreeing with the raw prior on >95% of decisions, which at the
+    choice-point branching factor of ≈4.2 would mean the search buys nothing.
+    Gated on run 2's verdict.
 
 Items 1–3 are confounded with each other if run together; item 4 is a reward
 schema change (`reward-v2`) and must be its own arm.

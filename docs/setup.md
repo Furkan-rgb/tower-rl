@@ -64,7 +64,10 @@ file limit and this repository is public — and no project state is kept anywhe
 else on the host. The location is resolved from the package's own file location
 (`tower_rl.environment.project_state.state_directory`), never from the current
 directory, so an entry point started from anywhere finds the same tree. There is
-no environment variable that moves it.
+no environment variable that moves it. A linked git worktree shares this same
+`state/`: the resolver follows the worktree's `.git` file back to the main
+checkout so a run started from a worktree still finds the one bridge install
+and the one set of runs.
 
 A host that still has the old `~/.local/state/tower-rl` tree brings it in once,
 with no emulator running:

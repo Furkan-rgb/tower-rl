@@ -594,6 +594,44 @@ def test_a_uniform_fleet_s_near_greedy_window_is_its_pooled_window(
         )
 
 
+def test_every_checkpoint_period_reaches_the_store_on_the_run_s_own_axis(
+    tmp_path: Path,
+) -> None:
+    """The series a run stops itself on has to be readable beside the curve.
+
+    One point per numbered-checkpoint crossing, keyed by the decisions spent at
+    it like every other series, with the budget position beside it as a metric
+    so the same points can be read in game seconds.
+    """
+    tracker = RecordingTracker()
+    session(
+        tmp_path,
+        budget="1200",
+        settings={"--checkpoint-every-game-seconds": "400"},
+        tracker=tracker,
+    )
+
+    points = [
+        point
+        for point in tracker.runs[0].points
+        if "checkpoint_period_near_greedy_mean_final_wave" in point.metrics
+    ]
+    assert points, "a 1,200-second budget crosses a 400-second period"
+    periods = [point.metrics["checkpoint_period"] for point in points]
+    assert periods == sorted(periods) and periods[0] == 1
+    for point in points:
+        metrics = point.metrics
+        assert metrics["checkpoint_period_game_seconds"] % 400 == 0
+        assert metrics["checkpoint_period_near_greedy_episodes"] > 0
+        assert (
+            metrics["checkpoint_period_best_near_greedy_mean_final_wave"]
+            >= metrics["checkpoint_period_near_greedy_mean_final_wave"]
+        )
+    assert [point.decisions for point in points] == sorted(
+        point.decisions for point in points
+    )
+
+
 def test_each_episode_logs_the_rate_the_actor_that_played_it_explored_at(
     tmp_path: Path,
 ) -> None:

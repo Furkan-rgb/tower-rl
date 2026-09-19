@@ -194,6 +194,13 @@ def resolved_config(
         "evaluation_episodes": arguments.evaluation_episodes,
         "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
         "checkpoint_every_game_seconds": config.checkpoint_every_game_seconds,
+        # What the run was allowed to stop itself on. A run that ended before
+        # its budget has to be readable as a decision rather than as an
+        # interruption, and these are the thresholds that decision was made
+        # under. Zero patience is off, which is what every run so far spent its
+        # whole budget under.
+        "early_stop_patience_periods": config.early_stop_patience_periods,
+        "early_stop_min_improvement": config.early_stop_min_improvement,
         # The parameter lag the fleet acted under, which a later reading of the
         # collection curve needs as much as the replay ratio.
         "parameter_sync_episodes": config.parameter_sync_episodes,

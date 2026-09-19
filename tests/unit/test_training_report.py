@@ -469,3 +469,48 @@ def test_the_summary_reports_the_budget_in_game_time(trained: dict[str, Any]) ->
     # exploration anneal are in decisions by design - but they are no longer
     # what the run is spent against.
     assert arm["decisions"] > 0 and arm["decisions_per_hour"] > 0
+
+
+def test_a_run_that_spent_its_budget_says_it_did_not_stop_early(
+    trained: dict[str, Any],
+) -> None:
+    """Recorded whether or not early stopping was on, so two runs compare."""
+    early = trained["arm"]["early_stopping"]
+
+    assert early["patience_periods"] == 0 and early["early_stopped"] is False
+    assert early["stopped_at_period"] is None
+    assert early["tracker_restored_from_parent"] is False
+    # And the thresholds the run was judged under travel as params too.
+    assert trained["arm"]["resolved_config"]["early_stop_min_improvement"] == 0.2
+
+
+def test_the_summary_carries_the_periods_the_run_judged_itself_on(
+    tmp_path: Path,
+) -> None:
+    """One record per numbered-checkpoint crossing, on the run's own axis."""
+    report = session(
+        tmp_path,
+        budget="1200",
+        settings={"--checkpoint-every-game-seconds": "400"},
+    )
+    arm = report["arm"]
+    periods = arm["checkpoint_periods"]
+
+    assert periods, "a 1,200-second budget crosses a 400-second period"
+    assert [period["index"] for period in periods] == list(range(1, len(periods) + 1))
+    assert [period["game_seconds_at_end"] for period in periods] == [
+        400 * (index + 1) for index in range(len(periods))
+    ]
+    # Every period of this fixture is collected by the one near-greedy actor of
+    # a uniform schedule, so each carries a mean and it is a real wave.
+    assert all(period["near_greedy_episodes"] > 0 for period in periods)
+    assert all(period["mean_final_wave"] >= 1 for period in periods)
+    assert arm["early_stopping"]["periods_closed"] == len(periods)
+    # The bar is the mean of some period that cleared it, which is one of these
+    # and never above the highest of them - not necessarily the highest itself.
+    best = arm["early_stopping"]["best_period_near_greedy_mean_final_wave"]
+    assert best in [period["mean_final_wave"] for period in periods]
+    assert best <= max(period["mean_final_wave"] for period in periods)
+    assert arm["early_stopping"]["closing_period_near_greedy_mean_final_wave"] == (
+        periods[-1]["mean_final_wave"]
+    )

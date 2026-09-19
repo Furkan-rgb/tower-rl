@@ -7,6 +7,252 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M2-E002 — First budgeted run: 200k decisions, post-hoc evaluation
+
+**Date:** 2026-09-19
+**Status:** The pre-registered rule FIRES on both comparisons. On set B
+`stacked-dqn` beats scripted and beats random on final wave; random and
+scripted remain indistinguishable from each other. Board `#31`.
+**Purpose:** Execute `M2-P001` as corrected — the 200,000-decision budgeted
+training run, then set A selection and set B report — and apply its decision
+rule mechanically. Repository at `10722c7` for the evaluation, `3c494b7` for
+the training run; no code changed for either.
+
+Run directory
+`~/.local/state/tower-rl/runs/session-20260918-215839`, arm run
+`stacked-dqn-20260918-215839-e3c6ba`, MLflow run
+`90d08dac383d4f7d9f48f1a8ca43c189` (`sqlite:///~/.local/state/tower-rl/mlflow.db`).
+
+### The training run
+
+`train.py --actors 7 --budget-decisions 200000 --checkpoint-every-decisions
+50000 --renderer host --frame-rate-hz 120`, launched 21:53 on 2026-09-18,
+defaults elsewhere (2,000-decision block, 4 cores an instance, seed 0,
+0.25 gradient steps a decision).
+
+- **200,174 decisions** in **1,420 episodes, 1,415 valid**, **48,892
+  optimisation steps**, 4,290 sequences accepted.
+- Wall **27,731 s = 7.70 h** for the arm, **30,957 s = 8.60 h** for the
+  session (bring-up, post-budget evaluation and teardown included).
+- Fleet 7/7 up in ~5 min cold under `-gpu host`; 7/7 `deployed bridge
+  confirmed 7a98f50b…f99a`, 7/7 `is at home and offline`, and **7/7 `confirmed
+  at 120 Hz`** from `train.py`'s own raise — the `#30` fix doing its job, which
+  `M2-E001` had to do by hand.
+- All four numbered checkpoints written: `checkpoint-0050123.pt`,
+  `-0100080.pt`, `-0150002.pt`, `-0200174.pt`, each with its `.sha256`.
+- Exploring final wave rose: first-10 mean **5.5** → last-10 mean **7.1**
+  (first-100 5.66 → last-100 6.47, overall 6.32). Weighted loss fell
+  **0.1215 → 0.0921**. Value-fit correlation ended 0.63.
+- Post-budget greedy evaluation inside the run: 30 episodes, 0 invalid, mean
+  final wave 6.167, 21.3 decisions a wave.
+- MLflow `episode_*` carry **1,419** points against the 1,420 episodes the
+  session report counts: the last episode of the run is not in the per-episode
+  series. The invalid count differs the same way (4 logged, 5 in the report).
+  One episode, at the shutdown boundary; worth knowing before either number is
+  quoted as exact.
+- **The estimate was 44 minutes short.** The budget was spent at 05:40 (the
+  final numbered checkpoint) against the 05:50 estimate in the live packet, but
+  the session did not close until 06:34: `train.py`'s post-budget evaluation,
+  session report and fleet teardown are ~50 min that the estimate did not
+  price. A budget estimate for this pipeline must include them.
+
+### Set A — selection, 2 episodes an actor a candidate
+
+Four fleets, one a candidate, 07:38-08:18 (9-10 min each). **54 of 56 episodes
+valid.** `select_checkpoint.py` over the four evaluation directories:
+
+    4 checkpoints of stacked-dqn-20260918-215839-e3c6ba
+
+    final_wave:
+      checkpoint-0050123.pt        IQM   7.00  [  5.88,   7.88]  n=14
+      checkpoint-0100080.pt        IQM   7.00  [  5.50,   8.25]  n=14
+      checkpoint-0150002.pt        IQM   5.88  [  5.00,   7.25]  n=14
+      checkpoint-0200174.pt        IQM   6.67  [  6.00,   7.00]  n=12
+
+    decisions:
+      checkpoint-0050123.pt        IQM 152.75  [128.75, 172.12]  n=14
+      checkpoint-0100080.pt        IQM 161.12  [130.88, 188.12]  n=14
+      checkpoint-0150002.pt        IQM 123.25  [106.88, 148.62]  n=14
+      checkpoint-0200174.pt        IQM 142.50  [126.33, 149.83]  n=12
+
+    selected .../checkpoints/checkpoint-0050123.pt
+      its interval overlaps checkpoint-0100080.pt, checkpoint-0200174.pt,
+      checkpoint-0150002.pt; the selection is a choice among checkpoints this
+      sample could not separate
+
+`checkpoint-0200174` is n=12 because one actor was lost on that fleet to
+`RunPortError: the instance did not reach an active run` at episode reset.
+The two leaders tie at IQM 7.00 and the rule's tie-break — lower decisions,
+the earlier checkpoint — chose **`checkpoint-0050123.pt`, at 50,123 of the
+200,174 decisions**. Every interval overlaps every other: 14 episodes a
+candidate separates nothing, which is exactly why M2-P001 forbids set A from
+appearing in a claim. `selection.json`, written beside the arm run:
+
+    {
+      "run_id": "stacked-dqn-20260918-215839-e3c6ba",
+      "checkpoint": ".../checkpoints/checkpoint-0050123.pt",
+      "decisions": 50123,
+      "checkpoint_identity": "8344a482eede",
+      "selected_on": "final_wave",
+      "iqm": 7.0,
+      "interval": [5.875, 7.875],
+      "selected_at": "2026-09-19T06:18:04+00:00"
+    }
+
+### Set B — report, 9 episodes an actor an arm, fresh fleets
+
+Three fleets, 08:18-09:50: `stacked-dqn` (the selected checkpoint) **61
+valid**, `scripted` **63 valid**, `random` **62 valid**, all ≥60. The random
+arm was **re-run whole**, as M2-P001 requires and not padded: its first attempt
+returned 54 valid because one actor's bridge deploy died on
+`adb: error: cannot bind listener: Address already in use` — a host port still
+held from the previous fleet, not a device fault — and that attempt's records
+were set aside unused. `report_arms.py ... --selection selection.json
+--mlflow-run …` accepted the model arm against the selection:
+
+    interquartile mean, stratified by actor:
+
+    final_wave:
+      random                       IQM   6.19  [  5.31,   6.84]  n=62
+      scripted                     IQM   5.94  [  5.42,   6.48]  n=63
+      stacked-dqn                  IQM   6.61  [  6.29,   7.13]  n=61
+
+    decisions:
+      random                       IQM 135.16  [116.62, 148.47]  n=62
+      scripted                     IQM 125.97  [115.70, 136.30]  n=63
+      stacked-dqn                  IQM 148.61  [140.32, 158.61]  n=61
+
+    pairwise difference in mean final wave:
+      random 5.79 vs scripted 5.81: difference -0.02 [-0.92, +0.87] d=-0.01
+        n=62/63 — indistinguishable
+      random 5.79 vs stacked-dqn 6.77: difference -0.98 [-1.83, -0.13] d=-0.41
+        n=62/61 — separated
+      scripted 5.81 vs stacked-dqn 6.77: difference -0.96 [-1.74, -0.20] d=-0.43
+        n=63/61 — separated
+
+Secondary per-wave evidence (`wave_statistics.analyse_reports`), nine wave
+indices a pair, 95% intervals at 80% power, quoting each family's own summary
+line and the per-episode lines:
+
+    random vs scripted: 62/63 valid episodes
+      game_ms:          separated at [1],          pooled d=+0.291
+      decisions:        separated at [2, 5, 7],    pooled d=+0.311
+      health_fraction:  separated at [3, 8],       pooled d=-0.091
+      cash_log:         separated at [7],          pooled d=-0.035
+      final_wave: 5.79 vs 5.81: -0.02 [-0.92, +0.87] d=-0.01 — indistinguishable
+      decisions: 125.58 vs 123.83: +1.76 [-15.94, +19.10] d=+0.03 — indistinguishable
+
+    random vs stacked-dqn: 62/61 valid episodes
+      game_ms:          separated at [1],          pooled d=+0.244
+      decisions:        separated at [3, 4, 6, 9], pooled d=-0.299
+      health_fraction:  separated at none,         pooled d=+0.033
+      cash_log:         separated at [3],          pooled d=-0.035
+      final_wave: 5.79 vs 6.77: -0.98 [-1.83, -0.13] d=-0.41 — separated
+      decisions: 125.58 vs 150.44: -24.86 [-42.02, -7.68] d=-0.51 — separated
+
+    scripted vs stacked-dqn: 63/61 valid episodes
+      game_ms:          separated at none,                  pooled d=+0.045
+      decisions:        separated at [2, 3, 4, 5, 6, 7],    pooled d=-0.594
+      health_fraction:  separated at [3, 8],                pooled d=+0.111
+      cash_log:         separated at [1, 3],                pooled d=-0.039
+      final_wave: 5.81 vs 6.77: -0.96 [-1.74, -0.20] d=-0.43 — separated
+      decisions: 123.83 vs 150.44: -26.62 [-41.97, -11.59] d=-0.61 — separated
+
+The one per-wave family that separates broadly is **decisions**: against
+scripted the model takes more decisions at six of nine wave indices (pooled
+d=-0.59), and it survives 150.4 decisions an episode against scripted's 123.8.
+Game time per wave is flat everywhere but wave 1 — the waves themselves are
+not longer, there are more of them. `health_fraction` runs slightly *lower*
+for the model at the indices that separate, so the extra waves are not bought
+by playing safer.
+
+The post-hoc MLflow series were confirmed through the client:
+`greedy_final_wave_iqm` (with `_ci_low`/`_ci_high`) at steps **50123, 100080,
+150002, 200174** — each checkpoint at its own decision count — and
+`report_random_*`, `report_scripted_*`, `report_stacked-dqn_*` at step 0.
+
+### The pre-registered rule, applied
+
+M2-P001: *"The headline claim `stacked-dqn` beats scripted is made only if the
+pairwise interval of (model − scripted) final-wave IQM excludes zero on set B.
+Beats random likewise."*
+
+- (model − scripted) = **+0.96, interval [+0.20, +1.74]** — excludes zero.
+  **"`stacked-dqn` beats scripted" is made.**
+- (model − random) = **+0.98, interval [+0.13, +1.83]** — excludes zero.
+  **"`stacked-dqn` beats random" is made.**
+- (random − scripted) = −0.02, [−0.92, +0.87] — the comparison floor is not
+  separated at this sample, as in `M1B-E021`.
+
+Both claims rest on `checkpoint-0050123`, chosen on set A and reported on
+fresh set-B episodes; set A appears in no claim.
+
+**One instrument note, recorded because it qualifies the rule rather than the
+result.** `report_arms.py` prints the per-arm statistic as the stratified IQM
+but computes the *pairwise* bootstrap difference on the **mean**, so the
+interval the rule is applied to is a difference of means, not of IQMs. The
+pre-registration says IQM in both places. The direction and the decision are
+the same either way here — the per-arm IQMs are 6.61 model, 5.94 scripted,
+6.19 random, and the mean difference intervals exclude zero — but "the
+pairwise interval" as the rule names it does not exist in the tooling and was
+not built for this run. The claim above is the rule applied to the interval
+the pre-registered command actually reports.
+
+A second qualification, from the same output: the per-arm IQM *intervals*
+overlap (model [6.29, 7.13] against scripted [5.42, 6.48] and random
+[5.31, 6.84]). The rule is deliberately on the paired difference, which is the
+sharper test, and that is what fired; overlapping marginal intervals are not
+evidence against it, but neither should this be reported as a result so large
+that the arms separate on inspection.
+
+**This is also a stated expectation refuted in the model's favour.** M2-P001's
+correction pre-registered that "the headline claim is NOT expected to be
+reachable at this budget". It was reached, at 200,174 decisions and 48,892
+gradient steps, by a checkpoint taken a quarter of the way through.
+
+### What this sample cannot detect
+
+At ~60 valid an arm the per-episode comparison can resolve about 1.1-1.3 waves
+(the report prints its own floors: 1.124 against scripted, 1.218 against
+random), so the measured ~0.97 is at the edge of what the design can see and
+the interval's lower end is +0.20 waves — the size of the effect is not
+established, only its sign. One training seed: nothing here speaks to
+seed-to-seed variance, and a single seed that clears a threshold is the result
+most likely not to replicate. Nothing about robustness to a different image
+state, frame rate, or account progression. The selected checkpoint is the
+earliest of four and its set-A lead over the others was inside the noise, so
+"the model at 50k decisions is better than the model at 200k" is **not** a
+finding — set A could not separate them and only one of them was reported.
+
+### The decision as a budget unit
+
+M2-P001 left this under review, on the reading that waits cost 4-5x a purchase
+in wall time and that the wait fraction might fall as the policy sharpened.
+Over the run's 1,419 logged episodes `episode_wait_fraction` means **0.841**,
+and it does not move: first 100 episodes **0.829**, last 100 **0.847**, and by
+quartile 0.840, 0.842, 0.840, 0.841. Against `M2-E001`'s ~0.80 it is slightly
+*higher*, not lower. The policy sharpening does not buy the wait fraction back,
+so the decision stays a variable-cost unit for the whole of a run at this
+configuration, and the case for pricing budgets in game time rather than
+decisions is not weakened by anything measured here.
+
+### Device hygiene
+
+Seven fleet stages in a row (four set-A, three set-B, plus one discarded
+random attempt), each brought up and torn down on its own. Every stage: 7/7
+`deployed bridge confirmed 7a98f50b…f99a`, 7/7 `confirmed at 120 Hz` (6/7 on
+the discarded attempt, whose lost actor never got that far), and on teardown
+7/7 on every line — `libunity_sha256
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, `game_frame_rate_override: reset` — then zero
+qemu in `/proc/*/exe` and `adb devices` empty. Only serials 5556-5568; no
+reference to 5554 or the canonical AVD anywhere in any log. No taps, no
+screenshots, every artifact under `~/.local/state/tower-rl/`, none in the
+repository. Two actor losses in 56 actor-stages, both named by their own
+error: one `RunPortError` at reset, one host-side port collision on deploy.
+
 ## M2-E001 — Walking skeleton: the pipeline runs end to end; the wall-clock budget does not
 
 **Date:** 2026-09-18

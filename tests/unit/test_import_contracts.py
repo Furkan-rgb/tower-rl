@@ -72,6 +72,7 @@ SCRIPT_MODULES = (
     "select_checkpoint",
     "report_arms",
     "spectate",
+    "render_recording",
     "diagnose_plasticity",
     "migrate_state",
 )
@@ -137,6 +138,9 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     # stream drawn in a terminal, owning no domain concept of its own. This is
     # the one file that reads them.
     "spectate": frozenset({"test_spectate"}),
+    # Composition of a recording and the decision track beside it: it reads two
+    # files and calls ffmpeg, owns no domain concept, and has one test reader.
+    "render_recording": frozenset({"test_render_recording"}),
     # The capture seam and the diagnostic that reads what it writes are one
     # pipeline joined by a file format, and that format is the thing worth
     # holding; `run_episodes` picks up this reader for the wrapper that lives

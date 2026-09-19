@@ -359,3 +359,41 @@ limit, and this repo is public.
 `--output-directory` writes the episodes the session played as the same
 per-episode records the fleet writes. Omit it and nothing is kept: the panel is
 a view, not a measurement.
+
+### What the agent did, in the recording
+
+A recording of the guest screen shows the game and not the agent: the same
+`--record` session also writes `<stem>.decisions.jsonl` beside the video, one
+JSON object per decision, so what the agent did and when is readable afterwards.
+Each line carries `video_s` (seconds since the recording began), `chunk` and
+`chunk_s` (which chunk the decision is in and how far into it — the placement a
+seam cannot move), `episode`, `decision`, `wave`, `cash`, `health_fraction`,
+`action` (`wait` or `attack:3`), `label` (what the game calls that upgrade row,
+or `Hold`), `held_s` (game time the choice was held for), `hud` (the same
+readings the terminal panel shows), and `ended` — with `reason` — on the
+decision the episode died on. The session record under
+`state/recordings/records/` names the video, the track and the monotonic anchor
+both are timed from.
+
+`scripts/render_recording.py` composes the two into one video:
+
+```text
+uv run python scripts/render_recording.py --recording state/recordings/session
+```
+
+It concatenates the chunks in order and pads the picture to the right with a
+panel drawn by `libass` — a header with wave, cash, health and the HUD block,
+updated per decision, and a scrolling history of the last twelve actions with
+their labels and held times, the current one picked out. The result is
+`<stem>-panel.mp4` beside the input. The guest picture is never scaled: the
+output is the source resolution plus the 560-pixel panel, encoded x264 CRF 20,
+`veryfast`, `yuv420p`, no audio. ffmpeg and a monospace font are required and
+the render fails by name if either is missing (Debian/Ubuntu: `sudo apt install
+ffmpeg fonts-dejavu-core`).
+
+**The panel leads the picture slightly.** Times are anchored on the monotonic
+clock at the instant the host asks the guest to record, and the guest's first
+frame arrives an adb round trip and a `screenrecord` process start later — a
+few hundred milliseconds, under a second. Each chunk seam loses about a second
+the same way, which is why a decision is placed by its chunk rather than by
+`video_s`. Close enough to watch; not something to measure from.

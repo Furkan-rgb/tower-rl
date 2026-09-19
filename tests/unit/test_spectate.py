@@ -9,6 +9,7 @@ looking at the terminal verifies better than an assertion can.
 from __future__ import annotations
 
 import ast
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -733,3 +734,199 @@ def test_a_recording_the_guest_stopped_answering_is_still_pulled(tmp_path: Path)
 
     assert [path.name for path in pulled] == ["session-000.mp4"]
     assert len(guest.screenrecords()) == 1, "the loop stops rather than retrying forever"
+
+
+# -- the decision track beside the video -----------------------------------
+
+
+def _track(tmp_path: Path, times: list[float], **overrides: object) -> spectate.DecisionTrack:
+    """A track on a clock that reads the given times, one per call."""
+    fields: dict[str, object] = {
+        "path": tmp_path / "session.decisions.jsonl",
+        "anchor": 100.0,
+        "clock": lambda: times.pop(0),
+    }
+    fields.update(overrides)
+    return spectate.DecisionTrack(**fields)  # type: ignore[arg-type]
+
+
+def _lines(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_a_decision_is_written_as_one_line_saying_when_it_was_and_what_it_bought(
+    tmp_path: Path,
+) -> None:
+    """The line is the whole seam: a renderer reads it and nothing else."""
+    track = _track(
+        tmp_path,
+        [112.5],
+        labels=[UpgradeSlotLabel(family="attack", index=2, name="Critical Chance", description="")],
+    )
+
+    track.write(
+        _view(episode=2, decision=17, wave=6, cash=1240.0, action="attack:2", game_ms=9800.0)
+    )
+    track.close()
+
+    (line,) = _lines(track.path)
+    assert line["video_s"] == 12.5
+    assert line["chunk"] == 0 and line["chunk_s"] == 12.5
+    assert line["episode"] == 2 and line["decision"] == 17
+    assert line["wave"] == 6 and line["cash"] == 1240.0
+    assert line["health_fraction"] == 0.5
+    assert line["action"] == "attack:2"
+    assert line["label"] == "Critical Chance", "the game's own name for the row, not the index"
+    assert line["held_s"] == 9.8
+    assert line["ended"] is False and "reason" not in line
+    hud = line["hud"]
+    assert isinstance(hud, dict)
+    assert hud["damage"] == 12.09 and hud["waveTimer"] == 12.5
+    assert set(hud) <= set(spectate.PANEL_HUD_WIRES)
+
+
+def test_a_wait_is_named_as_one_and_an_unknown_slot_keeps_its_index(tmp_path: Path) -> None:
+    """A panel that said `attack:2` for everything would say nothing."""
+    track = _track(tmp_path, [101.0, 102.0], labels=[])
+
+    track.write(_view(action="wait"))
+    track.write(_view(action="defense:1"))
+    track.close()
+
+    assert [line["label"] for line in _lines(track.path)] == [spectate.HOLD_LABEL, "defense:1"]
+
+
+def test_the_death_decision_carries_the_end_and_why(tmp_path: Path) -> None:
+    track = _track(tmp_path, [150.0])
+
+    track.write(_view(done=True, termination=TerminationOutcome.GAME_OVER))
+    track.close()
+
+    (line,) = _lines(track.path)
+    assert line["ended"] is True
+    assert line["reason"] == "game_over"
+
+
+def test_every_reading_the_panel_draws_is_one_the_track_writes() -> None:
+    """The rendered panel shows what the watcher saw, or it is a second view.
+
+    Read from `hud_lines`' own source: a reading added to the panel and not to
+    `PANEL_HUD_WIRES` would be drawn live and missing from every recording.
+    """
+    source = ast.parse((REPOSITORY / "scripts" / "spectate.py").read_text())
+    (function,) = [
+        node
+        for node in ast.walk(source)
+        if isinstance(node, ast.FunctionDef) and node.name == "hud_lines"
+    ]
+    read = {
+        node.slice.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    }
+
+    assert read, "the reader found no HUD lookups at all"
+    assert read <= set(spectate.PANEL_HUD_WIRES)
+
+
+def test_a_track_is_written_for_every_decision_a_session_takes(tmp_path: Path) -> None:
+    """The fake port plays the episodes; the track is the record of them."""
+    environment, _ = _environment()
+    summaries: list[EpisodeSummary] = []
+    clock = iter(float(tick) for tick in range(100, 1000))
+    track = spectate.DecisionTrack(
+        path=tmp_path / "session.decisions.jsonl", anchor=100.0, clock=lambda: next(clock)
+    )
+
+    spectate.spectate_session(
+        environment,
+        RandomPolicy(seed=5),
+        RecordingPanel(),
+        spectate.Spectator(),
+        summaries,
+        episodes=2,
+        policy_name="random",
+        renderer="lavapipe",
+        actor_id="spectate:random",
+        track=track,
+    )
+    track.close()
+
+    lines = _lines(track.path)
+    assert len(lines) == sum(summary.decisions for summary in summaries)
+    assert [line["episode"] for line in lines] == sorted(line["episode"] for line in lines)
+    assert [line["video_s"] for line in lines] == sorted(line["video_s"] for line in lines)
+    assert sum(1 for line in lines if line["ended"]) == 2, "one ending per episode"
+
+
+# -- placing a decision in the video ---------------------------------------
+
+
+def test_a_decision_is_placed_in_the_chunk_that_was_recording_at_the_time() -> None:
+    """The chunk and the offset into it: what a seam cannot move."""
+    starts = [100.5, 281.0, 462.0]
+
+    assert spectate.video_position(100.6, 100.0, starts) == spectate.VideoPosition(
+        video_s=0.6, chunk=0, chunk_s=0.1
+    )
+    assert spectate.video_position(300.0, 100.0, starts) == spectate.VideoPosition(
+        video_s=200.0, chunk=1, chunk_s=19.0
+    )
+    assert spectate.video_position(470.0, 100.0, starts) == spectate.VideoPosition(
+        video_s=370.0, chunk=2, chunk_s=8.0
+    )
+
+
+def test_a_decision_taken_before_the_guest_started_recording_belongs_to_the_first_chunk() -> None:
+    """There is no earlier frame for it to be in, so it is not placed before one."""
+    position = spectate.video_position(100.2, 100.0, [100.5])
+
+    assert position.chunk == 0
+    assert position.video_s == 0.2
+    assert position.chunk_s == 0.2
+
+
+def test_the_anchor_is_taken_when_the_guest_is_asked_to_record(tmp_path: Path) -> None:
+    """Everything beside the video is timed from the instant `start` returns.
+
+    The chunk starts are taken on the same clock, one per chunk, which is what
+    makes a decision placeable in a session longer than three minutes.
+    """
+    guest = FakeGuest()
+    ticks = iter([50.0, 50.25, 230.0])
+    recording = spectate.GuestRecording(
+        CloneInstance(), tmp_path / "session.mp4", run=guest, clock=lambda: next(ticks)
+    )
+    guest.after_chunk = lambda: recording._stop.set() if guest.chunks == 2 else None
+
+    anchor = recording.start()
+    if recording._thread is not None:
+        recording._thread.join(timeout=5.0)
+
+    assert anchor == 50.0 == recording.anchor
+    assert recording.chunk_starts == [50.25, 230.0]
+    assert anchor <= recording.chunk_starts[0], "the guest starts after it is asked to"
+
+
+def test_the_track_lands_beside_the_video_it_belongs_to() -> None:
+    video = spectate.RECORDINGS_DIRECTORY / "session.mp4"
+
+    assert spectate.decisions_beside(video).name == "session.decisions.jsonl"
+    assert spectate.decisions_beside(video).parent == spectate.RECORDINGS_DIRECTORY
+
+
+def test_a_record_says_where_the_recording_and_its_track_are() -> None:
+    """A record read afterwards is where the two files are lined up from."""
+    record = spectate.session_record(
+        (), {"name": "random"}, frame_rate_hz=60,
+        decision_cadence="choice-points", wall_seconds=1.0,
+        recording={"video": "/tmp/session.mp4", "anchor_monotonic": 50.0},
+    )
+
+    assert record["recording"] == {"video": "/tmp/session.mp4", "anchor_monotonic": 50.0}
+    assert "recording" not in spectate.session_record(
+        (), {"name": "random"}, frame_rate_hz=60,
+        decision_cadence="choice-points", wall_seconds=1.0,
+    ), "a session that recorded nothing says nothing about a recording"

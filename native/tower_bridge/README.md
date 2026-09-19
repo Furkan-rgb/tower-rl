@@ -228,7 +228,11 @@ All three families are resolved and every element proven readable before
 anything is written, so a drifted schema refuses the command whole and leaves
 the game exactly as it was. A write that fails *after* that pre-read can still
 leave the arrays part way; the frame is emitted either way and shows what the
-arrays then hold, which is the only honest report of a partial state.
+arrays then hold, which is the only honest report of a partial state. Each of
+the three passes re-reads the field rather than reusing the array pointer the
+first one found, and refuses if it is handed a different object: a held pointer
+would write to — and then dutifully read back — an array the game had swapped
+out, reporting a success the game never saw.
 
 Both commands are gated, not only the write. The read-only one could have been
 in both builds, but the production artifact's digest is the identity every

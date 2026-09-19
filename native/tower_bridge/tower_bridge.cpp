@@ -725,6 +725,21 @@ bool WritePrimitiveArray(const Il2CppApi& api, Il2CppArray* array, size_t index,
   return true;
 }
 
+// One family's availability array, resolved and validated from `Main` afresh.
+// Every pass over the arrays re-reads the field rather than reusing a pointer
+// from an earlier one: an `Il2CppArray*` is the object the field pointed at when
+// it was read, and if the game swaps in a new array between passes, a held
+// pointer would write to - and then dutifully read back - an orphan the game no
+// longer looks at, reporting a success it never saw. Re-reading turns that into
+// a refusal, because the pass compares what it found against what the first
+// pass found.
+bool ResolveUnlockArray(const Il2CppApi& api, Il2CppObject* main, const FamilyFields& family,
+                        Il2CppArray** array, size_t* length) {
+  if (!ReadField(api, main, family.unlocked, array) || *array == nullptr) return false;
+  *length = api.array_length(*array);
+  return *length != 0 && *length <= kMaxEntriesPerFamily;
+}
+
 // The profile-v2 trial instrument (board #54). `unlock_all` sets every element
 // of the three in-run availability arrays true on the live `Main`; either way
 // the three arrays are then read back and reported as a length and a count of
@@ -748,49 +763,63 @@ bool ReportUnlockState(const Il2CppApi& api, const MainFields& fields, bool unlo
   if (!NativeHandleIsAlive(api, main)) return false;
   const FamilyFields families[] = {fields.attack, fields.defense, fields.utility};
   constexpr size_t kFamilyCount = sizeof(families) / sizeof(families[0]);
-  Il2CppArray* unlocked[kFamilyCount] = {};
+  // Pass one: every array resolved, bounded, and every element proven readable
+  // under exactly the guards a write applies, before a single byte is written.
+  Il2CppArray* seen[kFamilyCount] = {};
   size_t lengths[kFamilyCount] = {};
   for (size_t family = 0; family < kFamilyCount; ++family) {
-    if (!ReadField(api, main, families[family].unlocked, &unlocked[family]) ||
-        unlocked[family] == nullptr) {
+    if (!ResolveUnlockArray(api, main, families[family], &seen[family], &lengths[family])) {
       return false;
     }
-    lengths[family] = api.array_length(unlocked[family]);
-    if (lengths[family] == 0 || lengths[family] > kMaxEntriesPerFamily) return false;
-    // Every element is proven readable before any of them is written, so the
-    // element-size and bounds checks cannot first fail half way through a write.
     for (size_t index = 0; index < lengths[family]; ++index) {
       uint8_t value = 0;
-      if (!ReadPrimitiveArray(api, unlocked[family], index, &value)) return false;
+      if (!ReadPrimitiveArray(api, seen[family], index, &value)) return false;
     }
   }
-  bool wrote = true;
+  // Pass two: the write, against the field read again. `wrote_every_slot` is the
+  // local truth about this pass and is not the `wrote` the report carries - that
+  // one says a write was *commanded*, which is what the host checks its own
+  // command against.
+  bool wrote_every_slot = true;
   if (unlock_all) {
-    for (size_t family = 0; family < kFamilyCount && wrote; ++family) {
-      for (size_t index = 0; index < lengths[family]; ++index) {
+    for (size_t family = 0; family < kFamilyCount && wrote_every_slot; ++family) {
+      Il2CppArray* array = nullptr;
+      size_t length = 0;
+      if (!ResolveUnlockArray(api, main, families[family], &array, &length) ||
+          array != seen[family] || length != lengths[family]) {
+        return false;
+      }
+      for (size_t index = 0; index < length; ++index) {
         const uint8_t truth = 1;
-        if (!WritePrimitiveArray(api, unlocked[family], index, truth)) { wrote = false; break; }
+        if (!WritePrimitiveArray(api, array, index, truth)) { wrote_every_slot = false; break; }
       }
     }
   }
+  // Pass three: what the arrays hold now, read from the field once more.
   *json = "{\"type\":\"unlock_state\",\"protocol_version\":2,\"wrote\":";
   json->append(unlock_all ? "true" : "false");
   json->append(",\"families\":[");
   for (size_t family = 0; family < kFamilyCount; ++family) {
+    Il2CppArray* array = nullptr;
+    size_t length = 0;
+    if (!ResolveUnlockArray(api, main, families[family], &array, &length) ||
+        array != seen[family] || length != lengths[family]) {
+      return false;
+    }
     size_t true_count = 0;
-    for (size_t index = 0; index < lengths[family]; ++index) {
+    for (size_t index = 0; index < length; ++index) {
       // Read back what the array now holds rather than what was written: a
       // write that did not take, or took only part way, is exactly the outcome
       // this instrument exists to detect.
       uint8_t value = 0;
-      if (!ReadPrimitiveArray(api, unlocked[family], index, &value)) return false;
+      if (!ReadPrimitiveArray(api, array, index, &value)) return false;
       if (value != 0) ++true_count;
     }
     if (json->back() != '[') json->push_back(',');
     json->append("{\"family\":\"");
     json->append(families[family].name);
     json->append("\",\"length\":");
-    json->append(std::to_string(lengths[family]));
+    json->append(std::to_string(length));
     json->append(",\"true_count\":");
     json->append(std::to_string(true_count));
     json->push_back('}');

@@ -39,6 +39,11 @@ from tower_rl.simulation.bridge import (  # noqa: E402
     bridge_build_directory,
     compatibility,
 )
+from tower_rl.simulation.instance import (  # noqa: E402
+    CANONICAL_AVD,
+    FIRST_BRIDGE_HOST_PORT,
+    FIRST_CONSOLE_PORT,
+)
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
     BridgeCompatibilityError,
     BridgeObservation,
@@ -47,7 +52,35 @@ from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
     UnlockFamilyState,
 )
 
+#: The canonical evaluation AVD's serial. Named here because it is the one
+#: instance this script must never reach, and the port derivation below cannot
+#: express that: its console port is below index 0's.
 CANONICAL_SERIAL = "emulator-5554"
+
+
+def bridge_port_for(serial: str) -> int:
+    """The host port forwarded to the bridge on that instance, from its serial.
+
+    The serial is the console port (`instance.py`: even, two apart, index 0 at
+    5556), and each instance forwards its own host port from the same base. For
+    a read-only runner an unmatched `--serial`/`--port` pair is a confusing
+    session; for an instrument that *writes* to the game it is a write aimed at
+    whichever instance the port happens to reach, which may be a measured one.
+    So the port is derived here rather than defaulted, and a serial that is not
+    on the scheme is refused instead of being guessed at.
+    """
+    if serial == CANONICAL_SERIAL:
+        raise SystemExit(f"refusing to run against the canonical evaluation AVD ({CANONICAL_AVD})")
+    prefix = "emulator-"
+    if not serial.startswith(prefix) or not serial[len(prefix) :].isdigit():
+        raise SystemExit(f"not an emulator serial: {serial!r}")
+    port = int(serial[len(prefix) :])
+    if port < FIRST_CONSOLE_PORT or port % 2 != 0:
+        raise SystemExit(
+            f"{serial} is not on the emulator console-port scheme "
+            f"(even, from {FIRST_CONSOLE_PORT}); refusing to guess its bridge port"
+        )
+    return FIRST_BRIDGE_HOST_PORT + (port - FIRST_CONSOLE_PORT) // 2
 
 
 def _report(title: str, families: tuple[UnlockFamilyState, ...]) -> None:
@@ -58,16 +91,27 @@ def _report(title: str, families: tuple[UnlockFamilyState, ...]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial", default="emulator-5556")
-    parser.add_argument("--port", type=int, default=47652)
+    parser.add_argument("--serial", default=f"emulator-{FIRST_CONSOLE_PORT}")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="the forwarded bridge port; derived from --serial, and must agree with it",
+    )
     arguments = parser.parse_args()
-    if arguments.serial == CANONICAL_SERIAL:
-        raise SystemExit("refusing to run against the canonical evaluation AVD")
+    port = bridge_port_for(arguments.serial)
+    if arguments.port is not None and arguments.port != port:
+        # The port is what actually selects the instance. A pair that disagrees
+        # names one instance and writes to another.
+        raise SystemExit(
+            f"--port {arguments.port} does not belong to {arguments.serial}, whose bridge "
+            f"port is {port}"
+        )
 
     expected = compatibility(bridge_build_directory())
     client = InstrumentedBridgeClient(
         "127.0.0.1",
-        arguments.port,
+        port,
         expected_compatibility=expected,
         connect_timeout=5.0,
         read_timeout=30.0,

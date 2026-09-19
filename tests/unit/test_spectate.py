@@ -299,7 +299,11 @@ def test_the_plain_panel_prints_the_death_on_the_decision_it_happened_on(
 def test_the_plain_panel_stays_quiet_while_the_episode_runs(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """One line a decision: the death line appears on the death, not before it."""
+    """The state and the live readings, and nothing else.
+
+    The death line appears on the death, not before it, and no blank or stray
+    line ever reaches the log: three lines a decision, always the same three.
+    """
     spectator = spectate.Spectator()
     spectator.observe(_view(wave=3))
 
@@ -313,7 +317,10 @@ def test_the_plain_panel_stays_quiet_while_the_episode_runs(
         )
     )
 
-    assert capsys.readouterr().out.count("\n") == 1, "no blank or stray second line"
+    printed = capsys.readouterr().out
+    assert printed.count("\n") == 3, "the state line and the two live-reading lines"
+    assert "dmg 12.1" in printed, "a log is what a recording is lined up against"
+    assert "wave clock" in printed
 
 
 def test_the_plain_panel_draws_before_the_first_decision_arrives(

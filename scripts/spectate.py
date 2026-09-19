@@ -43,7 +43,7 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -116,6 +116,12 @@ RECENT_ACTIONS = 20
 #: can find it at the same index: the plain one prints it to a log, and the
 #: curses one draws it.
 DEATH_LINE = 4
+#: Where `panel_lines` puts the two live-reading lines — the tower stats and the
+#: wave block, in the game's own units. Like `DEATH_LINE` the slots are always
+#: there, blank before the first decision, so both panels index them the same
+#: way: the curses one draws them and the plain one prints them to a log, which
+#: is what lets a recording be lined up against what the agent actually saw.
+HUD_LINES = slice(DEATH_LINE + 2, DEATH_LINE + 4)
 
 #: The Android limit on one `screenrecord`, in seconds. It is a hard limit in
 #: the guest tool, so a longer session is recorded as consecutive chunks and the
@@ -144,10 +150,24 @@ class Spectator:
     decisions: int = 0
     episodes_finished: int = 0
     final_waves: list[int] = field(default_factory=list)
+    #: The range each live reading took this session, in the game's own unit:
+    #: `[min, max, first, last]` per `Main` field. The panel is what a human
+    #: checks against the HUD; this is the same readings in a form a record can
+    #: be checked against afterwards, and it is the shape the device capture in
+    #: `FIELD-SAMPLES.md` (board #39) reports, so the two compare directly.
+    live_ranges: dict[str, list[float]] = field(default_factory=dict)
 
     def observe(self, view: DecisionView) -> None:
         self.latest = view
         self.decisions += 1
+        for name, value in view.hud.items():
+            seen = self.live_ranges.get(name)
+            if seen is None:
+                self.live_ranges[name] = [value, value, value, value]
+            else:
+                seen[0] = min(seen[0], value)
+                seen[1] = max(seen[1], value)
+                seen[3] = value
         self.recent.append(f"e{view.episode} d{view.decision} {view.action}")
         if view.done:
             self.episodes_finished += 1
@@ -282,9 +302,10 @@ def panel_lines(
         ended = f"episode {view.episode} ended at wave {view.wave}: {outcome}"
     lines.append(ended)
     lines.append("")
-    if view is not None:
-        lines.extend(hud_lines(view))
-        lines.append("")
+    # Two slots, always present so both panels can index them, and blank until
+    # there is a decision to read them from.
+    lines.extend(hud_lines(view) if view is not None else ["", ""])
+    lines.append("")
     lines.extend(label_lines(labels))
     if labels:
         lines.append("")
@@ -334,6 +355,13 @@ class PlainPanel:
         print(f"{lines[2]} | {lines[0]}", flush=True)
         if len(lines) > DEATH_LINE and lines[DEATH_LINE]:
             print(lines[DEATH_LINE], flush=True)
+        # The live readings too, in the game's own units. A session watched
+        # through this panel is one somebody reads afterwards, and lining a
+        # recording up against what the agent saw is the only way
+        # `observation-v2` gets checked against the game rather than itself.
+        for line in lines[HUD_LINES]:
+            if line:
+                print(f"  {line}", flush=True)
 
     def key(self) -> str:
         return ""
@@ -615,6 +643,7 @@ def session_record(
     decision_cadence: str,
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
+    live_ranges: Mapping[str, Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     """The same per-episode rows the fleet writes, for the episodes just played.
 
@@ -642,6 +671,14 @@ def session_record(
             for label in labels
             if label.name
         ],
+        # What each live reading actually read this session, in the game's own
+        # unit: `{field: {min, max, first, last}}`. The panel is what a human
+        # checks against the HUD; this is what a record can be checked against
+        # afterwards, and it is the shape board #39's device capture reports.
+        "live_readings": {
+            name: dict(zip(("min", "max", "first", "last"), seen, strict=True))
+            for name, seen in sorted((live_ranges or {}).items())
+        },
         "episodes": [episode_record(index, summary) for index, summary in enumerate(summaries)],
     }
 
@@ -803,6 +840,7 @@ def run(arguments: argparse.Namespace) -> int:
             decision_cadence=str(decision_cadence_from(arguments)),
             wall_seconds=time.monotonic() - started,
             labels=labels,
+            live_ranges=spectator.live_ranges,
         )
         output = arguments.output_directory / f"{instance.serial}.json"
         output.write_text(json.dumps(record, indent=2))

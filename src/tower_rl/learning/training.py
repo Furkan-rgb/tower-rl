@@ -12,6 +12,14 @@ its budget and reports the overshoot.  Decisions are still counted beside it:
 the replay ratio and the exploration anneal are schedules in decisions by
 design.
 
+A run may also stop before its budget is spent.  The interval between two
+numbered-checkpoint crossings is a period, and at each crossing the run reads
+the mean final wave of the near-greedy actors' valid episodes that ended inside
+the period just closed.  A curve that has not improved on its best period for
+`early_stop_patience_periods` periods in a row has stopped learning, and the
+rest of the budget buys nothing, so the run ends after writing that crossing's
+checkpoint.
+
 A run collects with one actor or with a fleet of them, and the budget is the
 fleet's: N actors, each on its own emulator instance, collect concurrently into
 one replay buffer and one learner, so the gradient steps a run takes track the
@@ -230,6 +238,18 @@ class TrainingConfig:
     #: arms are equalised on: two runs whose episodes differ in length still
     #: produce checkpoints at the same points of their budgets.
     checkpoint_every_game_seconds: int = 0
+    #: How many checkpoint periods in a row may close without the near-greedy
+    #: curve improving before the run stops itself, after the checkpoint of the
+    #: crossing that closed the last of them. Zero is off, which is what every
+    #: run measured so far spent its whole budget under. The unit is the period
+    #: between numbered-checkpoint crossings, so early stopping needs
+    #: `checkpoint_every_game_seconds` to have a period at all.
+    early_stop_patience_periods: int = 0
+    #: What counts as an improvement, in waves. A period whose near-greedy mean
+    #: does not reach the best period mean so far plus this much has not
+    #: improved on it. 0.2 waves is about the standard error of a hundred
+    #: episode window, so a period inside it is noise rather than progress.
+    early_stop_min_improvement: float = 0.2
     #: How many episodes in a row may fail at the port before an actor gives up.
     #: A single failed episode is an ordinary event on a real device and must not
     #: end a run that has hours of experience in it; a device that fails every
@@ -265,6 +285,16 @@ class TrainingConfig:
             raise ValueError("actors must be synchronised at least every episode")
         if self.checkpoint_every_game_seconds < 0:
             raise ValueError("a checkpoint period in game seconds cannot be negative")
+        if self.early_stop_patience_periods < 0:
+            raise ValueError("early-stopping patience cannot be negative")
+        if self.early_stop_patience_periods and not self.checkpoint_every_game_seconds:
+            # The period early stopping counts in is the interval between
+            # numbered-checkpoint crossings. Without one there is no period, and
+            # a run configured to stop on a plateau would simply never stop.
+            raise ValueError(
+                "early stopping counts checkpoint periods and needs "
+                "checkpoint_every_game_seconds to have one"
+            )
 
     @property
     def budget_game_ms(self) -> float:
@@ -360,6 +390,86 @@ class CollectionWindow:
     #: numbers under a uniform schedule, where every actor is near-greedy.
     near_greedy_episodes: int = 0
     near_greedy_mean_final_wave: float | None = None
+
+
+@dataclass(frozen=True)
+class CheckpointPeriod:
+    """One interval between numbered-checkpoint crossings, as it closed.
+
+    The collection window beside this is cut in episodes and is the curve the
+    run is read from; a period is cut in game time - exactly the interval a
+    numbered checkpoint is written at the end of - so its mean belongs to the
+    checkpoint that was just written, which is what a run deciding whether it
+    is still improving has to compare.
+    """
+
+    #: The period's ordinal over the whole run, counting from one.
+    index: int
+    #: The multiple of the period this crossing reached, and where the run
+    #: stood on the decision axis when it did.
+    game_seconds_at_end: int
+    decisions_at_end: int
+    #: Valid episodes the near-greedy actors ended inside the period, and their
+    #: mean final wave. None when no near-greedy actor finished a valid episode
+    #: in it, which measures nothing rather than measuring zero.
+    near_greedy_episodes: int
+    mean_final_wave: float | None
+    #: The best period mean of the run including this one, which is what the
+    #: next period is judged against.
+    best_mean_final_wave: float | None
+
+
+@dataclass
+class NearGreedyPlateau:
+    """Whether the near-greedy curve has stopped improving, period by period.
+
+    The run's own read of its learning curve, and the only state behind its
+    decision to stop early. It is counted over the whole run rather than over
+    one segment of it: the counters travel in the checkpoint, so a run trained
+    in two sittings is judged on one curve. What a period's mean is over - the
+    near-greedy actors' valid episodes, which under a uniform schedule is every
+    actor's - belongs to `TrainingRun`; this only remembers what the periods
+    have been worth.
+    """
+
+    #: Periods closed so far, over the whole run.
+    periods_closed: int = 0
+    #: The best period mean of the run, which every later period is judged
+    #: against. None until a period has produced one.
+    best_mean_final_wave: float | None = None
+    #: Periods in a row that failed to improve on it.
+    periods_without_improvement: int = 0
+    #: The period the run stopped itself at, or None while it is still running.
+    stopped_at_period: int | None = None
+    #: Whether these counters came back from a parent checkpoint. False for a
+    #: fresh run and for a resume from a checkpoint written before early
+    #: stopping existed, whose tracker starts over - which the report says
+    #: rather than leaving a fresh baseline to look like a continued one.
+    restored: bool = False
+
+    def close_period(self, mean: float | None, *, min_improvement: float) -> None:
+        """Record what the period just closed was worth.
+
+        The first period with a mean sets the baseline and cannot count against
+        the run: there has to be something to fail to improve on before a run
+        can be said to have stopped improving. A period no near-greedy actor
+        finished a valid episode in is counted neither way - it measures
+        nothing - though it is still a period that closed.
+        """
+        self.periods_closed += 1
+        if mean is None:
+            return
+        best = self.best_mean_final_wave
+        if best is None or mean >= best + min_improvement:
+            self.periods_without_improvement = 0
+        else:
+            self.periods_without_improvement += 1
+        if best is None or mean > best:
+            self.best_mean_final_wave = mean
+
+    def plateaued(self, patience_periods: int) -> bool:
+        """Whether the curve has failed to improve for `patience_periods` in a row."""
+        return bool(patience_periods) and self.periods_without_improvement >= patience_periods
 
 
 def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribution | None:
@@ -553,6 +663,13 @@ class TrainingProgressReport:
     #: The fleet, keyed by actor id in the order the actors were started. A run
     #: with one actor holds exactly one entry.
     actors: dict[str, ActorProgress] = field(default_factory=dict)
+    #: Every checkpoint period this segment closed, in order. The episodes
+    #: behind them are this segment's - the collected list is not restored on a
+    #: resume - while the plateau below is counted over the whole run.
+    checkpoint_periods: list[CheckpointPeriod] = field(default_factory=list)
+    #: The run's read of its own near-greedy curve, and the state a resume
+    #: restores so a run trained in two sittings is judged on one curve.
+    plateau: NearGreedyPlateau = field(default_factory=NearGreedyPlateau)
 
     @property
     def game_seconds(self) -> float:
@@ -688,6 +805,10 @@ class TrainingRun:
     #: can fall inside one long episode; this records which of them have
     #: already been answered so a crossing produces exactly one checkpoint.
     _numbered_at: int = field(default=0, init=False)
+    #: Where in `report.collected` the period now open began. A period's mean is
+    #: over the episodes that ended inside it, and this is the cursor that
+    #: separates them from the ones the previous period was already judged on.
+    _period_start: int = field(default=0, init=False)
     #: Where each actor stands in the fleet, by id. The order actors were given
     #: in is the order the exploration ladder is read in and the order a
     #: per-actor metric series is keyed by, so it is resolved once here rather
@@ -754,8 +875,31 @@ class TrainingRun:
             self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
     @property
+    def near_greedy_actor_ids(self) -> frozenset[str]:
+        """The actors whose episodes read as the policy's performance, not search.
+
+        Every actor of a uniform schedule, which draws the one annealed rate;
+        under a ladder, the ones at or under `NEAR_GREEDY_EPSILON`. Resolved
+        here because the fleet's order is the run's: the ladder is read in it,
+        and anything asking which actors are near-greedy is asking about this
+        fleet.
+        """
+        exploration = self.config.exploration
+        return frozenset(
+            actor_id
+            for actor_id, index in self.actor_index.items()
+            if exploration.is_near_greedy(index)
+        )
+
+    @property
+    def stopped_early(self) -> bool:
+        """Whether the run stopped itself on a near-greedy curve that plateaued."""
+        return self.report.plateau.stopped_at_period is not None
+
+    @property
     def finished(self) -> bool:
-        return self.report.game_ms >= self.config.budget_game_ms
+        """Whether nothing is left to collect: the budget is spent, or it plateaued."""
+        return self.report.game_ms >= self.config.budget_game_ms or self.stopped_early
 
     @property
     def budget_overshoot_game_ms(self) -> float:
@@ -881,7 +1025,11 @@ class TrainingRun:
         actor_id = actor.config.actor_id
         while True:
             with profile.acquiring(self._lock):
-                if self.report.game_ms >= target:
+                if self.report.game_ms >= target or self.stopped_early:
+                    # The budget, or the run's own decision to stop: a plateau
+                    # is answered at the episode boundary after the crossing
+                    # that found it, so every actor finishes the episode it is
+                    # in and none of them starts another.
                     return
                 # This actor's own rate, which under a ladder is not the rate
                 # any other actor is drawing - and beside it the one number the
@@ -1089,15 +1237,55 @@ class TrainingRun:
             self.checkpoint(report)
             report.checkpoints_written += 1
         game_seconds_period = self.config.checkpoint_every_game_seconds
-        if self.numbered_checkpoint is not None and game_seconds_period:
+        if game_seconds_period:
             # The multiple this much game time has reached, which is what the
             # crossing is counted by: the counter lands past a multiple, not on
             # it, because an episode is played to its end.
             reached = int(report.game_seconds) // game_seconds_period * game_seconds_period
             if reached > self._numbered_at:
                 self._numbered_at = reached
-                self.numbered_checkpoint(report)
-                report.checkpoints_written += 1
+                if self.numbered_checkpoint is not None:
+                    self.numbered_checkpoint(report)
+                    report.checkpoints_written += 1
+                # After the checkpoint, so a run that stops here has written the
+                # model the period it stopped on produced.
+                self._close_period(report, reached)
+
+    def _close_period(self, report: TrainingProgressReport, reached: int) -> None:
+        """Close the checkpoint period this crossing ends, and stop on a plateau.
+
+        The period's mean is the near-greedy actors' valid episodes that ended
+        inside it: the series that reads as the policy's own performance rather
+        than as search, which under a uniform schedule is every episode the
+        fleet collected. A run whose best period mean is not improved on for
+        `early_stop_patience_periods` periods in a row is not learning any more,
+        and the rest of its budget buys nothing.
+        """
+        episodes = report.collected[self._period_start :]
+        self._period_start = len(report.collected)
+        near_greedy_ids = self.near_greedy_actor_ids
+        near_greedy = [
+            episode.summary.final_wave
+            for episode in episodes
+            if episode.summary.valid and episode.actor_id in near_greedy_ids
+        ]
+        mean = statistics.fmean(near_greedy) if near_greedy else None
+        plateau = report.plateau
+        plateau.close_period(
+            mean, min_improvement=self.config.early_stop_min_improvement
+        )
+        report.checkpoint_periods.append(
+            CheckpointPeriod(
+                index=plateau.periods_closed,
+                game_seconds_at_end=reached,
+                decisions_at_end=report.decisions,
+                near_greedy_episodes=len(near_greedy),
+                mean_final_wave=mean,
+                best_mean_final_wave=plateau.best_mean_final_wave,
+            )
+        )
+        if plateau.plateaued(self.config.early_stop_patience_periods):
+            plateau.stopped_at_period = plateau.periods_closed
 
     def _optimise(self, game_ms: float) -> LearnMetrics:
         # The buffer's lock is held across sampling, learning and the priority
@@ -1136,9 +1324,11 @@ __all__ = [
     "ActionDistribution",
     "ActorConfig",
     "ActorProgress",
+    "CheckpointPeriod",
     "CollectedEpisode",
     "CollectionWindow",
     "EpisodeHealth",
+    "NearGreedyPlateau",
     "action_distribution",
     "collection_windows",
     "episode_health",

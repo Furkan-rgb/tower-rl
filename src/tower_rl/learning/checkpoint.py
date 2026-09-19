@@ -34,6 +34,11 @@ from tower_rl.environment.run_environment import DecisionCadence
 #: evaluation path wants exactly those - but they record no game time, so a
 #: resume that continues a game-time budget refuses them by name rather than
 #: reading their spent budget as zero.
+#: Early stopping added three counters to `progress` without a fourth version:
+#: they are optional fields with defaults, so a format 3 file written before
+#: them still loads and a reader that does not know them still reads everything
+#: else. Absence is meaningful rather than silent - see
+#: `TrainingProgress.checkpoint_periods_closed`.
 CHECKPOINT_FORMAT_VERSION = 3
 SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)
 #: The first format that records game time. Named rather than compared against
@@ -138,6 +143,16 @@ class TrainingProgress:
     episodes: int = 0
     epsilon: float = 0.0
     importance_beta: float = 0.4
+    #: The early-stopping tracker, so a run trained in two sittings is judged on
+    #: one near-greedy curve rather than starting its plateau count over at
+    #: every resume: the checkpoint periods closed so far, the best period mean
+    #: and how many periods in a row have failed to improve on it. Optional
+    #: within format 3 - `checkpoint_periods_closed` is None in a file written
+    #: before early stopping existed, which is how a resume tells a tracker it
+    #: can continue from one it has to start fresh.
+    checkpoint_periods_closed: int | None = None
+    best_period_near_greedy_mean: float | None = None
+    periods_without_improvement: int | None = None
 
 
 @dataclass(frozen=True)
@@ -310,6 +325,13 @@ class ResumeState:
     #: None when the parent was untracked, and for every version 1 checkpoint.
     tracking_run_id: str | None
     backbone_state: Mapping[str, Any]
+    #: The early-stopping tracker as the parent recorded it. `periods_closed` is
+    #: None for a checkpoint written before early stopping existed: the resumed
+    #: run then starts the tracker fresh and says so, rather than reading
+    #: absence as a run that had closed no period.
+    periods_closed: int | None = None
+    best_period_near_greedy_mean: float | None = None
+    periods_without_improvement: int = 0
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:
@@ -324,6 +346,9 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
         format_version=checkpoint.format_version,
         tracking_run_id=checkpoint.tracking_run_id,
         backbone_state=checkpoint.backbone_state,
+        periods_closed=checkpoint.progress.checkpoint_periods_closed,
+        best_period_near_greedy_mean=checkpoint.progress.best_period_near_greedy_mean,
+        periods_without_improvement=checkpoint.progress.periods_without_improvement or 0,
     )
 
 

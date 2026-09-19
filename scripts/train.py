@@ -32,6 +32,15 @@ and tears them all down when the run ends.
     uv run --extra tracking python scripts/train.py \\
         --actors 4 --budget-game-seconds 200000
 
+`--early-stop-patience-periods N` lets the run stop before its budget is spent.
+The interval between two numbered-checkpoint crossings is a period, and at each
+crossing the run takes the mean final wave of the near-greedy actors' valid
+episodes that ended in the period just closed. A curve that has not improved on
+its best period by `--early-stop-min-improvement` waves for N periods in a row
+has stopped learning, so the run ends after writing that crossing's checkpoint
+and the summary records what it stopped on. The default, 0, spends the whole
+budget as every measured run so far has.
+
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
 budget. The weights, the optimizer moments, the game-time and decision counters
 and every schedule and cadence derived from them come back from the file; the
@@ -108,6 +117,7 @@ from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
+    NearGreedyPlateau,
     TrainingConfig,
     TrainingProgressReport,
     TrainingRun,
@@ -252,6 +262,8 @@ def build_arm(
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
         checkpoint_every_game_seconds=arguments.checkpoint_every_game_seconds,
+        early_stop_patience_periods=arguments.early_stop_patience_periods,
+        early_stop_min_improvement=arguments.early_stop_min_improvement,
         parameter_sync_episodes=arguments.parameter_sync_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
@@ -316,6 +328,17 @@ def build_arm(
             game_ms=resume.game_ms,
             episodes=resume.episodes,
             optimisation_steps=resume.optimisation_steps,
+            # The early-stopping tracker, so a run trained in two sittings is
+            # judged on one near-greedy curve. A checkpoint written before
+            # early stopping existed records none, and the tracker then starts
+            # fresh - said out loud below, because a fresh baseline that read
+            # as a continued one would let a plateaued run go on collecting.
+            plateau=NearGreedyPlateau(
+                periods_closed=resume.periods_closed or 0,
+                best_mean_final_wave=resume.best_period_near_greedy_mean,
+                periods_without_improvement=resume.periods_without_improvement,
+                restored=resume.periods_closed is not None,
+            ),
         )
     arm = TrainingReport(
         name=name,
@@ -397,6 +420,9 @@ def build_arm(
         # the smoothed view of the same series.
         arm.record_episodes()
         arm.record_collection_windows()
+        # The periods the run judges itself on, after the windows: a crossing
+        # is closed inside the same hook, and this is the record of it.
+        arm.record_checkpoint_periods()
         arm.record_decision_time()
         print(
             f"[{name}] episode {report.episodes} game seconds "
@@ -434,6 +460,13 @@ def build_arm(
             f"{config.budget_game_seconds}",
             flush=True,
         )
+        if config.early_stop_patience_periods and not progress.plateau.restored:
+            print(
+                f"[{name}] the parent checkpoint records no early-stopping "
+                "tracker, so the plateau count starts fresh from this segment's "
+                "first checkpoint period",
+                flush=True,
+            )
     # The evaluation comes back beside the report rather than on it: the report
     # records what an evaluation produced, and the session decides when the one
     # pre-registered evaluation is taken.
@@ -572,6 +605,27 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--early-stop-patience-periods",
+        type=int,
+        default=0,
+        help=(
+            "stop the run when the near-greedy collection curve has not "
+            "improved for this many checkpoint periods in a row, after writing "
+            "that crossing's checkpoint; 0 spends the whole budget, and any "
+            "value needs --checkpoint-every-game-seconds to have a period"
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-min-improvement",
+        type=float,
+        default=0.2,
+        help=(
+            "waves a checkpoint period must add to the best period mean so far "
+            "to count as an improvement; 0.2 is about the standard error of a "
+            "hundred-episode window, so anything inside it is noise"
+        ),
+    )
+    parser.add_argument(
         "--parameter-sync-episodes",
         type=int,
         default=1,
@@ -700,6 +754,18 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             f"{arguments.checkpoint_every_game_seconds} is not a multiple of "
             f"--block-game-seconds {arguments.block_game_seconds}"
         )
+    if arguments.early_stop_patience_periods < 0:
+        raise SystemExit("--early-stop-patience-periods cannot be negative")
+    if arguments.early_stop_patience_periods and not arguments.checkpoint_every_game_seconds:
+        # The period early stopping counts in is the interval between numbered
+        # checkpoint crossings. Without one there is no period at all, and a run
+        # asked to stop on a plateau would quietly spend its whole budget.
+        raise SystemExit(
+            "--early-stop-patience-periods counts checkpoint periods and needs "
+            "--checkpoint-every-game-seconds to have one"
+        )
+    if arguments.early_stop_min_improvement < 0:
+        raise SystemExit("--early-stop-min-improvement cannot be negative")
     if arguments.stacked_burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
@@ -849,6 +915,19 @@ def train_session(
             if arm.training.finished:
                 break
             arm.training.advance(arguments.block_game_seconds)
+
+        if arm.training.stopped_early:
+            plateau = arm.training.report.plateau
+            # An early stop is the run's own decision and is invisible in the
+            # counters alone - a run that stopped at 60,000 of 200,000 game
+            # seconds looks like one that was interrupted.
+            print(
+                f"[{arm.name}] stopped early at checkpoint period "
+                f"{plateau.stopped_at_period}: the near-greedy curve did not "
+                f"improve on {plateau.best_mean_final_wave:.2f} waves for "
+                f"{arguments.early_stop_patience_periods} periods",
+                flush=True,
+            )
 
         arm.checkpoint(arm.training.report)
         # The one pre-registered measurement of the run: exploration-free, on

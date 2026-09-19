@@ -175,7 +175,8 @@ environment and nothing that observes or drives it.
 - `actor.py` — `Actor`, which plays one episode against one
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
-  `TrainingProgressReport`, `episode_health`, `collection_windows`.
+  `TrainingProgressReport`, `episode_health`, `collection_windows`,
+  `CheckpointPeriod` and `NearGreedyPlateau`.
 - `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
   explores at, at each point of the budget.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
@@ -199,6 +200,26 @@ still produce a collection curve that reads as the policy's own performance.
 `CollectionWindow` carries that split: the pooled window, each actor's own mean
 final wave, and a mean pooled over the near-greedy actors alone, which under a
 uniform schedule is every actor and therefore the pooled series itself.
+
+**Stopping early.** A run may end before its budget is spent. The interval
+between two numbered-checkpoint crossings
+(`--checkpoint-every-game-seconds`) is a *period*, and at each crossing
+`TrainingRun` closes the period just ended: it takes the mean final wave of the
+near-greedy actors' valid episodes that ended inside it — under a uniform
+schedule that is every actor — and hands it to `NearGreedyPlateau`, which keeps
+the best period mean of the run and how many periods in a row have failed to
+reach it plus `--early-stop-min-improvement` waves. The first period sets the
+baseline and cannot trigger a stop. When `--early-stop-patience-periods`
+periods in a row have failed to improve, the run stops after that crossing's
+checkpoint is written: the actors finish the episodes they are in and start no
+more, `finished` is true, and the summary's `early_stopping` block records the
+stop, the period it happened at, the best period mean and the closing period's.
+The default patience of 0 is off, which is what every measured run so far
+collected under. The three counters travel in the checkpoint's
+`TrainingProgress` — optional fields within format 3 — so a resumed run is
+judged on one curve rather than counting again from zero; a resume from a file
+written before they existed starts the tracker fresh and says so, in the log
+and in `early_stopping.tracker_restored_from_parent`.
 
 **State.** `TrainingRun` owns everything the fleet shares: one
 `PrioritizedSequenceReplay` all actors write into, one `Backbone` inside

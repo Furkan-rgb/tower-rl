@@ -23,6 +23,8 @@ from tower_rl.experiment.metrics import (
     DECISION_TIME_INTERVAL_SECONDS,
     LearningCurvePoint,
     actor_summary,
+    checkpoint_period_line,
+    checkpoint_period_metrics,
     collected_episode_records,
     curve_metrics,
     decision_time_line,
@@ -120,6 +122,10 @@ class TrainingReport:
     #: The same running sum in game time, so each episode's point carries the
     #: budget position it ended at as well as the decisions axis it is keyed on.
     game_ms_logged: float = field(init=False, default=0.0)
+    #: How many closed checkpoint periods have been reported. The periods
+    #: themselves belong to the run - it is the run that decides whether it is
+    #: still improving - and this is only how far the record has followed it.
+    periods_logged: int = field(init=False, default=0)
     #: The tracking run this report's checkpoints name as their own, so a resume
     #: from one of them can continue that series. None when untracked.
     tracking_run_id: str | None = None
@@ -132,16 +138,12 @@ class TrainingReport:
     def near_greedy_actor_ids(self) -> frozenset[str]:
         """The actors whose episodes read as the policy's performance, not search.
 
-        The whole fleet under a uniform schedule, where every actor draws the one
-        annealed rate; under a ladder, the ones at or under
-        `NEAR_GREEDY_EPSILON`.
+        The run's own answer: it is the run that holds the fleet's order and the
+        exploration schedule read against it, and a second definition here could
+        cut the collection curve's near-greedy series over one set of actors
+        while the run stopped itself on another.
         """
-        exploration = self.training.config.exploration
-        return frozenset(
-            actor_id
-            for actor_id, index in self.training.actor_index.items()
-            if exploration.is_near_greedy(index)
-        )
+        return self.training.near_greedy_actor_ids
 
     @property
     def checkpoint_path(self) -> Path:
@@ -195,6 +197,12 @@ class TrainingReport:
                 # per-episode series is where those are read.
                 epsilon=report.epsilon,
                 importance_beta=report.importance_beta,
+                # The early-stopping tracker, so a resume continues the one
+                # near-greedy curve the run is judged on instead of starting
+                # its plateau count over.
+                checkpoint_periods_closed=report.plateau.periods_closed,
+                best_period_near_greedy_mean=report.plateau.best_mean_final_wave,
+                periods_without_improvement=report.plateau.periods_without_improvement,
             ),
             backbone_state=self.backbone.state_dict(),
             resolved_config=self.resolved,
@@ -335,6 +343,27 @@ class TrainingReport:
             )
             print(f"[{self.name}] collection: {window_line(window)}", flush=True)
 
+    def record_checkpoint_periods(self) -> None:
+        """Report every checkpoint period that has closed since the last call.
+
+        The period is the interval a numbered checkpoint is written at the end
+        of, and its near-greedy mean final wave is what the run judges itself
+        on: the same number, on the same key, that decided whether the run went
+        on collecting. Keyed by the decisions spent at the crossing, with the
+        budget position beside it as a metric, exactly as every other series
+        here is.
+
+        Called per episode, on the collecting thread, under the run's progress
+        lock. It reads what the run already closed and measures nothing.
+        """
+        periods = self.training.report.checkpoint_periods
+        for period in periods[self.periods_logged :]:
+            self.periods_logged += 1
+            self.run.log_metrics(
+                checkpoint_period_metrics(period), decisions=period.decisions_at_end
+            )
+            print(f"[{self.name}] {checkpoint_period_line(period)}", flush=True)
+
     def record_decision_time(self, *, final: bool = False) -> None:
         """Emit where the fleet's decision time went since the last emission.
 
@@ -378,6 +407,38 @@ class TrainingReport:
         )
         print(decision_time_line(self.name, fleet, len(interval)), flush=True)
 
+    def _early_stopping(self) -> dict[str, object]:
+        """Whether the run stopped itself, and on what.
+
+        Recorded whether or not early stopping was on: a run that spent its
+        whole budget says so with `early_stopped` false and the thresholds it
+        was judged under beside it, so two runs are comparable without knowing
+        which of them had the flag.
+        """
+        config = self.training.config
+        plateau = self.training.report.plateau
+        periods = self.training.report.checkpoint_periods
+        return {
+            "patience_periods": config.early_stop_patience_periods,
+            "min_improvement": config.early_stop_min_improvement,
+            "early_stopped": self.training.stopped_early,
+            # The period the run stopped at, and the two means the decision was
+            # made on: the best the curve had reached, and what the period that
+            # closed the run was worth.
+            "stopped_at_period": plateau.stopped_at_period,
+            "best_period_near_greedy_mean_final_wave": plateau.best_mean_final_wave,
+            "closing_period_near_greedy_mean_final_wave": (
+                periods[-1].mean_final_wave if periods else None
+            ),
+            "periods_closed": plateau.periods_closed,
+            "periods_without_improvement": plateau.periods_without_improvement,
+            # False for a fresh run, and for a resume from a checkpoint that
+            # recorded no tracker: that run's plateau count starts over, and
+            # saying so is what keeps a fresh baseline from reading as a
+            # continued one.
+            "tracker_restored_from_parent": plateau.restored,
+        }
+
     def summary(self) -> dict[str, object]:
         report = self.training.report
         # Flush the interval the run ended in, so a short measurement is not
@@ -415,6 +476,13 @@ class TrainingReport:
             # the final checkpoint, which is the headline against the floors.
             "collection_curve": [asdict(window) for window in self.collection_curve],
             "collection_window_episodes": self.training.config.collection_window_episodes,
+            # The periods the run judged itself on, and what it decided. A run
+            # that stopped early spent less than its budget, so a reading of
+            # the curve has to be able to see that it stopped and why.
+            "checkpoint_periods": [
+                asdict(period) for period in report.checkpoint_periods
+            ],
+            "early_stopping": self._early_stopping(),
             "final_evaluation": (
                 asdict(self.final_point) if self.final_point is not None else None
             ),

@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from itertools import chain, repeat
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 import torch
 from fakes.fake_run_port import FakeRunPort
 
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
 from tower_rl.environment.features import encode_state
 from tower_rl.environment.run_environment import (
     CadenceConfig,
@@ -25,12 +29,18 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.backbone import (
     LearnMetrics,
     SequenceBatch,
     acting_copy,
     parameters_are_equal,
+)
+from tower_rl.learning.checkpoint import (
+    CheckpointIdentity,
+    TrainingProgress,
+    resume_state,
+    write_checkpoint,
 )
 from tower_rl.learning.exploration import ExplorationSchedule, ape_x_floors
 from tower_rl.learning.network import NetworkConfig
@@ -40,7 +50,9 @@ from tower_rl.learning.stacked_dqn import (
     StackedDqnConfig,
 )
 from tower_rl.learning.training import (
+    NearGreedyPlateau,
     TrainingConfig,
+    TrainingProgressReport,
     TrainingRun,
     collection_windows,
 )
@@ -131,9 +143,15 @@ def fleet(
     environments: list[InstrumentedRunEnvironment],
     *,
     backbone: Any = None,
+    report: TrainingProgressReport | None = None,
     **overrides: Any,
 ) -> TrainingRun:
-    """One arm collecting on these instances, one actor each."""
+    """One arm collecting on these instances, one actor each.
+
+    `report` is what a resumed segment is built with: the counters a parent
+    left, handed to the run at construction because the run reads its
+    checkpoint cadence off them.
+    """
     learner = backbone or StackedDqnBackbone(
         config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
     )
@@ -165,6 +183,7 @@ def fleet(
         replay=replay,
         backbone=learner,
         config=TrainingConfig(**settings),
+        report=report or TrainingProgressReport(),
     )
 
 
@@ -768,3 +787,267 @@ def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> 
     assert not parameters_are_equal(acting.online, learner.online), (
         "the copy moved with the learner, so it shares its storage"
     )
+
+
+# --- Stopping early on a near-greedy curve that has stopped improving -------
+#
+# What a period is worth is what the fleet collected in it, so a test of the
+# stopping rule has to fix what the episodes are worth. The actors below are
+# the real ones, driven by the real run, with only `run_episode` scripted: the
+# period cutting, the plateau counting and the stop itself are the run's own.
+
+#: Game time one scripted episode spends, so a period of `PERIOD_GAME_SECONDS`
+#: is exactly that many episodes and a crossing lands where the test says.
+EPISODE_ROUND_MS = 1000.0
+PERIOD_GAME_SECONDS = 5
+
+
+def scripted_episode(wave: int) -> EpisodeResult:
+    """One delivered episode worth `wave`, spending one game second."""
+    return EpisodeResult(
+        summary=EpisodeSummary(
+            episode_id=f"scripted-{wave}",
+            profile_id="fake-profile-v1",
+            final_wave=wave,
+            decisions=4,
+            purchases=0,
+            termination=TerminationOutcome.GAME_OVER,
+            elapsed_wall_seconds=0.0,
+            game_speed=8.0,
+            invalid_transitions=0,
+            game_ms=EPISODE_ROUND_MS,
+            round_ms=EPISODE_ROUND_MS,
+        ),
+        sequences_offered=0,
+        sequences_accepted=0,
+        total_reward=0.0,
+        wait_decisions=0,
+    )
+
+
+def play(training: TrainingRun, waves: Sequence[int], *, actor: int = 0) -> None:
+    """Give one actor the final waves its episodes will be worth, in order.
+
+    The last wave repeats for ever, so an actor that outlives its script keeps
+    collecting at that level rather than raising out of its own thread.
+    """
+    script = chain(waves, repeat(waves[-1]))
+    training.actors[actor].run_episode = lambda: scripted_episode(  # type: ignore[method-assign]
+        next(script)
+    )
+
+
+def period_means(means: Sequence[int]) -> list[int]:
+    """A wave script whose consecutive periods average exactly these."""
+    return [wave for wave in means for _ in range(PERIOD_GAME_SECONDS)]
+
+
+def scripted_fleet(waves: Sequence[int], **overrides: Any) -> TrainingRun:
+    """A fleet of one whose episodes are worth exactly `waves`, in order."""
+    settings: dict[str, Any] = {
+        "budget_game_seconds": 100,
+        "checkpoint_every_game_seconds": PERIOD_GAME_SECONDS,
+        "early_stop_patience_periods": 2,
+        "early_stop_min_improvement": 0.2,
+    }
+    settings.update(overrides)
+    training = fleet([environment()], **settings)
+    play(training, waves)
+    return training
+
+
+def test_a_plateaued_fleet_stops_after_exactly_the_patience_it_was_given() -> None:
+    """The rule itself: two periods that add nothing, and the budget is not spent."""
+    training = scripted_fleet(period_means([10, 10, 10, 10, 10]))
+
+    report = training.run()
+
+    plateau = report.plateau
+    # Period 1 set the baseline; periods 2 and 3 failed to improve on it, and
+    # the second of those is the patience the run was given.
+    assert plateau.stopped_at_period == 3
+    assert plateau.periods_closed == 3
+    assert plateau.best_mean_final_wave == 10
+    assert training.stopped_early and training.finished
+    assert [period.mean_final_wave for period in report.checkpoint_periods] == [10, 10, 10]
+    assert [period.game_seconds_at_end for period in report.checkpoint_periods] == [5, 10, 15]
+    # Three whole periods, and not an episode past the crossing that stopped it.
+    assert report.episodes == 3 * PERIOD_GAME_SECONDS
+    assert report.game_seconds < training.config.budget_game_seconds
+
+
+def test_a_fleet_that_keeps_improving_spends_its_whole_budget() -> None:
+    """The curve is still going up, so the budget is still buying something."""
+    # Six periods of budget and six improving periods: the run is still
+    # learning at every crossing it is judged on.
+    training = scripted_fleet(
+        period_means([10, 11, 12, 13, 14, 15]),
+        budget_game_seconds=6 * PERIOD_GAME_SECONDS,
+    )
+
+    report = training.run()
+
+    assert not training.stopped_early
+    assert len(report.checkpoint_periods) == 6
+    assert report.plateau.stopped_at_period is None
+    assert report.plateau.periods_without_improvement == 0
+    assert report.game_seconds >= training.config.budget_game_seconds
+
+
+def test_a_period_inside_the_threshold_has_not_improved_on_the_best() -> None:
+    """Half a wave on a noisy curve is not progress, and must not buy patience."""
+    training = scripted_fleet(period_means([10, 11, 12, 13]), early_stop_min_improvement=3.0)
+
+    report = training.run()
+
+    # Every period beat the one before it by a wave and none of them cleared
+    # the threshold, so the run stopped on a curve that was still moving up.
+    assert report.plateau.stopped_at_period == 3
+    assert report.plateau.best_mean_final_wave == 12
+
+
+def test_patience_zero_never_stops_a_run() -> None:
+    """The default: every run measured so far spent its whole budget."""
+    training = scripted_fleet(period_means([10, 10, 10, 10]), early_stop_patience_periods=0)
+
+    report = training.run()
+
+    assert not training.stopped_early
+    assert report.game_seconds >= training.config.budget_game_seconds
+    # The periods were still closed and still measured: the curve is reported
+    # whether or not the run is allowed to stop itself on it.
+    assert len(report.checkpoint_periods) == 20
+    assert report.plateau.periods_without_improvement > 0
+
+
+def test_the_first_period_sets_the_baseline_and_cannot_stop_the_run() -> None:
+    """There must be something to fail to improve on before a run has stopped."""
+    training = scripted_fleet(period_means([10, 10, 10]), early_stop_patience_periods=1)
+
+    report = training.run()
+
+    assert report.plateau.stopped_at_period == 2, "the first period stopped the run"
+    assert report.checkpoint_periods[0].mean_final_wave == 10
+
+
+def test_a_period_is_measured_over_the_near_greedy_actors_alone() -> None:
+    """Under a ladder the searching actors are not the policy's performance.
+
+    The searching actor here reaches far higher waves than the near-greedy
+    ones. Pooled, the periods would sit well above the series a readout cites;
+    the run has to judge itself on the series that reads as the policy.
+    """
+    schedule = ExplorationSchedule.for_option(
+        "ladder",
+        actors=3,
+        epsilon_start=0.9,
+        epsilon_end=SCHEDULE.epsilon_end,
+        anneal_decisions=1,
+    )
+    training = fleet(
+        [environment() for _ in range(3)],
+        exploration=schedule,
+        budget_game_seconds=100,
+        checkpoint_every_game_seconds=PERIOD_GAME_SECONDS,
+        early_stop_patience_periods=2,
+    )
+    # The bottom two rungs of a ladder of three are near-greedy; actor 0, at
+    # 0.4, is searching.
+    assert training.near_greedy_actor_ids == {"fake-1:stacked-dqn", "fake-2:stacked-dqn"}
+    play(training, [40], actor=0)
+    play(training, [7], actor=1)
+    play(training, [7], actor=2)
+
+    report = training.run()
+
+    assert training.stopped_early
+    assert report.plateau.best_mean_final_wave == 7
+    # 7 wherever a near-greedy actor ended an episode inside the period, and
+    # nothing at all where none did - never the 40 the searching actor reached.
+    assert {period.mean_final_wave for period in report.checkpoint_periods} <= {7.0, None}
+    assert any(period.near_greedy_episodes for period in report.checkpoint_periods)
+
+
+def test_the_plateau_a_run_resumes_from_is_the_one_its_parent_left(tmp_path: Path) -> None:
+    """A run trained in two sittings is judged on one curve, not on two.
+
+    The tracker travels in the checkpoint, so the second segment stops on the
+    period that completes the parent's patience instead of counting again from
+    zero and spending the rest of the budget on a curve that already plateaued.
+    """
+    parent = scripted_fleet(period_means([10, 10]), budget_game_seconds=10)
+
+    parent.run()
+
+    # Two periods closed and one of them without improvement: one short of the
+    # patience of two, so the parent itself did not stop.
+    assert not parent.stopped_early
+    assert parent.report.plateau.periods_closed == 2
+    assert parent.report.plateau.periods_without_improvement == 1
+
+    path = tmp_path / "latest.pt"
+    write_checkpoint(
+        path,
+        identity=CheckpointIdentity(
+            run_id="parent",
+            backbone="stacked-dqn",
+            profile_id="fake-profile-v1",
+            observation_schema="1",
+            action_schema="1",
+            reward_schema="1",
+            source_revision="test",
+        ),
+        progress=TrainingProgress(
+            environment_decisions=parent.report.decisions,
+            environment_game_ms=parent.report.game_ms,
+            episodes=parent.report.episodes,
+            checkpoint_periods_closed=parent.report.plateau.periods_closed,
+            best_period_near_greedy_mean=parent.report.plateau.best_mean_final_wave,
+            periods_without_improvement=parent.report.plateau.periods_without_improvement,
+        ),
+        backbone_state={"weight": torch.zeros(2)},
+        resolved_config={},
+        replay_provenance={},
+    )
+    state = resume_state(path)
+    assert state.periods_closed == 2 and state.best_period_near_greedy_mean == 10
+
+    # Exactly the progress `train.py` builds a resumed segment with.
+    child = scripted_fleet(
+        period_means([10, 10, 10]),
+        budget_game_seconds=100,
+        report=TrainingProgressReport(
+            decisions=state.decisions,
+            game_ms=state.game_ms,
+            episodes=state.episodes,
+            plateau=NearGreedyPlateau(
+                periods_closed=state.periods_closed or 0,
+                best_mean_final_wave=state.best_period_near_greedy_mean,
+                periods_without_improvement=state.periods_without_improvement,
+                restored=state.periods_closed is not None,
+            ),
+        ),
+    )
+
+    report = child.run()
+
+    assert report.plateau.restored
+    # One more period without improvement completes the patience, so the child
+    # stops at the run's third period rather than at its own second.
+    assert report.plateau.stopped_at_period == 3
+    assert child.stopped_early
+    assert len(report.checkpoint_periods) == 1, "the child closed one period of its own"
+
+
+def test_a_checkpoint_written_before_early_stopping_restores_no_tracker() -> None:
+    """Absence is read as absence, not as a run that had closed no period."""
+    progress = TrainingProgress(environment_decisions=10, environment_game_ms=1000.0)
+
+    assert progress.checkpoint_periods_closed is None
+    assert progress.best_period_near_greedy_mean is None
+
+
+def test_early_stopping_needs_a_checkpoint_period_to_count_in() -> None:
+    """Without a crossing there is no period, and the run would never stop."""
+    with pytest.raises(ValueError, match="checkpoint_every_game_seconds"):
+        fleet([environment()], early_stop_patience_periods=2)

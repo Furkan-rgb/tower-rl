@@ -334,6 +334,22 @@ def test_no_numbered_checkpoints_are_written_without_a_period(tmp_path: Path) ->
     assert (directory / "latest.pt").exists()
 
 
+def test_early_stopping_is_off_by_default_and_resolved_with_its_threshold(
+    tmp_path: Path,
+) -> None:
+    """Every run measured so far spent its whole budget; that stays the default."""
+    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+
+    assert defaults.early_stop_patience_periods == 0
+    assert defaults.early_stop_min_improvement == 0.2
+
+
+def test_early_stopping_without_a_checkpoint_period_is_refused(tmp_path: Path) -> None:
+    """The period it counts in is the interval between numbered checkpoints."""
+    with pytest.raises(SystemExit, match="--checkpoint-every-game-seconds"):
+        arguments(tmp_path, **{"--early-stop-patience-periods": "2"})
+
+
 def test_a_checkpoint_period_that_is_not_whole_blocks_is_refused(tmp_path: Path) -> None:
     """Checked in the parser: the budget is spent a block at a time."""
     with pytest.raises(SystemExit, match="not a multiple of --block-game-seconds"):

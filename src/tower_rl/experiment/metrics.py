@@ -24,6 +24,7 @@ from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.evaluator import EvaluationReport, episode_record
 from tower_rl.learning.training import (
     ActorProgress,
+    CheckpointPeriod,
     CollectedEpisode,
     CollectionWindow,
     EpisodeHealth,
@@ -277,6 +278,48 @@ def window_metrics(
     return metrics
 
 
+def checkpoint_period_metrics(period: CheckpointPeriod) -> dict[str, float]:
+    """One closed checkpoint period, which is the series a run stops itself on.
+
+    The collection window beside it is cut in episodes and smooths the curve;
+    this is cut in game time, at exactly the crossings a numbered checkpoint is
+    written at, so a point here belongs to a checkpoint on disk and to the
+    decision the run made when it wrote it.
+
+    Keyed on the decisions spent at the crossing, like every other series in the
+    store, with `checkpoint_period_game_seconds` beside it so the same points
+    can be read in the unit the run was spent in. A period no near-greedy actor
+    finished a valid episode in carries no mean at all rather than a zero,
+    which would read as a policy that reached wave nothing.
+    """
+    metrics = {
+        "checkpoint_period": float(period.index),
+        "checkpoint_period_game_seconds": float(period.game_seconds_at_end),
+        "checkpoint_period_near_greedy_episodes": float(period.near_greedy_episodes),
+    }
+    if period.mean_final_wave is not None:
+        metrics["checkpoint_period_near_greedy_mean_final_wave"] = period.mean_final_wave
+    if period.best_mean_final_wave is not None:
+        metrics["checkpoint_period_best_near_greedy_mean_final_wave"] = (
+            period.best_mean_final_wave
+        )
+    return metrics
+
+
+def checkpoint_period_line(period: CheckpointPeriod) -> str:
+    mean = "n/a" if period.mean_final_wave is None else f"{period.mean_final_wave:.2f}"
+    best = (
+        "n/a"
+        if period.best_mean_final_wave is None
+        else f"{period.best_mean_final_wave:.2f}"
+    )
+    return (
+        f"period {period.index} at {period.game_seconds_at_end} game seconds: "
+        f"near-greedy mean final wave {mean} over {period.near_greedy_episodes} "
+        f"episodes, best {best}"
+    )
+
+
 def window_line(window: CollectionWindow) -> str:
     error = "n/a" if window.standard_error is None else f"{window.standard_error:.2f}"
     health = window.health
@@ -450,6 +493,8 @@ __all__ = [
     "DECISION_TIME_INTERVAL_SECONDS",
     "LearningCurvePoint",
     "actor_summary",
+    "checkpoint_period_line",
+    "checkpoint_period_metrics",
     "collected_episode_records",
     "curve_metrics",
     "decision_time_line",

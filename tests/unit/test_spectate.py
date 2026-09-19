@@ -111,7 +111,7 @@ def _view(**overrides: object) -> DecisionView:
 
 def _purchase(**overrides: object) -> PurchaseView:
     fields: dict[str, object] = {
-        "label": "Damage",
+        "action": "attack:0",
         "level_after": 4,
         "max_level": 20,
         "cost": 120.0,
@@ -156,10 +156,18 @@ def test_the_history_says_which_upgrade_was_bought_the_level_and_the_cost() -> N
             renderer="lavapipe",
             episodes_requested=1,
             elapsed_seconds=60.0,
+            labels=(UpgradeSlotLabel("attack", 0, "Damage", "Tower damage"),),
         )
     )
 
     assert "Damage \u2192 L4/20  -120" in text
+
+
+def test_a_purchase_of_a_row_the_session_has_no_name_for_keeps_its_slot() -> None:
+    """A panel without labels is still a panel; it just says `attack:0`."""
+    row = spectate.decision_row(_view(action="attack:0", purchase=_purchase()))
+
+    assert row == "attack:0 \u2192 L4/20  -120"
 
 
 def test_a_hold_says_how_long_it_was_held_because_it_bought_nothing() -> None:
@@ -180,20 +188,12 @@ def test_a_hold_says_how_long_it_was_held_because_it_bought_nothing() -> None:
 
 def test_a_row_name_longer_than_the_column_is_cut_rather_than_wrapped() -> None:
     row = spectate.decision_row(
-        _view(action="utility:3", purchase=_purchase(label="Free Upgrade Chance"))
+        _view(action="utility:3", purchase=_purchase(action="utility:3")),
+        (UpgradeSlotLabel("utility", 3, "Free Upgrade Chance", ""),),
     )
 
     assert row.startswith("Free Upgrade Chan\u2026 \u2192")
     assert len(row.split(" \u2192 ")[0]) == spectate.LABEL_WIDTH
-
-
-def test_the_rows_are_named_by_the_action_string_the_environment_knows_them_by() -> None:
-    labels = (
-        UpgradeSlotLabel("attack", 0, "Damage", "Tower damage"),
-        UpgradeSlotLabel("attack", 19, "", ""),
-    )
-
-    assert spectate.slot_label_names(labels) == {"attack:0": "Damage"}
 
 
 def test_the_panel_shows_the_tower_stats_and_the_wave_in_the_games_own_units() -> None:
@@ -857,7 +857,11 @@ def test_a_written_decision_carries_what_the_purchase_bought_and_a_hold_carries_
     tmp_path: Path,
 ) -> None:
     """The renderer reads the line and nothing else, so the line must say it."""
-    track = _track(tmp_path, [112.5, 113.0], labels=[])
+    track = _track(
+        tmp_path,
+        [112.5, 113.0],
+        labels=[UpgradeSlotLabel("attack", 0, "Damage", "Tower damage")],
+    )
 
     track.write(_view(action="attack:0", purchase=_purchase()))
     track.write(_view(action="wait"))

@@ -905,10 +905,9 @@ def test_a_view_says_what_its_own_transition_said() -> None:
     assert view.termination is transition.termination
 
 
-def test_a_view_of_a_purchase_names_the_row_the_level_and_the_cash_it_cost() -> None:
-    """A slot index is a coordinate; this is what a watcher can actually read."""
+def test_a_view_of_a_purchase_says_which_row_which_level_and_what_it_cost() -> None:
+    """What a watcher needs beside the row's name, which the session supplies."""
     environment, _ = _environment()
-    environment.slot_labels = {"attack:0": "Damage"}
     seen: list[DecisionView] = []
     environment.on_decision = seen.append
     state = environment.reset()
@@ -922,26 +921,13 @@ def test_a_view_of_a_purchase_names_the_row_the_level_and_the_cash_it_cost() -> 
         after for after in transition.next_state.rows if after.action == row.action
     )
     assert purchase is not None
-    assert purchase.label == "Damage"
+    assert purchase.action == "attack:0", "which row, as the action names it"
     assert purchase.level_after == bought.level == row.level + 1
     assert purchase.max_level == bought.max_level
     # The price paid, not the next level's: the row quotes a new cost once the
     # purchase has settled.
     assert purchase.cost == pytest.approx(math.expm1(row.cost_log))
     assert purchase.cost != pytest.approx(math.expm1(bought.cost_log))
-
-
-def test_a_purchase_the_session_named_no_row_for_falls_back_to_the_slot() -> None:
-    """The labels come off the bridge; an environment without them still says which slot."""
-    environment, _ = _environment()
-    seen: list[DecisionView] = []
-    environment.on_decision = seen.append
-    environment.reset()
-
-    environment.step(upgrade_action("attack", 0))
-
-    assert seen[-1].purchase is not None
-    assert seen[-1].purchase.label == "attack:0"
 
 
 def test_a_wait_bought_nothing_and_says_so() -> None:

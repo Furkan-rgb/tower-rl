@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
@@ -343,12 +343,6 @@ class InstrumentedRunEnvironment:
     #: watching one run; it is not a logging hook, and nothing it is handed is
     #: a record of anything (see `DecisionView`).
     on_decision: Callable[[DecisionView], None] | None = None
-    #: The game's own name for each upgrade row, keyed by the action's own
-    #: string (`attack:3`). Given by whoever built the environment, because the
-    #: labels come off the bridge and the environment does not speak to it; the
-    #: default leaves a view naming the slot it already names. Human-facing
-    #: only, like `on_decision`: a name never reaches the observation.
-    slot_labels: Mapping[str, str] = field(default_factory=dict)
     _state: RunState | None = field(default=None, init=False)
     _episode_id: str = field(default="", init=False)
     #: Episodes begun on this environment, which only the view above reports.
@@ -923,7 +917,7 @@ class InstrumentedRunEnvironment:
         if reached is None or priced is None:
             return None
         return PurchaseView(
-            label=self.slot_labels.get(str(action), str(action)),
+            action=str(action),
             level_after=reached.level,
             max_level=reached.max_level,
             cost=math.expm1(priced.cost_log),

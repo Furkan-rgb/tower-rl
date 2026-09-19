@@ -58,9 +58,10 @@ class DecisionEvent(StrEnum):
 class PurchaseView:
     """What one upgrade decision actually bought, as a human reads it.
 
-    A slot index says nothing to a watcher: `attack:3` is not an upgrade, it is
-    a coordinate. This is the same decision in the game's own terms - which row,
-    what level it now stands at, and what the purchase cost in earned cash.
+    A slot index alone says nothing to a watcher: `attack:3` is not an upgrade,
+    it is a coordinate. This is what the decision did to that row - the level it
+    now stands at, and what reaching it cost in earned cash - which is what a
+    panel needs beside the row's name to say what was bought.
 
     `cost` is raw cash, backed out of the row's `cost_log` exactly as
     `hud_readings` backs out a magnitude, and it is the price the row carried in
@@ -68,10 +69,10 @@ class PurchaseView:
     *next* level's price, which is not what was paid.
     """
 
-    #: The game's own name for the row, when the caller knew it. `attack:3` when
-    #: it did not - the slot labels are read from the bridge by the session that
-    #: watches, and nothing else in the environment has them.
-    label: str
+    #: Which row, as the action names it: `attack:3`. The game's own name for
+    #: that row is not here - the slot labels are read from the bridge by the
+    #: session that watches, and naming a row is that session's job.
+    action: str
     #: The level the row stands at in the state the decision produced.
     level_after: int
     max_level: int

@@ -24,7 +24,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,6 +68,7 @@ from tower_rl.learning.policies import (  # noqa: E402
 from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
     InstrumentedBridgeClient,
+    UpgradeSlotLabel,
 )
 from tower_rl.simulation.instrumented_run_adapter import (  # noqa: E402
     InstrumentedRunAdapter,
@@ -208,6 +209,7 @@ def actor_record(
     max_quiet_game_ms: int,
     decision_cadence: DecisionCadence,
     wall_seconds: float,
+    labels: Sequence[UpgradeSlotLabel] = (),
 ) -> dict[str, Any]:
     """One actor's durable record: the episodes, and which arm produced them.
 
@@ -225,6 +227,16 @@ def actor_record(
     # produced it could not be compared with anything (ADR 0009).
     record["decision_cadence"] = str(decision_cadence)
     record["wall_seconds"] = round(wall_seconds, 1)
+    # What the game calls each slot the actions address, so the human reading
+    # this record afterwards can tell what `attack:3` was. Never an input: the
+    # policy addresses a slot by index, and a renamed row must not change what a
+    # checkpoint means.
+    record["upgrade_rows"] = [
+        {"family": label.family, "index": label.index, "name": label.name,
+         "description": label.description}
+        for label in labels
+        if label.name
+    ]
     record["episodes_per_hour"] = (
         round(report.valid_episodes / wall_seconds * 3600, 1) if wall_seconds > 0 else 0.0
     )
@@ -335,6 +347,9 @@ def main() -> int:
     )
 
     adapter = InstrumentedRunAdapter(client=client)
+    # Before the first round: a command of the adapter's own initiative belongs
+    # to the episode boundary, and these are constant for the build.
+    labels = adapter.slot_labels()
     environment = InstrumentedRunEnvironment(
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
@@ -365,6 +380,7 @@ def main() -> int:
         max_quiet_game_ms=arguments.max_quiet_game_ms,
         decision_cadence=decision_cadence_from(arguments),
         wall_seconds=time.monotonic() - started,
+        labels=labels,
     )
     arguments.output.write_text(json.dumps(record, indent=2))
     print(report.summary_line(), flush=True)

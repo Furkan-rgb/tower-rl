@@ -15,12 +15,14 @@ from dataclasses import dataclass, field
 
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.simulation.instrumented_bridge import (
+    PROTOCOL_VERSION,
     BridgeCommandResult,
     BridgeObservation,
     BridgeRunUnavailable,
     BridgeStaleObservationError,
     InstrumentedBridgeClient,
     InstrumentedBridgeError,
+    UpgradeSlotLabel,
 )
 
 #: The game's own speed multiplier, pinned at 1x. It is not a speed-up mechanism
@@ -44,6 +46,8 @@ class InstrumentedRunAdapter:
     #: observation sequence the next command must bind, so the adapter issues
     #: nothing of its own initiative: see `_command_between_rounds`.
     _round_in_progress: bool = field(default=False, init=False)
+    #: The upgrade-row names, once the session has asked for them.
+    _labels: tuple[UpgradeSlotLabel, ...] | None = field(default=None, init=False)
 
     # -- reading -----------------------------------------------------------
 
@@ -72,6 +76,26 @@ class InstrumentedRunAdapter:
                 f"the bridge could not report the run state: "
                 f"{type(failure).__name__}: {failure}"
             ) from failure
+
+    def slot_labels(self) -> tuple[UpgradeSlotLabel, ...]:
+        """What the game calls each upgrade row, read once and then remembered.
+
+        A boundary command like any other - it consumes an observation sequence -
+        so it belongs before the first round, not inside one. The answer is
+        constant for a build, so it is asked for once per session and cached.
+        """
+        if self._labels is None:
+            if self._round_in_progress:
+                raise RunPortError("slot labels may not be read while a round is in progress")
+            state = self._latest_state()
+            try:
+                self._labels = self.client.read_slot_labels(expected_sequence=state.sequence)
+            except InstrumentedBridgeError as failure:
+                raise RunPortError(
+                    f"the bridge could not name the upgrade rows: "
+                    f"{type(failure).__name__}: {failure}"
+                ) from failure
+        return self._labels
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -120,7 +144,7 @@ class InstrumentedRunAdapter:
         result = self._command_between_rounds(
             {
                 "type": "command",
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "request_id": self._request_id(action),
                 "expected_observation_sequence": expected_sequence,
                 "kind": "lifecycle",
@@ -154,7 +178,7 @@ class InstrumentedRunAdapter:
         result = self._command_between_rounds(
             {
                 "type": "command",
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "request_id": self._request_id("unpause"),
                 "expected_observation_sequence": state.sequence,
                 "kind": "lifecycle",
@@ -181,7 +205,7 @@ class InstrumentedRunAdapter:
         return self._send(
             {
                 "type": "command",
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "request_id": self._request_id("buy"),
                 "expected_observation_sequence": expected_sequence,
                 "kind": "buy_upgrade",
@@ -212,7 +236,7 @@ class InstrumentedRunAdapter:
         return self._send(
             {
                 "type": "command",
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "request_id": self._request_id("advance"),
                 "expected_observation_sequence": expected_sequence,
                 "kind": "advance",
@@ -312,7 +336,7 @@ class InstrumentedRunAdapter:
             self._command_between_rounds(
                 {
                     "type": "command",
-                    "protocol_version": 1,
+                    "protocol_version": PROTOCOL_VERSION,
                     "request_id": self._request_id("unpause"),
                     "expected_observation_sequence": state.sequence,
                     "kind": "lifecycle",

@@ -10,7 +10,7 @@ from contextlib import suppress
 import pytest
 
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
-from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.environment.run_state import LIVE_WIRE_NAMES, RunStateBuilder
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.simulation.instrumented_bridge import (
     ADVANCE_WALL_CEILING_SECONDS,
@@ -29,6 +29,7 @@ from tower_rl.simulation.instrumented_bridge import (
     decode_command_result,
     decode_handshake,
     decode_observation,
+    decode_slot_labels,
     encode_frame,
     read_frame,
 )
@@ -50,7 +51,7 @@ EXPECTED = BridgeCompatibility(
 def _handshake(**overrides: object) -> dict[str, object]:
     message: dict[str, object] = {
         "type": "handshake",
-        "protocol_version": 1,
+        "protocol_version": 2,
         "bridge_version": "tower-bridge-v1",
         "mode": "instrumented_training",
         "command_capability": "semantic-v2",
@@ -83,6 +84,13 @@ FULL_INVENTORY = [
 ]
 
 
+#: Every `observation-v2` live reading a state message must carry. The values
+#: are the resting ones a device produced for an unexercised stat (board #39);
+#: what matters here is that the whole declared set is present, because a
+#: message missing one is a bridge that does not speak this schema.
+LIVE_READINGS = {**dict.fromkeys(LIVE_WIRE_NAMES, 0.0), "damage": 12.09, "waveTimer": 4.5}
+
+
 def _observation(
     sequence: int = 1,
     wave: int = 7,
@@ -90,11 +98,13 @@ def _observation(
     terminal: bool = False,
     speed: float = 1.5,
     full_inventory: bool = False,
+    live: dict[str, float] | None = None,
 ) -> dict[str, object]:
     if full_inventory:
-        return {**_observation(sequence, wave, terminal=terminal, speed=speed),
+        return {**_observation(sequence, wave, terminal=terminal, speed=speed, live=live),
                 "upgrades": FULL_INVENTORY}
     return {
+        "live": LIVE_READINGS if live is None else live,
         "type": "observation",
         "sequence": sequence,
         "lifecycle": "terminal" if terminal else "active",
@@ -162,7 +172,7 @@ def test_malformed_and_oversized_frames_fail_closed() -> None:
 
 def test_version_or_compatibility_mismatch_is_rejected() -> None:
     with pytest.raises(BridgeCompatibilityError, match="protocol version mismatch"):
-        decode_handshake(_handshake(protocol_version=2), EXPECTED)
+        decode_handshake(_handshake(protocol_version=1), EXPECTED)
 
     incompatible = _handshake(
         compatibility={
@@ -212,6 +222,109 @@ def test_valid_observation_decodes_and_stale_sequence_is_rejected() -> None:
         peer.close()
 
 
+def test_a_state_message_must_carry_exactly_the_live_readings_the_schema_declares() -> None:
+    """Never a silent zero: a missing reading is a bridge that is not v2.
+
+    The values themselves pass through raw - scaling and the range invariant are
+    the environment's - so what the wire owes is the whole declared set, no more
+    and no less.
+    """
+    whole = decode_observation(_observation(1))
+
+    assert set(whole.live) == set(LIVE_WIRE_NAMES)
+    assert whole.live["damage"] == pytest.approx(12.09)
+
+    missing = {name: 0.0 for name in LIVE_WIRE_NAMES if name != "waveTimer"}
+    with pytest.raises(BridgeProtocolError, match="missing live readings"):
+        decode_observation(_observation(1, live=missing))
+
+    extra = {**dict.fromkeys(LIVE_WIRE_NAMES, 0.0), "cellsEarnedThisWave": 1.0}
+    # Named, not counted: "one too many" leaves the reader to diff two lists of
+    # thirty-seven to find out which field the bridge sent.
+    with pytest.raises(BridgeProtocolError, match="cannot place.*cellsEarnedThisWave"):
+        decode_observation(_observation(1, live=extra))
+
+    with pytest.raises(BridgeProtocolError, match="no live readings object"):
+        decode_observation({k: v for k, v in _observation(1).items() if k != "live"})
+
+
+def test_the_upgrade_row_labels_decode_with_the_games_own_empty_tail() -> None:
+    labels = decode_slot_labels(
+        {
+            "type": "slot_labels",
+            "protocol_version": 2,
+            "labels": [
+                {"family": "attack", "index": 0, "name": "Damage", "description": "Tower damage"},
+                # The game's own trailing empties, carried so the slot indices
+                # stay aligned with the action schema.
+                {"family": "attack", "index": 19, "name": "", "description": ""},
+            ],
+        }
+    )
+
+    assert labels[0].name == "Damage" and labels[1].name == ""
+
+    with pytest.raises(BridgeProtocolError, match="duplicate slot label"):
+        decode_slot_labels(
+            {
+                "type": "slot_labels",
+                "protocol_version": 2,
+                "labels": [
+                    {"family": "attack", "index": 0, "name": "a", "description": "b"},
+                    {"family": "attack", "index": 0, "name": "a", "description": "b"},
+                ],
+            }
+        )
+
+
+def test_the_slot_label_command_is_one_round_trip_and_the_answer_is_remembered() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        requests: list[dict[str, object]] = []
+
+        def bridge() -> None:
+            """Answer the command the way the bridge does: labels, state, result."""
+            requests.append(read_frame(peer, timeout=2.0))
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "slot_labels", "protocol_version": 2,
+                        "labels": [
+                            {"family": "utility", "index": 1, "name": "Cash / Wave",
+                             "description": "Cash each wave"},
+                        ],
+                    }
+                )
+            )
+            peer.sendall(encode_frame(_observation(2)))
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "command_result", "protocol_version": 2,
+                        "request_id": str(requests[0]["request_id"]),
+                        "outcome": "confirmed", "reason": "slot_labels_reported",
+                        "observation_sequence": 2,
+                    }
+                )
+            )
+
+        responder = threading.Thread(target=bridge)
+        responder.start()
+        adapter = InstrumentedRunAdapter(client=client)
+        labels = adapter.slot_labels()
+        responder.join(timeout=5.0)
+
+        assert labels[0].name == "Cash / Wave"
+        # Constant for the build, so asking again costs no round trip at all.
+        assert adapter.slot_labels() is labels
+        assert requests[0]["kind"] == "slot_labels"
+        assert requests[0]["protocol_version"] == 2
+    finally:
+        client.close()
+        peer.close()
+
+
 def test_heartbeat_must_confirm_the_latest_observation() -> None:
     client, peer = _connected_client()
     try:
@@ -245,7 +358,7 @@ def test_timeout_and_eof_are_distinct() -> None:
 
 def test_command_contract_rejects_malformed_and_stale_requests() -> None:
     malformed_advance = {
-        "type": "command", "protocol_version": 1, "request_id": "a",
+        "type": "command", "protocol_version": 2, "request_id": "a",
         "expected_observation_sequence": 1, "kind": "advance", "index": 0,
         "budget_game_ms": 2000, "frame_game_ms": 16.0, "health_change_fraction": 0.05,
     }
@@ -256,18 +369,18 @@ def test_command_contract_rejects_malformed_and_stale_requests() -> None:
         peer.sendall(encode_frame(_observation(1)))
         client.read_observation()
         stale_lifecycle = {
-            "type": "command", "protocol_version": 1, "request_id": "a",
+            "type": "command", "protocol_version": 2, "request_id": "a",
             "expected_observation_sequence": 2, "kind": "lifecycle", "action": "pause",
         }
         with pytest.raises(BridgeStaleObservationError, match="latest"):
             client.send_command(stale_lifecycle)
         other_result = {
-            "type": "command_result", "protocol_version": 1, "request_id": "b",
+            "type": "command_result", "protocol_version": 2, "request_id": "b",
             "outcome": "confirmed", "reason": "run_active", "observation_sequence": 1,
         }
         peer.sendall(encode_frame(other_result))
         mine = {
-            "type": "command", "protocol_version": 1, "request_id": "a",
+            "type": "command", "protocol_version": 2, "request_id": "a",
             "expected_observation_sequence": 1, "kind": "lifecycle", "action": "pause",
         }
         with pytest.raises(BridgeProtocolError, match="request id"):
@@ -284,14 +397,14 @@ def test_command_wire_format_matches_the_native_parser_contract() -> None:
         peer.sendall(encode_frame(_observation(1)))
         client.read_observation()
         result = {
-            "type": "command_result", "protocol_version": 1, "request_id": "buy-1",
+            "type": "command_result", "protocol_version": 2, "request_id": "buy-1",
             "outcome": "confirmed", "reason": "confirmed_state_change",
             "observation_sequence": 1,
         }
         peer.sendall(encode_frame(result))
         client.send_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "buy-1",
+                "type": "command", "protocol_version": 2, "request_id": "buy-1",
                 "expected_observation_sequence": 1, "kind": "buy_upgrade",
                 "family": "attack", "index": 3,
             }
@@ -299,7 +412,7 @@ def test_command_wire_format_matches_the_native_parser_contract() -> None:
         payload = read_frame(peer, timeout=0.1)
         raw = encode_frame(payload)[4:].decode("utf-8")
 
-        prefix = '{"type":"command","protocol_version":1,"request_id":"'
+        prefix = '{"type":"command","protocol_version":2,"request_id":"'
         sequence_key = '","expected_observation_sequence":'
         assert raw.startswith(prefix)
         assert len(prefix) == 53
@@ -369,7 +482,7 @@ def test_state_sequence_must_advance_across_both_state_kinds() -> None:
 def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
     lifecycle = decode_command(
         {
-            "type": "command", "protocol_version": 1, "request_id": "r",
+            "type": "command", "protocol_version": 2, "request_id": "r",
             "expected_observation_sequence": 2, "kind": "lifecycle", "action": "start_round",
         }
     )
@@ -381,14 +494,14 @@ def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
     with pytest.raises(BridgeProtocolError, match="unsupported lifecycle action"):
         decode_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "r",
+                "type": "command", "protocol_version": 2, "request_id": "r",
                 "expected_observation_sequence": 2, "kind": "lifecycle", "action": "buy_gems",
             }
         )
     with pytest.raises(BridgeProtocolError, match="must not contain an upgrade target"):
         decode_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "r",
+                "type": "command", "protocol_version": 2, "request_id": "r",
                 "expected_observation_sequence": 2, "kind": "lifecycle",
                 "action": "start_round", "family": "attack", "index": 0,
             }
@@ -396,7 +509,7 @@ def test_lifecycle_commands_are_separate_from_policy_actions() -> None:
     with pytest.raises(BridgeProtocolError, match="only a lifecycle command"):
         decode_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "r",
+                "type": "command", "protocol_version": 2, "request_id": "r",
                 "expected_observation_sequence": 2, "kind": "advance", "action": "start_round",
                 "budget_game_ms": 2000, "frame_game_ms": 16.0,
                 "health_change_fraction": 0.05,
@@ -412,14 +525,14 @@ def test_lifecycle_wire_format_matches_the_native_parser_contract() -> None:
         peer.sendall(
             encode_frame(
                 {
-                    "type": "command_result", "protocol_version": 1, "request_id": "life-1",
+                    "type": "command_result", "protocol_version": 2, "request_id": "life-1",
                     "outcome": "confirmed", "reason": "run_active", "observation_sequence": 1,
                 }
             )
         )
         client.send_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "life-1",
+                "type": "command", "protocol_version": 2, "request_id": "life-1",
                 "expected_observation_sequence": 1, "kind": "lifecycle",
                 "action": "start_round",
             }
@@ -441,7 +554,7 @@ def test_advance_wire_format_matches_the_native_parser_contract() -> None:
         peer.sendall(
             encode_frame(
                 {
-                    "type": "command_result", "protocol_version": 1, "request_id": "adv-1",
+                    "type": "command_result", "protocol_version": 2, "request_id": "adv-1",
                     "outcome": "confirmed", "reason": "budget_exhausted",
                     "observation_sequence": 1, "frames": 120, "game_ms": 2000,
                     "round_ms": 1998, "wall_micros": 57_000,
@@ -450,7 +563,7 @@ def test_advance_wire_format_matches_the_native_parser_contract() -> None:
         )
         client.send_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "adv-1",
+                "type": "command", "protocol_version": 2, "request_id": "adv-1",
                 "expected_observation_sequence": 1, "kind": "advance",
                 "budget_game_ms": 2000, "frame_game_ms": 16.5,
                 "health_change_fraction": 0.05,
@@ -471,7 +584,7 @@ def test_advance_command_bounds_every_field_it_carries() -> None:
     """One advance replaces the host's slicing loop, so its bounds are the contract."""
     advance = decode_command(
         {
-            "type": "command", "protocol_version": 1, "request_id": "a",
+            "type": "command", "protocol_version": 2, "request_id": "a",
             "expected_observation_sequence": 1, "kind": "advance",
             "budget_game_ms": 2000, "frame_game_ms": 1000 / 60,
             "health_change_fraction": 0.05,
@@ -492,7 +605,7 @@ def test_advance_command_bounds_every_field_it_carries() -> None:
         ("health_change_fraction", 1.1),
     ):
         message = {
-            "type": "command", "protocol_version": 1, "request_id": "a",
+            "type": "command", "protocol_version": 2, "request_id": "a",
             "expected_observation_sequence": 1, "kind": "advance",
             "budget_game_ms": 2000, "frame_game_ms": 16.0,
             "health_change_fraction": 0.05,
@@ -511,7 +624,7 @@ def test_the_step_and_wait_commands_no_longer_exist() -> None:
         with pytest.raises(BridgeProtocolError, match="unsupported command kind"):
             decode_command(
                 {
-                    "type": "command", "protocol_version": 1, "request_id": "s",
+                    "type": "command", "protocol_version": 2, "request_id": "s",
                     "expected_observation_sequence": 1, **dead,
                 }
             )
@@ -528,7 +641,7 @@ def test_a_command_result_carries_what_the_advance_cost() -> None:
     """
     result = decode_command_result(
         {
-            "type": "command_result", "protocol_version": 1, "request_id": "a",
+            "type": "command_result", "protocol_version": 2, "request_id": "a",
             "outcome": "confirmed", "reason": "event:wave_changed",
             "observation_sequence": 7, "frames": 120, "game_ms": 2000.0,
             "round_ms": 1998.0, "wall_micros": 57_000,
@@ -545,7 +658,7 @@ def test_a_command_result_carries_what_the_advance_cost() -> None:
     # Commands that burn no game time omit them, and zero is the honest answer.
     bare = decode_command_result(
         {
-            "type": "command_result", "protocol_version": 1, "request_id": "b",
+            "type": "command_result", "protocol_version": 2, "request_id": "b",
             "outcome": "confirmed", "reason": "confirmed_state_change",
             "observation_sequence": 7,
         }
@@ -564,7 +677,7 @@ def test_a_result_carries_the_observation_the_bridge_sent_with_it() -> None:
         peer.sendall(
             encode_frame(
                 {
-                    "type": "command_result", "protocol_version": 1, "request_id": "adv-2",
+                    "type": "command_result", "protocol_version": 2, "request_id": "adv-2",
                     "outcome": "confirmed", "reason": "event:wave_changed",
                     "observation_sequence": 2, "frames": 60, "game_ms": 1000,
                     "round_ms": 1000, "wall_micros": 21_000,
@@ -573,7 +686,7 @@ def test_a_result_carries_the_observation_the_bridge_sent_with_it() -> None:
         )
         result = client.send_command(
             {
-                "type": "command", "protocol_version": 1, "request_id": "adv-2",
+                "type": "command", "protocol_version": 2, "request_id": "adv-2",
                 "expected_observation_sequence": 1, "kind": "advance",
                 "budget_game_ms": 2000, "frame_game_ms": 16.5,
                 "health_change_fraction": 0.05,
@@ -614,7 +727,7 @@ def test_any_inbound_frame_proves_the_bridge_is_alive() -> None:
             peer.sendall(
                 encode_frame(
                     {
-                        "type": "command_result", "protocol_version": 1,
+                        "type": "command_result", "protocol_version": 2,
                         "request_id": f"adv-{sequence}", "outcome": "confirmed",
                         "reason": "budget_exhausted",
                         "observation_sequence": 2 * sequence, "frames": 3,
@@ -624,7 +737,7 @@ def test_any_inbound_frame_proves_the_bridge_is_alive() -> None:
             )
             result = client.send_command(
                 {
-                    "type": "command", "protocol_version": 1,
+                    "type": "command", "protocol_version": 2,
                     "request_id": f"adv-{sequence}",
                     "expected_observation_sequence": 2 * sequence - 1, "kind": "advance",
                     "budget_game_ms": 2000, "frame_game_ms": 100.0,
@@ -727,7 +840,7 @@ class _IdleStreamBridge:
 
     def _result(self, request_id: str, outcome: str, reason: str) -> dict[str, object]:
         return {
-            "type": "command_result", "protocol_version": 1, "request_id": request_id,
+            "type": "command_result", "protocol_version": 2, "request_id": request_id,
             "outcome": outcome, "reason": reason, "observation_sequence": self._sequence,
             "frames": 20, "game_ms": 2000, "round_ms": 2000, "wall_micros": 40_000,
         }
@@ -811,7 +924,7 @@ def _slow_bridge_client() -> tuple[InstrumentedBridgeClient, socket.socket]:
 
 def _advance(request_id: str, sequence: int) -> dict[str, object]:
     return {
-        "type": "command", "protocol_version": 1, "request_id": request_id,
+        "type": "command", "protocol_version": 2, "request_id": request_id,
         "expected_observation_sequence": sequence, "kind": "advance",
         "budget_game_ms": 2000, "frame_game_ms": 100.0, "health_change_fraction": 0.05,
     }
@@ -884,7 +997,7 @@ def test_a_purchase_does_not_resume_a_paused_stream() -> None:
             advance = client.send_command(_advance("adv-1", state.sequence))
             purchase = client.send_command(
                 {
-                    "type": "command", "protocol_version": 1, "request_id": "buy-1",
+                    "type": "command", "protocol_version": 2, "request_id": "buy-1",
                     "expected_observation_sequence": advance.observation_sequence,
                     "kind": "buy_upgrade", "family": "attack", "index": 0,
                 }

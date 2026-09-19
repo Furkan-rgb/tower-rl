@@ -26,6 +26,93 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M2-E006 — Observation-v2 on device
+
+**Date:** 2026-09-19
+**Status:** `observation-v2` reads every declared field on the real game with
+**zero** out-of-range readings and **zero** invalid episodes, and the values
+reproduce board `#39`'s capture field for field. `criticalChance` is confirmed
+to be stored in percent. The six other percent candidates sit in slots the
+frozen V1 baseline never offers and **cannot be settled at this baseline**.
+Board `#41`, ADR 0010.
+**Purpose:** `observation-v2` reads thirty-seven further `Main` fields and
+rescales each by a transform chosen from `#39`'s observed units. Only one of
+those units had been observed non-zero. This is the check that the production
+bridge reads them all on the live game, that no transform produces an
+out-of-range value, and that the panel shows numbers a developer can hold
+beside the HUD.
+
+One clone instance (`tower_rl_instrumented_api36`, `emulator-5556`,
+`-read-only`, lavapipe, 60 Hz, windowed, offline by interface), production
+bridge `662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b`
+deployed through `TOWER_BRIDGE_BUILD_DIR`, `scripts/spectate.py --policy random
+--episodes 2 --no-panel --record`. Two episodes, 49 decisions, 33 purchases,
+final waves 1 and 6, 197 s of round clock.
+
+Both episodes valid; `invalid_reasons` empty for both, so no
+`OBSERVATION_OUT_OF_RANGE` was raised by any of the 37 fields across 49
+decisions. All 37 present in every state message, all finite. The 48 non-empty
+upgrade-row labels came back from one `slot_labels` command and match `#39`'s
+lists slot for slot.
+
+Ranges over the session, in the game's own units (`live_readings` in the
+session record):
+
+| field | min | max | `#39` |
+| --- | --- | --- | --- |
+| `damage` | 3 | 12.09 | 3 → 12.09 |
+| `attackSpeed` | 1 | 1.20 | 1 → 1.15 |
+| `criticalChance` | 1 | 5 | 1 → 5 |
+| `criticalMult` | 1.2 | 1.5 | 1.2 → 1.5 |
+| `towerHealthRegen` | 0.0005 | 0.2342 | same |
+| `wallHealth` | 0 | 4.019 | same |
+| `towerRangeDistance` | 2.70 | 2.70 | 0 → 2.700 |
+| `currentWaveBaseHealth` | 2.35 | 8.713 | same |
+| `currentWaveBaseDamage` | 1.176 | 2.680 | same |
+| `currentWaveBaseKillCash` | 1 | 1 | same |
+| `enemiesSpawnedThisWave` | 0 | 30 | 0 → 27 |
+| `enemiesKilledThisWave` | 0 | 33 | 0 → 26 |
+| `estimatedEnemiesToSpawnThisWave` | 21 | 26 | same |
+| `closestEnemyDistance` | 0 | 10000 | same |
+| `waveTimer` | 0.16 | 34.59 | 0 → 34.47 |
+| `waveLengthSeconds` / `waveCooldownSeconds` | 26 / 9 | 26 / 9 | same |
+| `cashEarnedThisWave` | 0 | 23 | 0 → 24.5 |
+| `gameplayTimeThisRound` | 0.16 | 197 | 343.9 (longer run) |
+| `wallRebuild` / `orbSpeed` / `knockbackForce` / `rapidFireDuration` | 1200 / 0.04 / 0.4 / 0.6 | constant | same |
+| `superCritChance`, `multishotChance`, `rapidFireChance`, `knockbackChance`, `lifesteal`, `defenseRel`, `thornDamage`, `defenseAbs`, `cashPerWave`, `orbCount`, `multishotTargets`, boss flags | 0 (2 for `multishotTargets`) | unexercised | same |
+
+Behaviour checks, all from the record rather than by eye: the wave's base health
+rises 2.4 → 3.3 → 4.4 → 5.6 → 7.2 → 8.7 with the wave (×1.29, `#39`'s curve);
+`waveTimer` counts to 34.6 and resets, against `waveLengthSeconds + waveCooldownSeconds`
+= 35; `enemy_present` toggles, 15 decisions with the 10000 sentinel and 35 with a
+real distance down to 0.13 m; `cash` is unchanged from v1 and `cashEarnedThisWave`
+is a separate within-wave counter.
+
+**Unit conclusion, and what it does not settle.** `criticalChance` reads 1 and
+5 — integers, the HUD's "1 %" and "5 %" — so the percent transform is correct
+for it. The other six percent-typed fields and `thornDamage` read a flat 0,
+because the frozen V1 baseline offers **six** in-run slots (ADR 0001) and those
+six are exactly the stats that moved: Damage, Attack Speed, Critical Chance,
+Critical Factor, Health and Health Regen. A random policy cannot buy widely here
+because there is nothing wider to buy. Their units are therefore **not settled
+by any run at this baseline**, and will not be until permanent progression (ADR
+0008) unlocks those rows. Today the risk is bounded: a field that is really a
+fraction would be divided by 100 — a scaling error, never an invalid observation
+— and it can only arise once such a row is purchasable.
+
+Recording `state/recordings/observation-v2-check-000.mp4` and `-001.mp4`, session
+record `state/recordings/records/emulator-5556.json` (both under `state/`, not
+committed). Installed and deployed as `state/bridge/current`, replacing
+`7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a`.
+
+Cleanup on the live serial before it was killed: `game_frame_rate_override:
+reset`, `libunity_sha256:
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`. Afterwards zero qemu processes via `/proc/*/exe`
+and `adb devices` empty.
+
 ## M2-E005 — Choice-point cadence on device
 
 **Date:** 2026-09-19

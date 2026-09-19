@@ -19,7 +19,7 @@ from typing import Any, Protocol
 
 import torch
 
-from tower_rl.environment.features import ROW_WIDTH, StateFeatures
+from tower_rl.environment.features import ROW_FEATURES, ROW_WIDTH, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.checkpoint import CheckpointIdentity, load
 from tower_rl.learning.network import NetworkConfig
@@ -70,7 +70,11 @@ class CheapestFirstPolicy:
     """
 
     #: Index of `cost_log` inside a row, which orders identically to raw cost.
-    cost_feature: int = 0
+    #: Derived from the schema rather than written as a number: the row layout
+    #: grew in `observation-v2`, and a hand-kept 0 would have gone on naming
+    #: whichever feature happened to land first and quietly compared the wrong
+    #: column - a floor that is silently not the cheapest-first floor.
+    cost_feature: int = field(default_factory=lambda: ROW_FEATURES.index("cost_log"))
 
     def initial_state(self) -> None:
         return None

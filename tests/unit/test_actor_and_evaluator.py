@@ -54,7 +54,7 @@ def test_an_actor_plays_an_episode_and_emits_sequences() -> None:
     stored = replay._items[0]
     assert len(stored.steps) == 8 and stored.burn_in == 2
     assert stored.metadata.profile_id == PROFILE
-    assert stored.metadata.observation_schema == "observation-v1"
+    assert stored.metadata.observation_schema == "observation-v2"
 
 
 def test_buying_survives_longer_than_never_buying() -> None:

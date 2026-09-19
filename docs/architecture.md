@@ -69,9 +69,18 @@ Owns the decision problem, and nothing about how a device is reached.
   `ACTION_SCHEMA_VERSION`.
 - `run_state.py` — `RunState` and `RunStateBuilder`, which turn one bridge
   reading into a validated observation; `OBSERVATION_SCHEMA_VERSION`,
-  `validate_transition`, `action_is_allowed`.
+  `validate_transition`, `action_is_allowed`. It also holds `LIVE_FIELDS`, the
+  single declaration of what `observation-v2` shows the policy beyond the
+  upgrade grid — one `Main` field per row, its observed unit, and the transform
+  that rescales it — together with `scale_live_reading`, which enforces each
+  field's range invariant, and `hud_readings`, its inverse, which puts a reading
+  back in the unit a human can check against the game's own HUD. The bridge
+  decoder requires exactly these wire names and `features.SCALAR_FEATURES` takes
+  its order from them, so the schema is declared once and read everywhere.
 - `features.py` — `encode_state` to a `StateFeatures` (scalars plus one row per
-  upgrade action). The only place raw state becomes network input.
+  upgrade action). The only place raw state becomes network input. The widths
+  the network is built from derive from `SCALAR_FEATURES`/`ROW_FEATURES`, which
+  is why growing the schema needs no change in `learning/network.py`.
 - `episode.py` — `TerminationOutcome`, `ActionOutcome`, `DecisionEvent`,
   `DecisionView`, `RunTransition`, `WaveRecord`, `EpisodeSummary`,
   `wave_progress_reward`, `REWARD_SCHEMA_VERSION`. `DecisionEvent` is the
@@ -132,10 +141,14 @@ knows nothing about the run being driven on it.
 - `bridge.py` — deploying and cleaning up the instrumented bridge through
   `scripts/instrumented_bridge.sh`; `compatibility` reads the build's identity.
 - `instrumented_bridge.py` — `InstrumentedBridgeClient` and the framed JSON
-  protocol: handshake, compatibility, observation, command, advance, and the
-  typed errors for every way it can fail.
+  protocol (version 2): handshake, compatibility, observation, command, advance,
+  slot labels, and the typed errors for every way it can fail. The one thing it
+  takes from the domain is `LIVE_WIRE_NAMES`, the set of `Main` fields a v2
+  state message owes; it validates their presence and passes the values through
+  raw, and does not scale them.
 - `instrumented_run_adapter.py` — `InstrumentedRunAdapter`, the `RunPort`
-  implementation. This is the join to `environment`.
+  implementation, plus `slot_labels()`, the once-per-session read of what the
+  game calls each upgrade row. This is the join to `environment`.
 - `fleet.py` — many instances: `stagger_bring_up`, `bring_up_fleet`,
   `prepare_pinned_snapshot`, `tear_down_instance`, `tear_down_fleet`.
 

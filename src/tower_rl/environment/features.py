@@ -1,8 +1,8 @@
 """The policy's numeric view of run state.
 
-The encoding is part of `observation-v1`: changing it changes what a trained
+The encoding is part of `observation-v2`: changing it changes what a trained
 checkpoint means, so any change needs a new schema version.  The layout is split
-the way the network in `solution.md` 9.3 consumes it - a few run scalars, then
+the way the network in `solution.md` 9.3 consumes it - the run scalars, then
 one fixed-width row per upgrade slot scored by shared weights.
 """
 
@@ -11,22 +11,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.environment.run_state import RunState
+from tower_rl.environment.run_state import LIVE_FEATURES, RunState
 
-#: Run-level features, in order.
+#: Run-level features, in order: the four v1 carried, then every live reading
+#: `run_state.LIVE_FIELDS` declares. The order comes from that one declaration,
+#: so a field added to the schema cannot land in the tensor twice or not at all.
 SCALAR_FEATURES: tuple[str, ...] = (
     "wave_log",
     "cash_log",
     "health_fraction",
     "max_health_log",
+    *LIVE_FEATURES,
 )
 
-#: Per-slot features, in order. Deliberately excludes `tier_unlocked`, which live
-#: 29.0.3 reports false for every offered upgrade and therefore carries no signal
-#: (M1B-E001); it stays in the raw reading for drift detection.
+#: Per-slot features, in order. `level` and `max_level` are the raw integers
+#: beside the derived fraction: v1 fed only `level/max_level`, which made a
+#: level 3 of 5 upgrade and a level 30 of 50 one identical to the network even
+#: though what they cost next is not. Deliberately excludes `tier_unlocked`,
+#: which live 29.0.3 reports false for every offered upgrade and therefore
+#: carries no signal (M1B-E001); it stays in the raw reading for drift detection.
 ROW_FEATURES: tuple[str, ...] = (
     "cost_log",
     "affordability",
+    "level",
+    "max_level",
     "level_fraction",
     "headroom",
     "unlocked",
@@ -67,6 +75,7 @@ def encode_state(state: RunState) -> StateFeatures:
         state.cash_log,
         state.health_fraction,
         state.max_health_log,
+        *(state.live[name] for name in LIVE_FEATURES),
     )
     rows: list[float] = []
     for row in state.rows:
@@ -75,6 +84,8 @@ def encode_state(state: RunState) -> StateFeatures:
             (
                 row.cost_log,
                 row.affordability,
+                float(row.level),
+                float(row.max_level),
                 level_fraction,
                 row.headroom,
                 float(row.unlocked),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -61,7 +62,7 @@ class DecisionView:
     once per `InstrumentedRunEnvironment.step`, carries what that decision did,
     and is thrown away by everything that does not want it. It is deliberately
     *not* a `RunTransition` - a panel that held transitions would hold two
-    whole observations per decision and would have to know `observation-v1` to
+    whole observations per decision and would have to know `observation-v2` to
     read them - and deliberately not named `DecisionEvent`, which above is the
     cadence condition the environment stopped advancing on.
 
@@ -76,10 +77,15 @@ class DecisionView:
     #: The state the decision produced, or the state it was taken in when the
     #: port produced none - which is itself a failing episode about to end.
     wave: int
-    #: Earned cash, back out of the observation's log scale. `observation-v1`
+    #: Earned cash, back out of the observation's log scale. `observation-v2`
     #: carries `cash_log`, and a human reads cash.
     cash: float
     health_fraction: float
+    #: Every live reading in the unit the player reads it in, under the game's
+    #: own `Main` field name. This is what lets a watcher hold the panel beside
+    #: the HUD and check the two agree, which is how `observation-v2` is
+    #: verified against the game rather than against itself.
+    hud: Mapping[str, float]
     #: `wait`, or the upgrade slot bought, as `attack:3`.
     action: str
     reward: float
@@ -180,7 +186,7 @@ class WaveRecord:
     #: slices are advanced through (ADR 0009).
     advances: int
     #: The state at the *start* of this wave, as the observation carries it:
-    #: cash exists only log-scaled in `observation-v1` and is recorded as such.
+    #: cash exists only log-scaled in `observation-v2` and is recorded as such.
     health_fraction: float
     cash_log: float
 

@@ -15,11 +15,21 @@ import struct
 import time
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
-PROTOCOL_VERSION = 1
+#: The one thing this module takes from the domain: which `Main` fields a v2
+#: state message must carry. It is a wire contract, not a translation - the
+#: values are passed through raw and scaled in `environment/run_state.py` - and
+#: importing the list is what keeps a second copy of thirty-seven field names
+#: from drifting away from the schema that declares them.
+from tower_rl.environment.run_state import LIVE_WIRE_NAMES
+
+#: Bumped to 2 by `observation-v2`: the state message carries the game's live
+#: `Main` readings and the bridge answers a `slot_labels` command, so a v1
+#: bridge and a v2 host cannot talk to each other and must not try.
+PROTOCOL_VERSION = 2
 #: Bounds on one `advance` request. The budget is the game time the bridge may
 #: burn before handing a decision back even when nothing happened; the frame is
 #: how much game time each rendered frame is worth, which is what decouples
@@ -156,6 +166,25 @@ class BridgeObservation:
     game_speed: float
     play_time: float
     upgrades: tuple[UpgradeInventoryEntry, ...]
+    #: Every `LIVE_WIRE_NAMES` reading, raw and unscaled, keyed by the game's own
+    #: `Main` field name. Scaling is the environment's, not this adapter's.
+    live: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class UpgradeSlotLabel:
+    """What the player reads on one upgrade row: its name and its description.
+
+    Read once per session by the `slot_labels` command, never per snapshot: the
+    arrays are constant for a build. These are for humans - the spectate panel
+    and the records a developer reads afterwards - and are deliberately not part
+    of the observation tensor, which addresses a slot by its stable index.
+    """
+
+    family: str
+    index: int
+    name: str
+    description: str
 
 
 @dataclass(frozen=True)
@@ -326,6 +355,23 @@ def decode_observation(
     lifecycle = _string(message, "lifecycle")
     if lifecycle not in {"idle", "active", "terminal", "invalid"}:
         raise BridgeProtocolError(f"unsupported lifecycle: {lifecycle!r}")
+    live_value = message.get("live")
+    if not isinstance(live_value, Mapping):
+        raise BridgeProtocolError("state message carries no live readings object")
+    # Exactly the declared set, no more and no less: an absent field is a bridge
+    # that does not speak this schema, and an extra one is a bridge sending
+    # something the host has no transform for. Either way the host must not
+    # guess, and a protocol error costs the episode rather than the meaning of
+    # every observation after it.
+    missing = [name for name in LIVE_WIRE_NAMES if name not in live_value]
+    if missing:
+        raise BridgeProtocolError(f"state message is missing live readings: {missing}")
+    extra = sorted(set(live_value) - set(LIVE_WIRE_NAMES))
+    if extra:
+        raise BridgeProtocolError(
+            f"state message carries live readings this schema cannot place: {extra}"
+        )
+    live = {name: _finite_number(live_value, name) for name in LIVE_WIRE_NAMES}
     return BridgeObservation(
         sequence=_int(message, "sequence", minimum=1),
         lifecycle=lifecycle,
@@ -338,7 +384,36 @@ def decode_observation(
         game_speed=_finite_number(message, "game_speed"),
         play_time=_finite_number(message, "play_time"),
         upgrades=tuple(entries),
+        live=live,
     )
+
+
+def decode_slot_labels(
+    message: Mapping[str, Any], *, max_labels: int = DEFAULT_MAX_UPGRADE_ENTRIES
+) -> tuple[UpgradeSlotLabel, ...]:
+    """Decode the once-per-session upgrade-row names the player reads."""
+    _require_message_type(message, "slot_labels")
+    if _int(message, "protocol_version", minimum=1) != PROTOCOL_VERSION:
+        raise BridgeProtocolError("unsupported slot-label protocol version")
+    labels_value = message.get("labels")
+    if not isinstance(labels_value, list) or len(labels_value) > max_labels:
+        raise BridgeProtocolError("slot labels are missing, malformed, or exceed their bound")
+    labels: list[UpgradeSlotLabel] = []
+    seen: set[tuple[str, int]] = set()
+    for value in labels_value:
+        if not isinstance(value, Mapping):
+            raise BridgeProtocolError("slot label must be an object")
+        label = UpgradeSlotLabel(
+            family=_upgrade_family(value),
+            index=_int(value, "index", minimum=0),
+            name=_label_text(value, "name"),
+            description=_label_text(value, "description"),
+        )
+        if (label.family, label.index) in seen:
+            raise BridgeProtocolError(f"duplicate slot label: {label.family}[{label.index}]")
+        seen.add((label.family, label.index))
+        labels.append(label)
+    return tuple(labels)
 
 
 def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
@@ -353,7 +428,7 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
     family = message.get("family")
     index = message.get("index")
     action = message.get("action")
-    if kind in {"lifecycle", "set_speed", "advance"} and (
+    if kind in {"lifecycle", "set_speed", "advance", "slot_labels"} and (
         family is not None or index is not None
     ):
         raise BridgeProtocolError(f"{kind} command must not contain an upgrade target")
@@ -376,6 +451,14 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
             budget_game_ms=budget,
             frame_game_ms=frame,
             health_change_fraction=fraction,
+        )
+    if kind == "slot_labels":
+        # Carries nothing but the sequence it binds: the answer is the same for
+        # the whole build, which is why it is asked once rather than streamed.
+        return BridgeCommand(
+            request_id,
+            _int(message, "expected_observation_sequence", minimum=1),
+            kind,
         )
     if kind == "set_speed":
         value = _finite_number(message, "value")
@@ -465,6 +548,7 @@ class InstrumentedBridgeClient:
         self._handshake: BridgeHandshake | None = None
         self._last_observation_sequence = 0
         self._last_state: BridgeObservation | BridgeRunUnavailable | None = None
+        self._slot_labels: tuple[UpgradeSlotLabel, ...] = ()
 
     @property
     def handshake(self) -> BridgeHandshake:
@@ -584,6 +668,12 @@ class InstrumentedBridgeClient:
             self._advance_sequence(unavailable.sequence)
             self._last_state = unavailable
             return unavailable
+        if message_type == "slot_labels":
+            # Session-scoped, so the connection owns them: the arrays are
+            # constant for a build and are asked for once, before the first
+            # round. They are not state - nothing binds a sequence to them.
+            self._slot_labels = decode_slot_labels(message, max_labels=self.max_upgrade_entries)
+            return None
         if message_type == "heartbeat":
             sequence = _int(message, "last_observation_sequence", minimum=0)
             if sequence != self._last_observation_sequence:
@@ -598,6 +688,27 @@ class InstrumentedBridgeClient:
                 raise BridgeCompatibilityError(f"bridge {code}: {detail}")
             raise BridgeProtocolError(f"bridge {code}: {detail}")
         raise BridgeProtocolError(f"unexpected bridge message type: {message_type!r}")
+
+    def read_slot_labels(self, *, expected_sequence: int) -> tuple[UpgradeSlotLabel, ...]:
+        """Ask the game once what each upgrade row is called, and what it does.
+
+        For humans only. The policy addresses a slot by its stable index, so a
+        renamed row must not change what a checkpoint means; these labels reach
+        the spectate panel and the session records a developer reads, and never
+        the observation tensor.
+        """
+        result = self.send_command(
+            {
+                "type": "command",
+                "protocol_version": PROTOCOL_VERSION,
+                "request_id": f"labels-{time.monotonic_ns() % 1_000_000_000}",
+                "expected_observation_sequence": expected_sequence,
+                "kind": "slot_labels",
+            }
+        )
+        if result.outcome != CommandOutcome.CONFIRMED or not self._slot_labels:
+            raise BridgeProtocolError(f"the bridge reported no slot labels: {result.reason}")
+        return self._slot_labels
 
     def send_command(self, message: Mapping[str, object]) -> BridgeCommandResult:
         """Submit one sequence-bound semantic command and await its bounded result."""
@@ -772,6 +883,24 @@ def _finite_number(message: Mapping[str, Any], name: str) -> float:
     return float(value)
 
 
+#: Enough for the longest upgrade description the game carries, and short enough
+#: that sixty of them cannot approach the frame bound.
+MAX_LABEL_CHARACTERS = 256
+
+
+def _label_text(message: Mapping[str, Any], name: str) -> str:
+    """One human-facing label, which may legitimately be empty.
+
+    The game's own name arrays are twenty wide per family with an empty tail -
+    the slots no tier ever offers - so an empty label is the game's answer, not
+    a truncated read, and is carried as such to keep the slot indices aligned.
+    """
+    value = message.get(name)
+    if not isinstance(value, str) or len(value) > MAX_LABEL_CHARACTERS:
+        raise BridgeProtocolError(f"{name} must be a string of at most {MAX_LABEL_CHARACTERS}")
+    return value
+
+
 def _bool(message: Mapping[str, Any], name: str) -> bool:
     value = message.get(name)
     if not isinstance(value, bool):
@@ -821,10 +950,12 @@ __all__ = [
     "InstrumentedBridgeClient",
     "InstrumentedBridgeError",
     "UpgradeInventoryEntry",
+    "UpgradeSlotLabel",
     "decode_handshake",
     "decode_command",
     "decode_command_result",
     "decode_observation",
+    "decode_slot_labels",
     "encode_frame",
     "read_frame",
 ]

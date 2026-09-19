@@ -9,7 +9,7 @@ contract.
 
 ## Run-contract versioning
 
-- Observation schema: `observation-v1`
+- Observation schema: `observation-v2`
 - Run-action schema: `run-action-v1`
 - Every serialized observation and transition carries both versions.
 - Incompatible changes require a new version and invalidate old replay.
@@ -27,18 +27,93 @@ the decision loop reads a pixel.
 | `profile_id` | The exact game/library plus bridge/protocol/speed identity this reading belongs to. |
 | `lifecycle` | `active` or `terminal`. `terminal` is what `RunState.terminal` reports. |
 | `wave`, `wave_log` | The wave number, raw and log-scaled for the encoder. |
-| `cash_log` | Spendable in-run currency, log-scaled. `observation-v1` carries cash only in this form. |
+| `cash_log` | Spendable in-run currency, log-scaled. `observation-v2` carries cash only in this form. |
 | `health_fraction` | Current/max health ratio. |
 | `max_health_log` | Log-scaled maximum health. |
 | `game_speed` | The world's speed multiplier as the game reports it. |
-| `rows` | One `UpgradeRow` per upgrade action: `cost_log`, `affordability` (clipped at `MAX_AFFORDABILITY_RATIO`), `level`, `max_level`, `headroom`, `unlocked`, `maxed`, `available`. |
+| `live` | Every live reading below, scaled, keyed by feature name. |
+| `rows` | One `UpgradeRow` per upgrade action: `cost_log`, `affordability` (`log1p(cash/cost)`, unclipped), `level`, `max_level`, `headroom`, `unlocked`, `maxed`, `available`. |
 | `action_mask` | One flag per entry of `RUN_ACTIONS`, in that order; authoritative for this observation. |
 | `valid`, `invalid_reasons` | Admission decision for replay and environment stepping. |
-| `schema_version` | `observation-v1`. |
+| `schema_version` | `observation-v2`. |
 
 Readings are exact rather than confidence-weighted: the bridge reports a
 game-owned field or it reports nothing. A missing value is never converted to
 zero — the state is invalid instead.
+
+### Live readings
+
+`observation-v2` shows the policy what the player reads off the run screen. Each
+row below is one field of the game's own `Main`, read whole at the width its
+declared IL2CPP type names and rescaled — never summarised. The declaration is
+`LIVE_FIELDS` in `environment/run_state.py`; this table is that declaration, and
+the bridge's `kLiveFieldNames` is the same list in C++. The wire name is the
+game's own field name, so a reading is traceable from the tensor back to the
+field without a translation table.
+
+| `Main` field | Unit observed | Transform | Feature |
+| --- | --- | --- | --- |
+| `damage` | damage per shot | log1p | `damage_log` |
+| `attackSpeed` | shots per second | log1p | `attack_speed_log` |
+| `criticalChance` | percent | divided by 100 | `critical_chance_fraction` |
+| `criticalMult` | multiplier | log1p | `critical_mult_log` |
+| `superCritChance` | percent | divided by 100 | `super_crit_chance_fraction` |
+| `multishotChance` | percent | divided by 100 | `multishot_chance_fraction` |
+| `multishotTargets` | targets | raw | `multishot_targets` |
+| `rapidFireChance` | percent | divided by 100 | `rapid_fire_chance_fraction` |
+| `rapidFireDuration` | seconds | log1p | `rapid_fire_duration_log` |
+| `towerRangeDistance` | metres | log1p | `tower_range_log` |
+| `knockbackChance` | percent | divided by 100 | `knockback_chance_fraction` |
+| `knockbackForce` | force | log1p | `knockback_force_log` |
+| `lifesteal` | percent | divided by 100 | `lifesteal_fraction` |
+| `thornDamage` | damage reflected | log1p | `thorn_damage_log` |
+| `defenseAbs` | damage blocked | log1p | `defense_absolute_log` |
+| `defenseRel` | percent | divided by 100 | `defense_relative_fraction` |
+| `towerHealthRegen` | health per second | log1p | `health_regen_log` |
+| `wallHealth` | health | log1p | `wall_health_log` |
+| `wallRebuild` | seconds | log1p | `wall_rebuild_log` |
+| `orbCount` | orbs | raw | `orb_count` |
+| `orbSpeed` | revolutions per second | log1p | `orb_speed_log` |
+| `currentWaveBaseHealth` | health | log1p | `wave_base_health_log` |
+| `currentWaveBaseDamage` | damage | log1p | `wave_base_damage_log` |
+| `currentWaveBaseKillCash` | cash | log1p | `wave_base_kill_cash_log` |
+| `enemiesSpawnedThisWave` | enemies | raw | `enemies_spawned` |
+| `enemiesKilledThisWave` | enemies | raw | `enemies_killed` |
+| `estimatedEnemiesToSpawnThisWave` | enemies | raw | `enemies_expected` |
+| `closestEnemyDistance` | metres | raw; the 10000 no-enemy sentinel reads as distance 0 and flag 0 | `closest_enemy_distance`, `enemy_present` |
+| `bossWaveBool` | boolean | raw 0/1 | `boss_wave` |
+| `bossSpawnedBool` | boolean | raw 0/1 | `boss_spawned` |
+| `miniBossWaveBool` | boolean | raw 0/1 | `mini_boss_wave` |
+| `waveTimer` | seconds | log1p | `wave_timer_log` |
+| `waveLengthSeconds` | seconds | log1p | `wave_length_log` |
+| `waveCooldownSeconds` | seconds | log1p | `wave_cooldown_log` |
+| `cashPerWave` | cash per wave | log1p | `cash_per_wave_log` |
+| `cashEarnedThisWave` | cash | log1p | `cash_earned_this_wave_log` |
+| `gameplayTimeThisRound` | seconds | log1p | `round_time_log` |
+
+Every one of these carries a range invariant, which is what makes a bad reading
+an attributable anomaly rather than a plausible number (the M1B-E017 lesson): a
+magnitude, a count and a clock must be finite and non-negative; a distance must
+be finite and lie in [0, 10000], where exactly 10000 is the absence and anything
+beyond it is a reading this schema cannot account for rather than one more
+absence; a percent must land in [0, 1] once divided by 100; a flag is 0 or 1. A
+violation zeroes the feature *and* appends
+`OBSERVATION_OUT_OF_RANGE:<Main field>` to `invalid_reasons`, so the transition
+is inadmissible and the episode record names the field that misread.
+
+The bridge refuses to initialize when any of these fields is absent from `Main`
+or declared at a type it cannot read, and the host refuses a state message that
+does not carry exactly this set. Neither ever substitutes a zero.
+
+### Upgrade-row labels
+
+The game's own name and description for each slot (`upgradeName`,
+`upgradeDefenseName`, `upgradeUtilityName` and their description twins) are read
+**once per session** by the bridge's `slot_labels` command, never per snapshot:
+they are constant for a build. They are for humans — the spectate panel and the
+`upgrade_rows` block of evaluation and session records — and are deliberately
+**not** part of the observation tensor. The policy addresses a slot by its
+stable index, and a renamed row must not change what a checkpoint means.
 
 `validate_transition(previous, current)` rejects a non-advancing source sequence
 or capture time, a profile identity or schema version that changed inside an
@@ -125,8 +200,8 @@ cadence is read as `every-slice`.
 semantic action, action mask, typed outcome, scalar reward, `terminated` and
 `truncated` flags, termination reason, the `DecisionEvent`s that ended the
 advance, elapsed real seconds, the game time the advance *requested*
-(`requested_game_ms` — this build exposes no live in-run clock, so the honest
-record is the request, `M1B-E003`), invalid reasons, and
+(`requested_game_ms` — a budget, not a measurement; `game_ms` beside it is the
+game's own round clock across the same span), invalid reasons, and
 `reward_schema_version`. Its `admissible` property is what gates replay: both
 states valid, a next state present, and no invalid reason.
 

@@ -19,6 +19,12 @@ watching wants the game's own speed. And it refuses to start at all while any
 emulator is running: a session here must never share the host with a
 measurement or a training run, whose throughput is what the host is for.
 
+The guest renders through `-gpu lavapipe` by default, not the host renderer the
+fleet uses: the host renderer glitches the picture, which makes a recording of
+it useless. `--record` and the per-run episode JSON both land under
+`recordings/`, a git-ignored directory beside the project — an mp4 is far above
+GitHub's file limit, and this repo is public.
+
 Everything else is exactly what the fleet does: the canonical AVD is refused by
 `CloneInstance`, the instance is `-read-only`, the bridge is deployed with its
 digest confirmed, offline is verified by interface, and the instance is torn
@@ -44,6 +50,14 @@ from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+#: The repo root, from the script's own location rather than the cwd, so
+#: `recordings/` lands beside the project whichever directory this is run from.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+#: Where a spectated session's output lives: recordings and their per-run
+#: records in one place, git-ignored because an mp4 is far above GitHub's file
+#: limit and this repo is public.
+RECORDINGS_DIRECTORY = PROJECT_ROOT / "recordings"
 
 # One torch thread, for the same reason `run_episodes.py` sets it: acting is one
 # small forward pass per decision and a pool buys nothing.
@@ -141,6 +155,7 @@ def panel_lines(
     spectator: Spectator,
     *,
     policy: str,
+    renderer: str,
     episodes_requested: int,
     elapsed_seconds: float,
     holding: bool = False,
@@ -149,6 +164,9 @@ def panel_lines(
 
     `elapsed_seconds` is passed in rather than read from a clock here, so the
     panel has no hidden state and a test can assert every line it produces.
+    `renderer` is named on the same line for the same reason: what rendered the
+    picture is part of what a watcher, or a log read afterwards, needs to know
+    it was looking at.
 
     The first five lines are a fixed layout, because both panels index into it:
     title, blank, state, counters, and `DEATH_LINE` - the episode that just
@@ -160,7 +178,7 @@ def panel_lines(
     per_minute = spectator.decisions / elapsed_seconds * 60 if elapsed_seconds > 0 else 0.0
 
     lines = [
-        f"tower-rl spectate — {policy} — episode {episode} of {of}",
+        f"tower-rl spectate — {policy} — {renderer} — episode {episode} of {of}",
         "",
     ]
     if view is None:
@@ -452,6 +470,7 @@ def spectate_session(
     episodes: int,
     policy_name: str,
     actor_id: str,
+    renderer: str,
 ) -> None:
     """Play episodes, drawing the panel once per decision, until told to stop.
 
@@ -475,6 +494,7 @@ def spectate_session(
             panel_lines(
                 spectator,
                 policy=policy_name,
+                renderer=renderer,
                 episodes_requested=episodes,
                 elapsed_seconds=time.monotonic() - begun,
             )
@@ -564,7 +584,12 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"guest frame rate; {SPECTATE_FRAME_RATE_HZ} is real time, 120 is the fleet's",
     )
     parser.add_argument("--instance-index", type=int, default=0)
-    parser.add_argument("--renderer", default="host")
+    parser.add_argument(
+        "--renderer",
+        default="lavapipe",
+        help="guest GPU renderer; lavapipe is the default because the host "
+        "renderer glitches the picture, which makes a recording of it useless",
+    )
     parser.add_argument("--cores", type=int, default=4)
     parser.add_argument(
         "--no-panel",
@@ -575,14 +600,16 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--record",
         type=Path,
         default=None,
-        help="record the guest screen to this .mp4; a session longer than "
-        f"{SCREENRECORD_CHUNK_SECONDS}s is pulled back as numbered chunks",
+        help="record the guest screen to this .mp4; a relative filename is "
+        f"written under {RECORDINGS_DIRECTORY}, an absolute path elsewhere; a "
+        f"session longer than {SCREENRECORD_CHUNK_SECONDS}s is pulled back as "
+        "numbered chunks",
     )
     parser.add_argument(
         "--output-directory",
         type=Path,
-        default=None,
-        help="where the episode records are written; omitted, none are kept",
+        default=RECORDINGS_DIRECTORY / "records",
+        help="where the episode records are written",
     )
     add_cadence_arguments(parser)
     arguments = parser.parse_args(argv)
@@ -594,6 +621,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "spectated session; anything else is a throughput choice and belongs "
             "to run_actors.py"
         )
+    if arguments.record is not None and not arguments.record.is_absolute():
+        arguments.record = RECORDINGS_DIRECTORY / arguments.record
     return arguments
 
 
@@ -702,11 +731,13 @@ def watch(
             episodes=arguments.episodes,
             policy_name=name,
             actor_id=actor_id,
+            renderer=arguments.renderer,
         )
         panel.draw(
             panel_lines(
                 spectator,
                 policy=name,
+                renderer=arguments.renderer,
                 episodes_requested=arguments.episodes,
                 elapsed_seconds=0.0,
                 holding=True,

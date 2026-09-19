@@ -89,7 +89,11 @@ def test_the_panel_shows_the_state_the_latest_decision_left() -> None:
     spectator.observe(_view(wave=7, cash=1240.0, health_fraction=0.62, action="attack:2"))
 
     lines = spectate.panel_lines(
-        spectator, policy="checkpoint-0100000", episodes_requested=1, elapsed_seconds=60.0
+        spectator,
+        policy="checkpoint-0100000",
+        renderer="lavapipe",
+        episodes_requested=1,
+        elapsed_seconds=60.0,
     )
     text = "\n".join(lines)
 
@@ -107,7 +111,7 @@ def test_the_panel_counts_episodes_and_means_their_final_waves() -> None:
         spectator.observe(_view(wave=wave, done=True, termination=TerminationOutcome.GAME_OVER))
 
     lines = spectate.panel_lines(
-        spectator, policy="random", episodes_requested=0, elapsed_seconds=10.0
+        spectator, policy="random", renderer="lavapipe", episodes_requested=0, elapsed_seconds=10.0
     )
     text = "\n".join(lines)
 
@@ -125,7 +129,7 @@ def test_the_panel_keeps_only_the_last_twenty_actions_newest_first() -> None:
         spectator.observe(_view(decision=decision, action=f"attack:{decision}"))
 
     lines = spectate.panel_lines(
-        spectator, policy="random", episodes_requested=1, elapsed_seconds=1.0
+        spectator, policy="random", renderer="lavapipe", episodes_requested=1, elapsed_seconds=1.0
     )
     actions = [line.strip() for line in lines if line.startswith("  ")]
 
@@ -143,6 +147,7 @@ def test_the_panel_says_the_session_is_over_while_it_holds() -> None:
         spectate.panel_lines(
             spectator,
             policy="random",
+            renderer="lavapipe",
             episodes_requested=1,
             elapsed_seconds=1.0,
             holding=True,
@@ -163,7 +168,11 @@ def test_the_plain_panel_prints_the_death_on_the_decision_it_happened_on(
     spectator = spectate.Spectator()
     spectator.observe(_view(wave=8, done=True, termination=TerminationOutcome.GAME_OVER))
     lines = spectate.panel_lines(
-        spectator, policy="checkpoint-0050123", episodes_requested=1, elapsed_seconds=10.0
+        spectator,
+        policy="checkpoint-0050123",
+        renderer="lavapipe",
+        episodes_requested=1,
+        elapsed_seconds=10.0,
     )
 
     spectate.PlainPanel().draw(lines)
@@ -181,7 +190,13 @@ def test_the_plain_panel_stays_quiet_while_the_episode_runs(
     spectator.observe(_view(wave=3))
 
     spectate.PlainPanel().draw(
-        spectate.panel_lines(spectator, policy="random", episodes_requested=1, elapsed_seconds=10.0)
+        spectate.panel_lines(
+            spectator,
+            policy="random",
+            renderer="lavapipe",
+            episodes_requested=1,
+            elapsed_seconds=10.0,
+        )
     )
 
     assert capsys.readouterr().out.count("\n") == 1, "no blank or stray second line"
@@ -193,7 +208,11 @@ def test_the_plain_panel_draws_before_the_first_decision_arrives(
     """The waiting frame has no death line to find at `DEATH_LINE` either."""
     spectate.PlainPanel().draw(
         spectate.panel_lines(
-            spectate.Spectator(), policy="random", episodes_requested=1, elapsed_seconds=0.0
+            spectate.Spectator(),
+            policy="random",
+            renderer="lavapipe",
+            episodes_requested=1,
+            elapsed_seconds=0.0,
         )
     )
 
@@ -204,7 +223,11 @@ def test_the_plain_panel_draws_before_the_first_decision_arrives(
 
 def test_the_panel_draws_before_the_first_decision_arrives() -> None:
     lines = spectate.panel_lines(
-        spectate.Spectator(), policy="random", episodes_requested=1, elapsed_seconds=0.0
+        spectate.Spectator(),
+        policy="random",
+        renderer="lavapipe",
+        episodes_requested=1,
+        elapsed_seconds=0.0,
     )
 
     assert "waiting for the first decision" in "\n".join(lines)
@@ -312,6 +335,7 @@ def test_a_session_plays_the_episodes_it_was_asked_for_and_draws_every_decision(
         summaries,
         episodes=3,
         policy_name="random",
+        renderer="lavapipe",
         actor_id="spectate:random",
     )
 
@@ -357,6 +381,7 @@ def test_q_stops_at_the_next_decision_and_keeps_the_episodes_already_finished() 
         summaries,
         episodes=0,
         policy_name="random",
+        renderer="lavapipe",
         actor_id="spectate:random",
     )
 
@@ -386,6 +411,7 @@ def test_ctrl_c_keeps_every_episode_that_had_already_finished() -> None:
             summaries,
             episodes=0,
             policy_name="random",
+            renderer="lavapipe",
             actor_id="spectate:random",
         )
 

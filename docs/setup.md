@@ -262,6 +262,18 @@ and pulls the file back at the end. Android's `screenrecord` stops itself after
 consecutive numbered chunks (`session-000.mp4`, `session-001.mp4`, …) with about
 a second lost at each seam. The recording covers through the death and the hold.
 
+**The guest renders through `-gpu lavapipe` by default**, not the host renderer
+the fleet trains on: the host renderer glitches the picture on this machine,
+which makes a recording of it useless. `--renderer host` is accepted if you
+want the fleet's own renderer instead. The renderer in use is named on the
+panel's own title line.
+
+A relative `--record` filename, and the per-run episode JSON `--output-directory`
+writes, both land under `recordings/` at the repo root by default — one home
+for spectate output, resolved from the script's own location rather than the
+current directory. `recordings/` is git-ignored: an mp4 is far above GitHub's
+file limit, and this repo is public.
+
 `--output-directory` writes the episodes the session played as the same
 per-episode records the fleet writes. Omit it and nothing is kept: the panel is
 a view, not a measurement.

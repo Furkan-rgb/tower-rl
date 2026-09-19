@@ -9,6 +9,8 @@ personal screenshots, bulk logs, replay, or model artifacts.
 
 ## M2-E003 — Spectate mode on device
 
+**2026-09-19 note:** this recording was made under the host renderer and may show the glitching the developer reports; recordings from this change on are lavapipe by default (board `#36`).
+
 **Date:** 2026-09-19
 **Status:** Eight of the nine device checks for `#12` pass. Check 9 fails, in
 the direction it was written to catch: `screenrecord` interrupted by SIGINT

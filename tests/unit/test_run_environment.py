@@ -905,6 +905,42 @@ def test_a_view_says_what_its_own_transition_said() -> None:
     assert view.termination is transition.termination
 
 
+def test_a_view_of_a_purchase_says_which_row_which_level_and_what_it_cost() -> None:
+    """What a watcher needs beside the row's name, which the session supplies."""
+    environment, _ = _environment()
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+    state = environment.reset()
+    row = next(row for row in state.rows if row.action == upgrade_action("attack", 0))
+
+    transition = environment.step(row.action)
+    purchase = seen[-1].purchase
+
+    assert transition.next_state is not None
+    bought = next(
+        after for after in transition.next_state.rows if after.action == row.action
+    )
+    assert purchase is not None
+    assert purchase.action == "attack:0", "which row, as the action names it"
+    assert purchase.level_after == bought.level == row.level + 1
+    assert purchase.max_level == bought.max_level
+    # The price paid, not the next level's: the row quotes a new cost once the
+    # purchase has settled.
+    assert purchase.cost == pytest.approx(math.expm1(row.cost_log))
+    assert purchase.cost != pytest.approx(math.expm1(bought.cost_log))
+
+
+def test_a_wait_bought_nothing_and_says_so() -> None:
+    environment, _ = _environment()
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+    environment.reset()
+
+    environment.step(WAIT)
+
+    assert seen[-1].purchase is None
+
+
 def test_the_last_view_of_an_episode_is_the_one_marked_done() -> None:
     """A watcher learns the tower died from the stream, not from a summary."""
     environment, _ = _environment(damage_per_second=2.0, max_health=1.0)

@@ -357,7 +357,8 @@ before the instance is torn down, so the death is not the moment the window
 disappears.
 
 The panel shows the current episode, wave, cash and health, the last 20 actions
-(each upgrade slot bought, or `wait`), episodes played, the running mean final
+(`Damage → L4/20  -120` for a purchase — the row, the level it reached and the
+cash it cost — and `Hold  2.0s` for a wait), episodes played, the running mean final
 wave, and decisions per minute.
 
 Keys: `q` stops at the next decision; Ctrl-C does the same, and both keep the
@@ -413,7 +414,10 @@ Each line carries `video_s` (seconds since the recording began), `chunk` and
 `chunk_s` (which chunk the decision is in and how far into it — the placement a
 seam cannot move), `episode`, `decision`, `wave`, `cash`, `health_fraction`,
 `action` (`wait` or `attack:3`), `label` (what the game calls that upgrade row,
-or `Hold`), `held_s` (game time the choice was held for), `hud` (the same
+or `Hold`), `purchase` (the row bought, the level it reached, its maximum and
+the cash it cost — `null` for a hold, and absent from tracks written before it
+was recorded, which still render), `held_s` (game time the choice was held
+for), `hud` (the same
 readings the terminal panel shows), and `ended` — with `reason` — on the
 decision the episode died on. The session record under
 `state/recordings/records/` names the video, the track and the monotonic anchor
@@ -427,8 +431,8 @@ uv run python scripts/render_recording.py --recording state/recordings/session
 
 It concatenates the chunks in order and pads the picture to the right with a
 panel drawn by `libass` — a header with wave, cash, health and the HUD block,
-updated per decision, and a scrolling history of the last twelve actions with
-their labels and held times, the current one picked out. The result is
+updated per decision, and a scrolling history of the last twelve actions in
+the same form the live panel uses, the current one picked out. The result is
 `<stem>-panel.mp4` beside the input. The guest picture is never scaled: the
 output is the source resolution plus the 560-pixel panel, encoded x264 CRF 20,
 `veryfast`, `yuv420p`, no audio. ffmpeg and a monospace font are required and

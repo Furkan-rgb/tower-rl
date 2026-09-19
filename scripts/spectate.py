@@ -74,7 +74,11 @@ from run_episodes import (  # noqa: E402
     policy_from,
 )
 
-from tower_rl.environment.episode import DecisionView, EpisodeSummary  # noqa: E402
+from tower_rl.environment.episode import (  # noqa: E402
+    DecisionView,
+    EpisodeSummary,
+    PurchaseView,
+)
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_state import (  # noqa: E402
     NO_ENEMY_DISTANCE,
@@ -145,7 +149,10 @@ class SpectateStopped(Exception):
 class Spectator:
     """What has been seen so far, as the panel needs it."""
 
-    recent: deque[str] = field(default_factory=lambda: deque(maxlen=RECENT_ACTIONS))
+    #: The decisions the history is drawn from, oldest first. Views rather
+    #: than finished lines: naming the row they bought needs the slot labels,
+    #: which `panel_lines` has and this does not.
+    recent: deque[DecisionView] = field(default_factory=lambda: deque(maxlen=RECENT_ACTIONS))
     latest: DecisionView | None = None
     decisions: int = 0
     episodes_finished: int = 0
@@ -168,7 +175,7 @@ class Spectator:
                 seen[0] = min(seen[0], value)
                 seen[1] = max(seen[1], value)
                 seen[3] = value
-        self.recent.append(f"e{view.episode} d{view.decision} {view.action}")
+        self.recent.append(view)
         if view.done:
             self.episodes_finished += 1
             self.final_waves.append(view.wave)
@@ -222,6 +229,58 @@ PANEL_HUD_WIRES: tuple[str, ...] = tuple(wire for wire, _, _ in TOWER_STATS) + W
 #: What a decision that bought nothing is called. The slot labels name what was
 #: bought; waiting has no slot, so it is named here.
 HOLD_LABEL = "Hold"
+
+#: How wide a row name may be in a history line. The game's own names run past
+#: what fits beside the picture, and a history line that wraps stops being a
+#: history; eighteen is what the rendered panel's column holds.
+LABEL_WIDTH = 18
+
+
+def short_label(label: str) -> str:
+    """A row name cut to `LABEL_WIDTH`, ending in an ellipsis when it was cut."""
+    if len(label) <= LABEL_WIDTH:
+        return label
+    return label[: LABEL_WIDTH - 1] + "\u2026"
+
+
+def label_for(action: str, labels: Sequence[UpgradeSlotLabel]) -> str:
+    """The game's name for what an action bought, or `Hold` for a wait.
+
+    The one place a slot is turned into a name. The labels are read off the
+    bridge by the session, so this is the session's job and not the
+    environment's: a `DecisionView` says which slot, and this says what the
+    game calls it.
+    """
+    family, _, index = action.partition(":")
+    if not index:
+        return HOLD_LABEL
+    for label in labels:
+        if label.family == family and str(label.index) == index:
+            return label.name or action
+    return action
+
+
+def purchase_row(purchase: PurchaseView, labels: Sequence[UpgradeSlotLabel]) -> str:
+    """What a bought row reads as: the name, the level reached, the cash paid."""
+    return (
+        f"{short_label(label_for(purchase.action, labels))} \u2192 "
+        f"L{purchase.level_after}/{purchase.max_level}  -{purchase.cost:,.0f}"
+    )
+
+
+def decision_row(view: DecisionView, labels: Sequence[UpgradeSlotLabel] = ()) -> str:
+    """One decision as the history reads it: what was bought, or how long held.
+
+    A purchase says which row, the level it reached and what it cost; a hold has
+    none of those and says the one thing it does have, which is its length.
+    """
+    if view.purchase is not None:
+        return purchase_row(view.purchase, labels)
+    if view.action == "wait":
+        return f"{HOLD_LABEL}  {view.game_ms / 1000:.1f}s"
+    # A purchase with no row to read a level and a cost from: the slot itself,
+    # which is what the history said before it could say anything more.
+    return label_for(view.action, labels)
 
 
 def hud_lines(view: DecisionView) -> list[str]:
@@ -339,7 +398,10 @@ def panel_lines(
     if labels:
         lines.append("")
     lines.append(f"last {RECENT_ACTIONS} actions, newest first:")
-    lines.extend(f"  {action}" for action in reversed(spectator.recent))
+    lines.extend(
+        f"  e{past.episode} d{past.decision} {decision_row(past, labels)}"
+        for past in reversed(spectator.recent)
+    )
     lines.append("")
     lines.append(
         "session over — press any key to tear the instance down"
@@ -701,13 +763,7 @@ class DecisionTrack:
 
     def label_for(self, action: str) -> str:
         """The game's name for what this action bought, or `Hold` for a wait."""
-        family, _, index = action.partition(":")
-        if not index:
-            return HOLD_LABEL
-        for label in self.labels:
-            if label.family == family and str(label.index) == index:
-                return label.name or action
-        return action
+        return label_for(action, self.labels)
 
     def write(self, view: DecisionView) -> None:
         """Append one decision, placed in the video."""
@@ -726,6 +782,18 @@ class DecisionTrack:
             # Game time, which is what the agent held the choice for; at 60 Hz
             # that is also wall time, and at 120 it is half of it.
             "held_s": round(view.game_ms / 1000, 3),
+            # What the purchase was, when it was one: a label alone cannot say
+            # which level the row reached or what reaching it cost.
+            "purchase": (
+                {
+                    "label": self.label_for(view.purchase.action),
+                    "level_after": view.purchase.level_after,
+                    "max_level": view.purchase.max_level,
+                    "cost": round(view.purchase.cost, 1),
+                }
+                if view.purchase is not None
+                else None
+            ),
             "hud": {
                 wire: round(float(view.hud[wire]), 4)
                 for wire in PANEL_HUD_WIRES

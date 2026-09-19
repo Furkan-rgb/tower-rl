@@ -25,6 +25,7 @@ from tower_rl.environment.episode import (
     DecisionEvent,
     DecisionView,
     EpisodeSummary,
+    PurchaseView,
     RunTransition,
     TerminationOutcome,
     WaveRecord,
@@ -897,6 +898,29 @@ class InstrumentedRunEnvironment:
             game_ms=transition.game_ms,
             done=transition.termination is not None,
             termination=transition.termination,
+            purchase=self._purchase(transition, shown),
+        )
+
+    def _purchase(self, transition: RunTransition, shown: RunState) -> PurchaseView | None:
+        """What the decision bought, in the game's own terms, or None for a wait.
+
+        The price comes from the state the decision was taken *from*, which is
+        the price that was paid; the level comes from the state it produced,
+        which is the level the purchase reached. Reading both from one state
+        would quote either the next level's price or the level before the buy.
+        """
+        action = transition.action
+        if action.is_wait:
+            return None
+        reached = next((row for row in shown.rows if row.action == action), None)
+        priced = next((row for row in transition.state.rows if row.action == action), None)
+        if reached is None or priced is None:
+            return None
+        return PurchaseView(
+            action=str(action),
+            level_after=reached.level,
+            max_level=reached.max_level,
+            cost=math.expm1(priced.cost_log),
         )
 
 

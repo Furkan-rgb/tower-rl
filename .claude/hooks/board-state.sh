@@ -43,7 +43,7 @@ items.sort(key=lambda r: (order.get(r[0], 99), r[1]))
 
 print("Board (open items):")
 
-if len(items) <= 12:
+if len(items) <= 11:
     for status, number, title in items:
         print(f"#{number} [{status}] {title}")
 else:
@@ -55,6 +55,8 @@ else:
         print(f"...and {len(rest)} more in Backlog/Blocked, including:")
         for status, number, title in rest[:3]:
             print(f"#{number} [{status}] {title}")
+
+print("Reconcile before acting: any item you start, finish, block, or learn something new about this turn gets its status or a comment updated now \u2014 never later.")
 ' 2>/dev/null
 
 exit 0

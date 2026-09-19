@@ -190,10 +190,14 @@ def scale_live_reading(live: LiveField, raw: float) -> tuple[dict[str, float], s
                 return zeros, out_of_range
             return {live.feature: raw}, None
         case LiveTransform.DISTANCE:
-            if raw < 0.0:
-                return zeros, out_of_range
-            if raw >= NO_ENEMY_DISTANCE:
+            # Exactly the sentinel is an absence. Anything beyond it is a
+            # reading this schema cannot account for, and treating it as one
+            # more absence would let a field that had started reporting
+            # something else pass silently as "no enemy" forever.
+            if raw == NO_ENEMY_DISTANCE:
                 return zeros, None
+            if raw < 0.0 or raw > NO_ENEMY_DISTANCE:
+                return zeros, out_of_range
             return {live.feature: raw, str(live.presence_feature): 1.0}, None
         case LiveTransform.MAGNITUDE:
             if raw < 0.0:
@@ -492,7 +496,10 @@ def hud_readings(state: RunState) -> dict[str, float]:
                 readings[live.wire] = scaled * 100.0
             case LiveTransform.DISTANCE:
                 # An absence reads as the game's own sentinel again, so the panel
-                # shows "no enemy" rather than an enemy at zero distance.
+                # shows "no enemy" rather than an enemy at zero distance. A
+                # reading that was refused as out of range is zero here and has
+                # no flag, so it shows as the absence it was reduced to; what
+                # says it was refused is `invalid_reasons`, not this.
                 present = state.live[str(live.presence_feature)]
                 readings[live.wire] = scaled if present else NO_ENEMY_DISTANCE
             case _:

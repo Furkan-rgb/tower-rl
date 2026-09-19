@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -328,3 +329,61 @@ def test_health_above_maximum_is_invalid_in_any_lifecycle() -> None:
         )
         assert not state.valid
         assert "health exceeds maximum" in state.invalid_reasons
+
+
+def test_only_the_sentinel_itself_is_an_absence() -> None:
+    """A distance past the sentinel is a reading this schema cannot account for.
+
+    Treating everything at or above 10000 as "no enemy" would let a field that
+    had started reporting something else pass silently as an absence forever,
+    which is exactly the silence the range invariant exists to break.
+    """
+    beyond = BUILDER.build(
+        _reading(live={"closestEnemyDistance": NO_ENEMY_DISTANCE + 1.0}),
+        captured_at_monotonic=1.0,
+    )
+
+    assert not beyond.valid
+    assert f"{OUT_OF_RANGE_REASON}:closestEnemyDistance" in beyond.invalid_reasons
+    assert beyond.live["closest_enemy_distance"] == 0.0
+    assert beyond.live["enemy_present"] == 0.0
+
+
+def test_the_contract_table_is_the_declaration_it_claims_to_be() -> None:
+    """`docs/environment-contract.md` says what the schema is; this proves it does.
+
+    The table is what a reader trusts to know what the agent sees and in what
+    unit. A documented transform that has quietly stopped matching the code is
+    worse than none: it is a false account of the observation every checkpoint
+    was trained on. So the rows are parsed and compared, rather than the
+    document being kept current by somebody remembering to.
+    """
+    how = {
+        LiveTransform.MAGNITUDE: "log1p",
+        LiveTransform.PERCENT: "divided by 100",
+        LiveTransform.COUNT: "raw",
+        LiveTransform.FLAG: "raw 0/1",
+        LiveTransform.DISTANCE: "raw",
+    }
+    contract = (
+        Path(__file__).resolve().parents[2] / "docs" / "environment-contract.md"
+    ).read_text()
+    _, _, after = contract.partition("### Live readings")
+    table, _, _ = after.partition("\nEvery one of these")
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in table.splitlines()
+        # The header names the class rather than a field, so it looks like a row
+        # and is not one.
+        if line.startswith("| `") and not line.startswith("| `Main` field")
+    ]
+
+    assert len(rows) == len(LIVE_FIELDS), "one documented row per declared field"
+    for row, live in zip(rows, LIVE_FIELDS, strict=True):
+        wire, unit, transform, features = row
+        assert wire == f"`{live.wire}`"
+        assert unit == live.unit
+        # The distance row spells its sentinel handling out after the transform
+        # name; every other row is the transform and nothing else.
+        assert transform.startswith(how[live.transform])
+        assert features == ", ".join(f"`{name}`" for name in live.features)

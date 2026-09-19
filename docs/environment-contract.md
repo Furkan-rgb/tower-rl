@@ -93,8 +93,10 @@ field without a translation table.
 
 Every one of these carries a range invariant, which is what makes a bad reading
 an attributable anomaly rather than a plausible number (the M1B-E017 lesson): a
-magnitude, a count, a distance and a clock must be finite and non-negative; a
-percent must land in [0, 1] once divided by 100; a flag must be 0 or 1. A
+magnitude, a count and a clock must be finite and non-negative; a distance must
+be finite and lie in [0, 10000], where exactly 10000 is the absence and anything
+beyond it is a reading this schema cannot account for rather than one more
+absence; a percent must land in [0, 1] once divided by 100; a flag is 0 or 1. A
 violation zeroes the feature *and* appends
 `OBSERVATION_OUT_OF_RANGE:<Main field>` to `invalid_reasons`, so the transition
 is inadmissible and the episode record names the field that misread.

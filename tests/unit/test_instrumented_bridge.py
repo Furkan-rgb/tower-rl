@@ -239,7 +239,9 @@ def test_a_state_message_must_carry_exactly_the_live_readings_the_schema_declare
         decode_observation(_observation(1, live=missing))
 
     extra = {**dict.fromkeys(LIVE_WIRE_NAMES, 0.0), "cellsEarnedThisWave": 1.0}
-    with pytest.raises(BridgeProtocolError, match="cannot place"):
+    # Named, not counted: "one too many" leaves the reader to diff two lists of
+    # thirty-seven to find out which field the bridge sent.
+    with pytest.raises(BridgeProtocolError, match="cannot place.*cellsEarnedThisWave"):
         decode_observation(_observation(1, live=extra))
 
     with pytest.raises(BridgeProtocolError, match="no live readings object"):

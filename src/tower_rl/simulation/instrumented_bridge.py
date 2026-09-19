@@ -366,8 +366,11 @@ def decode_observation(
     missing = [name for name in LIVE_WIRE_NAMES if name not in live_value]
     if missing:
         raise BridgeProtocolError(f"state message is missing live readings: {missing}")
-    if len(live_value) != len(LIVE_WIRE_NAMES):
-        raise BridgeProtocolError("state message carries live readings this schema cannot place")
+    extra = sorted(set(live_value) - set(LIVE_WIRE_NAMES))
+    if extra:
+        raise BridgeProtocolError(
+            f"state message carries live readings this schema cannot place: {extra}"
+        )
     live = {name: _finite_number(live_value, name) for name in LIVE_WIRE_NAMES}
     return BridgeObservation(
         sequence=_int(message, "sequence", minimum=1),

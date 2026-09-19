@@ -56,6 +56,7 @@ state/runs/              training runs, checkpoints and reports
 state/mlflow.db          the MLflow store, with artifacts in state/mlartifacts/
 state/records/           evaluation records: actors, arms, episodes, selection
 state/recordings/        spectate recordings and their per-run records
+state/logs/              each emulator's own captured output, by serial
 ```
 
 `state/` is git-ignored in full — the artifacts in it are far above GitHub's
@@ -73,7 +74,9 @@ uv run python scripts/migrate_state.py
 ```
 
 It renames each entry into `state/`, re-points `state/bridge/current` at its
-sibling relatively, prints what moved where, and leaves the old location absent.
+sibling relatively, writes `state/bridge/config/profile.cmake` out of the
+installed build's `CMakeCache.txt` (below), prints what moved where, and leaves
+the old location absent.
 
 ### Building and installing the bridge
 
@@ -84,9 +87,10 @@ original `libunity.so` and `libil2cpp.so` digests, profile id — is private and
 supplied as CMake cache values from `state/bridge/config/profile.cmake`, which is
 not committed. **The reference for those values is the `CMakeCache.txt` beside
 the installed bridge**: it records exactly what the deployed artifact was
-configured with, so a lost `profile.cmake` is rewritten from
-`state/bridge/current/CMakeCache.txt` (`grep TOWER_BRIDGE_ state/bridge/current/CMakeCache.txt`)
-rather than guessed at.
+configured with. `scripts/migrate_state.py` writes `profile.cmake` out of it, and
+`migrate_state.write_private_build_configuration` rewrites it at any time from
+`state/bridge/current/CMakeCache.txt`, so the configuration is never guessed at
+and never retyped from a shell history.
 
 ```text
 build=$(mktemp -d)

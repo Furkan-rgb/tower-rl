@@ -14,11 +14,11 @@ distinguishable from a slow one by watching the process it started.
 from __future__ import annotations
 
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from tower_rl.environment.project_state import state_directory
 from tower_rl.simulation.android_sdk import find_android_tool
 
 PACKAGE = "com.TechTreeGames.TheTower"
@@ -65,11 +65,14 @@ assert GUEST_FRAME_RATE_HZ <= MAX_GUEST_FRAME_RATE_HZ, (
     "no measured fps supports a guest rate above 300 Hz"
 )
 
-#: Where the emulator's own output is captured. A module-level path rather than
-#: a `tempfile.gettempdir()` call inside `launch_emulator`, so a test can point
-#: it somewhere harmless: the log is opened `"wb"` before the launch, and a test
-#: that fakes only `Popen` truncated the live instance's log every run.
-EMULATOR_LOG_DIRECTORY = Path(tempfile.gettempdir())
+#: Where the emulator's own output is captured: `state/logs/`, with everything
+#: else this project writes, rather than the system temp directory it used to go
+#: to — the account of why a boot failed should outlive the reboot that follows
+#: it. A module-level path rather than a call inside `launch_emulator`, so a
+#: test can point it somewhere harmless: the log is opened `"wb"` before the
+#: launch, and a test that fakes only `Popen` truncated the live instance's log
+#: every run.
+EMULATOR_LOG_DIRECTORY = state_directory() / "logs"
 
 
 class CloneError(RuntimeError):
@@ -271,6 +274,9 @@ def launch_emulator(
     # launch, so a failure can always be explained without spamming this
     # process's own console when there is nothing to explain.
     log_path = EMULATOR_LOG_DIRECTORY / f"tower-rl-emulator-{instance.serial}.log"
+    # The state directory holds no directory nobody has written to yet, so the
+    # one that owns this file makes it here rather than at import time.
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("wb") as log_file:
         process = subprocess.Popen(
             command, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True

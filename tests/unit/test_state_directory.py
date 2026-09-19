@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from tower_rl.environment.project_state import repository_root, state_directory
-from tower_rl.simulation import bridge
+from tower_rl.simulation import bridge, instance
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCRIPTS = REPOSITORY / "scripts"
@@ -87,6 +87,15 @@ def test_the_state_directory_is_git_ignored_and_the_resolver_creates_nothing() -
 def test_the_installed_bridge_lives_under_the_state_directory() -> None:
     """`state/bridge/<sha256>/`, with `current` the symlink to the deployed one."""
     assert state_directory() / "bridge" == bridge.BRIDGE_STATE_DIRECTORY
+
+
+def test_the_emulators_own_output_is_captured_under_the_state_directory() -> None:
+    """`state/logs/`, not the system temp directory it used to be written to.
+
+    The emulator's own output is the only account of why a launch never booted,
+    and a reboot after a host-level failure is exactly when it is read.
+    """
+    assert state_directory() / "logs" == instance.EMULATOR_LOG_DIRECTORY
 
 
 @pytest.mark.parametrize("script", sorted(WRITING_ARGUMENTS), ids=sorted(WRITING_ARGUMENTS))

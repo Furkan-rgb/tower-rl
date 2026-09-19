@@ -130,6 +130,11 @@ from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter 
 #: The one backbone this project trains.
 BACKBONE = "stacked-dqn"
 
+#: What a uniform schedule anneals to when `--epsilon-end` is not given. Held
+#: here rather than as the flag's default so that a value the ladder would
+#: ignore can be told from one that was never given at all.
+DEFAULT_EPSILON_END = 0.05
+
 
 @dataclass(frozen=True)
 class ActorInstance:
@@ -458,7 +463,18 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="how slowly the target network follows the online one",
     )
     parser.add_argument("--epsilon-start", type=float, default=1.0)
-    parser.add_argument("--epsilon-end", type=float, default=0.05)
+    parser.add_argument(
+        "--epsilon-end",
+        type=float,
+        # Unset rather than 0.05, so a value the ladder would ignore can be told
+        # from the default it resolves to below.
+        default=None,
+        help=(
+            "the rate every actor of a uniform schedule anneals to (default "
+            "0.05); under --exploration ladder each actor anneals to its own "
+            "rung instead and this may not be given"
+        ),
+    )
     parser.add_argument(
         "--exploration",
         choices=EXPLORATION_OPTIONS,
@@ -585,9 +601,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
-    if arguments.exploration == LADDER and "--epsilon-end" in (
-        sys.argv[1:] if argv is None else argv
-    ):
+    if arguments.epsilon_end is None:
+        arguments.epsilon_end = DEFAULT_EPSILON_END
+    elif arguments.exploration == LADDER:
         # The ladder replaces the end of the anneal per actor, so a value given
         # here would be silently unused - and the one thing an exploration
         # setting may not be is silently unused.

@@ -762,9 +762,16 @@ def test_an_epsilon_end_passed_with_the_ladder_is_refused(tmp_path: Path) -> Non
     """The ladder replaces the end of the anneal, so the flag would go unused."""
     with pytest.raises(SystemExit, match="--epsilon-end"):
         arguments(tmp_path, **{"--exploration": "ladder", "--epsilon-end": "0.001"})
+    # The equals form is the same flag and is refused the same way: what is read
+    # is the parsed value, not the shape of the argument vector.
+    with pytest.raises(SystemExit, match="--epsilon-end"):
+        train.parse_arguments(
+            ["--run-dir", str(tmp_path), "--exploration", "ladder", "--epsilon-end=0.05"]
+        )
 
-    # Either alone is ordinary.
-    assert arguments(tmp_path, **{"--exploration": "ladder"}).exploration == "ladder"
+    # Either alone is ordinary, and an unset flag resolves to the uniform floor.
+    ladder = arguments(tmp_path, **{"--exploration": "ladder"})
+    assert (ladder.exploration, ladder.epsilon_end) == ("ladder", 0.05)
     assert arguments(tmp_path, **{"--epsilon-end": "0.001"}).epsilon_end == 0.001
 
 

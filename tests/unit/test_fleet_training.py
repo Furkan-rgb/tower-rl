@@ -51,6 +51,13 @@ from tower_rl.simulation.instrumented_run_adapter import (
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
+#: Any schedule at all: nothing in this file is about exploration, and the rates
+#: a real run uses are resolved from `train.py`'s parser rather than defaulted.
+SCHEDULE = ExplorationSchedule(
+    epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
+)
+
+
 #: Long enough that two actors overlap in it and short enough that the suite
 #: stays fast. A real decision costs hundreds of milliseconds on device.
 DECISION_SECONDS = 0.002
@@ -150,6 +157,7 @@ def fleet(
         "warmup_sequences": 2,
         "batch_size": 2,
         "gradient_steps_per_decision": 0.2,
+        "exploration": SCHEDULE,
     }
     settings.update(overrides)
     return TrainingRun(
@@ -501,7 +509,11 @@ def test_a_ladder_puts_every_actor_of_the_fleet_on_a_rate_of_its_own() -> None:
     a run collects under for all but the first few thousand decisions.
     """
     schedule = ExplorationSchedule.for_option(
-        "ladder", actors=3, epsilon_start=0.9, anneal_decisions=1
+        "ladder",
+        actors=3,
+        epsilon_start=0.9,
+        epsilon_end=SCHEDULE.epsilon_end,
+        anneal_decisions=1,
     )
     training = fleet(
         [environment() for _ in range(3)], exploration=schedule, budget_decisions=200
@@ -525,7 +537,13 @@ def test_a_ladder_built_for_another_fleet_is_refused() -> None:
     with pytest.raises(ValueError, match="exploration ladder"):
         fleet(
             [environment() for _ in range(2)],
-            exploration=ExplorationSchedule.for_option("ladder", actors=7),
+            exploration=ExplorationSchedule.for_option(
+                "ladder",
+                actors=7,
+                epsilon_start=SCHEDULE.epsilon_start,
+                epsilon_end=SCHEDULE.epsilon_end,
+                anneal_decisions=SCHEDULE.anneal_decisions,
+            ),
         )
 
 

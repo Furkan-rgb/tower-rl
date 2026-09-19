@@ -62,9 +62,12 @@ class ExplorationSchedule:
     it holds.
     """
 
-    epsilon_start: float = 1.0
-    epsilon_end: float = 0.05
-    anneal_decisions: int = 10_000
+    #: Named by whoever resolved the command line and by nobody else: there is
+    #: no default here, so a run's exploration cannot be half `train.py`'s
+    #: parser and half this file's.
+    epsilon_start: float
+    epsilon_end: float
+    anneal_decisions: int
     floors: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
@@ -77,9 +80,9 @@ class ExplorationSchedule:
         option: str,
         *,
         actors: int,
-        epsilon_start: float = 1.0,
-        epsilon_end: float = 0.05,
-        anneal_decisions: int = 10_000,
+        epsilon_start: float,
+        epsilon_end: float,
+        anneal_decisions: int,
     ) -> ExplorationSchedule:
         """Resolve `--exploration` once, where the command line is read."""
         if option not in EXPLORATION_OPTIONS:
@@ -95,6 +98,25 @@ class ExplorationSchedule:
     def option(self) -> str:
         """Which of `EXPLORATION_OPTIONS` this schedule is, for the record."""
         return UNIFORM if not self.floors else LADDER
+
+    @property
+    def reported_actor(self) -> int:
+        """Whose rate stands for the run's when only one number can be carried.
+
+        The lowest-index near-greedy actor: actor 0 of a uniform fleet, where
+        every actor draws that one rate anyway, and the top of the near-greedy
+        rungs under a ladder. Informational only - under a ladder no single
+        number is the fleet's, and anything measuring exploration per episode
+        asks `epsilon_for` for the actor that played it.
+        """
+        return next(
+            (index for index in range(len(self.floors)) if self.is_near_greedy(index)),
+            0,
+        )
+
+    def reported_epsilon(self, decisions: int) -> float:
+        """The schedule position a checkpoint and a progress report carry."""
+        return self.epsilon_for(self.reported_actor, decisions)
 
     def floor_for(self, actor_index: int) -> float:
         """The rate this actor anneals to and is then held at.

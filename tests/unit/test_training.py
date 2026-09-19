@@ -38,6 +38,12 @@ from tower_rl.learning.training import (
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
+#: Any schedule at all: nothing in this file is about exploration, and the rates
+#: a real run uses are resolved from `train.py`'s parser rather than defaulted.
+SCHEDULE = ExplorationSchedule(
+    epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
+)
+
 
 def _run(*, device: torch.device | None = None, **overrides: object) -> TrainingRun:
     environment = InstrumentedRunEnvironment(
@@ -62,6 +68,7 @@ def _run(*, device: torch.device | None = None, **overrides: object) -> Training
         "warmup_sequences": 2,
         "batch_size": 2,
         "gradient_steps_per_decision": 0.2,
+        "exploration": SCHEDULE,
     }
     settings.update(overrides)
     return TrainingRun(
@@ -94,7 +101,8 @@ def test_the_budget_is_counted_in_decisions_not_episodes() -> None:
     assert long.decisions > short.decisions
     assert long.decisions >= 240 and short.decisions >= 60
     # Episodes are a consequence of the budget, never the budget itself.
-    assert episode_budget(TrainingConfig(budget_decisions=240), 40.0) == 6
+    budget = TrainingConfig(budget_decisions=240, exploration=SCHEDULE)
+    assert episode_budget(budget, 40.0) == 6
 
 
 def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
@@ -104,12 +112,7 @@ def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
     mean epsilon of 0.525: more than half of it was near-random data, and the
     collection episodes could not be read as a policy's performance at all.
     """
-    config = TrainingConfig(
-        budget_decisions=20_000,
-        exploration=ExplorationSchedule(
-            epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
-        ),
-    )
+    config = TrainingConfig(budget_decisions=20_000, exploration=SCHEDULE)
     epsilon = functools.partial(config.exploration.epsilon_for, 0)
 
     assert epsilon(0) == pytest.approx(1.0)
@@ -122,7 +125,7 @@ def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
 
 def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
     """The same horizon means the same exploration whatever the budget is."""
-    schedule = ExplorationSchedule(anneal_decisions=10_000)
+    schedule = SCHEDULE
     short = TrainingConfig(budget_decisions=12_000, exploration=schedule)
     long = TrainingConfig(budget_decisions=200_000, exploration=schedule)
 
@@ -137,12 +140,17 @@ def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
 def test_a_horizon_of_no_decisions_is_refused() -> None:
     with pytest.raises(ValueError, match="anneal horizon"):
         TrainingConfig(
-            budget_decisions=100, exploration=ExplorationSchedule(anneal_decisions=0)
+            budget_decisions=100,
+            exploration=ExplorationSchedule(
+                epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=0
+            ),
         )
 
 
 def test_importance_sampling_correction_anneals_the_other_way() -> None:
-    config = TrainingConfig(budget_decisions=100, beta_start=0.4, beta_end=1.0)
+    config = TrainingConfig(
+        budget_decisions=100, exploration=SCHEDULE, beta_start=0.4, beta_end=1.0
+    )
 
     assert config.beta(0) == pytest.approx(0.4)
     assert config.beta(100) == pytest.approx(1.0)
@@ -168,12 +176,11 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
     assert training.report.importance_beta == pytest.approx(training.config.beta_start)
 
     report = training.run()
+    annealed = functools.partial(training.config.exploration.epsilon_for, 0)
 
     assert report.optimisation_steps > 0
     # The value of the last episode it started, which is the last one it acted
     # at: drawn once per episode, so it lags the schedule by that episode.
-    def annealed(decisions: int) -> float:
-        return training.config.exploration.epsilon_for(0, decisions)
     assert annealed(report.decisions) <= report.epsilon < 1.0
     assert report.epsilon == pytest.approx(
         annealed(report.decisions - report.collected[-1].summary.decisions)
@@ -203,11 +210,15 @@ def test_a_gradient_debt_is_not_banked_while_the_buffer_fills() -> None:
 
 def test_configuration_refuses_impossible_budgets() -> None:
     with pytest.raises(ValueError, match="budget must be positive"):
-        TrainingConfig(budget_decisions=0)
+        TrainingConfig(budget_decisions=0, exploration=SCHEDULE)
     with pytest.raises(ValueError, match="gradient steps"):
-        TrainingConfig(budget_decisions=10, gradient_steps_per_decision=0.0)
+        TrainingConfig(
+            budget_decisions=10,
+            exploration=SCHEDULE,
+            gradient_steps_per_decision=0.0,
+        )
     with pytest.raises(ValueError, match="decisions per episode"):
-        episode_budget(TrainingConfig(budget_decisions=10), 0)
+        episode_budget(TrainingConfig(budget_decisions=10, exploration=SCHEDULE), 0)
 
 
 def test_each_episode_is_reported_as_it_completes() -> None:
@@ -241,6 +252,7 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
     training = _run(budget_decisions=200)
     training.config = TrainingConfig(
         budget_decisions=200,
+        exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
         gradient_steps_per_decision=0.2,
@@ -277,6 +289,7 @@ def test_evaluation_does_not_consume_the_decision_budget() -> None:
     training = _run(budget_decisions=120)
     training.config = TrainingConfig(
         budget_decisions=120,
+        exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
         gradient_steps_per_decision=0.2,

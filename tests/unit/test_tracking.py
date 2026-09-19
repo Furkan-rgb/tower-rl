@@ -33,6 +33,7 @@ from tower_rl.experiment.tracking import (
     artifact_root,
     tracking_uri,
 )
+from tower_rl.learning.exploration import ape_x_floors
 
 REPOSITORY = Path(train.__file__).resolve().parents[1]
 
@@ -569,3 +570,34 @@ def test_a_uniform_fleet_s_near_greedy_window_is_its_pooled_window(
         assert metrics["collection_window_near_greedy_mean_final_wave"] == pytest.approx(
             metrics["collection_mean_final_wave"]
         )
+
+
+def test_each_episode_logs_the_rate_the_actor_that_played_it_explored_at(
+    tmp_path: Path,
+) -> None:
+    """Under a ladder the run's own published rate is some other actor's rung.
+
+    The anneal is one decision long here, so every actor is on its rung for the
+    whole run and the two rungs of a fleet of two are 0.4 and 0.4 ** 8 - far
+    enough apart that an episode credited to the wrong actor's rate is obvious.
+    """
+    rungs = ape_x_floors(2)
+    tracker = RecordingTracker()
+    session(
+        tmp_path,
+        budget="300",
+        actors=2,
+        settings={"--exploration": "ladder", "--epsilon-anneal-decisions": "1"},
+        tracker=tracker,
+    )
+
+    episodes = [
+        point for point in tracker.runs[0].points if "episode_epsilon" in point.metrics
+    ]
+    assert episodes, "the episode is the tracked unit"
+    seen = set()
+    for point in episodes:
+        actor = int(point.metrics["episode_actor"])
+        assert point.metrics["episode_epsilon"] == pytest.approx(rungs[actor])
+        seen.add(actor)
+    assert seen == {0, 1}, "both rungs of the ladder collected"

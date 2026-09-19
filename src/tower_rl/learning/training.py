@@ -181,6 +181,11 @@ class TrainingConfig:
 
     #: The equalised budget. Every arm of a comparison gets the same number.
     budget_decisions: int
+    #: What each actor explores at, at each point of the budget: the anneal and,
+    #: under a ladder, the rung each actor anneals to. Required, like the budget:
+    #: the rates a run explores at are resolved from the command line, and a
+    #: default here would be a second source of them.
+    exploration: ExplorationSchedule
     #: Sequences required before the first optimisation step. About 35 episodes
     #: at this geometry: enough that the first gradient steps see more than a
     #: handful of episodes of one policy.
@@ -192,10 +197,6 @@ class TrainingConfig:
     #: 10 and batch 8 that is about 504 per step, so 0.25 puts the run at 126:1,
     #: between SPR (64) and BBF (256). The 2.0 of the first run was 1087:1.
     gradient_steps_per_decision: float = 0.25
-    #: What each actor explores at, at each point of the budget: the fleet's
-    #: anneal and, under a ladder, a floor of its own for every actor. The one
-    #: owner of those numbers - nothing else here holds an exploration rate.
-    exploration: ExplorationSchedule = field(default_factory=ExplorationSchedule)
     #: Episodes per point of the collection curve. The curve is read from the
     #: collection episodes themselves rather than from exploration-free
     #: evaluations: at epsilon 0.05 they are almost on-policy, they cost no
@@ -499,10 +500,13 @@ class TrainingProgressReport:
     recent_value_fits: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
-    #: The exploration rate the run last acted at and the importance-sampling
-    #: exponent it last sampled at. Published here by the run that draws them
-    #: from its schedules, so a checkpoint or a report carries the value the run
-    #: actually used rather than re-evaluating a learning schedule of its own.
+    #: Where the exploration schedule had reached and the importance-sampling
+    #: exponent the run last sampled at. Published here by the run that draws
+    #: them from its schedules, so a checkpoint or a report carries the value
+    #: the run actually used rather than re-evaluating a schedule of its own.
+    #: Under a ladder the actors are at rates of their own and this is
+    #: `ExplorationSchedule.reported_epsilon` - informational, and never what a
+    #: per-episode or per-actor measurement should be read from.
     epsilon: float = 0.0
     importance_beta: float = 0.0
     #: Episodes the port could not produce at all - a boundary that would not
@@ -687,7 +691,9 @@ class TrainingRun:
         if self.config.checkpoint_every_decisions:
             period = self.config.checkpoint_every_decisions
             self._numbered_at = self.report.decisions // period * period
-        self.report.epsilon = self.config.exploration.epsilon_for(0, self.report.decisions)
+        self.report.epsilon = self.config.exploration.reported_epsilon(
+            self.report.decisions
+        )
         self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}
         for index, actor in enumerate(self.actors):
@@ -826,14 +832,16 @@ class TrainingRun:
                 if self.report.decisions >= target:
                     return
                 # This actor's own rate, which under a ladder is not the rate
-                # any other actor is drawing. The run publishes the one it last
-                # handed out: with a ladder no single number is the fleet's, and
-                # what a report of one is for is saying where the schedule had
-                # reached, which every rung shares.
-                epsilon = self.config.exploration.epsilon_for(
+                # any other actor is drawing - and beside it the one number the
+                # run publishes for itself, which is a schedule position rather
+                # than any actor's rate.
+                exploration = self.config.exploration
+                epsilon = exploration.epsilon_for(
                     self.actor_index[actor_id], self.report.decisions
                 )
-                self.report.epsilon = epsilon
+                self.report.epsilon = exploration.reported_epsilon(
+                    self.report.decisions
+                )
             # Refreshed between episodes and never inside one: the copy's
             # parameters hold still for a whole episode, and the history window
             # the actor carries through that episode was produced by exactly the

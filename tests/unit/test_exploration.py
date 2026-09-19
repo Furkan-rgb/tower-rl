@@ -22,6 +22,10 @@ from tower_rl.learning.exploration import (
 #: `0.4 ** (1 + 7 i / 6)`, mean 0.0870.
 LADDER_OF_SEVEN = (0.4, 0.1373399, 0.0471556, 0.0161909, 0.0055591, 0.0019087, 0.0006554)
 
+#: The anneal these tests read the schedule against; `train.py`'s parser is
+#: where a run's own numbers come from, and this file names its own.
+ANNEAL = {"epsilon_start": 1.0, "epsilon_end": 0.05, "anneal_decisions": 10_000}
+
 
 def old_uniform_epsilon(decisions: int, start: float, end: float, horizon: int) -> float:
     """`TrainingConfig.epsilon` exactly as run 1 evaluated it, kept for the test."""
@@ -56,7 +60,7 @@ def test_uniform_is_the_rate_run_one_collected_at(
 
 def test_every_actor_of_a_uniform_fleet_is_near_greedy() -> None:
     """They share the one rate, so the near-greedy series is the pooled one."""
-    schedule = ExplorationSchedule.for_option("uniform", actors=7)
+    schedule = ExplorationSchedule.for_option("uniform", actors=7, **ANNEAL)
 
     assert all(schedule.is_near_greedy(index) for index in range(7))
 
@@ -111,7 +115,7 @@ def test_every_actor_anneals_to_its_own_rung_and_is_held_there() -> None:
 
 def test_the_near_greedy_actors_of_a_ladder_are_the_bottom_of_it() -> None:
     """The ones whose episodes are read as performance rather than as search."""
-    schedule = ExplorationSchedule.for_option("ladder", actors=7)
+    schedule = ExplorationSchedule.for_option("ladder", actors=7, **ANNEAL)
 
     near_greedy = [index for index in range(7) if schedule.is_near_greedy(index)]
     assert near_greedy == [3, 4, 5, 6]
@@ -121,8 +125,8 @@ def test_the_near_greedy_actors_of_a_ladder_are_the_bottom_of_it() -> None:
 def test_the_schedule_says_which_option_it_is() -> None:
     """What the run records itself as having collected under."""
     assert EXPLORATION_OPTIONS == ("uniform", "ladder")
-    assert ExplorationSchedule.for_option("uniform", actors=4).option == "uniform"
-    assert ExplorationSchedule.for_option("ladder", actors=4).option == "ladder"
+    assert ExplorationSchedule.for_option("uniform", actors=4, **ANNEAL).option == "uniform"
+    assert ExplorationSchedule.for_option("ladder", actors=4, **ANNEAL).option == "ladder"
 
     with pytest.raises(ValueError, match="unknown exploration option"):
-        ExplorationSchedule.for_option("greedy", actors=4)
+        ExplorationSchedule.for_option("greedy", actors=4, **ANNEAL)

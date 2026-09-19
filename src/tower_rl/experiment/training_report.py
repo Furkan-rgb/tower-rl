@@ -174,9 +174,11 @@ class TrainingReport:
                 environment_decisions=report.decisions,
                 episodes=report.episodes,
                 # Read from the run rather than re-evaluated from its
-                # schedules: the exploration rate and the importance exponent
+                # schedules: the schedule position and the importance exponent
                 # are the run's to publish, and a resume has to restore what was
-                # actually used.
+                # actually used. Under a ladder the exploration figure is
+                # informational - the actors were at rates of their own, and the
+                # per-episode series is where those are read.
                 epsilon=report.epsilon,
                 importance_beta=report.importance_beta,
             ),
@@ -259,6 +261,7 @@ class TrainingReport:
         """
         report = self.training.report
         actors = self.training.actor_index
+        exploration = self.training.config.exploration
         learner = learner_metrics(report)
         for episode in report.collected[self.episodes_logged :]:
             # The decisions at the end of this episode, not the run's current
@@ -267,14 +270,21 @@ class TrainingReport:
             # the wrong part of the curve.
             self.decisions_logged += episode.summary.decisions
             self.episodes_logged += 1
+            index = actors.get(episode.actor_id, -1)
             self.run.log_metrics(
                 {
                     **episode_metrics(
                         episode,
-                        actor_index=actors.get(episode.actor_id, -1),
-                        # The run's exploration rate as this episode ended,
-                        # which is when this hook runs.
-                        epsilon=report.epsilon,
+                        actor_index=index,
+                        # The rate the actor that played this episode was
+                        # exploring at, where its episode ended - not the run's
+                        # published one, which under a ladder is some other
+                        # actor's rung entirely.
+                        epsilon=(
+                            report.epsilon
+                            if index < 0
+                            else exploration.epsilon_for(index, self.decisions_logged)
+                        ),
                     ),
                     **learner,
                 },

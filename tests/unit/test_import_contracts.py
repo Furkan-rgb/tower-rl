@@ -72,6 +72,7 @@ SCRIPT_MODULES = (
     "select_checkpoint",
     "report_arms",
     "spectate",
+    "diagnose_plasticity",
 )
 
 #: The test files allowed to import each entry point: the ones that test that
@@ -132,6 +133,7 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     # stream drawn in a terminal, owning no domain concept of its own. This is
     # the one file that reads them.
     "spectate": frozenset({"test_spectate"}),
+    "diagnose_plasticity": frozenset({"test_diagnose_plasticity"}),
 }
 
 def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:

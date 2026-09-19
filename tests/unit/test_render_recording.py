@@ -167,6 +167,64 @@ def test_the_panel_holds_the_readings_the_watcher_saw_and_the_history_it_could_n
     assert "Row 8" in history[0], "the history is the last twelve, oldest first"
 
 
+def test_a_history_line_says_which_upgrade_was_bought_the_level_and_the_cost() -> None:
+    """The row a watcher could not identify from the label alone."""
+    bought = _decision(
+        decision=7,
+        label="Damage",
+        purchase=render_recording.Purchase(
+            label="Damage", level_after=4, max_level=20, cost=120.0
+        ),
+    )
+
+    (line,) = [
+        text
+        for text in render_recording.panel_lines([bought], 0)
+        if text.startswith("> d7")
+    ]
+
+    assert line.rstrip() == "> d7    Damage             \u2192 L4/20  -120"
+
+
+def test_a_history_line_for_a_hold_says_how_long_it_was_held() -> None:
+    (line,) = [
+        text
+        for text in render_recording.panel_lines(
+            [_decision(decision=7, label="Hold", action="wait", held_s=2.0)], 0
+        )
+        if text.startswith("> d7")
+    ]
+
+    assert line.rstrip() == "> d7    Hold                 2.0s"
+
+
+def test_a_row_name_longer_than_the_column_is_cut_rather_than_running_off_the_panel() -> None:
+    assert render_recording.short_label("Free Upgrade Chance") == "Free Upgrade Chan\u2026"
+    assert render_recording.short_label("Damage") == "Damage"
+
+
+def test_a_track_written_before_purchases_still_renders_its_history(tmp_path: Path) -> None:
+    """The M2-E006 preview was recorded under the old line shape and must keep rendering."""
+    line = {
+        "video_s": 1.0, "chunk": 0, "chunk_s": 1.0, "episode": 1, "decision": 4,
+        "wave": 2, "cash": 300.0, "health_fraction": 0.9, "action": "attack:2",
+        "label": "Critical Chance", "held_s": 3.5, "hud": {"damage": 3.0},
+        "ended": False,
+    }
+    path = tmp_path / "old.decisions.jsonl"
+    path.write_text(json.dumps(line) + "\n")
+
+    (decision,) = render_recording.read_decisions(path)
+    (history,) = [
+        text
+        for text in render_recording.panel_lines([decision], 0)
+        if text.startswith("> d4")
+    ]
+
+    assert decision.purchase is None
+    assert history.rstrip() == "> d4    Critical Chance      3.5s"
+
+
 def test_the_death_is_on_the_panel_of_the_decision_that_ended_the_episode() -> None:
     lines = render_recording.panel_lines([_decision(ended=True, reason="game_over")], 0)
 

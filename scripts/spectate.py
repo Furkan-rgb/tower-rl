@@ -74,7 +74,11 @@ from run_episodes import (  # noqa: E402
     policy_from,
 )
 
-from tower_rl.environment.episode import DecisionView, EpisodeSummary  # noqa: E402
+from tower_rl.environment.episode import (  # noqa: E402
+    DecisionView,
+    EpisodeSummary,
+    PurchaseView,
+)
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_state import (  # noqa: E402
     NO_ENEMY_DISTANCE,
@@ -168,7 +172,7 @@ class Spectator:
                 seen[0] = min(seen[0], value)
                 seen[1] = max(seen[1], value)
                 seen[3] = value
-        self.recent.append(f"e{view.episode} d{view.decision} {view.action}")
+        self.recent.append(f"e{view.episode} d{view.decision} {decision_row(view)}")
         if view.done:
             self.episodes_finished += 1
             self.final_waves.append(view.wave)
@@ -222,6 +226,51 @@ PANEL_HUD_WIRES: tuple[str, ...] = tuple(wire for wire, _, _ in TOWER_STATS) + W
 #: What a decision that bought nothing is called. The slot labels name what was
 #: bought; waiting has no slot, so it is named here.
 HOLD_LABEL = "Hold"
+
+#: How wide a row name may be in a history line. The game's own names run past
+#: what fits beside the picture, and a history line that wraps stops being a
+#: history; eighteen is what the rendered panel's column holds.
+LABEL_WIDTH = 18
+
+
+def short_label(label: str) -> str:
+    """A row name cut to `LABEL_WIDTH`, ending in an ellipsis when it was cut."""
+    if len(label) <= LABEL_WIDTH:
+        return label
+    return label[: LABEL_WIDTH - 1] + "\u2026"
+
+
+def slot_label_names(labels: Sequence[UpgradeSlotLabel]) -> dict[str, str]:
+    """The game's name for each named row, keyed by the action's own string.
+
+    The bridge's labels in the form the environment can carry into a
+    `DecisionView`: the environment has no way to ask the bridge itself, and a
+    `RunActionId` is all it knows a row by.
+    """
+    return {f"{label.family}:{label.index}": label.name for label in labels if label.name}
+
+
+def purchase_row(purchase: PurchaseView) -> str:
+    """What a bought row reads as: the name, the level reached, the cash paid."""
+    return (
+        f"{short_label(purchase.label)} \u2192 "
+        f"L{purchase.level_after}/{purchase.max_level}  -{purchase.cost:,.0f}"
+    )
+
+
+def decision_row(view: DecisionView) -> str:
+    """One decision as the history reads it: what was bought, or how long held.
+
+    A purchase says which row, the level it reached and what it cost; a hold has
+    none of those and says the one thing it does have, which is its length.
+    """
+    if view.purchase is not None:
+        return purchase_row(view.purchase)
+    if view.action == "wait":
+        return f"{HOLD_LABEL}  {view.game_ms / 1000:.1f}s"
+    # A purchase the environment could not name a row for: the slot itself,
+    # which is what the history said before it could name anything.
+    return view.action
 
 
 def hud_lines(view: DecisionView) -> list[str]:
@@ -726,6 +775,18 @@ class DecisionTrack:
             # Game time, which is what the agent held the choice for; at 60 Hz
             # that is also wall time, and at 120 it is half of it.
             "held_s": round(view.game_ms / 1000, 3),
+            # What the purchase was, when it was one: a label alone cannot say
+            # which level the row reached or what reaching it cost.
+            "purchase": (
+                {
+                    "label": view.purchase.label,
+                    "level_after": view.purchase.level_after,
+                    "max_level": view.purchase.max_level,
+                    "cost": round(view.purchase.cost, 1),
+                }
+                if view.purchase is not None
+                else None
+            ),
             "hud": {
                 wire: round(float(view.hud[wire]), 4)
                 for wire in PANEL_HUD_WIRES
@@ -1026,6 +1087,10 @@ def run(arguments: argparse.Namespace) -> int:
             builder=RunStateBuilder(profile_id=expected.profile_id),
             cadence=cadence_from(arguments),
             decision_cadence=decision_cadence_from(arguments),
+            # The names go in here rather than being resolved on the way out,
+            # so the panel and the decision track read one purchase rather than
+            # each naming the same row for itself.
+            slot_labels=slot_label_names(labels),
         )
         try:
             watch(

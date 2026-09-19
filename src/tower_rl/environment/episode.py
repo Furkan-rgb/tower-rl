@@ -55,6 +55,31 @@ class DecisionEvent(StrEnum):
 
 
 @dataclass(frozen=True)
+class PurchaseView:
+    """What one upgrade decision actually bought, as a human reads it.
+
+    A slot index says nothing to a watcher: `attack:3` is not an upgrade, it is
+    a coordinate. This is the same decision in the game's own terms - which row,
+    what level it now stands at, and what the purchase cost in earned cash.
+
+    `cost` is raw cash, backed out of the row's `cost_log` exactly as
+    `hud_readings` backs out a magnitude, and it is the price the row carried in
+    the state the decision was taken from: after the purchase the row quotes the
+    *next* level's price, which is not what was paid.
+    """
+
+    #: The game's own name for the row, when the caller knew it. `attack:3` when
+    #: it did not - the slot labels are read from the bridge by the session that
+    #: watches, and nothing else in the environment has them.
+    label: str
+    #: The level the row stands at in the state the decision produced.
+    level_after: int
+    max_level: int
+    #: Earned cash paid, in the unit the player reads.
+    cost: float
+
+
+@dataclass(frozen=True)
 class DecisionView:
     """One decision as a human watching the run sees it.
 
@@ -98,6 +123,9 @@ class DecisionView:
     done: bool
     #: Why it ended, when it did.
     termination: TerminationOutcome | None
+    #: What the decision bought, when it bought something. `None` for a wait,
+    #: and for a decision whose slot the state no longer carries.
+    purchase: PurchaseView | None = None
 
 
 def wave_progress_reward(state: RunState, next_state: RunState | None) -> float:

@@ -50,6 +50,10 @@ PANEL_MARGIN = 10
 #: How many past decisions the panel keeps on screen. Twelve is what reads as
 #: "what just happened" without the history becoming the thing being watched.
 HISTORY = 12
+#: How wide the row-name column in a history line is. The game's own names run
+#: past what the panel holds, and a line that runs off the panel says nothing;
+#: a longer name is cut here and ends in an ellipsis.
+LABEL_WIDTH = 18
 
 #: The panel's background, and the two colours the text is drawn in: ASS spells
 #: a colour `&HAABBGGRR`, which is BGR with an alpha in front.
@@ -80,6 +84,20 @@ ENCODE = ("-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "y
 
 
 @dataclass(frozen=True)
+class Purchase:
+    """What one decision bought, as the session wrote it down.
+
+    A track written before the session recorded this has none, and the panel
+    falls back to the row's name alone - which is what it showed then.
+    """
+
+    label: str
+    level_after: int
+    max_level: int
+    cost: float
+
+
+@dataclass(frozen=True)
 class Decision:
     """One line of the decision track, as the panel needs it."""
 
@@ -97,6 +115,25 @@ class Decision:
     hud: dict[str, float]
     ended: bool
     reason: str | None
+    #: What this decision bought, when the track says. `None` for a hold, and
+    #: for every line of a track written before purchases were recorded.
+    purchase: Purchase | None = None
+
+
+def _purchase(value: object) -> Purchase | None:
+    """One line's purchase, or None when the line has none.
+
+    Read with `get` rather than by key: a track from before purchases were
+    written is still a track, and the panel still renders it.
+    """
+    if not isinstance(value, dict):
+        return None
+    return Purchase(
+        label=str(value["label"]),
+        level_after=int(value["level_after"]),
+        max_level=int(value["max_level"]),
+        cost=float(value["cost"]),
+    )
 
 
 def read_decisions(path: Path) -> list[Decision]:
@@ -133,6 +170,7 @@ def read_decisions(path: Path) -> list[Decision]:
                     hud={name: float(value) for name, value in line["hud"].items()},
                     ended=bool(line["ended"]),
                     reason=line.get("reason"),
+                    purchase=_purchase(line.get("purchase")),
                 )
             )
         except KeyError as missing:
@@ -207,8 +245,31 @@ def panel_lines(decisions: Sequence[Decision], index: int) -> list[str]:
     for position in range(max(0, index - HISTORY + 1), index + 1):
         past = decisions[position]
         marker = ">" if position == index else " "
-        lines.append(f"{marker} d{past.decision:<4} {past.label:<18} {past.held_s:>5.1f}s")
+        lines.append(f"{marker} d{past.decision:<4} {history_row(past)}")
     return lines
+
+
+def short_label(label: str) -> str:
+    """A row name cut to `LABEL_WIDTH`, ending in an ellipsis when it was cut."""
+    if len(label) <= LABEL_WIDTH:
+        return label
+    return label[: LABEL_WIDTH - 1] + "\u2026"
+
+
+def history_row(past: Decision) -> str:
+    """One history line's body: what was bought, or how long the hold was.
+
+    A purchase names the row, the level it reached and the cash it cost; a hold
+    has none of those and says its length. A track written before purchases
+    were recorded has only the name, and reads as it always did.
+    """
+    bought = past.purchase
+    if bought is None:
+        return f"{short_label(past.label):<{LABEL_WIDTH}} {past.held_s:>5.1f}s"
+    return (
+        f"{short_label(bought.label):<{LABEL_WIDTH}} \u2192 "
+        f"L{bought.level_after}/{bought.max_level}  -{bought.cost:,.0f}"
+    )
 
 
 # -- the subtitle the panel is drawn from ----------------------------------

@@ -41,6 +41,9 @@ screenshots/
 *.onnx
 *.tfevents.*
 
+# spectate recordings: mp4s are far above GitHub's file limit, and this repo is public
+recordings/
+
 # Local configuration and secrets
 .env
 .env.*

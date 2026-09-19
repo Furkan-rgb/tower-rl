@@ -149,6 +149,34 @@ def iqm(values: Sequence[float]) -> float:
     return statistics.fmean(middle)
 
 
+def _ordered_strata(strata: Mapping[str, Sequence[float]]) -> list[list[float]]:
+    """Each stratum's values, in a stable order, refusing what cannot be resampled."""
+    if not strata:
+        raise ValueError("a stratified bootstrap needs at least one stratum")
+    if any(not values for values in strata.values()):
+        empty = sorted(name for name, values in strata.items() if not values)
+        raise ValueError(f"strata with no values cannot be resampled: {empty}")
+    return [list(strata[name]) for name in sorted(strata)]
+
+
+def _resample_pool(ordered: list[list[float]], generator: random.Random) -> list[float]:
+    """One resample: every stratum redrawn to its own size, with replacement, then pooled."""
+    pooled: list[float] = []
+    for values in ordered:
+        pooled.extend(generator.choices(values, k=len(values)))
+    return pooled
+
+
+def _percentile_interval(estimates: list[float], confidence: float) -> tuple[float, float]:
+    """The bounds of the percentile interval over a bootstrap's estimates."""
+    estimates.sort()
+    count = len(estimates)
+    tail = (1.0 - confidence) / 2.0
+    low = estimates[int(tail * count)]
+    high = estimates[min(int((1.0 - tail) * count), count - 1)]
+    return low, high
+
+
 def stratified_bootstrap(
     strata: Mapping[str, Sequence[float]],
     statistic: Callable[[Sequence[float]], float] = iqm,
@@ -171,29 +199,62 @@ def stratified_bootstrap(
     Returns the point estimate over the observed pool and the bounds of the
     percentile interval, in that order.
     """
-    if not strata:
-        raise ValueError("a stratified bootstrap needs at least one stratum")
-    if any(not values for values in strata.values()):
-        empty = sorted(name for name, values in strata.items() if not values)
-        raise ValueError(f"strata with no values cannot be resampled: {empty}")
     if resamples < 1:
         raise ValueError("a bootstrap needs at least one resample")
     if not 0.0 < confidence < 1.0:
         raise ValueError("confidence must be within (0, 1)")
 
-    ordered = [list(strata[name]) for name in sorted(strata)]
+    ordered = _ordered_strata(strata)
     observed = statistic([value for values in ordered for value in values])
     generator = random.Random(seed)
-    estimates = []
-    for _ in range(resamples):
-        pooled: list[float] = []
-        for values in ordered:
-            pooled.extend(generator.choices(values, k=len(values)))
-        estimates.append(statistic(pooled))
-    estimates.sort()
-    tail = (1.0 - confidence) / 2.0
-    low = estimates[int(tail * resamples)]
-    high = estimates[min(int((1.0 - tail) * resamples), resamples - 1)]
+    estimates = [statistic(_resample_pool(ordered, generator)) for _ in range(resamples)]
+    low, high = _percentile_interval(estimates, confidence)
+    return observed, low, high
+
+
+def stratified_bootstrap_difference(
+    left: Mapping[str, Sequence[float]],
+    right: Mapping[str, Sequence[float]],
+    statistic: Callable[[Sequence[float]], float] = iqm,
+    *,
+    resamples: int = BOOTSTRAP_ITERATIONS,
+    confidence: float = 0.95,
+    seed: int | None = 0,
+) -> tuple[float, float, float]:
+    """The difference between two arms' statistics, with a stratified interval.
+
+    This is the paired form of `stratified_bootstrap`, and it is what a rule
+    written about "the pairwise interval of the IQM difference" names. Each arm
+    is resampled within its own strata - actors here - independently of the
+    other, because the two arms were collected as separate fleets and no episode
+    of one pairs with an episode of the other; the difference of the two
+    resampled statistics is the quantity whose percentile interval is returned.
+
+    Taking the difference inside the resample rather than differencing two
+    marginal intervals is the sharper test: two intervals that overlap can still
+    have a difference that excludes zero, which is why the marginal intervals
+    are reported beside this and never instead of it.
+
+    Returns the difference over the observed pools and the bounds of the
+    percentile interval, in that order.
+    """
+    if resamples < 1:
+        raise ValueError("a bootstrap needs at least one resample")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be within (0, 1)")
+
+    ordered_left = _ordered_strata(left)
+    ordered_right = _ordered_strata(right)
+    observed = statistic(
+        [value for values in ordered_left for value in values]
+    ) - statistic([value for values in ordered_right for value in values])
+    generator = random.Random(seed)
+    differences = [
+        statistic(_resample_pool(ordered_left, generator))
+        - statistic(_resample_pool(ordered_right, generator))
+        for _ in range(resamples)
+    ]
+    low, high = _percentile_interval(differences, confidence)
     return observed, low, high
 
 

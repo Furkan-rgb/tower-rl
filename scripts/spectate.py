@@ -89,6 +89,11 @@ SPECTATE_FRAME_RATE_HZ = 60
 #: How many past actions the panel keeps. Twenty is what fits beside the game
 #: window without the panel becoming the thing being read.
 RECENT_ACTIONS = 20
+#: Where `panel_lines` puts the line naming the episode that just ended, and
+#: leaves blank while one is running. The slot is always there so both panels
+#: can find it at the same index: the plain one prints it to a log, and the
+#: curses one draws it.
+DEATH_LINE = 4
 
 #: The Android limit on one `screenrecord`, in seconds. It is a hard limit in
 #: the guest tool, so a longer session is recorded as consecutive chunks and the
@@ -144,6 +149,10 @@ def panel_lines(
 
     `elapsed_seconds` is passed in rather than read from a clock here, so the
     panel has no hidden state and a test can assert every line it produces.
+
+    The first five lines are a fixed layout, because both panels index into it:
+    title, blank, state, counters, and `DEATH_LINE` - the episode that just
+    ended, or blank.
     """
     view = spectator.latest
     of = "unlimited" if episodes_requested == 0 else str(episodes_requested)
@@ -156,6 +165,7 @@ def panel_lines(
     ]
     if view is None:
         lines.append("waiting for the first decision")
+        lines.append("")
     else:
         lines.append(
             f"wave {view.wave}   cash {view.cash:,.0f}   "
@@ -166,9 +176,13 @@ def panel_lines(
             f"mean final wave {spectator.mean_final_wave:.2f}   "
             f"decisions {spectator.decisions}   {per_minute:.1f}/min"
         )
-        if view.done:
-            outcome = view.termination.value if view.termination is not None else "unknown"
-            lines.append(f"episode {view.episode} ended at wave {view.wave}: {outcome}")
+    # `DEATH_LINE` always exists and is blank unless this very decision ended an
+    # episode, so a reader at that index needs no other way to ask.
+    ended = ""
+    if view is not None and view.done:
+        outcome = view.termination.value if view.termination is not None else "unknown"
+        ended = f"episode {view.episode} ended at wave {view.wave}: {outcome}"
+    lines.append(ended)
     lines.append("")
     lines.append(f"last {RECENT_ACTIONS} actions, newest first:")
     lines.extend(f"  {action}" for action in reversed(spectator.recent))
@@ -209,8 +223,13 @@ class PlainPanel:
 
     def draw(self, lines: Sequence[str]) -> None:
         # The status line and the newest action: a log wants the run's progress,
-        # not a redrawn screen.
+        # not a redrawn screen. `panel_lines` puts the ended-episode line at
+        # index 4 and leaves that slot blank while the episode is running, so
+        # the death reaches a log on the decision it happened on rather than
+        # only the watcher of a terminal panel.
         print(f"{lines[2]} | {lines[0]}", flush=True)
+        if len(lines) > DEATH_LINE and lines[DEATH_LINE]:
+            print(lines[DEATH_LINE], flush=True)
 
     def key(self) -> str:
         return ""
@@ -333,18 +352,6 @@ class RunGuestCommand(Protocol):
 
 
 @dataclass
-class _Chunk:
-    """One `screenrecord` invocation's output, and whether it finished cleanly."""
-
-    guest_path: str
-    #: True when the guest tool did not exit 0 - it was interrupted mid-write,
-    #: or it failed. The file is still pulled, because a partial recording of
-    #: the moment somebody wanted to watch is worth more than no recording, but
-    #: it is named for what it is rather than passed off as a whole chunk.
-    partial: bool = False
-
-
-@dataclass
 class GuestRecording:
     """`screenrecord` on the guest, in chunks, pulled to the host at the end.
 
@@ -354,6 +361,13 @@ class GuestRecording:
     About a second is lost at each seam while the next chunk starts. This is a
     human-facing convenience and no measurement depends on it, which is why a
     lossy seam is acceptable here and would not be anywhere else.
+
+    Every chunk is whole. `finish` stops the guest with SIGINT, and on this
+    image `screenrecord` answers an interrupt by finalising the file it is
+    writing and exiting 0 - three interrupted chunks were pulled and read back
+    as valid MP4 with durations (`M2-E003`). So there is no truncated-chunk
+    case to name: a chunk this pulls is playable whether it ran its three
+    minutes out or was cut short, and only its duration says which.
 
     The lifecycle is the part worth stating. `finish` sets the stop flag
     *before* it interrupts the guest, and the loop tests that flag before
@@ -370,7 +384,9 @@ class GuestRecording:
     run: RunGuestCommand = adb
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
-    _chunks: list[_Chunk] = field(default_factory=list, init=False)
+    #: The guest path of every chunk started, in order, which is also the order
+    #: they are pulled and removed in.
+    _chunks: list[str] = field(default_factory=list, init=False)
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._record, daemon=True)
@@ -379,25 +395,20 @@ class GuestRecording:
     def _record(self) -> None:
         """Record chunk after chunk until asked to stop. Never raises."""
         while not self._stop.is_set():
-            chunk = _Chunk(f"/sdcard/tower-rl-spectate-{len(self._chunks):03d}.mp4")
-            self._chunks.append(chunk)
+            guest_path = f"/sdcard/tower-rl-spectate-{len(self._chunks):03d}.mp4"
+            self._chunks.append(guest_path)
             try:
-                # The exit status is asked for rather than assumed: a chunk the
-                # stop below interrupted mid-write is a different file from one
-                # that ran its three minutes out, and only the guest can say
-                # which this was.
-                reply = self.run(
+                self.run(
                     self.instance,
                     "shell",
-                    f"screenrecord --time-limit {SCREENRECORD_CHUNK_SECONDS} "
-                    f"{chunk.guest_path}; echo rc=$?",
+                    f"screenrecord --time-limit {SCREENRECORD_CHUNK_SECONDS} {guest_path}",
                     timeout=SCREENRECORD_CHUNK_SECONDS + 60.0,
                 )
             except Exception as error:  # noqa: BLE001 - a lost recording is not a lost session
-                chunk.partial = True
+                # What reached the guest is still pulled below: a recording of
+                # the moment somebody wanted to watch is worth more than none.
                 print(f"recording stopped: {error}", flush=True)
                 return
-            chunk.partial = "rc=0" not in reply
 
     def finish(self) -> list[Path]:
         """Stop the guest cleanly and pull every chunk. Never fatal."""
@@ -415,13 +426,12 @@ class GuestRecording:
             self._thread.join(timeout=SCREENRECORD_CHUNK_SECONDS + 60.0)
         try:
             self.destination.parent.mkdir(parents=True, exist_ok=True)
-            for index, chunk in enumerate(self._chunks):
-                suffix = "-partial" if chunk.partial else ""
+            for index, guest_path in enumerate(self._chunks):
                 local = self.destination.with_name(
-                    f"{self.destination.stem}-{index:03d}{suffix}{self.destination.suffix}"
+                    f"{self.destination.stem}-{index:03d}{self.destination.suffix}"
                 )
-                self.run(self.instance, "pull", chunk.guest_path, str(local), timeout=300.0)
-                self.run(self.instance, "shell", "rm", "-f", chunk.guest_path, timeout=30.0)
+                self.run(self.instance, "pull", guest_path, str(local), timeout=300.0)
+                self.run(self.instance, "shell", "rm", "-f", guest_path, timeout=30.0)
                 if local.exists():
                     pulled.append(local)
         except Exception as error:  # noqa: BLE001 - reported, never fatal

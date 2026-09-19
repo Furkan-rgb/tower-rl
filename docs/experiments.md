@@ -12,8 +12,8 @@ personal screenshots, bulk logs, replay, or model artifacts.
 **Date:** 2026-09-19
 **Status:** Eight of the nine device checks for `#12` pass. Check 9 fails, in
 the direction it was written to catch: `screenrecord` interrupted by SIGINT
-exits **0** on this image, so the `-partial` chunk naming can never fire.
-Board `#12`.
+exits **0** on this image, so the `-partial` chunk naming could never fire and
+has been removed. Board `#12`.
 **Purpose:** Run the nine device checks posted on `#12` against a real
 windowed instance, and make the first recording of the `M2-E002` selected
 checkpoint. Repository at `50fae46`; no code changed, on the device or off it.
@@ -86,10 +86,13 @@ single default session already crosses the three-minute chunk boundary; the
    later. Still owed to the developer's own eyes: comparing cash and health
    against the game window beside it.
 
-   Worth knowing before a session is run unattended: `--no-panel` prints
-   `lines[2] | lines[0]` and nothing else, so it gives wave, cash and health per
-   decision but **never the death line**. `episode N ended at wave W: …` exists
-   in the curses panel alone.
+   This check also found what an unattended session was missing: `--no-panel`
+   printed `lines[2] | lines[0]` and nothing else, so it gave wave, cash and
+   health per decision but **never the death line** — a log showed health
+   reaching 0 and left the reader to infer the death. Fixed with the check-9
+   decision below: `PlainPanel` now prints the same ended-episode line on the
+   same decision, and `panel_lines` reserves that slot so both panels find it
+   at one index.
 6. **Hold and teardown — pass.** The hold ran after the last episode
    (`session over — press any key to tear the instance down`), then
    `game_frame_rate_override: reset`, `libunity_mounts: 0`,
@@ -104,28 +107,39 @@ single default session already crosses the three-minute chunk boundary; the
    live instance: exit 1, nothing touched, naming both witnesses — `refusing to
    spectate while an emulator is running (adb: emulator-5556; qemu processes:
    1114598 …/qemu-system-x86_64)`. The running instance was unaffected.
-9. **`screenrecord` exit status — fail.** On this image `screenrecord`
-   interrupted by SIGINT exits **zero**. Read by hand on a live instance, both
-   ways the question can be asked:
+9. **`screenrecord` exit status — fail, and the `-partial` naming is gone.**
+   On this image `screenrecord` interrupted by SIGINT exits **zero**. Read by
+   hand on a live instance, both ways the question can be asked:
 
    ```text
    targeted-kill-INT rc=0
    pkill-INT rc=0
    ```
 
-   The recording code's own naming corroborates it. Session A's chunk 001 ran
+   The recording code's own naming corroborated it. Session A's chunk 001 ran
    144.55 s of its 180 s limit — plainly interrupted — and was pulled as
    `-001.mp4` with no `-partial`; a second session produced three chunks, every
    one interrupted, none named `-partial`. So
-   `chunk.partial = "rc=0" not in reply` can never be true for an interrupt,
-   and the `-partial` suffix cannot distinguish an interrupted chunk from a
-   whole one.
+   `chunk.partial = "rc=0" not in reply` could never be true for an interrupt.
 
-   The files themselves are fine, and for the same reason: SIGINT makes
-   `screenrecord` finalise what it is writing and exit cleanly, which is why an
-   interrupted chunk plays. What does not exist on this image is the *signal*
-   the suffix was added to carry. Left as found; what to do about it is a
-   decision, not a device reading.
+   The reason is the same one that makes the files good: SIGINT tells
+   `screenrecord` to stop, and it finalises what it is writing and exits
+   cleanly. All three interrupted chunks read back through `ffprobe` as valid
+   MP4 with durations. There is no truncated-chunk case on this image, so
+   `-partial` had nothing to distinguish and could only ever mislead in the
+   quiet direction — marking nothing while suggesting the distinction was being
+   watched.
+
+   **Decided and done:** the partial flag and the `-partial` suffix are removed
+   from `GuestRecording`, along with the `; echo rc=$?` that existed only to
+   feed them. A chunk is whole; how long it ran is its duration's business. If
+   a future image truncates on interrupt, the evidence for putting a warning
+   back is a chunk `ffprobe` cannot read — not an exit status.
+
+   The check that replaced it: `--no-panel` now prints the ended-episode line
+   the curses panel draws, on the decision the episode ends. An unattended log
+   that showed health reaching 0 but never named the death was making its
+   reader infer it.
 
 ### What the developer can now run
 

@@ -152,6 +152,56 @@ def test_the_panel_says_the_session_is_over_while_it_holds() -> None:
     assert "press any key" in holding
 
 
+def test_the_plain_panel_prints_the_death_on_the_decision_it_happened_on(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--no-panel` is what an unattended session writes; the death must be in it.
+
+    A log that shows health reaching 0 but never names the ended episode makes
+    the reader infer the death instead of reading it.
+    """
+    spectator = spectate.Spectator()
+    spectator.observe(_view(wave=8, done=True, termination=TerminationOutcome.GAME_OVER))
+    lines = spectate.panel_lines(
+        spectator, policy="checkpoint-0050123", episodes_requested=1, elapsed_seconds=10.0
+    )
+
+    spectate.PlainPanel().draw(lines)
+
+    printed = capsys.readouterr().out
+    assert "episode 1 ended at wave 8: game_over" in printed
+    assert "wave 8" in printed, "the state line is still there"
+
+
+def test_the_plain_panel_stays_quiet_while_the_episode_runs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One line a decision: the death line appears on the death, not before it."""
+    spectator = spectate.Spectator()
+    spectator.observe(_view(wave=3))
+
+    spectate.PlainPanel().draw(
+        spectate.panel_lines(spectator, policy="random", episodes_requested=1, elapsed_seconds=10.0)
+    )
+
+    assert capsys.readouterr().out.count("\n") == 1, "no blank or stray second line"
+
+
+def test_the_plain_panel_draws_before_the_first_decision_arrives(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The waiting frame has no death line to find at `DEATH_LINE` either."""
+    spectate.PlainPanel().draw(
+        spectate.panel_lines(
+            spectate.Spectator(), policy="random", episodes_requested=1, elapsed_seconds=0.0
+        )
+    )
+
+    printed = capsys.readouterr().out
+    assert "waiting for the first decision" in printed
+    assert printed.count("\n") == 1
+
+
 def test_the_panel_draws_before_the_first_decision_arrives() -> None:
     lines = spectate.panel_lines(
         spectate.Spectator(), policy="random", episodes_requested=1, elapsed_seconds=0.0
@@ -483,24 +533,29 @@ def test_the_stop_flag_is_set_before_the_guest_is_interrupted(tmp_path: Path) ->
     assert seen == [True]
 
 
-def test_a_chunk_cut_off_mid_write_is_kept_but_named_for_what_it_is(tmp_path: Path) -> None:
-    """`finish` lands mid-chunk: the guest exits non-zero, and the file is partial."""
-    guest = FakeGuest(statuses=[0, 130])
+def test_a_chunk_cut_off_mid_write_is_pulled_as_an_ordinary_chunk(tmp_path: Path) -> None:
+    """`finish` lands mid-chunk, and the file it interrupted is still whole.
+
+    `screenrecord` finalises what it is writing on SIGINT, so an interrupted
+    chunk plays and differs from a whole one only in its duration - measured on
+    device, three interrupted chunks all read back as valid MP4 (`M2-E003`).
+    Nothing here names it apart.
+    """
+    guest = FakeGuest()
     recording = _recording(tmp_path, guest)
     guest.after_chunk = lambda: recording._stop.set() if guest.chunks == 2 else None
 
     recording._record()
     pulled = recording.finish()
 
-    assert [path.name for path in pulled] == ["session-000.mp4", "session-001-partial.mp4"]
+    assert [path.name for path in pulled] == ["session-000.mp4", "session-001.mp4"]
 
 
 def test_a_recording_the_guest_stopped_answering_is_still_pulled(tmp_path: Path) -> None:
     """Ctrl-C mid-chunk: the emulator goes, adb raises, the loop ends quietly.
 
     A lost recording must not be a lost session, so the failure is reported and
-    what reached the guest is still retrieved - as a partial chunk, because the
-    tool never said it finished.
+    what reached the guest is still retrieved.
     """
     guest = FakeGuest(fail_with=RuntimeError("device offline"))
     recording = _recording(tmp_path, guest)
@@ -508,5 +563,5 @@ def test_a_recording_the_guest_stopped_answering_is_still_pulled(tmp_path: Path)
     recording._record()
     pulled = recording.finish()
 
-    assert [path.name for path in pulled] == ["session-000-partial.mp4"]
+    assert [path.name for path in pulled] == ["session-000.mp4"]
     assert len(guest.screenrecords()) == 1, "the loop stops rather than retrying forever"

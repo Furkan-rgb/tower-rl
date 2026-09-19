@@ -7,6 +7,65 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M2-E005 — Choice-point cadence on device
+
+**Date:** 2026-09-19
+**Status:** The choice-point cadence runs on the real game with **zero**
+environment failures, and it removes about four fifths of the decisions per
+wave while advancing the world identically. Board `#38`, ADR 0009.
+**Purpose:** `M2-E004`'s observation batch showed 68% of run 1's decisions had
+`WAIT` as the only legal action. ADR 0009 stops asking at those slices. This is
+the first device evidence that the new cadence drives the real game unchanged,
+and the measurement of what it actually removes.
+
+One clone instance (`tower_rl_instrumented_api36`, `emulator-5556`,
+`-read-only`, host renderer, 120 Hz, offline by interface), `random` arm,
+`scripts/run_actors.py --actors 1`. Five episodes under `--decision-cadence
+choice-points`, then two under `--decision-cadence every-slice` as the control.
+Code at `988ac04`.
+
+| | choice-points (5 ep) | every-slice (2 ep) |
+| --- | --- | --- |
+| valid / attempted | 5 / 5 | 2 / 2 |
+| decisions | 147 (29.4/ep) | 313 (156.5/ep) |
+| advances | 599 (119.8/ep) | 270 (135.0/ep) |
+| advances per decision | 4.07 | 0.86 |
+| decisions per wave | **4.59** | **20.87** |
+| advances per wave | 18.72 | 18.00 |
+| `WAIT` share of decisions | 29% (43/147) | 86% (270/313) |
+| mean final wave | 6.4 (1, 6, 7, 9, 9) | 7.5 (7, 8) |
+| measured game ms per episode | 212,577 | 246,691 |
+| wall seconds per episode | 107.8 | 124.6 |
+
+`bridge_event_divergence` 0, `advances_cut_short` 0, `stale_or_duplicate` 0,
+`episodes_not_started_fresh` 0, no `ADVANCE_TRUNCATED_BY_WALL` and no invalid
+reason of any kind, in both arms.
+
+### What it says
+
+- **The world is advanced the same way.** Advances per wave are 18.72 against
+  18.00: the cadence of the *world* is untouched, which is what ADR 0009
+  claimed and is the point of leaving the bridge alone.
+- **The decisions removed are the forced ones.** Decisions per wave fall to 22%
+  of the control (4.59 from 20.87), and the `WAIT` share of decisions falls
+  from 86% to 29%. The prediction from `M2-E004` was ~32%; the measured 22% is
+  lower because the arm here is `random`, which buys whenever it can and so
+  spends more of each run broke than a learned policy does. Under
+  choice-points the remaining `WAIT`s are chosen against a real alternative.
+- **A decision now covers a span.** 4.07 advances per decision, against 0.86
+  under every-slice — below one there because a settled purchase advances
+  nothing and is counted as the zero advances it made.
+- **Final wave is unchanged within this sample.** 6.4 against 7.5 on five and
+  two episodes of a policy whose own standard deviation is over a wave; this
+  says nothing either way and is not a comparison. `REFERENCE_FINAL_WAVES` is
+  still every-slice and still has to be re-measured.
+
+Cleanup on the live serial before the kill, both sessions: `libunity_sha256`
+`ffc1f3ef…dd0040`, `versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, frame-rate override reset; then no attached
+device and no `qemu` process.
+
 ## M2-E004 — Plasticity diagnostic across run-1 checkpoints
 
 **Date:** 2026-09-19

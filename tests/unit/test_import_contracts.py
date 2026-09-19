@@ -75,6 +75,7 @@ SCRIPT_MODULES = (
     "render_recording",
     "diagnose_plasticity",
     "migrate_state",
+    "unlock_trial",
 )
 
 #: The test files allowed to import each entry point: the ones that test that

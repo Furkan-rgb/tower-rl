@@ -731,6 +731,13 @@ bool WritePrimitiveArray(const Il2CppApi& api, Il2CppArray* array, size_t index,
 // trues, which is the whole answer the trial needs - it asks whether a write
 // lands in memory at all, not what any one slot holds.
 //
+// Every family is resolved and read before anything is written, so a schema
+// that has drifted - a missing array, a length the bridge refuses - costs
+// nothing: the command is refused whole and the game's state is exactly what it
+// was. A write that fails *after* that pre-read can still leave the arrays part
+// way, which is why the report is emitted either way and is a read-back rather
+// than a restatement of what was asked for.
+//
 // Diagnostics builds only, on both paths. A bridge that can change what the
 // game offers a policy has no place in a measured run, and the read-back is
 // gated with it so the production artifact stays byte-for-byte what it was.
@@ -740,30 +747,50 @@ bool ReportUnlockState(const Il2CppApi& api, const MainFields& fields, bool unlo
   api.field_static_get_value(fields.instance, &main);
   if (!NativeHandleIsAlive(api, main)) return false;
   const FamilyFields families[] = {fields.attack, fields.defense, fields.utility};
+  constexpr size_t kFamilyCount = sizeof(families) / sizeof(families[0]);
+  Il2CppArray* unlocked[kFamilyCount] = {};
+  size_t lengths[kFamilyCount] = {};
+  for (size_t family = 0; family < kFamilyCount; ++family) {
+    if (!ReadField(api, main, families[family].unlocked, &unlocked[family]) ||
+        unlocked[family] == nullptr) {
+      return false;
+    }
+    lengths[family] = api.array_length(unlocked[family]);
+    if (lengths[family] == 0 || lengths[family] > kMaxEntriesPerFamily) return false;
+    // Every element is proven readable before any of them is written, so the
+    // element-size and bounds checks cannot first fail half way through a write.
+    for (size_t index = 0; index < lengths[family]; ++index) {
+      uint8_t value = 0;
+      if (!ReadPrimitiveArray(api, unlocked[family], index, &value)) return false;
+    }
+  }
+  bool wrote = true;
+  if (unlock_all) {
+    for (size_t family = 0; family < kFamilyCount && wrote; ++family) {
+      for (size_t index = 0; index < lengths[family]; ++index) {
+        const uint8_t truth = 1;
+        if (!WritePrimitiveArray(api, unlocked[family], index, truth)) { wrote = false; break; }
+      }
+    }
+  }
   *json = "{\"type\":\"unlock_state\",\"protocol_version\":2,\"wrote\":";
   json->append(unlock_all ? "true" : "false");
   json->append(",\"families\":[");
-  for (const FamilyFields& family : families) {
-    Il2CppArray* unlocked = nullptr;
-    if (!ReadField(api, main, family.unlocked, &unlocked) || unlocked == nullptr) return false;
-    const size_t length = api.array_length(unlocked);
-    if (length == 0 || length > kMaxEntriesPerFamily) return false;
+  for (size_t family = 0; family < kFamilyCount; ++family) {
     size_t true_count = 0;
-    for (size_t index = 0; index < length; ++index) {
-      const uint8_t truth = 1;
-      if (unlock_all && !WritePrimitiveArray(api, unlocked, index, truth)) return false;
+    for (size_t index = 0; index < lengths[family]; ++index) {
       // Read back what the array now holds rather than what was written: a
-      // write that did not take is exactly the outcome this instrument exists
-      // to detect.
+      // write that did not take, or took only part way, is exactly the outcome
+      // this instrument exists to detect.
       uint8_t value = 0;
-      if (!ReadPrimitiveArray(api, unlocked, index, &value)) return false;
+      if (!ReadPrimitiveArray(api, unlocked[family], index, &value)) return false;
       if (value != 0) ++true_count;
     }
     if (json->back() != '[') json->push_back(',');
     json->append("{\"family\":\"");
-    json->append(family.name);
+    json->append(families[family].name);
     json->append("\",\"length\":");
-    json->append(std::to_string(length));
+    json->append(std::to_string(lengths[family]));
     json->append(",\"true_count\":");
     json->append(std::to_string(true_count));
     json->push_back('}');

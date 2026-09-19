@@ -221,10 +221,25 @@ element true through `WritePrimitiveArray`, the exact mirror of
 arithmetic, the `memcpy` reversed), and then reports the same pairs read back
 out of the arrays, so a write that did not take reports as one. The report is a
 separate `unlock_state` frame sent before the state and the result, exactly as
-the slot labels are. Both are gated, not only the write: a production bridge
-answers neither, so the artifact a measured run deploys cannot change what the
-game offers a policy, and its digest is unchanged by their presence in the
-source. The write is in-memory only — nothing here calls a save, and
+the slot labels are, and carries a `wrote` flag the client holds against the
+command it sent.
+
+All three families are resolved and every element proven readable before
+anything is written, so a drifted schema refuses the command whole and leaves
+the game exactly as it was. A write that fails *after* that pre-read can still
+leave the arrays part way; the frame is emitted either way and shows what the
+arrays then hold, which is the only honest report of a partial state.
+
+Both commands are gated, not only the write. The read-only one could have been
+in both builds, but the production artifact's digest is the identity every
+deployment is checked against, and keeping it unchanged outranks the
+convenience: with the pair behind the flag, production is byte-for-byte what it
+was. A production bridge therefore does not *reject* these commands — its parser
+has no such kind, so the frame fails to parse, it answers `protocol_error` and
+drops the connection. Select a diagnostics bridge with `TOWER_BRIDGE_BUILD_DIR`;
+never repoint `state/bridge/current` at one.
+
+The write is in-memory only — nothing here calls a save, and
 `scripts/unlock_trial.py` leaves starting a round and re-reading to a human.
 
 ## Known live behavior

@@ -11,9 +11,14 @@ a screenshot.
 
     uv run python scripts/unlock_trial.py --serial emulator-5556
 
-Both commands exist only in a bridge built with `-DTOWER_BRIDGE_DIAGNOSTICS=ON`;
-against the production bridge they are rejected, and this script says so. The
-forward to the bridge's device port is assumed to be up, exactly as
+Both commands exist only in a bridge built with `-DTOWER_BRIDGE_DIAGNOSTICS=ON`.
+A production bridge does not reject them, it cannot parse them: it answers
+`protocol_error` and drops the connection, and this script says what that means.
+Select the diagnostics bridge with `TOWER_BRIDGE_BUILD_DIR` pointed at its build
+tree; never repoint `state/bridge/current` at it, which is the pointer every
+measured run takes and must keep naming the production artifact.
+
+The forward to the bridge's device port is assumed to be up, exactly as
 `compare_arms.py` assumes it: bring-up establishes it.
 
 This changes what the game offers inside a live process. Run it on a disposable
@@ -35,6 +40,7 @@ from tower_rl.simulation.bridge import (  # noqa: E402
     compatibility,
 )
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    BridgeCompatibilityError,
     BridgeObservation,
     InstrumentedBridgeClient,
     InstrumentedBridgeError,
@@ -83,6 +89,14 @@ def main() -> int:
         if not isinstance(state, BridgeObservation):
             raise SystemExit(f"the run went away after the write: {state.reason}")
         _report("read back:", client.read_unlock_state(expected_sequence=state.sequence))
+    except BridgeCompatibilityError as error:
+        # The production parser has no such command kind, so the frame fails to
+        # parse and the bridge drops the connection. That is the artifact doing
+        # its job, not a fault to debug.
+        raise SystemExit(
+            "this bridge has no unlock commands (production build?) — point "
+            f"TOWER_BRIDGE_BUILD_DIR at the diagnostics build: {error}"
+        ) from error
     except InstrumentedBridgeError as error:
         raise SystemExit(f"the bridge on {arguments.serial} did not answer: {error}") from error
     finally:

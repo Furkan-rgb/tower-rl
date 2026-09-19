@@ -56,10 +56,11 @@ COMMAND_CAPABILITY = "semantic-v2"
 UPGRADE_FAMILIES = ("attack", "defense", "utility")
 #: Commands whose whole payload is the observation sequence they bind.
 #: `unlock_state` and `unlock_all_upgrades` are answered by the diagnostics
-#: build only (board #54's profile-v2 trial instrument); a production bridge
-#: rejects them, which is what keeps a measured run unable to change what the
-#: game offers a policy.
-TARGETLESS_COMMAND_KINDS = frozenset({"slot_labels", "unlock_state", "unlock_all_upgrades"})
+#: build only (board #54's profile-v2 trial instrument). A production bridge's
+#: parser has no such kind at all, so it answers `protocol_error` and drops the
+#: connection rather than rejecting a command it understands - which is what
+#: keeps a measured run unable to change what the game offers a policy.
+SEQUENCE_ONLY_COMMAND_KINDS = frozenset({"slot_labels", "unlock_state", "unlock_all_upgrades"})
 LIFECYCLE_ACTIONS = frozenset(
     {
         "start_round",
@@ -441,8 +442,14 @@ def decode_slot_labels(
 
 def decode_unlock_state(
     message: Mapping[str, Any], *, max_entries: int = DEFAULT_MAX_UPGRADE_ENTRIES
-) -> tuple[UnlockFamilyState, ...]:
-    """Decode the three in-run availability arrays' lengths and true-counts."""
+) -> tuple[bool, tuple[UnlockFamilyState, ...]]:
+    """Decode whether the bridge wrote, and each array's length and true-count.
+
+    The `wrote` flag comes back so the caller can hold the bridge to the command
+    it sent: a report claiming a write for a read command, or the reverse, means
+    the two ends disagree about what just happened to the game's state, which is
+    not something to reconcile silently.
+    """
     _require_message_type(message, "unlock_state")
     if _int(message, "protocol_version", minimum=1) != PROTOCOL_VERSION:
         raise BridgeProtocolError("unsupported unlock-state protocol version")
@@ -463,7 +470,7 @@ def decode_unlock_state(
             raise BridgeProtocolError(f"duplicate unlock family state: {family}")
         seen.add(family)
         families.append(UnlockFamilyState(family=family, length=length, true_count=true_count))
-    return tuple(families)
+    return _bool(message, "wrote"), tuple(families)
 
 
 def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
@@ -478,7 +485,7 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
     family = message.get("family")
     index = message.get("index")
     action = message.get("action")
-    if kind in {"lifecycle", "set_speed", "advance", *TARGETLESS_COMMAND_KINDS} and (
+    if kind in {"lifecycle", "set_speed", "advance", *SEQUENCE_ONLY_COMMAND_KINDS} and (
         family is not None or index is not None
     ):
         raise BridgeProtocolError(f"{kind} command must not contain an upgrade target")
@@ -502,7 +509,7 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
             frame_game_ms=frame,
             health_change_fraction=fraction,
         )
-    if kind in TARGETLESS_COMMAND_KINDS:
+    if kind in SEQUENCE_ONLY_COMMAND_KINDS:
         # Each carries nothing but the sequence it binds. `slot_labels` is asked
         # once because its answer is the same for the whole build; the two
         # unlock kinds address all three families at once by definition.
@@ -601,6 +608,7 @@ class InstrumentedBridgeClient:
         self._last_state: BridgeObservation | BridgeRunUnavailable | None = None
         self._slot_labels: tuple[UpgradeSlotLabel, ...] = ()
         self._unlock_state: tuple[UnlockFamilyState, ...] = ()
+        self._unlock_wrote: bool | None = None
 
     @property
     def handshake(self) -> BridgeHandshake:
@@ -729,7 +737,7 @@ class InstrumentedBridgeClient:
         if message_type == "unlock_state":
             # Not state: nothing binds a sequence to it, and it is the answer to
             # the command in flight rather than something the bridge streams.
-            self._unlock_state = decode_unlock_state(
+            self._unlock_wrote, self._unlock_state = decode_unlock_state(
                 message, max_entries=self.max_upgrade_entries
             )
             return None
@@ -773,8 +781,10 @@ class InstrumentedBridgeClient:
         """Ask how much of each family's in-run availability array is true.
 
         Reads nothing else and writes nothing. Answered by a diagnostics bridge
-        only; a production bridge rejects the command, which is the difference
-        the trial is meant to preserve.
+        only. A production bridge does not reject the command, it cannot parse
+        it: its parser has no such kind, so it answers `protocol_error` and
+        drops the connection, which surfaces here as a
+        `BridgeCompatibilityError` and a closed client.
         """
         return self._unlock_command("unlock_state", expected_sequence=expected_sequence)
 
@@ -793,6 +803,7 @@ class InstrumentedBridgeClient:
         self, kind: str, *, expected_sequence: int
     ) -> tuple[UnlockFamilyState, ...]:
         self._unlock_state = ()
+        self._unlock_wrote = None
         result = self.send_command(
             {
                 "type": "command",
@@ -804,6 +815,10 @@ class InstrumentedBridgeClient:
         )
         if result.outcome != CommandOutcome.CONFIRMED or not self._unlock_state:
             raise BridgeProtocolError(f"the bridge reported no unlock state: {result.reason}")
+        if self._unlock_wrote != (kind == "unlock_all_upgrades"):
+            raise BridgeProtocolError(
+                f"the unlock report does not match the {kind} command it answers"
+            )
         return self._unlock_state
 
     def send_command(self, message: Mapping[str, object]) -> BridgeCommandResult:

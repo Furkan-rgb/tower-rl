@@ -13,7 +13,7 @@ large-budget algorithm, and its published configuration is not the right
 default for the sample budget this project actually has. Reconciling that is a
 Lead decision, not a decision taken here.
 
-Every quantitative claim about published work is cited in section 10. Every
+Every quantitative claim about published work is cited in section 11. Every
 quantitative claim about this environment comes from `docs/experiments.md`,
 principally `M1B-E002`. Claims that are engineering judgement rather than
 measurement or literature are marked as judgement. The literature does not
@@ -153,16 +153,23 @@ real game as its model. Any search method must plan inside a learned model. The
 pause therefore does not remove the burden of learning dynamics; it only removes
 the latency objection to using a learned model at decision time.
 
-Third, and most important, shallow search does not reach the reward. At a
-one-second cadence a wave takes roughly 50 to 100 decisions. A 32- to
-50-simulation tree over a branching factor of about six reaches a depth of a few
-plies. Such a tree is entirely inside the current wave and sees no reward at
-all. All of its value comes from the learned value function at the leaves. That
-is not fatal — MuZero-family agents draw much of their benefit from search as a
-policy-improvement operator over a learned value, and from Reanalyse rather than
-from long lookahead — but it does mean the intuitive argument "we can pause, so
-we can plan ahead" does not hold at this cadence. Search becomes substantially
-more attractive if section 2.2's cadence change is made first.
+Third, under the choice-point cadence (ADR 0009) that section 2.2's cadence
+change produced, the "shallow search does not reach the reward" argument no
+longer holds as originally stated, though an honest recompute is weaker than
+a first read suggests. The mean legal action set differs by which state set
+it is measured over: at a choice point it is **≈4.2 actions including WAIT**
+(`M2-E004`, measured over choice-point states); averaged over every
+every-slice state, 68% of which were WAIT-only, it falls to ≈2.0. Under
+ADR 0009 the agent decides only at choice points, so ≈4.2 is the branching
+factor a search method actually faces. At that branching factor, 32
+simulations reach a depth k where 4^k ≤ 32, i.e. k ≈ 2.5 — EZ-V2's 32
+simulations are exhaustive enumeration to a depth of about **2 to 3**, not
+the 5 plies the original argument assumed. `M2-E007` measures 5.00 decisions
+per wave under random play and 3.23 under scripted play, so a tree of that
+depth spans roughly half to three-quarters of a wave, not a whole one, and
+does not reliably reach a reward event at its leaves. The argument that
+demoted the MuZero family to rank 5 in section 3.5 is weakened by the
+cadence work, not simply removed; section 9 revises the ranking accordingly.
 
 ### 2.5 Why published margins should not be expected to transfer
 
@@ -197,12 +204,37 @@ and failure modes.
 **What it is.** Double and dueling DQN over the masked 61-action space, with a
 shared per-upgrade-row encoder as already designed in `solution.md` section 9.3,
 a feed-forward trunk, and a stacked window of recent run scalars instead of
-recurrence. Trained with the optimisation recipe from the Atari 100k literature
-rather than the Rainbow or R2D2 defaults: replay ratio of roughly 2 to 8,
-n-step returns annealed from about 10 down to 3, an EMA target network,
+recurrence. The intended optimisation recipe is the one from the Atari 100k
+literature rather than the Rainbow or R2D2 defaults: replay ratio of roughly 2
+to 8, n-step returns annealed from about 10 down to 3, an EMA target network,
 prioritized replay, Huber loss, weight decay, and either periodic
-shrink-and-perturb resets or strong normalisation in place of them. Munchausen
-is a two-line optional addition.
+shrink-and-perturb resets or strong normalisation in place of them, with
+Munchausen as a two-line optional addition.
+
+What actually runs, as of run 2 (`docs/experiments.md` M2-E007; audit #53):
+
+- Replay ratio **0.25 gradient steps per decision** (`training.py:220`) —
+  specified, not implemented — see #53.
+- n-step **fixed at 10**, never annealed (`StackedDqnConfig.n_step`,
+  `stacked_dqn.py:45`) — specified, not implemented — see #53.
+- EMA target network: implemented, decay 0.995 per gradient step.
+- Prioritized replay: the machinery is built (`replay.py`), but
+  `priority_alpha` runs at **0**, which makes sampling uniform and importance
+  weights exactly 1 — specified, not implemented — see #53.
+- Huber loss (δ=1): implemented.
+- Weight decay: implemented, at `1e-5`; this document does not specify a
+  value, so the magnitude is not marked as a deviation.
+- Shrink-and-perturb resets / strong normalisation: absent — specified, not
+  implemented — see #53.
+- Munchausen: not implemented; always described here as optional.
+
+Two further facts govern the current run and are not part of the recipe as
+originally written here: the ε ladder anneals to its floor over the first
+**2,500 decisions** (`--epsilon-anneal-decisions`, run 2 launch parameters,
+M2-E007), and warm-up runs for **100 sequences** (`--warmup-sequences`; under
+the choice-point cadence one episode is one sequence, so this is
+≈100 episodes ≈ 2,690 decisions). The anneal therefore reaches its floor
+before the first gradient step is taken; see #53 for the consequence.
 
 **Fit.** This is the closest match to the problem's actual shape. The
 observation is low-dimensional, so no encoder pretraining is needed. The action
@@ -1042,23 +1074,101 @@ this document could do:
 
 ## 9. Summary of the ranking
 
-| Rank | Candidate | Expected gain | Engineering risk |
-| --- | --- | --- | --- |
-| 1 | Masked data-efficient DQN, stacked history | Moderate, reliable | Low |
-| 2 | The same, bootstrapped from logged scripted play | High | Low |
-| 3 | Recurrent value-based agent, R2D2 skeleton | Uncertain | Moderate |
-| 4 | DreamerV3 | Moderate to high | High |
-| 5 | EfficientZero V2 or Gumbel MuZero with Reanalyse | High ceiling | Highest |
-| 6 | Masked recurrent PPO | Low, used as a control | Lowest |
+This ranking was re-cut on 2026-09-19 for the regime the project actually
+runs in: choice-point cadence (ADR 0009), `observation-v2`, a budget of
+360,000 game-seconds ≈ 40,000 decisions ≈ 1,400 episodes, 20.7–27.5 decisions
+an episode and 3.2–5.0 a wave (`M2-E007`), a mean legal set at a choice
+point of ≈4.2 actions including WAIT (`M2-E004`; ≈2.0 averaged over every
+every-slice state, 68% of which were WAIT-only — ≈4.2 is the branching
+factor that applies under ADR 0009's choice points), and a
+learner that is ~3% busy. Sections 2.2 and 2.4 were written before the cadence
+work landed and their conclusions no longer follow; section 3.5's demotion of
+the MuZero family rested on section 2.4 and is reversed here.
 
-Two decisions are recommended to the Lead beyond the ranking itself. First, that
-the recurrent architecture in `solution.md` section 9.3 be treated as a
-hypothesis to be tested against a stacked-history baseline rather than as the
-default, and that R2D2's published hyperparameters not be adopted at this budget.
-Second, that decision cadence be investigated before any new backbone is built,
-because it changes the difficulty of the problem for every candidate at once.
+| Rank | Candidate | Strongest evidence | Fit to this regime | Cost | Risk |
+| --- | --- | --- | --- | --- | --- |
+| 1 | **Finish the BBF recipe on the existing `stacked-dqn`** — weight decay 0.1, width, shrink-and-perturb resets, 10→3 n-step and 0.97→0.997 γ anneals, prioritized replay on | Atari-100k IQM 1.045 at RR 8; +0.45 IQM over SR-SPR at *every* replay ratio; every component validated on 29 held-out ALE games (Schwarzer 2023) | Exact masking; replay ratio already between 54:1 and 126:1 depending on the counting convention (see #53), so what is missing is the regularisation and capacity, not the gradient count | 3–5 d | Low |
+| 2 | **Offline bootstrap from the logged baselines** (RLPD symmetric sampling + LayerNorm value net) | RLPD reports up to 2.5× from symmetric sampling with no pretraining and no offline-RL constraint (Ball 2023) | Costs **no new device time**: 223 valid baseline episodes already exist from `M2-E007`. Highest expected gain per device-hour in the list, and still never built | 2–3 d | Low |
+| 3 | **Gumbel MuZero / EfficientZero-V2 with full Reanalyse**, via LightZero (Apache-2.0) — *the different-paradigm candidate* | EZ-V2 Proprio Control **50k**: mean 723.2 vs DreamerV3 517.1 and SAC 552.0, TD-MPC2 740.9 (Wang 2024) — the only published vector-observation result at our budget. Atari-100k mean 2.428 / median 1.286 | Good structural fit: at the choice-point branching factor of ≈4.2, 32 simulations are exhaustive to a depth of ~2 to 3 (4^k ≤ 32 gives k ≈ 2.5) — roughly half to three-quarters of a wave (3.2–5.0 decisions, `M2-E007`), not a full wave; `action_mask` is first-class in LightZero's env dict; Reanalyse converts idle compute into better targets on scarce data, which is exactly this project's asymmetry | 15–20 d | High |
+| 4 | **DreamerV3** (NM512/dreamerv3-torch, MIT; danijar/dreamerv3 JAX, MIT) | One hyperparameter set over 150+ tasks (Nature 2025); but **weakest of the three** on Proprio Control 50k at 517.1, and Atari-100k mean 1.120 / median 0.490 | Robustness is still its real argument, and tuning is unaffordable here. Against it: no native masking, a bespoke mask head in imagination with no reference, and the worst low-dimensional number of the model-based options | 8–12 d | High |
+| 5 | Recurrent value-based agent, R2D2 skeleton | Ni et al. 2022 | Further demoted: an episode is now ~27 decisions and `history_length=8` already spans a quarter of one | 5–8 d | Moderate |
+| 6 | Masked PPO | Huang & Ontañón 2022 | Control instrument only, unchanged | 2 d | Lowest |
 
-## 10. Sources
+**Not candidates.** SimbaV2, BRO and TD-MPC2 are continuous-action methods
+(SimbaV2: 57 continuous-control tasks). Their transferable content is
+normalisation architecture for low-dimensional inputs and belongs to rank 1 as
+an ablation. The 2026 world-model line (Simulus, EAWM/EASimulus) is pixel
+Atari-100k; it is worth reading before rank 3 or 4 is built and is not itself a
+candidate here.
+
+**Three decisions recommended to the Lead.** First, that "raise the replay
+ratio because compute is free" be retired as a proposal: `training.py`
+already runs between 54 and 126 transitions replayed per transition
+generated, depending on the counting convention (see #53) — on the order of
+SPR's 64 to BBF's 256. Second, that the MuZero family be promoted above
+DreamerV3, because the cadence change removed the objection in section 2.4
+and because EZ-V2 is the only entry on this list with a published
+low-dimensional result at our budget. Third, that `M2-E004`'s absent
+plasticity signature not be read as permission to raise width or weight decay
+without re-measuring it — it was measured in the regime BBF's resets exist to
+leave.
+
+## 10. Run-3 ablation order
+
+From the audit (#53), in the order run 3 should test each item, each
+independently measurable against the M2-P002 baselines (random 5.495,
+scripted 6.429):
+
+1. **ε schedule + head init.** Fixed Ape-X ladder from step 0 (or anneal on
+   gradient steps, starting at warm-up) plus zero-init of the final `Linear`
+   layer of `value_head`, `wait_advantage` and `row_advantage`. Expected
+   effect: removes the near-constant, WAIT-biased greedy policy that actors
+   3–6 play for most of the anneal — the largest single deviation measured
+   (D1, #53).
+2. **n-step.** 10 → 3 (Ape-X/Rainbow), or the BBF 10→3 anneal already
+   specified in section 3.1. Expected effect: removes the off-policy bias in
+   the uncorrected n-step bootstrap and raises the action-attributable share
+   of the return (D2, #53).
+3. **Replay ratio.** 0.25 → 2.0 gradient steps per decision, the value
+   section 3.1 specifies and run 1 used. Expected effect: more gradient steps
+   behind the network the kill check reads at matched game-seconds; costs
+   ~26% of actor wall time (D3, #53).
+4. **Reward shaping, as a separate arm.** Potential-based Φ = clipped
+   within-wave kill fraction, Φ(terminal) = 0 (Ng, Harada & Russell 1999).
+   Developer decision: the benchmark reward stays +1/wave; shaping is an
+   ablation only, not a change to the optimised metric. Expected effect:
+   denser signal at decision cadence and a derived death penalty, provably
+   policy-invariant under this n-step learner (audit #53, Part 3).
+5. **Adam ε.** 1e-8 → 1e-3 (R2D2's, matching the lr already used). Expected
+   effect: cheap; targets the smallest gradients, which sit in the advantage
+   heads (D5, #53).
+6. **PER.** `priority_alpha` 0 → 0.6 with the existing β anneal. Expected
+   effect: moderate; oversamples the high-|TD| terminal/death transitions
+   currently sampled at the background rate (D4, #53).
+7. **History length.** k ∈ {1, 4} against 8 — the ablation section 3.1
+   already names and that has never been run. Expected effect: settles
+   whether the stacked window buys anything at this near-fully-observed
+   cadence; not checkpoint-compatible across k (D7, #53).
+8. **Masked pooling.** Mean-pool the trunk over `unlocked` rows instead of
+   all 60. Expected effect: second-order; removes a channel that is ~88%
+   constant given only ~7 of 61 actions are ever valid (D6, #53).
+9. **BBF block.** Weight decay 0.1, shrink-and-perturb resets, and the n-step
+   and γ anneals together, run as one arm (R3, SOTA-BACKBONES §4). Expected
+   effect (pre-registered): post-anneal near-greedy mean final wave ≥ 6.4 (the
+   scripted floor) by the third checkpoint; falsified by no improvement over
+   run 2's curve at matched game-seconds. Gated on run 2's verdict.
+10. **MuZero-family arm.** Gumbel MuZero with full Reanalyse, built behind the
+    existing `Backbone` protocol (R6, SOTA-BACKBONES §4). Expected effect
+    (pre-registered): beats the best model-free arm at matched game-seconds;
+    falsified by failing to do so, or by the search's recommended action
+    agreeing with the raw prior on >95% of decisions, which at the
+    choice-point branching factor of ≈4.2 would mean the search buys nothing.
+    Gated on run 2's verdict.
+
+Items 1–3 are confounded with each other if run together; item 4 is a reward
+schema change (`reward-v2`) and must be its own arm.
+
+## 11. Sources
 
 - Kapturowski et al., Recurrent Experience Replay in Distributed Reinforcement
   Learning (R2D2), ICLR 2019.

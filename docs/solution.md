@@ -893,13 +893,15 @@ backbone with whatever drifted in between — the device, the host, the account 
 which is the same trap `experiment/comparison.py` exists to avoid on the
 evaluation side. Training arms are therefore interleaved as well: each arm holds
 its own backbone, replay buffer and actor, and `scripts/train.py` hands the
-device to the next arm every `block_decisions`, in a shuffled round-robin so no
-arm is systematically first.
+device to the next arm every `block_game_seconds`, in a shuffled round-robin so
+no arm is systematically first.
 
 Three properties make that honest:
 
-- The budget is equal **per arm** and counted in environment decisions, so a
-  stronger policy surviving longer does not buy itself more experience.
+- The budget is equal **per arm** and counted in game time — cumulative game
+  seconds across the arm's fleet, measured from the game's own round clock — so
+  neither a stronger policy surviving longer nor a cadence that asks for fewer
+  decisions buys itself more experience. Game time is what the device sells.
 - A block ends on an episode boundary. An episode in progress is played to its
   classified end, because a half-episode is not experience and its sequences
   would be tagged with a policy that stopped acting.
@@ -1581,11 +1583,31 @@ Interactive only where evidence/confirmation is inherently needed. Produces a ve
 for the instrumented profile. It trains one arm on the single backbone named by
 the `BACKBONE` constant (`stacked-dqn`) — the multi-backbone comparison of
 section 9.2b was retired and there is no `--backbone` flag — advancing the run
-in `--block-decisions` blocks to `--budget-decisions`, checkpointing atomically
-under `state/runs`, and taking one exploration-free evaluation
-on the final weights. Resume is not implemented — see the open question in
-`docs/workstation-handoff.md`; an interrupted run is a shorter run, not a corrupt
-one, because the budget is counted in decisions.
+in `--block-game-seconds` blocks to `--budget-game-seconds`, checkpointing
+atomically under `state/runs`, and taking one exploration-free evaluation on the
+final weights after the budget is spent.
+
+The budget is cumulative game time across the fleet. It is accounted at episode
+granularity, because an episode's game time is known only when it ends: the run
+stops after the episode each actor crossed the budget in, and the arm summary
+reports `budget_overshoot_game_ms`, at most one episode per actor. The
+learning-side schedules stay in decisions by design — the replay ratio
+(`--gradient-steps-per-decision`) and the exploration anneal
+(`--epsilon-anneal-decisions`).
+
+`--checkpoint-every-game-seconds` leaves `checkpoint-gs<game seconds>.pt`
+candidates beside the `latest.pt` resume point, one per crossing of the period,
+which `scripts/select_checkpoint.py` later chooses among.
+
+`--resume <checkpoint.pt>` continues a run's budget in a second sitting (`#32`):
+the weights, the optimizer moments and both counters come back, and epsilon,
+beta and the checkpoint cadence are derived from them, so the segment carries on
+where a run that never stopped would have been. Replay is not persisted and
+re-warms under the loaded policy. `--budget-game-seconds` stays the whole run's
+total; a checkpoint whose identity names another arm, profile or schema, one
+that has already spent the budget, and one written before the budget was game
+time (checkpoint format 1 or 2, which records none) are each refused by name
+before a device is touched.
 
 Example behavior:
 

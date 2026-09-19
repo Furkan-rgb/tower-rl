@@ -155,7 +155,11 @@ def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
 
 
 def episode_metrics(
-    episode: CollectedEpisode, *, actor_index: int, epsilon: float
+    episode: CollectedEpisode,
+    *,
+    actor_index: int,
+    epsilon: float,
+    cumulative_game_ms: float,
 ) -> dict[str, float]:
     """One collected episode, as the tracked unit it is.
 
@@ -176,6 +180,10 @@ def episode_metrics(
         # The game's own round clock, not frames times `frame_game_ms`: the
         # latter is what the advances asked for, which is not evidence.
         "episode_game_ms": float(summary.round_ms),
+        # Where this episode left the budget. The series is keyed by decisions,
+        # which is monotone and shared with every point already recorded; this
+        # is what lets the same curve be read in the unit the run is spent in.
+        "episode_game_seconds_cumulative": cumulative_game_ms / 1000.0,
         "episode_wait_fraction": episode.wait_fraction,
         "episode_purchases": float(summary.purchases),
         "episode_valid": 1.0 if summary.valid else 0.0,
@@ -201,6 +209,9 @@ def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
     # problem, and a zero correlation as a learner predicting nothing.
     measured: dict[str, float | None] = {
         "learner_optimisation_steps": float(report.optimisation_steps),
+        # The budget position at this point of the decision axis, so a learner
+        # curve can be read in game time without leaving the store.
+        "learner_game_seconds": report.game_seconds,
         "learner_importance_beta": report.importance_beta,
         "learner_weighted_loss": report.mean_recent_weighted_loss,
         "learner_unweighted_mean_absolute_td_error": (
@@ -386,7 +397,7 @@ def decision_time_line(name: str, fleet: DecisionTimeBreakdown, actors: int) -> 
     )
 
 
-def per_hour(count: int, wall_seconds: float) -> float:
+def per_hour(count: float, wall_seconds: float) -> float:
     """A rate over the fleet's wall clock, which is the device time it cost.
 
     N actors collecting for an hour bought one hour of device time however many
@@ -414,12 +425,16 @@ def actor_summary(
         "actor_id": progress.actor_id,
         "episodes": progress.episodes,
         "decisions": progress.decisions,
+        # What this actor put on the fleet's budget, which is the share of it
+        # the instance actually bought.
+        "game_seconds": round(progress.game_ms / 1000.0, 3),
         "failed_episodes": progress.failed_episodes,
         # Set only for an actor whose instance failed every episode the limit
         # allows; the rest of the fleet kept collecting without it.
         "withdrawn": progress.withdrawn,
         "episodes_per_hour": per_hour(progress.episodes, report.wall_seconds),
         "decisions_per_hour": per_hour(progress.decisions, report.wall_seconds),
+        "game_seconds_per_hour": per_hour(progress.game_ms / 1000.0, report.wall_seconds),
         # This actor's own wall time, decomposed. `decisions_per_hour` above is
         # taken over the fleet's clock; the one inside this record is taken over
         # the actor's own collecting time, which is what a per-actor rate means.

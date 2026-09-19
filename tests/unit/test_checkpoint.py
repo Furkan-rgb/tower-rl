@@ -10,6 +10,7 @@ from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, St
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.backbone import parameters_are_equal
 from tower_rl.learning.checkpoint import (
+    CHECKPOINT_FORMAT_VERSION,
     Checkpoint,
     CheckpointError,
     CheckpointIdentity,
@@ -172,7 +173,10 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
         Checkpoint(
             identity=_identity(),
             progress=TrainingProgress(
-                optimisation_steps=31, environment_decisions=900, episodes=12
+                optimisation_steps=31,
+                environment_decisions=900,
+                environment_game_ms=1_800_000.0,
+                episodes=12,
             ),
             backbone_state=backbone.state_dict(),
             tracking_run_id="mlflow-run-1",
@@ -183,6 +187,9 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
     state = resume_state(path)
 
     assert state.decisions == 900 and state.episodes == 12
+    # The budget position, which is what the resumed run's budget check reads.
+    assert state.game_ms == 1_800_000.0
+    assert state.format_version == CHECKPOINT_FORMAT_VERSION
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
     assert "optimizer" in state.backbone_state, "the moments travel with the weights"
@@ -198,8 +205,10 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
     """A run of hours must not become unresumable for the format it was written in.
 
     Version 1 carried no tracking run id, so a resume from one opens a new
-    tracked run instead of continuing the parent's series. Everything else a
-    resume needs was already in it.
+    tracked run instead of continuing the parent's series. Version 2 added it;
+    neither records game time, which is why both read back as zero and why the
+    entry point refuses them under a game-time budget rather than reading a
+    spent budget of nothing.
     """
     path = tmp_path / "legacy.pt"
     save(
@@ -216,12 +225,16 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
 
     assert state.decisions == 200_174
     assert state.tracking_run_id is None
+    # The budget the file was spent against was decisions; it says nothing
+    # about game time, and says so as zero rather than as a guess.
+    assert state.game_ms == 0.0
+    assert state.format_version == 1
     assert load(path).format_version == 1
 
     # A version this code does not know is still refused rather than guessed at.
     future = tmp_path / "future.pt"
-    torch.save({"format_version": 3, "identity": {}}, future)
-    with pytest.raises(CheckpointError, match="format 3 is not supported"):
+    torch.save({"format_version": 4, "identity": {}}, future)
+    with pytest.raises(CheckpointError, match="format 4 is not supported"):
         load(future)
 
 

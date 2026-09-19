@@ -8,11 +8,15 @@ boundary lives in the bridge, and an action is a semantic upgrade purchase the
 bridge performs in the game, so there is no screen classification and no tap for
 one to gate.
 
-Collection runs in decision blocks (`--block-decisions`), each landing on an
-episode boundary, until the budget is spent.
+The budget is cumulative game time across the fleet (`--budget-game-seconds`):
+game time is what the device sells, and a decision buys a variable slice of it
+(ADR 0009). Collection runs in blocks of game time (`--block-game-seconds`),
+each landing on an episode boundary, and the run stops after the episode that
+crosses the budget - so it overshoots by at most one episode per actor, which
+the report records as `budget_overshoot_game_ms`.
 
     uv run --extra tracking python scripts/train.py \\
-        --budget-decisions 20000
+        --budget-game-seconds 40000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
 into the one replay buffer and the one learner, so the budget is spent about N
@@ -26,17 +30,19 @@ four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
     uv run --extra tracking python scripts/train.py \\
-        --actors 4 --budget-decisions 100000
+        --actors 4 --budget-game-seconds 200000
 
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
-budget. The weights, the optimizer moments, the decision counter and every
-schedule and cadence derived from it come back from the file; the replay buffer
-does not, so the run re-warms it under the loaded policy before learning
-restarts. `--budget-decisions` stays the whole run's total.
+budget. The weights, the optimizer moments, the game-time and decision counters
+and every schedule and cadence derived from them come back from the file; the
+replay buffer does not, so the run re-warms it under the loaded policy before
+learning restarts. `--budget-game-seconds` stays the whole run's total. A
+checkpoint written before the budget was game time (format 1 or 2) records none
+and is refused by name.
 
     uv run --extra tracking python scripts/train.py \\
         --resume state/runs/<session>/<run>/checkpoints/latest.pt \\
-        --budget-decisions 400000
+        --budget-game-seconds 800000
 
 The run records itself to the local MLflow store under `state/`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
@@ -85,6 +91,7 @@ from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
+    GAME_TIME_FORMAT_VERSION,
     CheckpointError,
     ResumeState,
     resume_state,
@@ -230,7 +237,7 @@ def build_arm(
         seed=arguments.seed,
     )
     config = TrainingConfig(
-        budget_decisions=arguments.budget_decisions,
+        budget_game_seconds=arguments.budget_game_seconds,
         warmup_sequences=arguments.warmup_sequences,
         batch_size=arguments.batch_size,
         gradient_steps_per_decision=arguments.gradient_steps_per_decision,
@@ -244,7 +251,7 @@ def build_arm(
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
-        checkpoint_every_decisions=arguments.checkpoint_every_decisions,
+        checkpoint_every_game_seconds=arguments.checkpoint_every_game_seconds,
         parameter_sync_episodes=arguments.parameter_sync_episodes,
     )
     stride = max(1, arguments.sequence_length // 2)
@@ -283,8 +290,8 @@ def build_arm(
     )
     if resume is not None and resume.tracking_run_id is not None:
         # The same run, not a second one beside it: the curve of a run trained
-        # in two sittings is one series, keyed by the decisions of the budget
-        # both segments spend. Its params were fixed when the first segment
+        # in two sittings is one series, on the one decision axis both
+        # segments' points are keyed by. Its params were fixed when the first segment
         # started and are not restated here.
         run = tracker.open_run(resume.tracking_run_id)
     else:
@@ -306,6 +313,7 @@ def build_arm(
         # never stopped would have them.
         progress = TrainingProgressReport(
             decisions=resume.decisions,
+            game_ms=resume.game_ms,
             episodes=resume.episodes,
             optimisation_steps=resume.optimisation_steps,
         )
@@ -329,6 +337,7 @@ def build_arm(
         # on the run's budget and what its own throughput is measured net of.
         resumed_decisions=progress.decisions,
         resumed_episodes=progress.episodes,
+        resumed_game_ms=progress.game_ms,
         tracking_run_id=tracked_run_id,
     )
 
@@ -390,8 +399,9 @@ def build_arm(
         arm.record_collection_windows()
         arm.record_decision_time()
         print(
-            f"[{name}] episode {report.episodes} decisions {report.decisions}/"
-            f"{config.budget_decisions} steps {report.optimisation_steps}",
+            f"[{name}] episode {report.episodes} game seconds "
+            f"{report.game_seconds:.0f}/{config.budget_game_seconds} decisions "
+            f"{report.decisions} steps {report.optimisation_steps}",
             flush=True,
         )
 
@@ -412,12 +422,16 @@ def build_arm(
         # `resolved_config`, which travels in the manifest above, in every
         # checkpoint this segment writes, and in its summary.
         run.log_metrics(
-            {"resumed_from_decisions": float(resume.decisions)},
+            {
+                "resumed_from_decisions": float(resume.decisions),
+                "resumed_from_game_seconds": resume.game_ms / 1000.0,
+            },
             decisions=resume.decisions,
         )
         print(
-            f"[{name}] resuming {resume.parent_checkpoint} at {resume.decisions} "
-            f"decisions of {config.budget_decisions}",
+            f"[{name}] resuming {resume.parent_checkpoint} at "
+            f"{resume.game_ms / 1000.0:.0f} game seconds of "
+            f"{config.budget_game_seconds}",
             flush=True,
         )
     # The evaluation comes back beside the report rather than on it: the report
@@ -429,12 +443,21 @@ def build_arm(
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Everything the run is configured by, validated before a device is touched."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--budget-decisions", type=int, default=20_000)
     parser.add_argument(
-        "--block-decisions",
+        "--budget-game-seconds",
         type=int,
-        default=2_000,
-        help="decisions collected before the loop checks the budget; lands on an episode",
+        default=40_000,
+        help=(
+            "the whole run's budget: cumulative game seconds across the fleet. "
+            "The default is the old 20,000-decision default priced at run 1's "
+            "cadence, where a slice mostly ran to the 2,000 ms quiet backstop"
+        ),
+    )
+    parser.add_argument(
+        "--block-game-seconds",
+        type=int,
+        default=4_000,
+        help="game seconds collected before the loop checks the budget; lands on an episode",
     )
     parser.add_argument(
         "--resume",
@@ -442,10 +465,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "a checkpoint to continue a run's budget from: the weights, the "
-            "optimizer, the decision counter and every schedule and cadence "
-            "derived from it come back, and the replay buffer is re-warmed "
-            "under the loaded policy. --budget-decisions stays the whole run's "
-            "total, so a checkpoint at or past it is refused"
+            "optimizer, the game-time and decision counters and every schedule "
+            "and cadence derived from them come back, and the replay buffer is "
+            "re-warmed under the loaded policy. --budget-game-seconds stays the "
+            "whole run's total, so a checkpoint at or past it is refused"
         ),
     )
     parser.add_argument("--seed", type=int, default=0)
@@ -538,13 +561,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument(
-        "--checkpoint-every-decisions",
+        "--checkpoint-every-game-seconds",
         type=int,
         default=0,
         help=(
-            "decisions between numbered checkpoints, each written beside "
-            "latest.pt under its own name and evaluable afterwards as an arm; "
-            "0 writes none, and any value must be a multiple of --block-decisions"
+            "game seconds between numbered checkpoints, each written beside "
+            "latest.pt as checkpoint-gs<seconds>.pt and evaluable afterwards "
+            "as an arm; 0 writes none, and any value must be a multiple of "
+            "--block-game-seconds"
         ),
     )
     parser.add_argument(
@@ -661,19 +685,20 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             f"1..{MAX_GUEST_FRAME_RATE_HZ}; no measured fps supports a guest "
             "rate above that"
         )
-    if arguments.checkpoint_every_decisions < 0:
-        raise SystemExit("--checkpoint-every-decisions cannot be negative")
+    if arguments.checkpoint_every_game_seconds < 0:
+        raise SystemExit("--checkpoint-every-game-seconds cannot be negative")
     if (
-        arguments.checkpoint_every_decisions
-        and arguments.checkpoint_every_decisions % arguments.block_decisions
+        arguments.checkpoint_every_game_seconds
+        and arguments.checkpoint_every_game_seconds % arguments.block_game_seconds
     ):
         # The budget is spent a block at a time, so a period that is not a whole
         # number of blocks would put its checkpoints at the block boundaries
         # nearest to it rather than where it asked for them - a selection made
         # over candidates the operator did not choose.
         raise SystemExit(
-            f"--checkpoint-every-decisions {arguments.checkpoint_every_decisions} is "
-            f"not a multiple of --block-decisions {arguments.block_decisions}"
+            f"--checkpoint-every-game-seconds "
+            f"{arguments.checkpoint_every_game_seconds} is not a multiple of "
+            f"--block-game-seconds {arguments.block_game_seconds}"
         )
     if arguments.stacked_burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
@@ -695,14 +720,16 @@ def resume_point(
 ) -> ResumeState | None:
     """The checkpoint this run continues, read and checked before a device is touched.
 
-    Two refusals, both here rather than an hour into collection. The identity
+    Three refusals, all here rather than an hour into collection. The identity
     is the checkpoint's own: a file from another arm, another device profile or
     another observation, action or reward schema is not experience this run can
-    go on from, and `CheckpointIdentity.incompatibilities` names which. The
-    budget is the second: `--budget-decisions` is the whole run's total, not
-    this segment's, so a checkpoint at 50,123 of 200,000 continues to 200,000
-    and a larger budget extends the run - but a checkpoint that has already
-    spent the budget is nothing this run can add to.
+    go on from, and `CheckpointIdentity.incompatibilities` names which. The unit
+    is the second: a checkpoint written before the budget was game time records
+    no game time at all, so continuing it here would read its whole spent budget
+    as zero. The budget is the third: `--budget-game-seconds` is the whole run's
+    total, not this segment's, so a checkpoint at 50,123 of 200,000 continues to
+    200,000 and a larger budget extends the run - but a checkpoint that has
+    already spent the budget is nothing this run can add to.
     """
     if arguments.resume is None:
         return None
@@ -723,11 +750,22 @@ def resume_point(
         state = resume_state(arguments.resume, expected=expected)
     except CheckpointError as failure:
         raise SystemExit(f"--resume {arguments.resume}: {failure}") from failure
-    if state.decisions >= arguments.budget_decisions:
+    if state.format_version < GAME_TIME_FORMAT_VERSION:
         raise SystemExit(
-            f"--resume {arguments.resume} is already at {state.decisions} decisions, "
-            f"which --budget-decisions {arguments.budget_decisions} does not extend; "
-            "raise the budget above it to continue the run"
+            f"--resume {arguments.resume} is a format {state.format_version} "
+            "checkpoint, written when the budget was counted in decisions: it "
+            "records no game time, so there is no budget position for "
+            f"--budget-game-seconds {arguments.budget_game_seconds} to continue "
+            "from and the run would re-collect the whole budget. A run budgeted "
+            "in decisions cannot be continued under this unit; train a new run "
+            "instead"
+        )
+    if state.game_ms >= arguments.budget_game_seconds * 1000:
+        raise SystemExit(
+            f"--resume {arguments.resume} is already at "
+            f"{state.game_ms / 1000:.0f} game seconds, which "
+            f"--budget-game-seconds {arguments.budget_game_seconds} does not "
+            "extend; raise the budget above it to continue the run"
         )
     return state
 
@@ -804,20 +842,20 @@ def train_session(
 
     # The blocks this segment still owes, not the whole budget's: a resumed run
     # starts with part of it already spent.
-    remaining = arguments.budget_decisions - arm.training.report.decisions
-    blocks = -(-remaining // arguments.block_decisions)
+    remaining = arguments.budget_game_seconds - int(arm.training.report.game_seconds)
+    blocks = -(-remaining // arguments.block_game_seconds)
     try:
         for _ in range(blocks):
             if arm.training.finished:
                 break
-            arm.training.advance(arguments.block_decisions)
+            arm.training.advance(arguments.block_game_seconds)
 
         arm.checkpoint(arm.training.report)
         # The one pre-registered measurement of the run: exploration-free, on
         # the final weights, sized so its standard error can resolve a real
         # difference against the scripted floor. Taken after the budget is
-        # spent, so it costs no decisions and cannot be chosen after the fact
-        # from a series of mid-run points.
+        # spent, so it costs none of the budget and cannot be chosen after
+        # the fact from a series of mid-run points.
         try:
             run_evaluation(True)
         except (RunPortError, ValueError) as failure:
@@ -831,8 +869,8 @@ def train_session(
             "session": str(session),
             "profile_id": profile_id,
             "source_revision": revision,
-            "budget_decisions_per_arm": arguments.budget_decisions,
-            "block_decisions": arguments.block_decisions,
+            "budget_game_seconds_per_arm": arguments.budget_game_seconds,
+            "block_game_seconds": arguments.block_game_seconds,
             "actors": len(instances),
             "actor_serials": [instance.serial for instance in instances],
             # Instances that never came up at all, which cost the fleet an actor

@@ -864,6 +864,14 @@ so the total (~9.5 h) is on record before the run.
 
 **Correction 2026-09-18 (after M2-E001), developer-approved:**
 
+> **Budget unit changed to game seconds on 2026-09-19; see `#42`.** The
+> paragraphs below are the record of what was pre-registered and are not
+> rewritten: they say decisions because that is what was budgeted then. The
+> budget and the numbered-checkpoint cadence are now cumulative game time
+> across the fleet (`--budget-game-seconds`,
+> `--checkpoint-every-game-seconds`), which is the replacement this block's
+> last paragraph named as under review.
+
 The recipe's throughput premise (129–143k decisions/hour, `M1B-E052`) was a
 scripted-policy figure. Measured under the learning policy in `M2-E001`:
 ~28–30k decisions/hour fleet-wide at 120 Hz, `episode_wait_fraction` ≈ 0.80

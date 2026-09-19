@@ -14,7 +14,7 @@ for a checkpoint a training run left behind, which is rebuilt into the backbone
 that wrote it and played greedily. Every record says which it was.
 
     ./scripts/run_episodes.py --episodes 50 \\
-        --policy checkpoint:state/runs/.../checkpoint-0100000.pt
+        --policy checkpoint:state/runs/.../checkpoint-gs0100000.pt
 """
 
 from __future__ import annotations
@@ -190,7 +190,7 @@ def policy_from(selector: str) -> tuple[Policy, dict[str, object]]:
     except (CheckpointError, ValueError) as failure:
         raise SystemExit(f"cannot play {path} as an arm: {failure}") from failure
     return policy, {
-        # Named for the file, which is named for the decisions behind it, so an
+        # Named for the file, which is named for the game time behind it, so an
         # actor id and a report line say which checkpoint of the run this is.
         "name": path.stem,
         "checkpoint_path": str(path.resolve()),

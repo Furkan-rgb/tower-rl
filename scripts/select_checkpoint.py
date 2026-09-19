@@ -14,7 +14,7 @@ holding one JSON record per actor.
 
     uv run python scripts/select_checkpoint.py \\
         state/runs/session-.../stacked-dqn-... \\
-        /tmp/eval-0100000 /tmp/eval-0200000 /tmp/eval-0300000
+        /tmp/eval-gs0100000 /tmp/eval-gs0200000 /tmp/eval-gs0300000
 
 The selection is by the highest interquartile mean of the final wave. The
 intervals are printed beside it, and when the leaders' intervals overlap that is
@@ -48,10 +48,12 @@ from tower_rl.experiment.arm_evaluation import (  # noqa: E402
 )
 from tower_rl.experiment.comparison import stratified_bootstrap  # noqa: E402
 from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
+from tower_rl.learning.checkpoint import CheckpointError, load  # noqa: E402
 
 #: The statistic the selection is made on. `decisions` is reported beside it and
 #: chooses nothing: a checkpoint that survives longer per episode is interesting,
-#: but the arm is judged on how far it got.
+#: but the arm is judged on how far it got. A tie is broken by the earlier
+#: checkpoint, which is the one that reached the same result on less game time.
 SELECT_ON = "final_wave"
 
 
@@ -68,8 +70,12 @@ class Candidate:
     evaluation: ArmEvaluation
     #: The file in this run's own checkpoints directory.
     checkpoint: Path
-    #: Decisions spent when it was written, from the name the record carries.
-    #: The budget axis every other metric of the run is keyed by, so the greedy
+    #: Game seconds spent when it was written, from the name the file carries.
+    #: The budget axis: this is what orders the candidates and what the tie
+    #: break reads as "the earlier checkpoint".
+    game_seconds: int
+    #: Decisions behind it, read out of the checkpoint's own progress rather
+    #: than its name. The tracked series are keyed by decisions, so the greedy
     #: curve lands above the exploring one rather than beside it.
     decisions: int
     #: `CheckpointIdentity` hashed: the run, the profile and the three schemas.
@@ -85,11 +91,11 @@ class Candidate:
 
 def run_checkpoints(run_directory: Path) -> dict[str, Path]:
     """The numbered checkpoints a run left, by file name."""
-    checkpoints = sorted((run_directory / "checkpoints").glob("checkpoint-*.pt"))
+    checkpoints = sorted((run_directory / "checkpoints").glob("checkpoint-gs*.pt"))
     if not checkpoints:
         raise SystemExit(
             f"{run_directory} left no numbered checkpoints; train with "
-            "--checkpoint-every-decisions to produce candidates to choose among"
+            "--checkpoint-every-game-seconds to produce candidates to choose among"
         )
     return {path.name: path for path in checkpoints}
 
@@ -100,14 +106,14 @@ def candidate(directory: Path, run_directory: Path, checkpoints: dict[str, Path]
     Which run produced the model played here is read from the records, not from
     the file name they mention: `run_id` and the identity hash come from the
     checkpoint's own `CheckpointIdentity`, and the run directory is named for
-    its run id. Two runs at the same `--checkpoint-every-decisions` leave files
+    its run id. Two runs at the same `--checkpoint-every-game-seconds` leave files
     called exactly the same thing, so a name check would accept another run's
     evaluation as this one's and the selected file would then be reported as
     this run's work.
 
     The file name is still what says *which* checkpoint of the run it is, and it
-    has to be: the identity hash is constant across a run, so only the decisions
-    in the name separate one candidate from another.
+    has to be: the identity hash is constant across a run, so only the game
+    seconds in the name separate one candidate from another.
     """
     try:
         evaluation = read_arm_evaluation(directory)
@@ -135,10 +141,12 @@ def candidate(directory: Path, run_directory: Path, checkpoints: dict[str, Path]
             f"{directory} played {name}, which is not a numbered checkpoint "
             f"this run left ({sorted(checkpoints)})"
         )
+    path = checkpoints[name]
     return Candidate(
         evaluation=evaluation,
-        checkpoint=checkpoints[name],
-        decisions=checkpoint_decisions(name),
+        checkpoint=path,
+        game_seconds=checkpoint_game_seconds(name),
+        decisions=checkpoint_decisions(path),
         identity_hash=str(digest),
     )
 
@@ -154,12 +162,26 @@ def one_run(candidates: list[Candidate]) -> str:
     return digests.pop()
 
 
-def checkpoint_decisions(name: str) -> int:
-    """The decisions a numbered checkpoint's file name records."""
-    digits = name.removeprefix("checkpoint-").removesuffix(".pt")
+def checkpoint_game_seconds(name: str) -> int:
+    """The game seconds a numbered checkpoint's file name records."""
+    digits = name.removeprefix("checkpoint-gs").removesuffix(".pt")
     if not digits.isdigit():
-        raise SystemExit(f"{name} does not name the decisions behind it")
+        raise SystemExit(f"{name} does not name the game seconds behind it")
     return int(digits)
+
+
+def checkpoint_decisions(path: Path) -> int:
+    """The decisions behind a checkpoint, out of the file's own progress.
+
+    The name carries the budget position, which is game seconds; the decisions
+    beside it are what the tracked series are keyed by, and they are only in
+    the file. Read here rather than inferred from any rate: the two units are
+    related by how the run happened to play, not by a constant.
+    """
+    try:
+        return load(path).progress.environment_decisions
+    except CheckpointError as failure:
+        raise SystemExit(f"cannot read {path}: {failure}") from failure
 
 
 def score(
@@ -247,11 +269,11 @@ def main() -> int:
         (item, score(item.evaluation, resamples=arguments.resamples, seed=arguments.seed))
         for item in candidates
     ]
-    # In the order the run produced them, by the decisions behind each one
+    # In the order the run produced them, by the game seconds behind each one
     # rather than by how its name happens to sort: the zero padding only orders
-    # correctly while every name is the same width, and a ten-million-decision
+    # correctly while every name is the same width, and a ten-million-second
     # run is three days of collection, not a hypothetical.
-    scored.sort(key=lambda item: item[0].decisions)
+    scored.sort(key=lambda item: item[0].game_seconds)
 
     print(f"{len(scored)} checkpoints of {arguments.run_directory.name}", flush=True)
     for statistic in STATISTICS:
@@ -304,13 +326,21 @@ def main() -> int:
         # second run holding it would have to be found by hand.
         for item, numbers in scored:
             entry = numbers[SELECT_ON]
+            point = {
+                "greedy_final_wave_iqm": float(entry["iqm"]),
+                "greedy_final_wave_ci_low": float(entry["low"]),
+                "greedy_final_wave_ci_high": float(entry["high"]),
+            }
+            # Twice, under two keys. The store's step is decisions everywhere
+            # else, so the first series lands on the axis every other metric of
+            # the run shares; the second is the same numbers on the budget axis
+            # the run was actually spent against, which is the one a reader
+            # comparing two runs wants. One key per axis rather than one key on
+            # two axes, which would interleave two curves into nonsense.
+            tracked.log_metrics(point, decisions=item.decisions)
             tracked.log_metrics(
-                {
-                    "greedy_final_wave_iqm": float(entry["iqm"]),
-                    "greedy_final_wave_ci_low": float(entry["low"]),
-                    "greedy_final_wave_ci_high": float(entry["high"]),
-                },
-                decisions=item.decisions,
+                {f"{key}_by_game_seconds": value for key, value in point.items()},
+                decisions=item.game_seconds,
             )
         print(f"  logged to tracked run {tracked.run_id}", flush=True)
 
@@ -321,6 +351,7 @@ def main() -> int:
     selection = {
         "run_id": arguments.run_directory.name,
         "checkpoint": str(selected),
+        "game_seconds": best.game_seconds,
         "decisions": best.decisions,
         "checkpoint_identity": identity,
         "selected_on": SELECT_ON,
@@ -342,6 +373,7 @@ def main() -> int:
         "candidates": [
             {
                 "checkpoint": str(item.checkpoint),
+                "game_seconds": item.game_seconds,
                 "decisions": item.decisions,
                 "evaluation_directory": str(item.evaluation.directory),
                 "policy_identity": item.evaluation.policy_identity,

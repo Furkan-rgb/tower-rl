@@ -253,6 +253,9 @@ def test_everything_the_run_writes_lands_outside_the_repository(
     checkpoint = load(Path(arm["checkpoint_path"]))
     assert checkpoint.identity.backbone == arm["backbone"]
     assert checkpoint.progress.environment_decisions == arm["decisions"]
+    assert checkpoint.progress.environment_game_ms / 1000 == pytest.approx(
+        arm["game_seconds"]
+    )
 
 
 def test_the_report_carries_the_collection_curve(trained: dict[str, Any]) -> None:
@@ -312,7 +315,7 @@ def test_the_record_names_the_pre_registered_point_rather_than_its_caller(
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         arm, run_evaluation = train.build_arm(
             train.BACKBONE,
-            arguments(tmp_path, **{"--budget-decisions": "20"}),
+            arguments(tmp_path, **{"--budget-game-seconds": "20"}),
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
             profile_id=PROFILE,
@@ -385,9 +388,16 @@ def test_the_report_accounts_for_every_actor_and_for_the_fleet(
         "actor_ids"
     ]
     assert sum(actor["decisions"] for actor in actors) == arm["decisions"]
+    assert sum(actor["game_seconds"] for actor in actors) == pytest.approx(
+        arm["game_seconds"], abs=0.01
+    )
     assert sum(actor["episodes"] for actor in actors) == arm["episodes"]
     assert arm["actors_withdrawn"] == 0
     assert arm["episodes_per_hour"] > 0 and arm["decisions_per_hour"] > 0
+    # Game seconds an hour is the comparable throughput: it does not move with
+    # how often the environment happened to ask for a decision.
+    assert arm["game_seconds_per_hour"] > 0
+    assert all(actor["game_seconds_per_hour"] > 0 for actor in actors)
     for actor in actors:
         assert actor["episodes"] > 0 and actor["decisions"] > 0
         assert actor["valid_episodes"] + actor["invalid_episodes"] <= actor["episodes"]
@@ -435,3 +445,27 @@ def test_a_fleet_attributes_collected_episodes_to_their_actor(
             record for record in records if record["actor_id"] == actor["actor_id"]
         ]
         assert len(attributed) == actor["episodes"] - actor["failed_episodes"]
+
+
+def test_the_summary_reports_the_budget_in_game_time(trained: dict[str, Any]) -> None:
+    """What the run spent, in the unit it was budgeted in, and what it overshot by.
+
+    The budget is accounted at episode granularity, so the run stops after the
+    episode that crossed it. The overshoot is reported rather than rounded
+    away: it is how far apart two arms equalised on one budget can be.
+    """
+    arm = trained["arm"]
+    budget = int(arm["resolved_config"]["budget_game_seconds"])
+
+    assert arm["game_seconds"] >= budget, "the budget is spent, never stopped short of"
+    assert arm["game_seconds"] == pytest.approx(
+        sum(float(episode["round_ms"]) for episode in arm["collected_episodes"]) / 1000
+    )
+    overshoot = arm["budget_overshoot_game_ms"]
+    assert overshoot == pytest.approx(arm["game_seconds"] * 1000 - budget * 1000, abs=1)
+    # At most the last episode of the one actor this fixture collects with.
+    assert 0 <= overshoot <= float(arm["collected_episodes"][-1]["round_ms"])
+    # Decisions are still counted beside it - the replay ratio and the
+    # exploration anneal are in decisions by design - but they are no longer
+    # what the run is spent against.
+    assert arm["decisions"] > 0 and arm["decisions_per_hour"] > 0

@@ -32,6 +32,12 @@ from tower_rl.environment.run_environment import (
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.learning.checkpoint import (
+    Checkpoint,
+    CheckpointIdentity,
+    TrainingProgress,
+    save,
+)
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import CheapestFirstPolicy, RandomPolicy
@@ -118,16 +124,46 @@ def checkpoint_identity(
     }
 
 
+#: Decisions a synthetic checkpoint records per game second of its name. The
+#: two units are related by how a run happened to play, so the selection reads
+#: the decisions out of the file rather than deriving them from the name; this
+#: is only what these fixtures happen to have played at.
+DECISIONS_PER_GAME_SECOND = 2
+
+
+def write_checkpoint_file(path: Path, game_seconds: int) -> None:
+    """A real, readable checkpoint: the selection reads the decisions out of it."""
+    save(
+        Checkpoint(
+            identity=CheckpointIdentity(
+                run_id=RUN_ID,
+                backbone="stacked-dqn",
+                profile_id=PROFILE,
+                observation_schema="observation-v1",
+                action_schema="run-action-v1",
+                reward_schema="reward-v1",
+                source_revision="test",
+            ),
+            progress=TrainingProgress(
+                environment_decisions=game_seconds * DECISIONS_PER_GAME_SECOND,
+                environment_game_ms=game_seconds * 1000.0,
+            ),
+            backbone_state={"weight": torch.ones(1)},
+        ),
+        path,
+    )
+
+
 def run_with_checkpoints(
-    root: Path, decisions: list[int], *, run_id: str = RUN_ID
+    root: Path, game_seconds: list[int], *, run_id: str = RUN_ID
 ) -> tuple[Path, list[Path]]:
-    """A run directory holding numbered checkpoints. The files are never read."""
+    """A run directory holding numbered checkpoints, named by their game seconds."""
     run = root / run_id
     (run / "checkpoints").mkdir(parents=True)
     paths = []
-    for spent in decisions:
-        path = run / "checkpoints" / f"checkpoint-{spent:07d}.pt"
-        path.write_bytes(b"")
+    for spent in game_seconds:
+        path = run / "checkpoints" / f"checkpoint-gs{spent:07d}.pt"
+        write_checkpoint_file(path, spent)
         paths.append(path)
     return run, paths
 
@@ -187,10 +223,13 @@ def test_the_selection_is_the_checkpoint_with_the_highest_interquartile_mean(
     report = json.loads(output.read_text())
     assert report["selection"]["checkpoint"] == str(best)
     assert report["selection"]["selected_on"] == "final_wave"
-    assert report["selection"]["decisions"] == 200
+    assert report["selection"]["game_seconds"] == 200
+    # The decisions behind it travel beside the budget position, read out of
+    # the file rather than off its name.
+    assert report["selection"]["decisions"] == 200 * DECISIONS_PER_GAME_SECOND
     assert len(report["candidates"]) == 3
     # The table is in the order the run produced them, not the command line's.
-    assert [item["decisions"] for item in report["candidates"]] == [100, 200, 300]
+    assert [item["game_seconds"] for item in report["candidates"]] == [100, 200, 300]
     # Three separated arms: nothing contests the winner at this sample.
     assert report["selection_contested_by"] == []
 
@@ -231,9 +270,9 @@ def test_an_evaluation_of_another_runs_checkpoint_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run, _ = run_with_checkpoints(tmp_path, [100])
-    other = tmp_path / "elsewhere" / "checkpoint-0900000.pt"
+    other = tmp_path / "elsewhere" / "checkpoint-gs0900000.pt"
     other.parent.mkdir(parents=True)
-    other.write_bytes(b"")
+    write_checkpoint_file(other, 900_000)
     directory = evaluation_directory(
         tmp_path / "evals", "foreign", {"a": [5, 6]}, checkpoint_identity(other)
     )
@@ -247,7 +286,7 @@ def test_two_runs_at_the_same_period_do_not_borrow_each_others_evaluations(
 ) -> None:
     """The file names collide; the run id is what says whose checkpoint it is.
 
-    Two runs trained at the same `--checkpoint-every-decisions` leave files
+    Two runs trained at the same `--checkpoint-every-game-seconds` leave files
     called exactly the same thing. Identifying a candidate by its file name
     would accept the other run's evaluation here, and the model reported as this
     run's work would be a model it never produced.
@@ -295,14 +334,15 @@ def test_candidates_that_disagree_about_their_run_are_refused(
         invoke(select_checkpoint, [str(run), *[str(item) for item in directories]], monkeypatch)
 
 
-def test_candidates_are_ordered_by_decisions_not_by_how_their_names_sort(
+def test_candidates_are_ordered_by_game_seconds_not_by_how_their_names_sort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The zero padding only orders correctly while every name is the same width.
 
-    A ten-million-decision run is about three days of collection on the fleet,
-    not a hypothetical, and at that point the widths mix: `checkpoint-10000000`
-    sorts before `checkpoint-9000000` as text and after it as a number.
+    A ten-million-game-second run is about three days of collection on the
+    fleet, not a hypothetical, and at that point the widths mix:
+    `checkpoint-gs10000000` sorts before `checkpoint-gs9000000` as text and
+    after it as a number.
     """
     run, checkpoints = run_with_checkpoints(tmp_path, [9_000_000, 10_000_000])
     nine, ten = checkpoints
@@ -327,7 +367,10 @@ def test_candidates_are_ordered_by_decisions_not_by_how_their_names_sort(
     )
 
     report = json.loads(output.read_text())
-    assert [item["decisions"] for item in report["candidates"]] == [9_000_000, 10_000_000]
+    assert [item["game_seconds"] for item in report["candidates"]] == [
+        9_000_000,
+        10_000_000,
+    ]
     # The printed table reads as a curve, in the order the run produced them.
     printed = capsys.readouterr().out
     assert printed.index(nine.name) < printed.index(ten.name)
@@ -351,7 +394,7 @@ def test_a_run_without_numbered_checkpoints_has_nothing_to_choose_among(
     run = tmp_path / "run"
     (run / "checkpoints").mkdir(parents=True)
 
-    with pytest.raises(SystemExit, match="--checkpoint-every-decisions"):
+    with pytest.raises(SystemExit, match="--checkpoint-every-game-seconds"):
         invoke(select_checkpoint, [str(run), str(tmp_path)], monkeypatch)
 
 
@@ -637,9 +680,9 @@ def test_train_then_select_then_report(
         session = train.train_session(
             train.parse_arguments(
                 [
-                    "--budget-decisions", "300",
-                    "--block-decisions", "50",
-                    "--checkpoint-every-decisions", "100",
+                    "--budget-game-seconds", "1200",
+                    "--block-game-seconds", "200",
+                    "--checkpoint-every-game-seconds", "400",
                     "--batch-size", "2",
                     "--gradient-steps-per-decision", "0.2",
                     "--warmup-sequences", "2",
@@ -662,7 +705,7 @@ def test_train_then_select_then_report(
         )
 
     run = Path(session["session"]) / session["arm"]["run_id"]
-    checkpoints = sorted((run / "checkpoints").glob("checkpoint-*.pt"))
+    checkpoints = sorted((run / "checkpoints").glob("checkpoint-gs*.pt"))
     assert len(checkpoints) >= 2, "the budget crosses the period more than once"
 
     # Set A: every candidate, each in its own directory.
@@ -737,7 +780,7 @@ def attached(module: Any, monkeypatch: pytest.MonkeyPatch) -> RecordedRun:
 def test_the_greedy_curve_is_logged_onto_the_training_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Keyed by each checkpoint's own decisions, so it sits above the exploring curve."""
+    """On both axes: the run's decision axis, and the budget axis in game seconds."""
     run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
     weak, best = checkpoints
     directories = [
@@ -763,10 +806,22 @@ def test_the_greedy_curve_is_logged_onto_the_training_run(
         monkeypatch,
     )
 
-    # The decisions in each checkpoint's own file name, which is the axis the
-    # training run's episode and checkpoint metrics already use.
-    assert [point.decisions for point in recorded.points] == [100, 200]
-    for point in recorded.points:
+    # Each candidate twice: once on the decisions the store's step axis is in,
+    # and once on the game seconds the run was actually budgeted in.
+    on_decisions = [
+        point for point in recorded.points if "greedy_final_wave_iqm" in point.metrics
+    ]
+    on_game_seconds = [
+        point
+        for point in recorded.points
+        if "greedy_final_wave_iqm_by_game_seconds" in point.metrics
+    ]
+    assert [point.decisions for point in on_decisions] == [
+        100 * DECISIONS_PER_GAME_SECOND,
+        200 * DECISIONS_PER_GAME_SECOND,
+    ]
+    assert [point.decisions for point in on_game_seconds] == [100, 200]
+    for point in on_decisions:
         assert set(point.metrics) == {
             "greedy_final_wave_iqm",
             "greedy_final_wave_ci_low",
@@ -777,8 +832,13 @@ def test_the_greedy_curve_is_logged_onto_the_training_run(
             <= point.metrics["greedy_final_wave_iqm"]
             <= point.metrics["greedy_final_wave_ci_high"]
         )
-    assert recorded.points[1].metrics["greedy_final_wave_iqm"] > (
-        recorded.points[0].metrics["greedy_final_wave_iqm"]
+    # The same numbers on both axes, under their own keys.
+    assert [point.metrics["greedy_final_wave_iqm"] for point in on_decisions] == [
+        point.metrics["greedy_final_wave_iqm_by_game_seconds"]
+        for point in on_game_seconds
+    ]
+    assert on_decisions[1].metrics["greedy_final_wave_iqm"] > (
+        on_decisions[0].metrics["greedy_final_wave_iqm"]
     )
 
 

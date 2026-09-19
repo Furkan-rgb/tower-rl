@@ -101,6 +101,9 @@ class TrainingReport:
     #: segment's clock.
     resumed_decisions: int = 0
     resumed_episodes: int = 0
+    #: What the parent segment had already spent of the budget, which is the
+    #: same offset in the unit the budget is counted in.
+    resumed_game_ms: float = 0.0
     #: How far the episode series has been reported: collected episodes already
     #: sent to the tracker, and the decisions spent by the end of the last of
     #: them. The episode is the tracked unit, so both are carried rather than
@@ -114,12 +117,16 @@ class TrainingReport:
     #: multi-hour run collects.
     episodes_logged: int = field(init=False, default=0)
     decisions_logged: int = field(init=False, default=0)
+    #: The same running sum in game time, so each episode's point carries the
+    #: budget position it ended at as well as the decisions axis it is keyed on.
+    game_ms_logged: float = field(init=False, default=0.0)
     #: The tracking run this report's checkpoints name as their own, so a resume
     #: from one of them can continue that series. None when untracked.
     tracking_run_id: str | None = None
 
     def __post_init__(self) -> None:
         self.decisions_logged = self.resumed_decisions
+        self.game_ms_logged = self.resumed_game_ms
 
     @property
     def near_greedy_actor_ids(self) -> frozenset[str]:
@@ -145,17 +152,23 @@ class TrainingReport:
         self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
 
     def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
-        """One candidate model of the run, named by the decisions behind it.
+        """One candidate model of the run, named by the game time behind it.
 
         Beside `latest.pt` rather than instead of it: the resume point is
         overwritten as the run proceeds and therefore names no particular model,
         while these are the arms a later evaluation chooses among. The name
-        carries the decisions actually spent when it was written - the counter
-        lands past its period, not on it, because an episode is played to its
-        classified end - so a file says what it cost rather than what it was
-        aimed at.
+        carries the game seconds actually spent when it was written - the
+        counter lands past its period, not on it, because an episode is played
+        to its classified end - so a file says what it cost rather than what it
+        was aimed at. The `gs` prefix on the number is what tells a file of this
+        run from a `checkpoint-<decisions>.pt` of run 1, whose number counts
+        something else entirely.
         """
-        path = self.run_dir / "checkpoints" / f"checkpoint-{report.decisions:07d}.pt"
+        path = (
+            self.run_dir
+            / "checkpoints"
+            / f"checkpoint-gs{int(report.game_seconds):07d}.pt"
+        )
         digest = self._write(report, path)
         # Under the same tracked run as every metric this report logs, and under
         # the weight digest a later reading names it by: a candidate the run's
@@ -172,6 +185,7 @@ class TrainingReport:
             progress=TrainingProgress(
                 optimisation_steps=report.optimisation_steps,
                 environment_decisions=report.decisions,
+                environment_game_ms=report.game_ms,
                 episodes=report.episodes,
                 # Read from the run rather than re-evaluated from its
                 # schedules: the schedule position and the importance exponent
@@ -269,6 +283,7 @@ class TrainingReport:
             # since the last call, and a point on the wrong key is a point on
             # the wrong part of the curve.
             self.decisions_logged += episode.summary.decisions
+            self.game_ms_logged += episode.summary.round_ms
             self.episodes_logged += 1
             index = actors.get(episode.actor_id, -1)
             self.run.log_metrics(
@@ -276,6 +291,11 @@ class TrainingReport:
                     **episode_metrics(
                         episode,
                         actor_index=index,
+                        # Where this episode left the budget, on the axis the
+                        # run is actually spent against. The step below stays
+                        # decisions, which is monotone and comparable with
+                        # every series already recorded.
+                        cumulative_game_ms=self.game_ms_logged,
                         # The rate the actor that played this episode was
                         # exploring at, where its episode ended - not the run's
                         # published one, which under a ladder is some other
@@ -375,6 +395,14 @@ class TrainingReport:
             "run_id": self.identity.run_id,
             "resolved_config": self.resolved,
             "decisions": report.decisions,
+            # The budget position, and how far past the budget the last episode
+            # of each actor carried it: the budget is accounted at episode
+            # granularity, so two arms equalised on it were equalised to within
+            # this much.
+            "game_seconds": round(report.game_seconds, 3),
+            "budget_overshoot_game_ms": round(
+                self.training.budget_overshoot_game_ms, 3
+            ),
             "episodes": report.episodes,
             "valid_episodes": report.valid_episodes,
             "optimisation_steps": report.optimisation_steps,
@@ -431,6 +459,13 @@ class TrainingReport:
             ),
             "decisions_per_hour": per_hour(
                 report.decisions - self.resumed_decisions, report.wall_seconds
+            ),
+            # The comparable throughput: game seconds bought per wall hour is
+            # what the device sells, and it does not move with how often the
+            # environment happened to ask for a decision.
+            "game_seconds_per_hour": per_hour(
+                report.game_seconds - self.resumed_game_ms / 1000.0,
+                report.wall_seconds,
             ),
             # Kept for compatibility with the report's earlier shape; identical
             # to `health["invalid_by_reason"]`, which is where it is now pooled.

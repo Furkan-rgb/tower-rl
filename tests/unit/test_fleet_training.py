@@ -153,7 +153,7 @@ def fleet(
         for index, item in enumerate(environments)
     ]
     settings: dict[str, Any] = {
-        "budget_decisions": 300,
+        "budget_game_seconds": 375,
         "warmup_sequences": 2,
         "batch_size": 2,
         "gradient_steps_per_decision": 0.2,
@@ -200,7 +200,7 @@ def test_a_bridge_that_stops_answering_withdraws_its_actor_and_not_the_run() -> 
     withdrawn: list[tuple[str, str]] = []
     training = fleet(
         [environment(), dead_bridge_environment(), environment()],
-        budget_decisions=200,
+        budget_game_seconds=250,
         max_consecutive_episode_failures=3,
     )
     training.on_withdrawal = lambda progress: withdrawn.append(
@@ -216,14 +216,14 @@ def test_a_bridge_that_stops_answering_withdraws_its_actor_and_not_the_run() -> 
     assert withdrawn == [("fake-1:stacked-dqn", dead.withdrawn)]
     alive = [progress for progress in report.actors.values() if progress.withdrawn is None]
     assert len(alive) == 2 and all(progress.valid_episodes > 0 for progress in alive)
-    assert report.decisions >= 200
+    assert report.game_seconds >= 250
 
 
 def test_a_fleet_whose_bridges_have_all_died_still_ends_the_run() -> None:
     """Nothing left collecting is a dead environment however it died."""
     training = fleet(
         [dead_bridge_environment() for _ in range(2)],
-        budget_decisions=200,
+        budget_game_seconds=250,
         max_consecutive_episode_failures=2,
     )
 
@@ -238,7 +238,7 @@ def test_a_fleet_whose_bridges_have_all_died_still_ends_the_run() -> None:
 def test_the_actors_of_a_fleet_collect_at_the_same_time() -> None:
     """The whole point: N instances stepping at once, not N arms taking turns."""
     overlap = Overlap()
-    training = fleet([environment(overlap) for _ in range(3)], budget_decisions=200)
+    training = fleet([environment(overlap) for _ in range(3)], budget_game_seconds=250)
 
     training.run()
 
@@ -248,7 +248,7 @@ def test_the_actors_of_a_fleet_collect_at_the_same_time() -> None:
 
 def test_every_actor_writes_into_the_one_replay_buffer() -> None:
     """One buffer and one learner: experience is pooled, not split per instance."""
-    training = fleet([environment() for _ in range(3)], budget_decisions=200)
+    training = fleet([environment() for _ in range(3)], budget_game_seconds=250)
 
     report = training.run()
 
@@ -259,14 +259,16 @@ def test_every_actor_writes_into_the_one_replay_buffer() -> None:
 
 def test_the_budget_is_counted_across_the_fleet() -> None:
     """Three actors spend one budget, and the learner's steps track all of it."""
-    training = fleet([environment() for _ in range(3)], budget_decisions=200)
+    training = fleet([environment() for _ in range(3)], budget_game_seconds=250)
 
     report = training.run()
 
     per_actor = [progress.decisions for progress in report.actors.values()]
-    assert report.decisions >= 200
+    game_time = [progress.game_ms for progress in report.actors.values()]
+    assert report.game_seconds >= 250
+    assert sum(game_time) == pytest.approx(report.game_ms)
     assert sum(per_actor) == report.decisions
-    assert all(decisions < report.decisions for decisions in per_actor), (
+    assert all(spent < report.game_ms for spent in game_time), (
         "no single actor spent the whole budget; the fleet did"
     )
     # Gradient steps follow the fleet's decisions rather than one actor's. The
@@ -284,7 +286,7 @@ def test_the_budget_is_counted_across_the_fleet() -> None:
 def test_the_collection_series_is_the_fleet_in_completion_order() -> None:
     """Windows are cut over episodes as they ended, whichever actor ended them."""
     overlap = Overlap()
-    training = fleet([environment(overlap) for _ in range(3)], budget_decisions=200)
+    training = fleet([environment(overlap) for _ in range(3)], budget_game_seconds=250)
 
     report = training.run()
     windows = collection_windows(report.collected, size=2)
@@ -307,7 +309,7 @@ def test_one_dead_instance_costs_an_actor_and_not_the_run() -> None:
     """A fleet-level limit: one emulator dying is not a dead environment."""
     training = fleet(
         [environment(), environment(refuse_to_start=True), environment()],
-        budget_decisions=200,
+        budget_game_seconds=250,
         max_consecutive_episode_failures=3,
     )
 
@@ -320,14 +322,14 @@ def test_one_dead_instance_costs_an_actor_and_not_the_run() -> None:
     # The survivors spent the whole budget between them.
     alive = [progress for progress in report.actors.values() if progress.withdrawn is None]
     assert len(alive) == 2 and all(progress.valid_episodes > 0 for progress in alive)
-    assert report.decisions >= 200
+    assert report.game_seconds >= 250
 
 
 def test_a_withdrawn_actor_is_not_asked_again_in_a_later_block() -> None:
     """Its instance failed every episode the limit allows; retrying would spin."""
     training = fleet(
         [environment(), environment(refuse_to_start=True)],
-        budget_decisions=400,
+        budget_game_seconds=500,
         max_consecutive_episode_failures=2,
     )
 
@@ -339,14 +341,14 @@ def test_a_withdrawn_actor_is_not_asked_again_in_a_later_block() -> None:
 
     assert dead.withdrawn is not None
     assert dead.failed_episodes == failures_after_first_block == 2
-    assert training.report.decisions >= 200
+    assert training.report.game_seconds >= 250
 
 
 def test_a_fleet_with_nothing_left_collecting_stops_the_run() -> None:
     """Every instance broken is a dead environment, which is what ends a run."""
     training = fleet(
         [environment(refuse_to_start=True) for _ in range(2)],
-        budget_decisions=200,
+        budget_game_seconds=250,
         max_consecutive_episode_failures=2,
     )
 
@@ -402,7 +404,7 @@ def test_a_fleet_refuses_to_evaluate_on_an_instance_that_is_still_collecting() -
 
 def test_a_fleet_of_one_may_evaluate_between_its_own_episodes() -> None:
     """The same hook is legal for one actor: the hook runs on that actor's thread."""
-    training = fleet([environment()], evaluate_every_episodes=1, budget_decisions=20)
+    training = fleet([environment()], evaluate_every_episodes=1, budget_game_seconds=25)
     evaluations = 0
 
     def evaluate_now() -> Any:
@@ -516,7 +518,7 @@ def test_a_ladder_puts_every_actor_of_the_fleet_on_a_rate_of_its_own() -> None:
         anneal_decisions=1,
     )
     training = fleet(
-        [environment() for _ in range(3)], exploration=schedule, budget_decisions=200
+        [environment() for _ in range(3)], exploration=schedule, budget_game_seconds=250
     )
 
     training.run()
@@ -549,7 +551,7 @@ def test_a_ladder_built_for_another_fleet_is_refused() -> None:
 
 def test_every_actor_acts_from_a_copy_of_its_own_and_not_from_the_learner() -> None:
     """The point of the whole arrangement: no forward pass touches shared state."""
-    training, watched = watched_fleet(3, budget_decisions=200)
+    training, watched = watched_fleet(3, budget_game_seconds=250)
 
     report = training.run()
 
@@ -590,7 +592,7 @@ def test_an_actor_does_not_wait_for_the_learner_to_finish_a_step() -> None:
 
     watched.learn = timed  # type: ignore[method-assign]
     training = fleet(
-        [environment(overlap) for _ in range(3)], backbone=watched, budget_decisions=200
+        [environment(overlap) for _ in range(3)], backbone=watched, budget_game_seconds=250
     )
 
     report = training.run()
@@ -605,7 +607,7 @@ def test_an_actor_does_not_wait_for_the_learner_to_finish_a_step() -> None:
 
 def test_a_publication_gives_an_actor_the_learner_s_current_parameters() -> None:
     """Synchronisation is the whole contract: afterwards the copy is the learner."""
-    training, _ = watched_fleet(1, budget_decisions=200)
+    training, _ = watched_fleet(1, budget_game_seconds=250)
     acting = copies(training)[0]
 
     report = training.run()
@@ -623,7 +625,7 @@ def test_a_publication_gives_an_actor_the_learner_s_current_parameters() -> None
 
 def test_no_actor_is_ever_given_half_of_an_optimisation_step() -> None:
     """Stale parameters are fine; half-updated ones are no policy at all."""
-    training, watched = watched_fleet(3, budget_decisions=200)
+    training, watched = watched_fleet(3, budget_game_seconds=250)
 
     report = training.run()
 
@@ -648,7 +650,7 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     )
     matched: list[bool] = []
     instance = environment()
-    training = fleet([instance], backbone=watched, budget_decisions=200)
+    training = fleet([instance], backbone=watched, budget_game_seconds=250)
     acting = copies(training)[0]
     opened = instance.reset
 
@@ -675,7 +677,7 @@ def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
     fleet, where another actor's learning lands mid-episode, and it is what
     keeps a run configured with `--actors 1` reproducible.
     """
-    training, watched = watched_fleet(1, budget_decisions=200)
+    training, watched = watched_fleet(1, budget_game_seconds=250)
     acting = copies(training)[0]
     boundaries: list[int] = []
     training.on_episode = lambda _: boundaries.append(acting.acts)
@@ -697,7 +699,7 @@ def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
 
 def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_episodes() -> None:
     """A bounded lag, set explicitly: one refresh every three episodes, not more."""
-    training, _ = watched_fleet(1, budget_decisions=900, parameter_sync_episodes=3)
+    training, _ = watched_fleet(1, budget_game_seconds=1125, parameter_sync_episodes=3)
     acting = copies(training)[0]
 
     report = training.run()
@@ -709,7 +711,7 @@ def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_episodes() -> 
 
 def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alone() -> None:
     """The carried history window is the actor's, not the network's, and outlives a refresh."""
-    training, _ = watched_fleet(1, budget_decisions=200)
+    training, _ = watched_fleet(1, budget_game_seconds=250)
     acting = copies(training)[0]
     instance = training.actors[0].environment
 

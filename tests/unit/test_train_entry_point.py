@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,8 +54,8 @@ def arguments(run_dir: Path, **overrides: str) -> argparse.Namespace:
     """The real parser, so the entry point's own defaults and checks are used."""
     argv: list[str] = []
     settings = {
-        "--budget-decisions": "150",
-        "--block-decisions": "50",
+        "--budget-game-seconds": "600",
+        "--block-game-seconds": "200",
         "--batch-size": "2",
         "--gradient-steps-per-decision": "0.2",
         "--warmup-sequences": "2",
@@ -99,14 +100,14 @@ def fleet(count: int = 1, **fake: Any) -> list[train.ActorInstance]:
 
 def session(
     run_dir: Path,
-    budget: str = "120",
+    budget: str = "600",
     actors: int = 1,
     settings: dict[str, str] | None = None,
     tracker: Any = None,
     resume: Any = None,
     **fake: Any,
 ) -> dict[str, Any]:
-    overrides = {"--budget-decisions": budget, **(settings or {})}
+    overrides = {"--budget-game-seconds": budget, **(settings or {})}
     if actors > 1:
         overrides.update(
             {
@@ -133,7 +134,7 @@ def session(
 
 #: Long enough that the arm plays more than one episode, which is what closes
 #: a window of the collection curve.
-TRAINING_BUDGET = "300"
+TRAINING_BUDGET = "1200"
 
 
 @pytest.fixture(scope="module")
@@ -147,7 +148,7 @@ def test_the_backbone_trains_under_one_budget(trained: dict[str, Any]) -> None:
     arm = trained["arm"]
 
     assert arm["backbone"] == "stacked-dqn"
-    assert arm["decisions"] >= int(TRAINING_BUDGET), "the arm spends the budget"
+    assert arm["game_seconds"] >= int(TRAINING_BUDGET), "the arm spends the budget"
     assert arm["episodes"] > 0
     assert arm["optimisation_steps"] > 0
     assert arm["sequences_accepted"] > 0
@@ -191,7 +192,7 @@ def test_an_episode_the_port_refuses_does_not_abort_the_session(tmp_path: Path) 
     assert len(arm["evaluation_failures"]) >= 1
     assert arm["failed_episodes"] + len(arm["evaluation_failures"]) == 2
     # The budget is still spent and the curve still produced.
-    assert arm["decisions"] >= 120
+    assert arm["game_seconds"] >= 600
     assert arm["learning_curve"]
 
 
@@ -204,7 +205,7 @@ def test_an_ambiguous_advance_is_classified_and_the_session_continues(
 
     arm = report["arm"]
     assert arm["failed_episodes"] == 0, "the port answered; the episode did not"
-    assert arm["episodes"] > 1 and arm["decisions"] >= 120
+    assert arm["episodes"] > 1 and arm["game_seconds"] >= 600
     # The pipeline failure is an invalid episode, counted rather than fatal.
     assert arm["valid_episodes"] < arm["episodes"]
     assert arm["invalid_episodes_by_reason"] == {
@@ -250,17 +251,17 @@ def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -
         arguments(tmp_path, **{"--stacked-burn-in": "2"})
 
 
-#: A checkpoint period that is a whole number of the 50-decision blocks these
-#: settings collect in, which is what the parser requires of it.
-CHECKPOINT_PERIOD = 100
+#: A checkpoint period that is a whole number of the 200-game-second blocks
+#: these settings collect in, which is what the parser requires of it.
+CHECKPOINT_PERIOD = 400
 
 
 def numbered_checkpoints(report: dict[str, Any]) -> tuple[dict[str, Any], Path, list[int]]:
-    """The arm, its checkpoint directory, and the decisions each file names."""
+    """The arm, its checkpoint directory, and the game seconds each file names."""
     arm = report["arm"]
     directory = Path(report["session"]) / arm["run_id"] / "checkpoints"
-    files = sorted(directory.glob("checkpoint-*.pt"))
-    return arm, directory, [int(path.stem.removeprefix("checkpoint-")) for path in files]
+    files = sorted(directory.glob("checkpoint-gs*.pt"))
+    return arm, directory, [int(path.stem.removeprefix("checkpoint-gs")) for path in files]
 
 
 def test_a_numbered_checkpoint_is_written_at_every_crossing_of_the_period(
@@ -276,22 +277,22 @@ def test_a_numbered_checkpoint_is_written_at_every_crossing_of_the_period(
     """
     report = session(
         tmp_path,
-        budget="600",
-        settings={"--checkpoint-every-decisions": str(CHECKPOINT_PERIOD)},
+        budget="2400",
+        settings={"--checkpoint-every-game-seconds": str(CHECKPOINT_PERIOD)},
     )
     arm, directory, written = numbered_checkpoints(report)
 
-    spent = 0
+    spent = 0.0
     crossed = 0
     expected: list[int] = []
     for episode in arm["collected_episodes"]:
-        spent += int(episode["decisions"])
-        reached = spent // CHECKPOINT_PERIOD * CHECKPOINT_PERIOD
+        spent += float(episode["round_ms"])
+        reached = int(spent / 1000) // CHECKPOINT_PERIOD * CHECKPOINT_PERIOD
         if reached > crossed:
             crossed = reached
-            expected.append(spent)
+            expected.append(int(spent / 1000))
 
-    assert len(written) >= 2, "a 600-decision budget crosses the period several times"
+    assert len(written) >= 2, "a 2,400-second budget crosses the period several times"
     assert written == expected
     # Beside the resume point, which is overwritten and names no one model.
     assert (directory / "latest.pt").exists()
@@ -301,20 +302,23 @@ def test_a_numbered_checkpoint_carries_the_run_it_came_from(tmp_path: Path) -> N
     """Each one is resumable and says which run, and which decisions, made it."""
     report = session(
         tmp_path,
-        budget="300",
-        settings={"--checkpoint-every-decisions": str(CHECKPOINT_PERIOD)},
+        budget="1200",
+        settings={"--checkpoint-every-game-seconds": str(CHECKPOINT_PERIOD)},
     )
     arm, directory, written = numbered_checkpoints(report)
     assert written, "the budget crosses the period at least once"
 
-    for decisions in written:
-        checkpoint = load(directory / f"checkpoint-{decisions:07d}.pt")
+    for game_seconds in written:
+        checkpoint = load(directory / f"checkpoint-gs{game_seconds:07d}.pt")
         assert checkpoint.identity.run_id == arm["run_id"]
         assert checkpoint.identity.backbone == "stacked-dqn"
         assert checkpoint.identity.profile_id == PROFILE
-        # The name is the decisions the progress in the file records, not an
+        # The name is the game time the progress in the file records, not an
         # aspiration: a selection reads the file, not the directory listing.
-        assert checkpoint.progress.environment_decisions == decisions
+        assert int(checkpoint.progress.environment_game_ms / 1000) == game_seconds
+        # And the decisions behind it travel with it, because the learning-side
+        # schedules are still counted in decisions.
+        assert checkpoint.progress.environment_decisions > 0
         # The width of the network, so the checkpoint can be rebuilt into the
         # policy that wrote it without being told what shape it is.
         assert checkpoint.resolved_config["network_hidden"] == SMALL_NETWORK.hidden
@@ -322,9 +326,9 @@ def test_a_numbered_checkpoint_carries_the_run_it_came_from(tmp_path: Path) -> N
 
 def test_no_numbered_checkpoints_are_written_without_a_period(tmp_path: Path) -> None:
     """The default leaves only the resume point, exactly as before."""
-    assert train.parse_arguments(["--run-dir", str(tmp_path)]).checkpoint_every_decisions == 0
+    assert train.parse_arguments(["--run-dir", str(tmp_path)]).checkpoint_every_game_seconds == 0
 
-    _, directory, written = numbered_checkpoints(session(tmp_path, budget="150"))
+    _, directory, written = numbered_checkpoints(session(tmp_path, budget="600"))
 
     assert written == []
     assert (directory / "latest.pt").exists()
@@ -332,15 +336,15 @@ def test_no_numbered_checkpoints_are_written_without_a_period(tmp_path: Path) ->
 
 def test_a_checkpoint_period_that_is_not_whole_blocks_is_refused(tmp_path: Path) -> None:
     """Checked in the parser: the budget is spent a block at a time."""
-    with pytest.raises(SystemExit, match="not a multiple of --block-decisions"):
-        arguments(tmp_path, **{"--checkpoint-every-decisions": "75"})
+    with pytest.raises(SystemExit, match="not a multiple of --block-game-seconds"):
+        arguments(tmp_path, **{"--checkpoint-every-game-seconds": "300"})
     with pytest.raises(SystemExit, match="cannot be negative"):
-        arguments(tmp_path, **{"--checkpoint-every-decisions": "-1"})
+        arguments(tmp_path, **{"--checkpoint-every-game-seconds": "-1"})
 
 
 #: Two fake instances, which is the fleet arrangement a device run takes: every
 #: block of collection uses every actor.
-FLEET_BUDGET = "300"
+FLEET_BUDGET = "1200"
 
 
 @pytest.fixture(scope="module")
@@ -358,7 +362,7 @@ def test_a_fleet_trains_the_backbone_under_one_budget(
     assert fleet_trained["bring_up_failures"] == []
 
     arm = fleet_trained["arm"]
-    assert arm["decisions"] >= int(FLEET_BUDGET)
+    assert arm["game_seconds"] >= int(FLEET_BUDGET)
     assert arm["optimisation_steps"] > 0 and arm["sequences_accepted"] > 0
     assert arm["resolved_config"]["actors"] == 2
     assert arm["resolved_config"]["actor_ids"] == [
@@ -379,7 +383,7 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
             arguments(
                 tmp_path,
                 **{
-                    "--budget-decisions": "150",
+                    "--budget-game-seconds": "150",
                     "--actors": "2",
                     "--serial": CloneInstance(index=0).serial,
                     "--evaluate-every-episodes": "0",
@@ -401,7 +405,8 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
     alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:stacked-dqn")
     assert dead["withdrawn"] is not None and dead["failed_episodes"] > 0
     assert arm["actors_withdrawn"] == 1
-    assert alive["decisions"] == arm["decisions"] >= 150
+    assert alive["decisions"] == arm["decisions"] > 0
+    assert arm["game_seconds"] == pytest.approx(alive["game_seconds"])
     assert arm["final_evaluation"] is not None, "the run was still measured"
     # A withdrawal is invisible in the aggregate, so it is announced when it
     # happens, naming the instance that left and what took it out.
@@ -664,8 +669,8 @@ def test_resolved_config_carries_the_frame_rate(tmp_path: Path) -> None:
 # re-warms under the loaded policy, which is the ordinary warm-up rule applied
 # again from the resume point.
 
-#: A whole number of the 50-decision blocks these settings collect in.
-RESUME_PERIOD = 100
+#: A whole number of the 200-game-second blocks these settings collect in.
+RESUME_PERIOD = 400
 
 
 def numbered(run_dir: Path, budget: int, **overrides: str) -> dict[str, Any]:
@@ -673,7 +678,7 @@ def numbered(run_dir: Path, budget: int, **overrides: str) -> dict[str, Any]:
     return session(
         run_dir,
         budget=str(budget),
-        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD), **overrides},
+        settings={"--checkpoint-every-game-seconds": str(RESUME_PERIOD), **overrides},
     )
 
 
@@ -693,7 +698,7 @@ def resume_from(
     return train.resume_point(
         arguments(
             run_dir,
-            **{"--budget-decisions": str(budget), "--resume": str(checkpoint)},
+            **{"--budget-game-seconds": str(budget), "--resume": str(checkpoint)},
         ),
         profile_id=profile_id,
         revision="test",
@@ -712,9 +717,9 @@ def resumed_arm(
     settings = arguments(
         run_dir,
         **{
-            "--budget-decisions": str(budget),
+            "--budget-game-seconds": str(budget),
             "--resume": str(checkpoint),
-            "--checkpoint-every-decisions": str(RESUME_PERIOD),
+            "--checkpoint-every-game-seconds": str(RESUME_PERIOD),
             **overrides,
         },
     )
@@ -783,11 +788,11 @@ def test_a_run_can_be_resumed_onto_the_ladder(tmp_path: Path) -> None:
     restores is the weights and the counters, and what the ladder changes is
     only how the fleet collects from here on.
     """
-    first = numbered(tmp_path / "first", 300)
+    first = numbered(tmp_path / "first", 1200)
     checkpoint = latest_checkpoint(first)
 
     arm, resume = resumed_arm(
-        tmp_path / "second", checkpoint, budget=600, **{"--exploration": "ladder"}
+        tmp_path / "second", checkpoint, budget=2400, **{"--exploration": "ladder"}
     )
 
     exploration = arm.training.config.exploration
@@ -801,17 +806,20 @@ def test_a_run_can_be_resumed_onto_the_ladder(tmp_path: Path) -> None:
 
 def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) -> None:
     """The state a second sitting continues from, before it collects anything."""
-    first = numbered(tmp_path / "first", 300)
+    first = numbered(tmp_path / "first", 1200)
     checkpoint = latest_checkpoint(first)
     parent = load(checkpoint)
     spent = parent.progress.environment_decisions
+    spent_game_ms = parent.progress.environment_game_ms
 
-    arm, resume = resumed_arm(tmp_path / "second", checkpoint, budget=600)
+    arm, resume = resumed_arm(tmp_path / "second", checkpoint, budget=2400)
 
     progress = arm.training.report
     config = arm.training.config
-    # The decision counter, which the budget, the schedules and the cadences
-    # are all read from.
+    # The budget position, which the budget and the checkpoint cadence are read
+    # from, and the decision counter the exploration schedule is read from.
+    assert progress.game_ms == spent_game_ms > 0
+    assert progress.game_seconds == pytest.approx(first["arm"]["game_seconds"])
     assert progress.decisions == spent == first["arm"]["decisions"]
     assert progress.episodes == parent.progress.episodes
     assert progress.optimisation_steps == parent.progress.optimisation_steps
@@ -824,7 +832,7 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
         == config.exploration.epsilon_for(0, spent)
         != config.exploration.epsilon_for(0, 0)
     )
-    assert progress.importance_beta == config.beta(spent) != config.beta(0)
+    assert progress.importance_beta == config.beta(spent_game_ms) != config.beta(0)
     # The optimizer's moments come back with the weights: one state dict, and a
     # resume that took only the weights would restart Adam silently mid-run.
     moments = parent.backbone_state["optimizer"]["state"]
@@ -841,26 +849,29 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
     assert arm.resolved["parent_checkpoint"] == resume.parent_checkpoint
     assert str(checkpoint) in resume.parent_checkpoint
     assert identity_hash(parent.identity) in resume.parent_checkpoint
-    # The episode series is keyed on the budget, so it continues where the
-    # parent left off rather than restarting at zero.
+    # The episode series is keyed on decisions and carries the budget position
+    # beside it, so both continue where the parent left off rather than
+    # restarting at zero.
     assert arm.decisions_logged == spent
+    assert arm.game_ms_logged == spent_game_ms
 
 
 def test_a_resumed_run_spends_the_rest_of_the_budget(tmp_path: Path) -> None:
     """The budget is the run's total, and the second segment finishes it."""
-    first = numbered(tmp_path / "first", 200)
+    first = numbered(tmp_path / "first", 800)
     spent = first["arm"]["decisions"]
+    spent_game_seconds = first["arm"]["game_seconds"]
 
     second = session(
         tmp_path / "second",
-        budget="400",
-        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
-        resume=resume_from(tmp_path / "second", latest_checkpoint(first), 400),
+        budget="1600",
+        settings={"--checkpoint-every-game-seconds": str(RESUME_PERIOD)},
+        resume=resume_from(tmp_path / "second", latest_checkpoint(first), 1600),
     )
 
     arm = second["arm"]
-    assert arm["decisions"] >= 400, "the run continues to the whole budget"
-    assert arm["resolved_config"]["budget_decisions"] == 400
+    assert arm["game_seconds"] >= 1600, "the run continues to the whole budget"
+    assert arm["resolved_config"]["budget_game_seconds"] == 1600
     assert arm["resolved_config"]["parent_checkpoint"] is not None
     # The second segment collected what was left, not the whole budget again.
     collected = sum(int(episode["decisions"]) for episode in arm["collected_episodes"])
@@ -869,8 +880,8 @@ def test_a_resumed_run_spends_the_rest_of_the_budget(tmp_path: Path) -> None:
     # segment wrote is past the resume point, and none of them answers a
     # multiple the first segment already answered.
     _, _, written = numbered_checkpoints(second)
-    assert written and min(written) > spent
-    assert min(written) // RESUME_PERIOD > spent // RESUME_PERIOD
+    assert written and min(written) > spent_game_seconds
+    assert min(written) // RESUME_PERIOD > int(spent_game_seconds) // RESUME_PERIOD
     # Throughput is this sitting's: the counters above are the whole run's and
     # came back restored, but the wall clock is this segment's alone, so the
     # parent's decisions must not be charged to it.
@@ -882,21 +893,22 @@ def test_a_resumed_run_spends_the_rest_of_the_budget(tmp_path: Path) -> None:
 
 
 def test_a_checkpoint_that_has_already_spent_the_budget_is_refused(tmp_path: Path) -> None:
-    """`--budget-decisions` is the run's total, so it must be raised to extend it."""
-    first = numbered(tmp_path / "first", 200)
-    spent = first["arm"]["decisions"]
+    """`--budget-game-seconds` is the run's total, so it must be raised to extend it."""
+    first = numbered(tmp_path / "first", 800)
+    spent = int(first["arm"]["game_seconds"])
     checkpoint = latest_checkpoint(first)
 
     with pytest.raises(SystemExit, match="does not extend"):
         resume_from(tmp_path / "second", checkpoint, spent)
 
-    # One decision more is a run with something left to spend.
-    assert resume_from(tmp_path / "second", checkpoint, spent + 1).decisions == spent
+    # One game second more is a run with something left to spend.
+    state = resume_from(tmp_path / "second", checkpoint, spent + 1)
+    assert state.game_ms / 1000 == pytest.approx(first["arm"]["game_seconds"])
 
 
 def test_a_missing_resume_point_is_refused_by_name(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="no checkpoint"):
-        resume_from(tmp_path, tmp_path / "absent.pt", 400)
+        resume_from(tmp_path, tmp_path / "absent.pt", 1600)
 
 
 def test_a_checkpoint_from_another_profile_is_refused_before_bring_up(
@@ -916,35 +928,41 @@ def test_a_checkpoint_from_another_profile_is_refused_before_bring_up(
         )
 
 
-def test_a_checkpoint_in_the_earlier_format_still_resumes(tmp_path: Path) -> None:
-    """The first run's files are resumable; what they lack is the tracked series.
+@pytest.mark.parametrize("format_version", [1, 2])
+def test_a_checkpoint_from_before_the_game_time_budget_is_refused_by_name(
+    tmp_path: Path, format_version: int
+) -> None:
+    """A run budgeted in decisions cannot be continued under this unit.
 
-    A checkpoint written before the format carried a tracking run id is read
-    rather than refused - a run of hours must not become unusable for its age.
-    Everything else a resume needs was already in it, so the only consequence
-    is that the segment opens a tracked run of its own, with the parent named
-    in its resolved config.
+    Formats 1 and 2 record no game time at all, so a resume onto
+    `--budget-game-seconds` would read the parent's spent budget as zero and
+    collect the whole budget again on top of it. The file is still readable -
+    every evaluation path still plays it - but this continuation is refused
+    where it is asked for, with the reason in the message.
     """
-    first = numbered(tmp_path / "first", 200)
+    first = numbered(tmp_path / "first", 800)
     parent = load(latest_checkpoint(first))
     legacy = tmp_path / "legacy.pt"
     save(
         Checkpoint(
             identity=parent.identity,
-            progress=parent.progress,
+            # As such a file really is: the counter it was spent against is
+            # decisions, and it records no game time at all.
+            progress=replace(parent.progress, environment_game_ms=0.0),
             backbone_state=parent.backbone_state,
             resolved_config=parent.resolved_config,
-            format_version=1,
+            format_version=format_version,
         ),
         legacy,
     )
 
-    arm, resume = resumed_arm(tmp_path / "second", legacy, budget=400)
+    with pytest.raises(SystemExit, match="records no game time") as refusal:
+        resumed_arm(tmp_path / "second", legacy, budget=1600)
 
-    assert resume.tracking_run_id is None, "no run id to continue; a new one is started"
-    assert arm.training.report.decisions == parent.progress.environment_decisions
-    assert arm.backbone.state_dict()["steps"] == parent.backbone_state["steps"]
-    assert str(legacy) in arm.resolved["parent_checkpoint"]
+    assert f"format {format_version} checkpoint" in str(refusal.value)
+    # And the file itself is still perfectly readable; what it cannot do is
+    # continue a budget counted in a unit it never recorded.
+    assert load(legacy).progress.environment_game_ms == 0.0
 
 
 def test_a_checkpoint_without_optimizer_state_is_a_truncated_file(
@@ -973,7 +991,7 @@ def test_a_checkpoint_without_optimizer_state_is_a_truncated_file(
     )
 
     with pytest.raises(KeyError, match="optimizer"):
-        resumed_arm(tmp_path / "second", truncated, budget=400)
+        resumed_arm(tmp_path / "second", truncated, budget=1600)
 
 
 def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) -> None:
@@ -981,9 +999,9 @@ def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) ->
     tracker = RecordingTracker()
     first = session(
         tmp_path / "first",
-        budget="200",
+        budget="800",
         tracker=tracker,
-        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
+        settings={"--checkpoint-every-game-seconds": str(RESUME_PERIOD)},
     )
     spent = first["arm"]["decisions"]
     checkpoint = latest_checkpoint(first)
@@ -992,10 +1010,10 @@ def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) ->
 
     second = session(
         tmp_path / "second",
-        budget="400",
+        budget="1600",
         tracker=tracker,
-        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
-        resume=resume_from(tmp_path / "second", checkpoint, 400),
+        settings={"--checkpoint-every-game-seconds": str(RESUME_PERIOD)},
+        resume=resume_from(tmp_path / "second", checkpoint, 1600),
     )
 
     assert len(tracker.runs) == 1, "no second run was opened beside the first"
@@ -1026,7 +1044,7 @@ def test_an_untracked_resume_does_not_announce_a_tracked_run(
 ) -> None:
     """`--no-track` records nothing, so there is no parent series to continue."""
     tracker = RecordingTracker()
-    first = session(tmp_path / "first", budget="200", tracker=tracker)
+    first = session(tmp_path / "first", budget="800", tracker=tracker)
     checkpoint = latest_checkpoint(first)
     assert load(checkpoint).tracking_run_id == tracker.runs[0].run_id
 
@@ -1052,7 +1070,7 @@ def test_an_untracked_resume_does_not_announce_a_tracked_run(
             "--no-track",
             "--resume",
             str(checkpoint),
-            "--budget-decisions",
+            "--budget-game-seconds",
             "100000",
             "--run-dir",
             str(tmp_path / "second"),
@@ -1079,22 +1097,22 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
     def crossings(report: dict[str, Any]) -> list[int]:
         """Which multiples of the period this segment's files answered."""
         _, _, written = numbered_checkpoints(report)
-        return [decisions // RESUME_PERIOD for decisions in written]
+        return [game_seconds // RESUME_PERIOD for game_seconds in written]
 
-    whole = numbered(tmp_path / "whole", 300)
+    whole = numbered(tmp_path / "whole", 1200)
     once = crossings(whole)
 
-    first = numbered(tmp_path / "first", 150)
+    first = numbered(tmp_path / "first", 600)
     second = session(
         tmp_path / "second",
-        budget="300",
-        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
-        resume=resume_from(tmp_path / "second", latest_checkpoint(first), 300),
+        budget="1200",
+        settings={"--checkpoint-every-game-seconds": str(RESUME_PERIOD)},
+        resume=resume_from(tmp_path / "second", latest_checkpoint(first), 1200),
     )
     split = crossings(first) + crossings(second)
 
-    assert whole["arm"]["decisions"] >= 300, "one sitting spends the budget"
-    assert second["arm"]["decisions"] >= 300, "two sittings spend the same budget"
+    assert whole["arm"]["game_seconds"] >= 1200, "one sitting spends the budget"
+    assert second["arm"]["game_seconds"] >= 1200, "two sittings spend the same budget"
     # The collection curve is one series across the two sittings: every window
     # is keyed by a position on the whole run's budget, so none of the second
     # segment's points falls at or below where the first segment stopped.

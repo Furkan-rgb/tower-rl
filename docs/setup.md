@@ -2,11 +2,12 @@
 
 ## 1. Current support status
 
-The validated single-device M0 baseline is:
+The supported host is the RTX 4090 workstation, and the validated
+single-device baseline on it is:
 
-- Apple M2 Pro host with hardware virtualization;
 - Android Emulator 37.1.11;
-- API 36 Google Play ARM64 system image;
+- API 36 Google Play x86_64 system image, which the ARM64 game runs on through
+  the image's own native-bridge translation;
 - Pixel 2 device definition at 1080×1920 portrait;
 - The Tower 29.0.3 (`versionCode=1199`) acquired through Google Play on the
   user-provisioned test account. The local 29.0.1 XAPK is retained for metadata
@@ -17,13 +18,11 @@ game reaches the Tier-1 Battle home, and the canonical golden snapshot
 `tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914` has been
 restored and visually verified with networking disabled. The snapshot is a
 recoverable running-state baseline; a force-stopped offline cold launch still
-re-enters Play licensing and is not supported. The production 28 GB/RTX 4090
-workstation has not been characterized.
+re-enters Play licensing and is not supported.
 
-For moving this work to that workstation, use
-[`workstation-handoff.md`](workstation-handoff.md). The account-bearing AVD
-snapshot is machine-local and must be recreated and revalidated on a different
-host.
+[`workstation-handoff.md`](workstation-handoff.md) holds the workstation's own
+state and procedures. The account-bearing AVD snapshot is machine-local and
+must be recreated and revalidated on a different host.
 
 ## 2. Repository environment
 
@@ -202,8 +201,9 @@ snapshot; nothing to pin`, and pins nothing.
 So `-gpu lavapipe` survives only where a snapshot is actually saved or restored:
 `prepare_pinned_snapshot` and `bring_up`'s restore path, the golden-baseline
 restore in section 7 below, and manual visual review. The `--renderer` default
-in the scripts is still `lavapipe` for that reason; a fleet run passes
-`--renderer host` explicitly.
+in `clone_session.py` and `spectate.py` is `lavapipe` for that reason, while
+`train.py` and `run_actors.py` default to `--renderer host`, the renderer every
+measured fleet run was taken under.
 
 ## 5. Optional XAPK metadata/reference inspection
 
@@ -357,8 +357,8 @@ directory. All of `state/` is git-ignored: an mp4 is far above GitHub's file
 limit, and this repo is public.
 
 `--output-directory` writes the episodes the session played as the same
-per-episode records the fleet writes. Omit it and nothing is kept: the panel is
-a view, not a measurement.
+per-episode records the fleet writes, under `state/recordings/records/` unless
+another directory is named.
 
 ### What the agent did, in the recording
 

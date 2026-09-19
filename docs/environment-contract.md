@@ -32,7 +32,7 @@ the decision loop reads a pixel.
 | `max_health_log` | Log-scaled maximum health. |
 | `game_speed` | The world's speed multiplier as the game reports it. |
 | `live` | Every live reading below, scaled, keyed by feature name. |
-| `rows` | One `UpgradeRow` per upgrade action: `cost_log`, `affordability` (`log1p(cash/cost)`, unclipped), `level`, `max_level`, `headroom`, `unlocked`, `maxed`, `available`. |
+| `rows` | One `UpgradeRow` per upgrade action, encoded as the nine `ROW_FEATURES` in order: `cost_log`, `affordability` (`log1p(cash/cost)`, unclipped), `level`, `max_level`, `level_fraction` (`level / max_level`, derived at encoding), `headroom`, `unlocked`, `maxed`, `available`. |
 | `action_mask` | One flag per entry of `RUN_ACTIONS`, in that order; authoritative for this observation. |
 | `valid`, `invalid_reasons` | Admission decision for replay and environment stepping. |
 | `schema_version` | `observation-v2`. |

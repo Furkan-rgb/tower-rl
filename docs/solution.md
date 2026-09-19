@@ -168,8 +168,8 @@ Tower-RL/
 ├── tests/
 │   ├── unit/                # including unit/simulation/
 │   └── fakes/
-├── scripts/                 # composition roots: train, run_actors, run_episodes, compare_arms, clone_session
-└── runtime/                 # ignored; runs, logs, models, replay
+├── scripts/                 # composition roots; the twelve entry points listed in section 11
+└── state/                   # ignored; bridge, runs, records, recordings, logs, mlflow.db
 ```
 
 `docs/architecture.md` states the dependency rule between those packages;
@@ -525,7 +525,7 @@ The evaluator owns a dedicated device and receives immutable candidate checkpoin
 The two-stage screening/promotion budget and the promoter that would compare a
 candidate against an incumbent are **not implemented**; selection is post-hoc —
 a run takes one pre-registered exploration-free evaluation on its final weights
-after its decision budget is spent, and arms are compared afterwards from their
+after its game-time budget is spent, and arms are compared afterwards from their
 records (`experiment/comparison.py`, `experiment/wave_statistics.py`). Record
 the Milestone 2 entry here when a promoter lands.
 
@@ -666,6 +666,13 @@ when something actionable has changed:
   rose, so the decision problem genuinely changed;
 - tower health changes materially;
 - a maximum game-time slice elapses, as a backstop so a quiet run still steps.
+
+Those conditions stop an *advance*. Whether the policy is asked at that stop
+is a separate question: under the choice-point cadence the environment asks
+only where the mask offers a purchase, and plays the quiet backstop slices
+through itself, so the backstop bounds how long the world runs unobserved
+rather than producing a decision ([ADR
+0009](adr/0009-decisions-at-choice-points.md)).
 
 Per-wave decisions were considered and rejected: with ample cash a player buys
 several upgrades inside one wave, and a per-wave cadence would cap the agent at
@@ -968,13 +975,21 @@ inside the bridge.** Unity exposes `Time.captureDeltaTime` for the first: while 
 is set, each rendered frame advances the world by precisely that amount however
 long the frame took in real time. The second half is what makes that affordable.
 
-**How advancing works now.** The environment issues exactly one `advance` command
-per decision, carrying three numbers: `budget_game_ms` (the game time the bridge
-may spend before coming back anyway), `frame_game_ms` (what one frame is worth,
-default 1000/60), and `health_change_fraction`. The bridge steps frames, checking
+**How advancing works now.** Each `advance` command carries three numbers:
+`budget_game_ms` (the game time the bridge may spend before coming back
+anyway), `frame_game_ms` (what one frame is worth, default 1000/60), and
+`health_change_fraction`. The bridge steps frames, checking
 after each one whether a decision condition has appeared, and returns as soon as
 one has or the budget is spent — with the observation, the reason it stopped, and
 what it cost in `frames`, `game_ms`, `round_ms` and `wall_micros`.
+
+One decision spans one or more of those advances: under the choice-point
+cadence the environment advances again, taking `WAIT` itself, until the
+settled observation offers a purchase or the run ends, and the transition it
+returns covers the whole span — reward is the wave progress across it,
+`game_ms` its measured game time, `advances` how many it took, and `events`
+every cadence condition the span met ([ADR
+0009](adr/0009-decisions-at-choice-points.md)).
 
 `game_ms` is the budget accounting, frames times `frame_game_ms`. `round_ms` is
 the game's own per-round clock — `Main.gameplayTimeThisRound` — measured across
@@ -1009,7 +1024,7 @@ and only then reads the state it reports. The readings taken inside the loop
 decide *when* to stop; the settled reading decides what the `reason` says, so the
 result and the observation emitted with it always describe the same moment. The
 environment builds its next state from that observation instead of waiting for
-the next stream tick, which is what actually makes one decision cost one round
+the next stream tick, which is what actually makes one advance cost one round
 trip; a second read would also risk describing a later world than the result
 does.
 
@@ -1095,10 +1110,13 @@ SurfaceFlinger's per-uid game frame-rate override pins the game surface to 60
 Hz independent of the display mode, and must be lifted at runtime (`cmd game
 set --fps`) in agreement with the display mode. Unity's own pacing
 (`vSyncCount`) showed no independent effect once those two are controlled.
-Solo, the dial holds up to 300 Hz before a cliff at 360; the fleet-safe rate
-under load is still being measured. See `M1B-E041` (mechanism and the three
-caps), `M1B-E042` (solo ladder and the 300 Hz knee), and `M1B-E043`/`M1B-E044`
-(fleet-safe rate, open) in `docs/experiments.md`.
+Solo, the dial holds up to 300 Hz before a cliff at 360; the fleet operating
+rate is 120 Hz. See `M1B-E041` (mechanism and the three caps), `M1B-E042`
+(solo ladder and the 300 Hz knee), `M1B-E043`/`M1B-E044` (240 Hz loses
+instances at N=7), `M1B-E045` (120 Hz established as the fleet rate) and
+`M1B-E053`/`M1B-E054` (behavioural equivalence against 60 Hz: the
+provisional reject did not replicate, so 120 Hz is cleared) in
+`docs/experiments.md`.
 
 **Choosing `frame_game_ms` is empirical.** It must stay at or below
 `Time.maximumDeltaTime` (333 ms by default), above which Unity clamps and the
@@ -1434,9 +1452,17 @@ device time is no longer the scarce resource.
 
 ### 9.5 Distributed exploration
 
-Assign each actor a stable epsilon derived from its rank across a configured minimum/maximum range. Include a small number of exploitative actors and more exploratory actors. Evaluation always uses epsilon zero.
-
-Record the epsilon with every sequence. On actor restart, preserve its configured exploration identity but reset episode recurrent state.
+Exploration is a named schedule, chosen with `--exploration` and resolved per
+actor once per episode. `uniform`, the default, anneals every actor to
+`--epsilon-end`. `ladder` is Ape-X's (Horgan et al. 2018): actor `i` of `N`
+anneals to `0.4 ** (1 + 7 i / (N - 1))` instead, so one fleet both searches,
+through the exploratory top rungs, and reports, through the near-greedy
+bottom ones — `--epsilon-end` is the uniform schedule's floor only and
+passing it under a ladder is refused. The collection window carries the
+split: the pooled mean final wave, each actor's own, and a mean over the
+near-greedy actors alone, which is the series a run's curve and its early
+stopping are read from. `docs/architecture.md` states where it lives.
+Evaluation always uses epsilon zero.
 
 ### 9.6 Learner-to-actor weight flow
 
@@ -1516,9 +1542,10 @@ Run directories answer "what did this run produce"; they do not answer "how do
 these twenty runs compare". Training therefore records itself through an
 `ExperimentTracker` port (`src/tower_rl/experiment/tracking.py`): a run is
 opened per arm with its resolved configuration as parameters and its provenance
-as tags, reports metrics **keyed by decisions consumed** - the unit the
-comparison protocol equalises on - and logs its manifest, its summary (learning
-curve and per-episode evaluation records) and each curve point's checkpoint,
+as tags, reports metrics **keyed by decisions consumed**, with the game seconds
+they were spent at beside them - a run's budget, and what arms are equalised on,
+is game time (`--budget-game-seconds`) - and logs its manifest, its summary
+(learning curve and per-episode evaluation records) and each curve point's checkpoint,
 stored under the point's weight fingerprint so a tracked point resolves to an
 exact file. The measured reference floors travel with every run as parameters,
 so a comparison opened months later needs no second document.
@@ -1558,7 +1585,16 @@ parsing its own `argparse` arguments and returning nonzero on failure:
 `clone_session.py` (one instance up, down, or inspected), `run_episodes.py` (one
 actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
 `train.py` (a training run on a fleet), `compare_arms.py` (two policies
-interleaved on one instance), and `workstation_preflight.py` (host checks).
+interleaved on one instance), `workstation_preflight.py` (host checks),
+`spectate.py` (one windowed instance a human watches, optionally recorded),
+`render_recording.py` (a recording and its decision log composed into one
+video), `select_checkpoint.py` (the post-hoc choice among a run's numbered
+checkpoints), `report_arms.py` (IQM and per-wave comparison of evaluation
+sets), `diagnose_plasticity.py` (the plasticity diagnostic over a recorded
+observation batch), and `migrate_state.py` (the one-time move of
+`~/.local/state/tower-rl` into `state/`). The shell helpers beside them —
+`create_avd.sh`, `launch_avd.sh` and `instrumented_bridge.sh` — are not
+argparse entry points.
 `tower_rl.doctor` is a library module with the host/APK/device checks below and
 no command of its own; the M0 `probe` and its vision layer no longer exist.
 
@@ -1640,7 +1676,7 @@ On graceful stop: stop starting episodes, allow a configurable drain window, clo
 Resume through an explicit form such as:
 
 ```text
-tower-rl train --resume runtime/runs/<run_id>
+train.py --resume state/runs/<session>/<run>/checkpoints/latest.pt
 ```
 
 On resume: validate source/config/schema/baseline compatibility before loading. Require an explicit migration path for incompatibilities; do not partially load silently. A graceful stop plus this resume path is the V1 pause/resume mechanism; do not claim pause support until the interrupted-versus-uninterrupted checkpoint test passes.

@@ -1,10 +1,67 @@
 # Tower-RL — Workstation Handoff
 
-## START HERE — current state, 2026-09-17
+## START HERE — current state, 2026-09-19
 
 This section is the one place that says where the project actually is. Everything
 below it is historical and dated; read this first and treat older sections as
 context rather than as current truth.
+
+### The protocol the project collects under
+
+Four things define what a run is, and all four are in force together:
+
+- **A decision is asked for only at a choice point** — an observation whose mask
+  offers at least one purchase. Forced `WAIT` slices are played through by the
+  environment and accrue to the surrounding decision, so one decision spans one
+  or more advances ([ADR 0009](adr/0009-decisions-at-choice-points.md);
+  `--decision-cadence choice-points` is the default, and `every-slice` is kept
+  to reproduce run 1's protocol).
+- **The policy is shown what the player sees**: `observation-v2`, 42 run scalars
+  — the four run-level readings plus 38 live `Main` fields — and nine per-slot
+  row features with raw `level`/`max_level` and unclipped affordability ([ADR
+  0010](adr/0010-observation-v2-everything-the-player-sees.md), confirmed on
+  device in `M2-E006`).
+- **A run's budget is game time, not decisions** — `--budget-game-seconds`,
+  `--block-game-seconds`, `--checkpoint-every-game-seconds` (`#42`), because a
+  choice-point decision's game-time cost varies by an order of magnitude.
+- **Exploration can be an Ape-X ladder**: `--exploration ladder` anneals actor
+  `i` of `N` to `0.4 ** (1 + 7 i / (N - 1))` instead of to one floor, and the
+  collection curve is then read from the near-greedy actors alone (`#37`). The
+  default is still `uniform`.
+
+A run may also **stop before its budget is spent**: with
+`--early-stop-patience-periods` set, the near-greedy mean final wave of each
+checkpoint period is compared against the bar the curve last cleared, and a run
+that fails to add `--early-stop-min-improvement` waves for that many periods in
+a row stops after writing that crossing's checkpoint (`#45`; the default of 0
+spends the whole budget). An interrupted run **resumes**: `train.py --resume
+<checkpoint.pt>` restores the weights, the optimizer, the game-time and decision
+counters and every schedule derived from them, re-warms replay under the loaded
+policy, and continues the same whole-run budget (`#32`).
+
+### Watching, recording, and where state lives
+
+`scripts/spectate.py` is the human-facing path: one windowed clone with this
+project's bridge deployed, at 60 Hz through `-gpu lavapipe`, refusing to start
+while any other emulator is running (`#12`). `--record` writes the guest screen
+as mp4 (`#36`) together with `<stem>.decisions.jsonl`, the agent's own decision
+log; `scripts/render_recording.py` composes the two into one video with the
+action side panel (`#48`).
+
+Everything this project writes lives under the git-ignored `state/` directory at
+the repository root — `bridge/`, `runs/`, `records/`, `recordings/`, `logs/`,
+`mlflow.db` — rather than under `~/.local/state` or `/tmp` (`#40`);
+`docs/setup.md` lists the layout.
+
+### Where run 2 stands
+
+Milestone 2 run 2 is **in progress**. Its protocol is pre-registered as
+`M2-P002` in `docs/experiments.md` and is authoritative for the run: option B,
+two seeds run sequentially on a seven-instance fleet at 120 Hz under the four
+changes above. Stage 1 of 5 is done — the random and scripted baselines are
+re-measured under this cadence and this schema and set the kill threshold
+(`M2-E007`, board `#46`). Training, evaluation, recordings and the verdict are
+not, and nothing measured so far is a verdict on the model.
 
 ### The goal
 
@@ -282,17 +339,6 @@ a 1.52x game-time inflation was found and fixed" above: the boundary tap
 receiver was found and the cold-launch/snapshot and `-gpu host` items are
 tracked as open issues on the board.
 
-### A small gap worth closing: `run_episodes.py` writes no per-episode data
-
-It writes one aggregate JSON record per invocation (`--output`, default
-`state/records/episodes.json`) and nothing per episode. The `M1B-E018` sweep
-needed per-episode waves, decision counts, and timing to compute its bootstrap
-intervals and had to bootstrap that data through a scratchpad observer wrapper
-around the runner rather than reading it from the runner itself. Worth closing
-in the runner: writing a per-episode sidecar (or extending the aggregate record
-with a per-episode array) would remove the need for an ad hoc wrapper the next
-time a sweep or comparison needs episode-level data.
-
 ### Claims this session corrected — do not reinstate them
 
 - `M1B-E006`'s decisions-per-wave table (63/79/69) **does not reproduce** and
@@ -315,7 +361,10 @@ time a sweep or comparison needs episode-level data.
 | `docs/solution.md` | Design decisions, including 9.2c on decision moments |
 | `docs/experiments.md` | Every finding, newest first, including negatives |
 | `docs/rl-candidates.md` | The RL algorithm study and its ranking |
-| `docs/adr/` | Architecture decisions 0005-0008 |
+| `docs/adr/` | Architecture decisions 0001-0010 |
+| `docs/setup.md` | Host, AVD, bridge build and the `state/` layout |
+| `docs/architecture.md` | The packages that exist and the dependency rule |
+| `docs/environment-contract.md` | The observation, action and transition contract |
 | This section | Current state and what to do next |
 
 ### Device state
@@ -747,8 +796,8 @@ multi-hour run interrupted at hour three therefore restarts. The question is
 whether resume should restore replay as well — a checkpoint that restores
 weights but not replay resumes into a very different learning problem from the
 one it stopped in, and recording that honestly matters more than the
-convenience. Not blocking: the budget is counted in decisions, so an interrupted
-run is a shorter run rather than a corrupt one.
+convenience. Not blocking: the budget is counted in game seconds, so an
+interrupted run is a shorter run rather than a corrupt one.
 
 **Where the stacked agent's window length should sit.** `docs/rl-candidates.md`
 3.1 treats `k` as a tuned hyperparameter between 4 and 16 and section 5 names
@@ -762,7 +811,7 @@ episodes per hour at 99.3 percent validity (M1B-E008). Whether two or four
 instrumented clones on this host multiply that or contend for the GPU is an
 empirical question, and the number that settles it is aggregate *valid* episodes
 per hour, not episodes per hour. Measure it before committing to long training
-runs, because it changes what an equal decision budget costs in wall-clock time.
+runs, because it changes what an equal game-time budget costs in wall-clock time.
 
 ## Directed next steps — 2026-09-17
 

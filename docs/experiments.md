@@ -29,11 +29,12 @@ records to `state/records/` instead of `/tmp`.
 ## M2-E007 — Milestone 2, run 2 under `M2-P002`: the baselines, and the kill threshold they set
 
 **Date:** 2026-09-19
-**Status:** **in progress — stage 1 of 5 complete; stage 2 (training) run
-for seed 0 and stopped at the kill criterion, seed 1 not run.** The random and
-scripted baselines are collected under the choice-point cadence and
-`observation-v2`; evaluation, recordings and the verdict are not. Nothing here
-is a verdict on the model. Board `#46`; protocol `M2-P002`, which is authoritative
+**Status:** **in progress — stage 1 of 5 complete; stage 2 (training)
+complete for seed 0, which early-stopped at period 4; seed 1 not run.** The
+random and scripted baselines are collected under the choice-point cadence and
+`observation-v2`, and seed 0 has a trained arm to evaluate; evaluation,
+recordings and the verdict are not done. Nothing here is a verdict on the
+model. Board `#46`; protocol `M2-P002`, which is authoritative
 and is not restated.
 
 Code at `66082dd`, bridge `662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b`
@@ -219,6 +220,100 @@ was killed: `libunity_sha256`
 `installerPackageName=com.android.vending`, `libunity_mounts: 0`,
 `bridge_artifacts: removed`, `game_frame_rate_override: reset`. After the run:
 no attached device and no `qemu` process on the host.
+
+### Stage 2 — seed 0, attempt 2: early stop fired at period 4
+
+**The reported outcome is `M2-P002`'s "early stop fired at period `k`", with
+k = 4.** The run cleared the kill check at period 2 under amendment 3, ran on,
+and stopped itself after the fourth numbered checkpoint when the near-greedy
+curve failed to improve on its best period for two periods in a row. It spent
+**240,511 of the 360,000 game-seconds** it was budgeted (66.8%) and left **four
+numbered checkpoints**, the last of which is the pre-declared evaluation arm.
+Code at `00e6e08`, bridge `662cba09…8902b`, MLflow run
+`5b0eff24c11d4042a4de07046601c4f7`, run directory
+`state/runs/session-20260919-164947/stacked-dqn-20260919-164947-2b2301`.
+
+| | |
+| --- | --- |
+| wall time | **6.57 h** (16:44:43 launch → 23:19:11 exit); collection 16:49:48–23:12:18 |
+| game seconds | **240,511** / 360,000 budgeted; **41,487 game-s an hour** of fleet throughput |
+| decisions | **43,023** (28.8 an episode) |
+| optimisation steps | **9,893**; replay held 1,533 sequences of 4,096, 79,144 sampled |
+| episodes valid / attempted | **1,483 / 1,492** (**99.4%**, above `M2-P002`'s 99% line) |
+| invalid episodes | 9: 7 `action_pipeline_failed` (all "advance was not confirmed: stale_or_duplicate"), 2 `observation_invalid` (round clock ran 0.955× and 0.97× the budgeted game time) |
+| actors withdrawn / bring-up failures | **0 / 0** |
+| `WAIT` share over the run | 0.416; purchases an episode 16.8 |
+| budget overshoot | 0 ms |
+
+**The near-greedy curve, per period.** A period is 60,000 game-seconds, and the
+mean is over the valid episodes the four near-greedy actors (ε ≤ 0.02) finished
+inside it.
+
+| period | game-s | decisions | near-greedy episodes | near-greedy mean final wave | bar (best clearing period) | plateau counter |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 60,000 | 10,849 | 221 | **4.855** | — | — (pools the anneal; see amendment 3) |
+| 2 | 120,000 | 19,471 | 191 | **5.529** | 5.529 | 0 |
+| 3 | 180,000 | 29,907 | 186 | **5.581** | 5.529 | 1 (gain +0.05, under 0.2) |
+| 4 | 240,000 | 42,913 | 241 | **4.490** | 5.529 | **2 → stop** |
+
+**The kill check passed at period 2**, which is where `M2-P002` amendment 3
+places it: 5.529 > the 5.195 the random baseline fixed, with the latest
+`collection_window_wait_fraction` at 0.317, far under 0.9. Period 1's 4.855 is
+recorded above for completeness and is not a check — it pools the ε-anneal and
+pre-warm-up episodes, which is the whole reason amendment 3 exists.
+
+**The early stop, as the shipped rule computed it:** `early_stopped` true,
+`stopped_at_period` 4, `best_period_near_greedy_mean_final_wave` 5.529,
+`closing_period_near_greedy_mean_final_wave` 4.490,
+`periods_without_improvement` 2. The run's own line reads *"stopped early at
+checkpoint period 4: the near-greedy curve did not improve on 5.53 waves for 2
+periods"*. Period 3 beat the bar by 0.05 and period 4 fell 1.04 below it, so
+the two consecutive failures are one marginal period and one clearly worse one,
+not two of a kind — the rule does not distinguish them and neither does this
+entry, which reports what it did rather than what a different rule would have
+done. Nothing here says the curve had converged; it says it did not improve by
+0.2 waves for two periods, which is the pre-registered stopping condition and
+the whole of what was tested.
+
+**Checkpoints.** Four numbered, plus the rolling `latest.pt`:
+
+| checkpoint | sha256 |
+| --- | --- |
+| `checkpoint-gs0060029.pt` | `02e47436e94e14d995a1284c8bc7bb8bab5c6afabccb5c0708c7e54f735300ff` |
+| `checkpoint-gs0120025.pt` | `13ceb852cf8c813cdf4ec9830796e60c923a353fe0dd24beee4d05b7174de0ff` |
+| `checkpoint-gs0180005.pt` | `6400129532cd7909992a62814c75bb62ec27b596bf74d6f647a5f44879c0090e` |
+| **`checkpoint-gs0240077.pt`** — the evaluation arm | `3a6bae708d7cf3d96c25e437e67606073d6192b7bca601f086735754ae6c82f6` |
+| `latest.pt` | `e6eeee748700239dab95e5c36a793491f8287189a555c132f6f57943b1921d80` |
+
+`checkpoint-gs0240077.pt` is the **highest-numbered** `checkpoint-gs*.pt` in the
+run directory and therefore the arm by `M2-P002`'s pre-declaration, which the
+early-stopping rule was written to agree with: the checkpoint written at the
+stopping crossing *is* the last one. It is also the crossing whose own period
+scored worst of the three post-anneal periods, which is a consequence of the
+pre-declaration and is stated now, before the arm is evaluated, rather than
+after its interval is known. Stage 4 therefore has **four** recordings to make
+for this seed, not six.
+
+**The learner, at the stop:** weighted loss 0.772, unweighted mean |TD error|
+0.983, gradient norm 10.77, `learner_value_fit_correlation` 0.613 — finite and
+moving throughout, and the correlation rose over the run (0.42 at 5k decisions,
+0.61 at the end) rather than drifting down as run 1's did.
+
+**Cleanup, seed 0 attempt 2.** On every one of the seven live serials, before
+its emulator was killed: `libunity_sha256`
+`ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, `game_frame_rate_override: reset` — seven of seven
+on each line. After the run: no attached device and no `qemu` process on the
+host.
+
+**Limits of this stage.** One seed, one image state, one frame rate, one account
+progression. The arm exists; it has not been evaluated, and nothing here
+compares it with either baseline. A run that stopped at 240,000 game-seconds and
+one that spent its whole 360,000 are not the same evidence even if their
+intervals later agree, which is why `M2-P002` requires the stop to be reported
+beside the verdict.
 
 ## M2-P002 — Milestone 2, run 2: pre-registered protocol (written before any run)
 

@@ -210,6 +210,23 @@ that regresses, is `ambiguous` with `contradictory_state_change`; exhausting the
 confirmation window is `ambiguous` with `confirmation_timeout`. Both are
 quarantine-worthy and never count as a purchase.
 
+`unlock_state` and `unlock_all_upgrades` exist only in a build configured with
+`-DTOWER_BRIDGE_DIAGNOSTICS=ON`, and are the trial instrument for board #54 —
+whether the in-run availability arrays can be written at all, and whether a
+write survives. `unlock_state` reads `upgradeUnlocked`,
+`upgradeDefenseUnlocked` and `upgradeUtilityUnlocked` and reports each array's
+length and how many of its elements are true; `unlock_all_upgrades` sets every
+element true through `WritePrimitiveArray`, the exact mirror of
+`ReadPrimitiveArray` (same bounds and element-size checks, same pointer
+arithmetic, the `memcpy` reversed), and then reports the same pairs read back
+out of the arrays, so a write that did not take reports as one. The report is a
+separate `unlock_state` frame sent before the state and the result, exactly as
+the slot labels are. Both are gated, not only the write: a production bridge
+answers neither, so the artifact a measured run deploys cannot change what the
+game offers a policy, and its digest is unchanged by their presence in the
+source. The write is in-memory only — nothing here calls a save, and
+`scripts/unlock_trial.py` leaves starting a round and re-reading to a human.
+
 ## Known live behavior
 
 IL2CPP resolution happens on the first client connection and is then cached.

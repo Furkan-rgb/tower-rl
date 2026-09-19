@@ -536,6 +536,12 @@ struct Command {
   float speed;
   bool advance;
   bool slot_labels;
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+  // The profile-v2 trial instrument: `unlock_state` reports the three in-run
+  // availability arrays, `unlock_all` writes them true first.
+  bool unlock_state;
+  bool unlock_all;
+#endif
   uint32_t budget_game_millis;
   float frame_game_millis;
   float health_change_fraction;
@@ -696,6 +702,76 @@ bool ReadUpgradeEvidence(const Il2CppApi& api, const MainFields& fields, const c
          std::isfinite(evidence->cost) && evidence->level >= 0 && evidence->unlocked <= 1 &&
          evidence->tier_unlocked <= 1 && evidence->maxed <= 1;
 }
+
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+// The mirror of `ReadPrimitiveArray`: the same bounds and element-size checks,
+// the same pointer arithmetic, the `memcpy` the other way round. Refuses a null
+// array, an index past the end, and an element type whose size is not `T`'s, so
+// a schema that has drifted writes nothing rather than corrupting the heap.
+template <typename T>
+bool WritePrimitiveArray(const Il2CppApi& api, Il2CppArray* array, size_t index, T value) {
+  if (array == nullptr || index >= api.array_length(array)) return false;
+  const size_t header_size = api.array_object_header_size();
+  const size_t byte_length = api.array_get_byte_length(array);
+  const size_t length = api.array_length(array);
+  Il2CppClass* array_class = api.object_get_class(reinterpret_cast<Il2CppObject*>(array));
+  if (array_class == nullptr) return false;
+  const size_t element_size = api.array_element_size(array_class);
+  if (header_size == 0 || length == 0 || element_size != sizeof(T) ||
+      byte_length / length != element_size ||
+      byte_length < (index + 1) * sizeof(T)) return false;
+  auto* bytes = reinterpret_cast<uint8_t*>(array) + header_size + index * sizeof(T);
+  std::memcpy(bytes, &value, sizeof(T));
+  return true;
+}
+
+// The profile-v2 trial instrument (board #54). `unlock_all` sets every element
+// of the three in-run availability arrays true on the live `Main`; either way
+// the three arrays are then read back and reported as a length and a count of
+// trues, which is the whole answer the trial needs - it asks whether a write
+// lands in memory at all, not what any one slot holds.
+//
+// Diagnostics builds only, on both paths. A bridge that can change what the
+// game offers a policy has no place in a measured run, and the read-back is
+// gated with it so the production artifact stays byte-for-byte what it was.
+bool ReportUnlockState(const Il2CppApi& api, const MainFields& fields, bool unlock_all,
+                       std::string* json) {
+  Il2CppObject* main = nullptr;
+  api.field_static_get_value(fields.instance, &main);
+  if (!NativeHandleIsAlive(api, main)) return false;
+  const FamilyFields families[] = {fields.attack, fields.defense, fields.utility};
+  *json = "{\"type\":\"unlock_state\",\"protocol_version\":2,\"wrote\":";
+  json->append(unlock_all ? "true" : "false");
+  json->append(",\"families\":[");
+  for (const FamilyFields& family : families) {
+    Il2CppArray* unlocked = nullptr;
+    if (!ReadField(api, main, family.unlocked, &unlocked) || unlocked == nullptr) return false;
+    const size_t length = api.array_length(unlocked);
+    if (length == 0 || length > kMaxEntriesPerFamily) return false;
+    size_t true_count = 0;
+    for (size_t index = 0; index < length; ++index) {
+      const uint8_t truth = 1;
+      if (unlock_all && !WritePrimitiveArray(api, unlocked, index, truth)) return false;
+      // Read back what the array now holds rather than what was written: a
+      // write that did not take is exactly the outcome this instrument exists
+      // to detect.
+      uint8_t value = 0;
+      if (!ReadPrimitiveArray(api, unlocked, index, &value)) return false;
+      if (value != 0) ++true_count;
+    }
+    if (json->back() != '[') json->push_back(',');
+    json->append("{\"family\":\"");
+    json->append(family.name);
+    json->append("\",\"length\":");
+    json->append(std::to_string(length));
+    json->append(",\"true_count\":");
+    json->append(std::to_string(true_count));
+    json->push_back('}');
+  }
+  json->append("]}");
+  return true;
+}
+#endif
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
 // Value sampling for a named list of `Main` fields, so a candidate observation
@@ -1180,6 +1256,16 @@ bool ParseCommand(const std::string& payload, Command* command) {
     command->family = nullptr; command->index = 0;
     return true;
   }
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+  command->unlock_state = false;
+  command->unlock_all = false;
+  if (tail == "unlock_state\"}" || tail == "unlock_all_upgrades\"}") {
+    command->unlock_state = true;
+    command->unlock_all = tail.rfind("unlock_all", 0) == 0;
+    command->family = nullptr; command->index = 0;
+    return true;
+  }
+#endif
   constexpr char kAdvanceKey[] = "advance\",\"budget_game_ms\":";
   constexpr char kFrameKey[] = ",\"frame_game_ms\":";
   constexpr char kHealthKey[] = ",\"health_change_fraction\":";
@@ -2010,6 +2096,19 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           outcome = "rejected";
           reason = "slot_labels_unreadable";
         }
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+      } else if (command.unlock_state) {
+        // The report frame goes out before the state and the result, exactly as
+        // the slot labels do, so the trial reads one answer per round trip.
+        std::string report;
+        if (ReportUnlockState(api, fields, command.unlock_all, &report)) {
+          if (!SendFrame(client, report)) return;
+          reason = command.unlock_all ? "unlock_all_applied" : "unlock_state_reported";
+        } else {
+          outcome = "rejected";
+          reason = "unlock_state_unreadable";
+        }
+#endif
       } else if (command.set_speed) {
         // This confirms that the slot holds the requested value, which is not
         // the same claim as the world running at it: the loop below reads back

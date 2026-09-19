@@ -7,6 +7,131 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## M2-E003 — Spectate mode on device
+
+**Date:** 2026-09-19
+**Status:** Eight of the nine device checks for `#12` pass. Check 9 fails, in
+the direction it was written to catch: `screenrecord` interrupted by SIGINT
+exits **0** on this image, so the `-partial` chunk naming can never fire.
+Board `#12`.
+**Purpose:** Run the nine device checks posted on `#12` against a real
+windowed instance, and make the first recording of the `M2-E002` selected
+checkpoint. Repository at `50fae46`; no code changed, on the device or off it.
+
+Two sessions on `emulator-5556` (clone AVD `tower_rl_instrumented_api36`,
+`-read-only`, `-gpu host`, windowed on a real X11 display), emulator 37.1.11
+under gfxstream. Host free before and after: zero `qemu` walking `/proc/*/exe`,
+`adb devices` empty.
+
+### The recording run
+
+```text
+uv run python scripts/spectate.py \
+  --policy checkpoint:…/checkpoints/checkpoint-0050123.pt \
+  --episodes 1 --frame-rate-hz 60 \
+  --record ~/.local/state/tower-rl/spectate/checkpoint-0050123-episode1.mp4 \
+  --output-directory ~/.local/state/tower-rl/spectate/records
+```
+
+- **Final wave 8**, 189 decisions, 24 purchases, 16,117 frames, valid, ending
+  `game_over`. The panel's own reading and the evaluator's `emulator-5556.json`
+  agree on both numbers.
+- Episode wall **272.991 s**; session wall **326.3 s** including bring-up, the
+  20 s hold and teardown.
+- `checkpoint_identity` `8344a482eede`, matching `selection.json` — the
+  `M2-E002` selection is what played.
+- Recording at `~/.local/state/tower-rl/spectate/`:
+  `checkpoint-0050123-episode1-000.mp4` (179.99 s, 162,468,268 B) and
+  `-001.mp4` (144.55 s, 92,320,194 B), both h264 360x640 in a readable MP4
+  container.
+
+One episode of this checkpoint at real time is roughly four minutes, so a
+single default session already crosses the three-minute chunk boundary; the
+`--episodes 2` fallback was not needed.
+
+### The nine checks
+
+1. **Windowed launch — pass.** `launching tower_rl_instrumented_api36 on
+   emulator-5556 (host, read-only, windowed)`, a real window on `DISPLAY=:0`.
+   Boot, deploy, the launch-online/cut-radios sequence, the 60 Hz confirm, the
+   bridge connect and the first decision all inside **45 s** of launch — the
+   300 s `wait_for_boot` bound was never approached.
+2. **`confirm_frame_rate` at 60 — pass.** `emulator-5556: confirmed at 60 Hz:
+   display vsync mode 60.00, uid 10218 game mode override 60, uid 10218 applied
+   frame rate 60.00`. All three readings present. The read-back had only ever
+   been exercised at 120; a surface already at the stock rate does publish an
+   applied rate it accepts.
+3. **Real time is real — pass.** `round_ms` 278,669 — 278.7 game seconds —
+   against `elapsed_wall_seconds` 272.991: **1.02x**, one game second per wall
+   second. The same checkpoint on the 120 Hz fleet (`M2-E002` set A) has a
+   median speed-up of 1.97x.
+4. **Bring-up unchanged by the window — pass.** `deployed bridge confirmed
+   7a98f50b…f99a`, then `emulator-5556 is at home and offline`. Read back
+   independently with the window up: only `lo` carries an IPv4, and
+   `topResumedActivity` is the game's `UnityPlayerActivity`. Cosmetic, not a
+   fault: `instrumented_bridge.sh deploy` tags the stderr of `adb push` and
+   `am start` as `deploy: error:` lines on a wholly successful deploy.
+5. **The panel — pass.** The frame the death is reported in:
+
+   ```text
+   tower-rl spectate — checkpoint-0050123 — episode 1 of 1
+
+   wave 8   cash 15   health 0%   reward +0
+   episodes played 1   mean final wave 8.00   decisions 189   0.0/min
+   episode 1 ended at wave 8: game_over
+   ```
+
+   The death line is written in the same redraw as `e1 d189` and before the
+   hold footer, so it lands on the decision the tower dies on rather than one
+   later. Still owed to the developer's own eyes: comparing cash and health
+   against the game window beside it.
+
+   Worth knowing before a session is run unattended: `--no-panel` prints
+   `lines[2] | lines[0]` and nothing else, so it gives wave, cash and health per
+   decision but **never the death line**. `episode N ended at wave W: …` exists
+   in the curses panel alone.
+6. **Hold and teardown — pass.** The hold ran after the last episode
+   (`session over — press any key to tear the instance down`), then
+   `game_frame_rate_override: reset`, `libunity_mounts: 0`,
+   `bridge_artifacts: removed`. Afterwards `adb devices` empty and zero `qemu`.
+7. **`--record` — pass.** Two chunks, the first stopping at its own 180 s
+   limit and the second at 144.55 s; `ffprobe` reads both as h264 in a
+   `mov,mp4,m4a` container with durations, so the last is finalised rather than
+   truncated. Guest-side removal was caught directly, polling `/sdcard` at 0.5 s:
+   chunks present at 10:12:34.657, gone at 10:12:35.175, device down at
+   10:12:36.254 — removed before teardown, with room to spare.
+8. **The refusal, positively — pass.** Started from a second shell against a
+   live instance: exit 1, nothing touched, naming both witnesses — `refusing to
+   spectate while an emulator is running (adb: emulator-5556; qemu processes:
+   1114598 …/qemu-system-x86_64)`. The running instance was unaffected.
+9. **`screenrecord` exit status — fail.** On this image `screenrecord`
+   interrupted by SIGINT exits **zero**. Read by hand on a live instance, both
+   ways the question can be asked:
+
+   ```text
+   targeted-kill-INT rc=0
+   pkill-INT rc=0
+   ```
+
+   The recording code's own naming corroborates it. Session A's chunk 001 ran
+   144.55 s of its 180 s limit — plainly interrupted — and was pulled as
+   `-001.mp4` with no `-partial`; a second session produced three chunks, every
+   one interrupted, none named `-partial`. So
+   `chunk.partial = "rc=0" not in reply` can never be true for an interrupt,
+   and the `-partial` suffix cannot distinguish an interrupted chunk from a
+   whole one.
+
+   The files themselves are fine, and for the same reason: SIGINT makes
+   `screenrecord` finalise what it is writing and exit cleanly, which is why an
+   interrupted chunk plays. What does not exist on this image is the *signal*
+   the suffix was added to carry. Left as found; what to do about it is a
+   decision, not a device reading.
+
+### What the developer can now run
+
+Nothing here needs a second attempt. The windowed path, the panel and the
+recording all work on the developer's own desktop with the command above.
+
 ## M2-E002 — First budgeted run: 200k decisions, post-hoc evaluation
 
 **Date:** 2026-09-19

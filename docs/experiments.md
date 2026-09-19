@@ -4846,6 +4846,12 @@ no check, so the interface is what is tested, not the setting.
 
 ## M1B-E009 — The 1,000-episode M2 reliability gate passes
 
+**Note (2026-09-19):** Measured under the game-speed multiplier mechanism
+(requested speed 64) that `M1B-E012` showed alters decision density by
+construction and that `M1B-E016`–`E019`/`E025` replaced with frame-exact
+stepping at a pinned 1× the same day. Not comparable with any figure from
+`M1B-E021` onward; see #55.
+
 **Date:** 2026-09-17
 **Status:** Gate passed — 1,000 of 1,000 attempts valid, no invalid attempt to
 classify, no silent corruption
@@ -4954,6 +4960,12 @@ unchanged (`versionCode 1199`, `versionName 29.0.3`, installer
 airplane mode still on afterwards, and no emulator left running.
 
 ## M1B-E008 — 150-episode reliability sample and the death-boundary transient
+
+**Note (2026-09-19):** Measured under the game-speed multiplier mechanism
+(requested speed 64) that `M1B-E012` showed alters decision density by
+construction and that `M1B-E016`–`E019`/`E025` replaced with frame-exact
+stepping at a pinned 1× the same day. Not comparable with any figure from
+`M1B-E021` onward; see #55.
 
 **Date:** 2026-09-17
 **Status:** 99.3 percent validity over 150 episodes; residual attributed and

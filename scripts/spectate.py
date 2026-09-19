@@ -1056,6 +1056,44 @@ def run(arguments: argparse.Namespace) -> int:
     summaries: list[EpisodeSummary] = []
     spectator = Spectator()
     labels: tuple[UpgradeSlotLabel, ...] = ()
+
+    def write_session_record() -> None:
+        """The episodes this session played, as the record the fleet writes.
+
+        A closure rather than a block at the end of `run`, because it has to
+        run on the way out of the teardown as well as after a clean session.
+        """
+        if arguments.output_directory is None or not summaries:
+            return
+        arguments.output_directory.mkdir(parents=True, exist_ok=True)
+        record = session_record(
+            summaries,
+            identity,
+            frame_rate_hz=arguments.frame_rate_hz,
+            decision_cadence=str(decision_cadence_from(arguments)),
+            wall_seconds=time.monotonic() - started,
+            labels=labels,
+            live_ranges=spectator.live_ranges,
+            recording=(
+                {
+                    "video": str(arguments.record),
+                    "decisions": str(track.path),
+                    "anchor_monotonic": round(track.anchor, 3),
+                    # Each chunk's start as an offset from the anchor, which is
+                    # what the seams cost: the gap between one chunk's start
+                    # and the last is a chunk's length plus the lost second.
+                    "chunk_start_offsets_s": [
+                        round(start - track.anchor, 3) for start in recording.chunk_starts
+                    ],
+                }
+                if track is not None and recording is not None
+                else None
+            ),
+        )
+        output = arguments.output_directory / f"{instance.serial}.json"
+        output.write_text(json.dumps(record, indent=2))
+        print(f"episodes: {output}", flush=True)
+
     try:
         require_offline(instance)
         require_game_activity(instance)
@@ -1114,37 +1152,17 @@ def run(arguments: argparse.Namespace) -> int:
                 print(f"recording: {path}", flush=True)
             if track is not None and track.path.exists():
                 print(f"decisions: {track.path}", flush=True)
-        tear_down_instance(instance)
+        # The record is written whatever teardown does. `tear_down_instance`
+        # raises when the instance's cleanup did not hold its post-conditions,
+        # and the episodes this session played are evidence that has nothing to
+        # do with how the instance was put down: leaving them unwritten because
+        # a frame-rate override did not reset would lose a session's work to an
+        # unrelated failure. Teardown's failure still propagates.
+        try:
+            tear_down_instance(instance)
+        finally:
+            write_session_record()
 
-    if arguments.output_directory is not None and summaries:
-        arguments.output_directory.mkdir(parents=True, exist_ok=True)
-        record = session_record(
-            summaries,
-            identity,
-            frame_rate_hz=arguments.frame_rate_hz,
-            decision_cadence=str(decision_cadence_from(arguments)),
-            wall_seconds=time.monotonic() - started,
-            labels=labels,
-            live_ranges=spectator.live_ranges,
-            recording=(
-                {
-                    "video": str(arguments.record),
-                    "decisions": str(track.path),
-                    "anchor_monotonic": round(track.anchor, 3),
-                    # Each chunk's start as an offset from the anchor, which is
-                    # what the seams cost: the gap between one chunk's start
-                    # and the last is a chunk's length plus the lost second.
-                    "chunk_start_offsets_s": [
-                        round(start - track.anchor, 3) for start in recording.chunk_starts
-                    ],
-                }
-                if track is not None and recording is not None
-                else None
-            ),
-        )
-        output = arguments.output_directory / f"{instance.serial}.json"
-        output.write_text(json.dumps(record, indent=2))
-        print(f"episodes: {output}", flush=True)
     for line in report_lines(spectator, summaries):
         print(line, flush=True)
     return 0

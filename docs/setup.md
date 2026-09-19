@@ -445,3 +445,63 @@ frame arrives an adb round trip and a `screenrecord` process start later — a
 few hundred milliseconds, under a second. Each chunk seam loses about a second
 the same way, which is why a decision is placed by its chunk rather than by
 `video_s`. Close enough to watch; not something to measure from.
+
+## 10. Running a device stage unattended
+
+A stage — a training seed, an evaluation batch, a recording session — is hours
+of device time, so it is launched once and left alone rather than watched:
+
+```text
+nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
+  uv run --extra tracking python scripts/train.py \
+      --actors 7 --renderer host --frame-rate-hz 120 \
+      --decision-cadence choice-points --exploration ladder \
+      --budget-game-seconds 360000 --block-game-seconds 4000 \
+      --checkpoint-every-game-seconds 60000 \
+      --epsilon-anneal-decisions 2500 \
+      --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
+      --seed 1 > /dev/null 2>&1 &
+```
+
+That is `M2-P002`'s option-B training line for seed 1, unchanged, with
+`run_stage.sh` in front of it; `nohup`'s own stdout goes nowhere because the
+script already writes everything to the log below.
+
+The stage command after `--` is run exactly as written; `run_stage.sh` does not
+bring the fleet up, because `train.py` and `run_actors.py` bring up and tear
+down their own instances. What it adds is the guarantee on the way out. On
+**every** exit path — success, failure, `SIGINT`, `SIGTERM` — it interrupts the
+stage command so the runner can tear its own fleet down, then runs
+`scripts/instrumented_bridge.sh cleanup` on each of the stage's serials that is
+still live, kills every emulator that is still attached, and verifies the host
+is empty: no qemu process (counted through `/proc/*/exe`) and no adb device.
+Before it launches anything it refuses a host that is already running something
+it should not. Every **attached** instance is checked, not only the ones adb
+reports as `device`: one that is not `tower_rl_instrumented_api36`, not
+`-read-only`, not on an even console port from 5556, still holding a routable
+interface, or attached in a state that cannot be asked about its interfaces at
+all, is a refusal — as is `emulator-5554` or the canonical evaluation AVD
+anywhere. The canonical AVD is never killed either: if one is running when the
+stage ends, the summary says the cleanup failed and it is left for you.
+
+Everything the stage and the script write goes to `state/logs/<name>-<timestamp>.log`
+and to stdout, ending in one summary line:
+
+```text
+stage m2-run2-train-seed1: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12:44
+```
+
+Once the teardown has begun, `SIGINT` and `SIGTERM` are **ignored**, so a second
+Ctrl-C cannot leave the device half cleaned; each instance's cleanup is bounded
+at 120 s so that ignoring them cannot hang the stage. `SIGKILL` of the
+supervisor is the one signal that abandons the teardown, and it leaves the
+cleanup and the verification to be run by hand.
+
+The exit status is the stage command's, or non-zero if cleanup or the
+verification failed while the stage itself succeeded — so a stage that left the
+device dirty cannot be read as a stage that passed.
+
+It needs **bash 5.1 or newer** (the workstation runs 5.3) and refuses to start
+otherwise: it waits on the stage and on the grace timer at once through
+`wait -n -p`, and a shell that cannot do that would read a running stage as a
+finished one and clean the device up underneath it.

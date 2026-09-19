@@ -720,6 +720,11 @@ is exactly why the pre-registered check is a period of ~220 episodes and not a
 window, and why no single window decides anything.) The price is device time: a
 run that fails is now stopped at 120,000 game-s, ~2.8 h, rather than at 60,000.
 
+**Amendment 4 (2026-09-20, before seed 1).** Stages from seed 1 onward are
+launched through `scripts/run_stage.sh`, which supervises the stage command and
+verifies the device is clean on every exit path. It changes no measured
+quantity, no threshold and no rule of this protocol.
+
 ## M2-E006 — Observation-v2 on device
 
 **Date:** 2026-09-19

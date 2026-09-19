@@ -10,7 +10,10 @@ set -euo pipefail
 #   verify   report package identity, libunity hash, and bridge-artifact state
 #   deploy   install the built bridge and mount the overlay, then start the game
 #   cleanup  stop the game, unmount, remove artifacts, reset the frame-rate
-#            override, and re-verify identity
+#            override, and re-verify identity. Every step is attempted whatever
+#            an earlier one found, and the exit status is non-zero if any check
+#            failed: a caller that reads it must not be told an instance is
+#            clean when it is not.
 #
 # Several clone instances can run at once, so the target instance is an argument:
 #
@@ -70,11 +73,53 @@ lib_path() {
     sed 's#/base.apk#/lib/arm64/libunity.so#'
 }
 
+# What the device must read back as once cleanup is done. Three of the four come
+# from the private build's own `CMakeCache.txt` — the same file
+# `bridge.compatibility` reads and the one place that says which game build this
+# profile is for — rather than being written here a second time to drift from it.
+cmake_cache_value() {
+  [ -n "$build_dir" ] && [ -f "$build_dir/CMakeCache.txt" ] || return 1
+  sed -n "s/^$1:STRING=//p" "$build_dir/CMakeCache.txt"
+}
+
 # The overlay's backing file must never be removed while the bind mount is live:
 # the target path then resolves to a deleted inode and can no longer be mounted.
-original_libunity_sha256() {
-  [ -n "$build_dir" ] && [ -f "$build_dir/CMakeCache.txt" ] || return 1
-  sed -n 's/^TOWER_BRIDGE_ORIGINAL_LIBUNITY_SHA256:STRING=//p' "$build_dir/CMakeCache.txt"
+original_libunity_sha256() { cmake_cache_value TOWER_BRIDGE_ORIGINAL_LIBUNITY_SHA256; }
+expected_version_name() { cmake_cache_value TOWER_BRIDGE_PACKAGE_VERSION; }
+expected_version_code() { cmake_cache_value TOWER_BRIDGE_PACKAGE_VERSION_CODE; }
+
+#: The one expectation the build configuration does not carry: the app is the
+#: one Google Play installed, and no part of the instrumented profile may change
+#: that. `deploy` mounts a view of a file; it never touches installer identity.
+expected_installer="com.android.vending"
+
+package_dump() { device shell dumpsys package "$package" 2> /dev/null | tr -d '\r'; }
+
+dump_field() {
+  printf '%s\n' "$2" | sed -n "s/.*$1=\([^ ]*\).*/\1/p" | head -n 1
+}
+
+libunity_mount_count() {
+  su_device "mount | grep -c libunity.so || true" | tr -d '\r' | head -n 1
+}
+
+#: Cleanup's checks are counted rather than acted on where they fail: the device
+#: is put back whatever an earlier step found, and the count decides the exit
+#: status at the end. Before this, a still-mounted overlay and a frame-rate
+#: override that never reset were printed as warnings and exited 0, so a caller
+#: that read the status — `fleet.tear_down_instance`, `run_stage.sh` — was told
+#: the instance was clean when it was not.
+failures=0
+fail() {
+  echo "check failed: $1" >&2
+  failures=$((failures + 1))
+}
+
+#: A reading that came back empty is not a reading, and a report of one is
+#: worse than no report: `verify` printing `versionCode=` at exit 0 says the
+#: identity was confirmed when the device answered nothing at all.
+require_reading() {
+  [ -n "$2" ] || fail "$1 read back empty on $serial"
 }
 
 target_sha256() {
@@ -95,12 +140,63 @@ unmount_overlay() {
   [ "$(target_sha256 "$target")" = "$original" ]
 }
 
+# What `cleanup` leaves behind, read back from the device and compared against
+# what it must be — not printed for somebody to notice. The readings are the
+# same ones `report_identity` prints, in the same shapes, because they are the
+# evidence a cleanup log is read for; the difference is that a mismatch here is
+# a failure rather than a line.
+check_identity() {
+  local expected
+  # The readings are `report_identity`'s: one place takes them and prints them,
+  # and this adds what each one has to be. Reading the device twice would let
+  # the evidence in the log and the value that was checked disagree.
+  report_identity "$1"
+  if expected="$(original_libunity_sha256)" && [ -n "$expected" ]; then
+    [ "$identity_sha256" = "$expected" ] ||
+      fail "libunity_sha256 on $serial is $identity_sha256, not the original $expected"
+  else
+    fail "nothing to check libunity_sha256 against: $build_dir holds no CMakeCache.txt"
+  fi
+  if expected="$(expected_version_name)" && [ -n "$expected" ]; then
+    [ "$identity_version_name" = "$expected" ] ||
+      fail "versionName is $identity_version_name, not $expected"
+  else
+    fail "nothing to check versionName against: $build_dir holds no CMakeCache.txt"
+  fi
+  if expected="$(expected_version_code)" && [ -n "$expected" ]; then
+    [ "$identity_version_code" = "$expected" ] ||
+      fail "versionCode is $identity_version_code, not $expected"
+  else
+    fail "nothing to check versionCode against: $build_dir holds no CMakeCache.txt"
+  fi
+  [ "$identity_installer" = "$expected_installer" ] ||
+    fail "installerPackageName is $identity_installer, not $expected_installer"
+  [ "$identity_mounts" = "0" ] ||
+    fail "$identity_mounts libunity.so mount(s) survive on $serial"
+}
+
+#: The readings `report_identity` last took. `check_identity` compares these
+#: rather than reading the device again, so what a log shows and what was
+#: checked are the same numbers.
+identity_sha256=""
+identity_version_name=""
+identity_version_code=""
+identity_installer=""
+identity_mounts=""
+
 report_identity() {
-  local target="$1"
-  echo "libunity_sha256: $(su_device "sha256sum $target" | awk '{print $1}')"
-  device shell dumpsys package "$package" |
-    grep -E 'versionName=|versionCode=|installerPackageName=' | head -n 3 | sed 's/^ *//'
-  su_device "mount | grep -c libunity.so || true" | tr -d '\r' | sed 's/^/libunity_mounts: /'
+  local target="$1" dump
+  identity_sha256="$(target_sha256 "$target")"
+  dump="$(package_dump)"
+  identity_version_name="$(dump_field versionName "$dump")"
+  identity_version_code="$(dump_field versionCode "$dump")"
+  identity_installer="$(dump_field installerPackageName "$dump")"
+  identity_mounts="$(libunity_mount_count)"
+  echo "libunity_sha256: $identity_sha256"
+  echo "versionName=$identity_version_name"
+  echo "versionCode=$identity_version_code"
+  echo "installerPackageName=$identity_installer"
+  echo "libunity_mounts: $identity_mounts"
 }
 
 # Airplane mode alone does not take this emulator offline: the setting can read 1
@@ -124,9 +220,21 @@ target="$(lib_path)"
 case "$command" in
   verify)
     report_identity "$target"
+    # `verify` reports rather than decides — except about its own readings. An
+    # empty one means the device answered nothing, and reporting that as
+    # identity would be a confirmation nobody made.
+    require_reading libunity_sha256 "$identity_sha256"
+    require_reading versionName "$identity_version_name"
+    require_reading versionCode "$identity_version_code"
+    require_reading installerPackageName "$identity_installer"
     device shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | grep -v ' lo ' |
       sed 's/^/routable_interface: /' || echo "routable_interfaces: none"
-    su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: none"
+    su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: none" ||
+      fail "bridge artifacts survive on $serial"
+    if [ "$failures" -gt 0 ]; then
+      echo "verify_checks: $failures failed on $serial" >&2
+      exit 1
+    fi
     ;;
 
   deploy)
@@ -157,7 +265,10 @@ case "$command" in
     ;;
 
   cleanup)
-    device shell am force-stop "$package"
+    # Every step runs to the end whatever an earlier one found: a device cleaned
+    # half way is worse than one every step was attempted on. What a failed check
+    # changes is the exit status, through `fail`.
+    device shell am force-stop "$package" || fail "am force-stop returned nonzero"
     # Bring-up pins the game's frame rate through GameManagerService (see
     # `clone_session.raise_frame_rate`); that override is device state, so it is
     # reset here and no instance is left modified by a run.
@@ -189,12 +300,32 @@ case "$command" in
       echo "game_frame_rate_override: reset"
     else
       echo "game_frame_rate_override: NOT-reset, still $override" >&2
+      fail "the game frame-rate override on $serial is still $override"
     fi
-    unmount_overlay "$target" || echo "warning: the overlay is still mounted" >&2
-    su_device "rm -f /data/user/0/$package/files/libtower_bridge.so /data/local/tmp/libtower_bridge.so /data/local/tmp/libunity-tower-bridge.so"
+    unmount_overlay "$target" || {
+      echo "warning: the overlay is still mounted" >&2
+      fail "the overlay is still mounted on $serial"
+    }
+    su_device "rm -f /data/user/0/$package/files/libtower_bridge.so /data/local/tmp/libtower_bridge.so /data/local/tmp/libunity-tower-bridge.so" ||
+      fail "the bridge artifacts could not be removed from $serial"
     device forward --remove "tcp:$host_port" 2> /dev/null || true
-    report_identity "$target"
-    su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: removed"
+    check_identity "$target"
+    # The device's own answer rather than its exit status: `adb shell` has
+    # propagated the remote status since platform-tools 24, but here the remote
+    # command is `su -c '<test> && <echo>'`, so the status that arrives is su's
+    # and depends on the su build. The marker it echoes is its own evidence and
+    # needs no such assumption.
+    artifacts="$(su_device "test ! -e /data/user/0/$package/files/libtower_bridge.so && test ! -e /data/local/tmp/libunity-tower-bridge.so && echo bridge_artifacts: removed" 2> /dev/null | tr -d '\r' | head -n 1 || true)"
+    if [ "$artifacts" = "bridge_artifacts: removed" ]; then
+      echo "$artifacts"
+    else
+      fail "bridge artifacts survive on $serial"
+    fi
+    if [ "$failures" -gt 0 ]; then
+      echo "cleanup_checks: $failures failed on $serial" >&2
+      exit 1
+    fi
+    echo "cleanup_checks: all passed"
     ;;
 
   *)

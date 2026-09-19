@@ -467,6 +467,27 @@ statistic; nothing here measures how the model plays. The evaluated checkpoint
 is the last one by declaration, not the best one — if an earlier checkpoint is
 stronger, this design cannot see it, which is the price of dropping a selection
 stage that `M2-E002` showed could not separate anyway.
+
+**Amendment 2026-09-19 (after stage 1, before stage 2).** Written after the
+baselines were collected and before any model data exists. Stage 1 measured a
+per-episode sd of final wave of **2.21–2.31 waves** (`M2-E007`, scripted and
+random), against the **1.3** the n=107 set size above was priced on — so at 112
+attempted an arm the realised resolution on a pairwise difference is ~0.85
+waves, not the 0.5 this design buys. To keep the designed **0.5-wave**
+resolution rather than silently accept a coarser one, the evaluation set size
+becomes what the same function returns at the sd actually observed:
+`comparison.required_episodes(standard_deviation=2.3, difference=0.5,
+power=0.8)` = **333 valid episodes an arm**, which is `--episodes 48` on 7
+instances = **336 attempted**. This applies to the model arms and, in the same
+stage, to **top-ups of both baseline arms** from their stage-1 112 to the same
+n, collected under the identical image state, cadence and schema and pooled with
+the episodes already recorded. Only the set size changes: the primary statistic,
+the kill criterion, the early-stopping rule, the pre-declared checkpoint, the
+99%/100-valid device rules and the **verdict rule are unchanged**. The price of
+the amendment is evaluation time — an arm is ~3× the 0.65 h stage 1 measured —
+and it is accepted here, before any model number is known, rather than after an
+interval is seen.
+
 ## M2-E006 — Observation-v2 on device
 
 **Date:** 2026-09-19

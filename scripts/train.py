@@ -86,6 +86,11 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     write_manifest,
 )
 from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
+from tower_rl.learning.exploration import (  # noqa: E402
+    EXPLORATION_OPTIONS,
+    LADDER,
+    ExplorationSchedule,
+)
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
@@ -124,6 +129,11 @@ from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter 
 
 #: The one backbone this project trains.
 BACKBONE = "stacked-dqn"
+
+#: What a uniform schedule anneals to when `--epsilon-end` is not given. Held
+#: here rather than as the flag's default so that a value the ladder would
+#: ignore can be told from one that was never given at all.
+DEFAULT_EPSILON_END = 0.05
 
 
 @dataclass(frozen=True)
@@ -209,9 +219,13 @@ def build_arm(
         warmup_sequences=arguments.warmup_sequences,
         batch_size=arguments.batch_size,
         gradient_steps_per_decision=arguments.gradient_steps_per_decision,
-        epsilon_start=arguments.epsilon_start,
-        epsilon_end=arguments.epsilon_end,
-        epsilon_anneal_decisions=arguments.epsilon_anneal_decisions,
+        exploration=ExplorationSchedule.for_option(
+            arguments.exploration,
+            actors=len(instances),
+            epsilon_start=arguments.epsilon_start,
+            epsilon_end=arguments.epsilon_end,
+            anneal_decisions=arguments.epsilon_anneal_decisions,
+        ),
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
@@ -449,7 +463,31 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="how slowly the target network follows the online one",
     )
     parser.add_argument("--epsilon-start", type=float, default=1.0)
-    parser.add_argument("--epsilon-end", type=float, default=0.05)
+    parser.add_argument(
+        "--epsilon-end",
+        type=float,
+        # Unset rather than 0.05, so a value the ladder would ignore can be told
+        # from the default it resolves to below.
+        default=None,
+        help=(
+            "the rate every actor of a uniform schedule anneals to (default "
+            "0.05); under --exploration ladder each actor anneals to its own "
+            "rung instead and this may not be given"
+        ),
+    )
+    parser.add_argument(
+        "--exploration",
+        choices=EXPLORATION_OPTIONS,
+        default="uniform",
+        help=(
+            "uniform anneals every actor to --epsilon-end, which is what every "
+            "run so far collected under; ladder anneals actor i of N to the "
+            "Ape-X rate 0.4 ** (1 + 7 i / (N - 1)) instead, so one fleet "
+            "searches and reports at once. --epsilon-end is the uniform "
+            "schedule's floor only and is ignored under ladder, where each "
+            "actor has a floor of its own"
+        ),
+    )
     parser.add_argument(
         "--epsilon-anneal-decisions",
         type=int,
@@ -563,6 +601,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
+    if arguments.epsilon_end is None:
+        arguments.epsilon_end = DEFAULT_EPSILON_END
+    elif arguments.exploration == LADDER:
+        # The ladder replaces the end of the anneal per actor, so a value given
+        # here would be silently unused - and the one thing an exploration
+        # setting may not be is silently unused.
+        raise SystemExit(
+            "--epsilon-end is the uniform schedule's floor and is ignored under "
+            "--exploration ladder, where every actor anneals to its own rung"
+        )
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
     if arguments.actors < 1:

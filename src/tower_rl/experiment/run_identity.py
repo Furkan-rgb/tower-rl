@@ -161,9 +161,16 @@ def resolved_config(
         "target_ema_decay": (
             arguments.target_ema_decay if name == "stacked-dqn" else None
         ),
-        "epsilon_start": config.epsilon_start,
-        "epsilon_end": config.epsilon_end,
-        "epsilon_anneal_decisions": config.epsilon_anneal_decisions,
+        "epsilon_start": config.exploration.epsilon_start,
+        "epsilon_end": config.exploration.epsilon_end,
+        "epsilon_anneal_decisions": config.exploration.anneal_decisions,
+        # Which exploration this arm collected under, and the per-actor floors
+        # it resolved to: under a ladder the fleet's actors sit at rates two
+        # orders of magnitude apart, and a curve read months later cannot be
+        # told from a uniform one without them. Empty under `uniform`, which has
+        # no per-actor floor at all.
+        "exploration": config.exploration.option,
+        "exploration_epsilon_floors": list(config.exploration.floors),
         "beta_start": config.beta_start,
         "beta_end": config.beta_end,
         "priority_alpha": arguments.priority_alpha,

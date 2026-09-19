@@ -32,6 +32,7 @@ from tower_rl.learning.backbone import (
     acting_copy,
     parameters_are_equal,
 )
+from tower_rl.learning.exploration import ExplorationSchedule, ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import (
@@ -49,6 +50,13 @@ from tower_rl.simulation.instrumented_run_adapter import (
 )
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
+
+#: Any schedule at all: nothing in this file is about exploration, and the rates
+#: a real run uses are resolved from `train.py`'s parser rather than defaulted.
+SCHEDULE = ExplorationSchedule(
+    epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
+)
+
 
 #: Long enough that two actors overlap in it and short enough that the suite
 #: stays fast. A real decision costs hundreds of milliseconds on device.
@@ -149,6 +157,7 @@ def fleet(
         "warmup_sequences": 2,
         "batch_size": 2,
         "gradient_steps_per_decision": 0.2,
+        "exploration": SCHEDULE,
     }
     settings.update(overrides)
     return TrainingRun(
@@ -491,6 +500,51 @@ def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, Watche
 def copies(training: TrainingRun) -> list[WatchedBackbone]:
     """The acting copies, which are deepcopies of the watched learner."""
     return [cast(WatchedBackbone, copy) for copy in training.acting.values()]
+
+
+def test_a_ladder_puts_every_actor_of_the_fleet_on_a_rate_of_its_own() -> None:
+    """Ape-X's arrangement: one fleet searches and reports at the same time.
+
+    The anneal is spent here, so every actor is at its own rung - which is what
+    a run collects under for all but the first few thousand decisions.
+    """
+    schedule = ExplorationSchedule.for_option(
+        "ladder",
+        actors=3,
+        epsilon_start=0.9,
+        epsilon_end=SCHEDULE.epsilon_end,
+        anneal_decisions=1,
+    )
+    training = fleet(
+        [environment() for _ in range(3)], exploration=schedule, budget_decisions=200
+    )
+
+    training.run()
+
+    rungs = ape_x_floors(3)
+    rates = [actor.config.epsilon for actor in training.actors]
+    # Exploration is drawn once per episode, so an actor whose only episode
+    # began at decision zero is still at the start of the anneal; every other
+    # actor is at its own rung and at nobody else's.
+    assert rates == [
+        pytest.approx(rung) if rate != 0.9 else 0.9 for rate, rung in zip(rates, rungs, strict=True)
+    ]
+    assert any(rate != 0.9 for rate in rates), "the anneal is one decision long"
+
+
+def test_a_ladder_built_for_another_fleet_is_refused() -> None:
+    """Read against the wrong fleet, actor 3 of 7 would act at actor 3 of 4's rate."""
+    with pytest.raises(ValueError, match="exploration ladder"):
+        fleet(
+            [environment() for _ in range(2)],
+            exploration=ExplorationSchedule.for_option(
+                "ladder",
+                actors=7,
+                epsilon_start=SCHEDULE.epsilon_start,
+                epsilon_end=SCHEDULE.epsilon_end,
+                anneal_decisions=SCHEDULE.anneal_decisions,
+            ),
+        )
 
 
 def test_every_actor_acts_from_a_copy_of_its_own_and_not_from_the_learner() -> None:

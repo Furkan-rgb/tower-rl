@@ -22,6 +22,7 @@ from test_train_entry_point import (
     SMALL_NETWORK,
     arguments,
     fleet,
+    session,
 )
 
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
@@ -32,6 +33,7 @@ from tower_rl.experiment.tracking import (
     artifact_root,
     tracking_uri,
 )
+from tower_rl.learning.exploration import ape_x_floors
 
 REPOSITORY = Path(train.__file__).resolve().parents[1]
 
@@ -498,3 +500,104 @@ def test_the_numbered_checkpoints_land_on_the_run_that_reported_the_episodes(
         directory is not None and directory.startswith("checkpoints/")
         for directory in directories
     )
+
+
+def test_a_laddered_fleet_reports_its_collection_windows_per_actor(
+    tmp_path: Path,
+) -> None:
+    """The pooled series alone cannot be read when the actors explore differently.
+
+    Under a ladder the fleet's actors sit at rates that differ by orders of
+    magnitude, so the pooled window is nobody's performance. Each actor's own
+    mean goes up beside it, and the near-greedy actors are pooled into the one
+    series a readout of what the policy itself reaches can cite.
+    """
+    tracker = RecordingTracker()
+    session(
+        tmp_path,
+        budget="300",
+        actors=2,
+        settings={"--exploration": "ladder"},
+        tracker=tracker,
+    )
+
+    points = [
+        point
+        for point in tracker.runs[0].points
+        if "collection_mean_final_wave" in point.metrics
+    ]
+    assert points, "the collection curve is what the run is read from"
+    for point in points:
+        metrics = point.metrics
+        # Actor 1 of 2 is the bottom of the ladder and the only near-greedy one,
+        # so the near-greedy series is its episodes rather than the fleet's.
+        assert metrics["collection_window_near_greedy_episodes"] <= metrics[
+            "collection_episodes"
+        ]
+        per_actor = {
+            key for key in metrics if key.startswith("collection_window_mean_final_wave_actor")
+        }
+        assert per_actor <= {
+            "collection_window_mean_final_wave_actor0",
+            "collection_window_mean_final_wave_actor1",
+        }
+        assert per_actor, "a closed window holds at least one actor's episodes"
+    # Over the run, both actors and the near-greedy series are all reported.
+    keys = {key for point in points for key in point.metrics}
+    assert "collection_window_mean_final_wave_actor0" in keys
+    assert "collection_window_mean_final_wave_actor1" in keys
+    assert "collection_window_near_greedy_mean_final_wave" in keys
+
+
+def test_a_uniform_fleet_s_near_greedy_window_is_its_pooled_window(
+    tmp_path: Path,
+) -> None:
+    """Every actor draws the one rate, so the two series are the same episodes."""
+    tracker = RecordingTracker()
+    session(tmp_path, budget="300", actors=2, tracker=tracker)
+
+    points = [
+        point
+        for point in tracker.runs[0].points
+        if "collection_mean_final_wave" in point.metrics
+    ]
+    assert points
+    for point in points:
+        metrics = point.metrics
+        assert metrics["collection_window_near_greedy_episodes"] == pytest.approx(
+            metrics["collection_episodes"]
+        )
+        assert metrics["collection_window_near_greedy_mean_final_wave"] == pytest.approx(
+            metrics["collection_mean_final_wave"]
+        )
+
+
+def test_each_episode_logs_the_rate_the_actor_that_played_it_explored_at(
+    tmp_path: Path,
+) -> None:
+    """Under a ladder the run's own published rate is some other actor's rung.
+
+    The anneal is one decision long here, so every actor is on its rung for the
+    whole run and the two rungs of a fleet of two are 0.4 and 0.4 ** 8 - far
+    enough apart that an episode credited to the wrong actor's rate is obvious.
+    """
+    rungs = ape_x_floors(2)
+    tracker = RecordingTracker()
+    session(
+        tmp_path,
+        budget="300",
+        actors=2,
+        settings={"--exploration": "ladder", "--epsilon-anneal-decisions": "1"},
+        tracker=tracker,
+    )
+
+    episodes = [
+        point for point in tracker.runs[0].points if "episode_epsilon" in point.metrics
+    ]
+    assert episodes, "the episode is the tracked unit"
+    seen = set()
+    for point in episodes:
+        actor = int(point.metrics["episode_actor"])
+        assert point.metrics["episode_epsilon"] == pytest.approx(rungs[actor])
+        seen.add(actor)
+    assert seen == {0, 1}, "both rungs of the ladder collected"

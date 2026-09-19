@@ -78,6 +78,9 @@ WINDOW_KEYS = {
     "wait_fraction",
     "purchases_per_episode",
     "health",
+    "mean_final_wave_by_actor",
+    "near_greedy_episodes",
+    "near_greedy_mean_final_wave",
 }
 
 #: `EpisodeHealth`'s own fields, pooled at whatever scope names it: the whole

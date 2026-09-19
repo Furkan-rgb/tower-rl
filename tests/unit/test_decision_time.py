@@ -36,6 +36,7 @@ from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.metrics import pooled
 from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.evaluator import EvaluationReport, evaluate
+from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import (
@@ -209,6 +210,10 @@ def fleet(count: int) -> TrainingRun:
         backbone=learner,
         config=TrainingConfig(
             budget_decisions=200,
+            # Any schedule at all: nothing here is about exploration.
+            exploration=ExplorationSchedule(
+                epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=10_000
+            ),
             warmup_sequences=2,
             batch_size=2,
             gradient_steps_per_decision=0.2,

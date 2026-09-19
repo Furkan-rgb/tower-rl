@@ -122,6 +122,21 @@ class TrainingReport:
         self.decisions_logged = self.resumed_decisions
 
     @property
+    def near_greedy_actor_ids(self) -> frozenset[str]:
+        """The actors whose episodes read as the policy's performance, not search.
+
+        The whole fleet under a uniform schedule, where every actor draws the one
+        annealed rate; under a ladder, the ones at or under
+        `NEAR_GREEDY_EPSILON`.
+        """
+        exploration = self.training.config.exploration
+        return frozenset(
+            actor_id
+            for actor_id, index in self.training.actor_index.items()
+            if exploration.is_near_greedy(index)
+        )
+
+    @property
     def checkpoint_path(self) -> Path:
         return self.run_dir / "checkpoints" / "latest.pt"
 
@@ -159,9 +174,11 @@ class TrainingReport:
                 environment_decisions=report.decisions,
                 episodes=report.episodes,
                 # Read from the run rather than re-evaluated from its
-                # schedules: the exploration rate and the importance exponent
+                # schedules: the schedule position and the importance exponent
                 # are the run's to publish, and a resume has to restore what was
-                # actually used.
+                # actually used. Under a ladder the exploration figure is
+                # informational - the actors were at rates of their own, and the
+                # per-episode series is where those are read.
                 epsilon=report.epsilon,
                 importance_beta=report.importance_beta,
             ),
@@ -243,9 +260,8 @@ class TrainingReport:
         lock. It reads what has already been measured and measures nothing.
         """
         report = self.training.report
-        actors = {
-            actor.config.actor_id: index for index, actor in enumerate(self.training.actors)
-        }
+        actors = self.training.actor_index
+        exploration = self.training.config.exploration
         learner = learner_metrics(report)
         for episode in report.collected[self.episodes_logged :]:
             # The decisions at the end of this episode, not the run's current
@@ -254,14 +270,21 @@ class TrainingReport:
             # the wrong part of the curve.
             self.decisions_logged += episode.summary.decisions
             self.episodes_logged += 1
+            index = actors.get(episode.actor_id, -1)
             self.run.log_metrics(
                 {
                     **episode_metrics(
                         episode,
-                        actor_index=actors.get(episode.actor_id, -1),
-                        # The run's exploration rate as this episode ended,
-                        # which is when this hook runs.
-                        epsilon=report.epsilon,
+                        actor_index=index,
+                        # The rate the actor that played this episode was
+                        # exploring at, where its episode ended - not the run's
+                        # published one, which under a ladder is some other
+                        # actor's rung entirely.
+                        epsilon=(
+                            report.epsilon
+                            if index < 0
+                            else exploration.epsilon_for(index, self.decisions_logged)
+                        ),
                     ),
                     **learner,
                 },
@@ -282,10 +305,14 @@ class TrainingReport:
             # run trained in two sittings is one series, and a window keyed from
             # zero would land underneath the parent's own points.
             spent_before=self.resumed_decisions,
+            near_greedy_actor_ids=self.near_greedy_actor_ids,
         )
         for window in windows[len(self.collection_curve) :]:
             self.collection_curve.append(window)
-            self.run.log_metrics(window_metrics(window), decisions=window.decisions_at_end)
+            self.run.log_metrics(
+                window_metrics(window, actor_index=self.training.actor_index),
+                decisions=window.decisions_at_end,
+            )
             print(f"[{self.name}] collection: {window_line(window)}", flush=True)
 
     def record_decision_time(self, *, final: bool = False) -> None:

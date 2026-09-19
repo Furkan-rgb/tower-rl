@@ -75,8 +75,9 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
     assert arm.replay.alpha == 0.3
     config = arm.training.config
     assert config.warmup_sequences == 7
-    assert (config.epsilon_start, config.epsilon_end) == (0.8, 0.02)
-    assert config.epsilon_anneal_decisions == 77
+    assert (config.exploration.epsilon_start, config.exploration.epsilon_end) == (0.8, 0.02)
+    assert config.exploration.anneal_decisions == 77
+    assert config.exploration.option == "uniform" and config.exploration.floors == ()
     assert config.collection_window_episodes == 5
     assert (config.batch_size, config.gradient_steps_per_decision) == (4, 0.25)
     assert config.parameter_sync_episodes == 4

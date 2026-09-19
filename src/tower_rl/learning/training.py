@@ -627,6 +627,14 @@ class TrainingRun:
             # name would report as one instance and hide a dead one.
             raise ValueError("every actor of a fleet needs an id of its own")
         self.learner = Learner(self.backbone)
+        # The cadence is continued rather than restarted: a run resumed at
+        # 50,123 decisions of a 100,000-decision period has already answered the
+        # multiple at 50,000, and the next checkpoint it owes is the one at
+        # 100,000. Derived from the report it was constructed with, so a fresh
+        # run - whose counter is zero - is unaffected.
+        if self.config.checkpoint_every_decisions:
+            period = self.config.checkpoint_every_decisions
+            self._numbered_at = self.report.decisions // period * period
         self.report.epsilon = self.config.epsilon(self.report.decisions)
         self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}

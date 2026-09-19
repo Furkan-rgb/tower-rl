@@ -99,14 +99,18 @@ class TrainingReport:
     #: sum over `collected`, which would re-add the whole list once per episode
     #: over the thousands a multi-hour run collects.
     #:
-    #: This tracks `TrainingProgressReport.decisions` exactly today - that
-    #: counter has one writer, `_record_episode`, which appends to `collected`
-    #: in the same breath, and nothing restores it. A resume that restored it
-    #: from a checkpoint would break that: this would start at zero against a
-    #: non-zero total and key the whole episode series onto the wrong part of
-    #: the budget. Initialise it from `report.decisions` when resume lands.
+    #: This tracks `TrainingProgressReport.decisions` exactly, and a resumed run
+    #: is why it is a constructor argument: the run's counter comes back from
+    #: the parent checkpoint, and this one starting at zero against a non-zero
+    #: total would key the whole episode series onto the wrong part of the
+    #: budget. `scripts/train.py` initialises it from `report.decisions`.
+    #: `episodes_logged` stays at zero either way - the episode list itself is
+    #: not restored, only the count of decisions behind it.
     episodes_logged: int = 0
     decisions_logged: int = 0
+    #: The tracking run this report's checkpoints name as their own, so a resume
+    #: from one of them can continue that series. None when untracked.
+    tracking_run_id: str | None = None
 
     @property
     def checkpoint_path(self) -> Path:
@@ -155,6 +159,7 @@ class TrainingReport:
             backbone_state=self.backbone.state_dict(),
             resolved_config=self.resolved,
             replay_provenance={**self.replay.snapshot(), "restored": False},
+            tracking_run_id=self.tracking_run_id,
         )
 
     def record_point(

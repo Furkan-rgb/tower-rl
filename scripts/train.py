@@ -844,7 +844,14 @@ def main() -> int:
     # still before anything is brought up: a resume that cannot be honoured
     # must fail now, not an hour into collection.
     resume = resume_point(arguments, profile_id=expected.profile_id, revision=revision)
-    if resume is not None and resume.tracking_run_id is not None:
+    if (
+        resume is not None
+        and resume.tracking_run_id is not None
+        # There is nothing to attach to under `--no-track`: the parent's run id
+        # names a run in a store this session is not recording into, and saying
+        # it was resumed would be a claim about a curve nothing is writing.
+        and not isinstance(tracker, NoExperimentTracker)
+    ):
         # The parent run is read back here, where a missing one costs nothing,
         # rather than at `build_arm` - which runs with the fleet already up.
         # The handle is discarded; the arm opens its own.

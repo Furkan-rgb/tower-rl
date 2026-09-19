@@ -950,6 +950,48 @@ def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) ->
     assert len(warmed) == 1 and warmed[0].decisions > spent
 
 
+def test_an_untracked_resume_does_not_announce_a_tracked_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--no-track` records nothing, so there is no parent series to continue."""
+    tracker = RecordingTracker()
+    first = session(tmp_path / "first", budget="200", tracker=tracker)
+    checkpoint = latest_checkpoint(first)
+    assert load(checkpoint).tracking_run_id == tracker.runs[0].run_id
+
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        train,
+        "compatibility",
+        lambda build_dir: SimpleNamespace(profile_id=PROFILE, bridge_version="v1"),
+    )
+    monkeypatch.setattr(
+        train,
+        "connect",
+        lambda serial, port, arguments, expected, opened: train.ActorInstance(
+            serial=serial, environment=environment()
+        ),
+    )
+    monkeypatch.setattr(train, "train_session", lambda arguments, instances, **kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--no-track",
+            "--resume",
+            str(checkpoint),
+            "--budget-decisions",
+            "100000",
+            "--run-dir",
+            str(tmp_path / "second"),
+        ],
+    )
+
+    assert train.main() == 0
+    assert "resuming tracked run" not in capsys.readouterr().out
+
+
 def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path) -> None:
     """The end-to-end claim: 300 in one sitting, or 150 and 150, is one run.
 

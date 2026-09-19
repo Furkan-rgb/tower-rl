@@ -138,10 +138,15 @@ no attached device and no `qemu` process on the host.
 progression, one session. These are baselines, not a comparison against any
 model; the arms the verdict needs do not exist yet.
 
-### Stage 2 — seed 0: stopped at the kill criterion
+### Stage 2 — seed 0, attempt 1, stopped by the pre-amendment check
 
-**The reported outcome is `M2-P002`'s "stopped at the kill criterion".** The
-first from-scratch `stacked-dqn` of run 2 was launched on the option-B training
+**This attempt does not count toward the verdict.** It was stopped by the kill
+check as originally timed, which `M2-P002`'s amendment 2 then moved to the close
+of the first checkpoint period because a check read at that point cannot
+discriminate an untrained network from a failed one — 558 optimisation steps had
+been taken when it fired. What it did report, it reported honestly, and it is
+kept here rather than deleted; no arm, no checkpoint and no claim comes from it.
+The first from-scratch `stacked-dqn` of run 2 was launched on the option-B training
 line (7 actors, host renderer, 120 Hz, choice points, ε ladder, anneal 2,500
 decisions, budget 360,000 game-s, blocks of 4,000, checkpoints every 60,000,
 early stop 2 periods / 0.2 waves, `--seed 0`) and stopped at the pre-registered
@@ -565,6 +570,30 @@ the kill criterion, the early-stopping rule, the pre-declared checkpoint, the
 the amendment is evaluation time — an arm is ~3× the 0.65 h stage 1 measured —
 and it is accepted here, before any model number is known, rather than after an
 interval is seen.
+
+**Amendment 2 (2026-09-19, after the first seed-0 attempt).** The kill check as
+originally timed reads a network that has barely been trained, and is moved.
+Attempt 1 hit the check about an hour in, as `M2-P002` predicted it would — and
+at that point the run had taken **558 optimisation steps over 5,662 decisions**,
+because replay warm-up did not end until around decision 3,400 and the learner
+had therefore been running for roughly a fifth of the episodes the check was
+computed from. A near-greedy mean final wave measured there is a reading of an
+almost untrained network, not of a policy that has failed to learn, so the check
+as timed **cannot discriminate** between the two and its failure carries no
+information about the run it would kill. The check therefore moves to the
+**close of the first checkpoint period, 60,000 game-seconds**: at that crossing
+`checkpoint_period_near_greedy_mean_final_wave` for period 1 must be
+**> 5.195**, and the period's wait fraction (or, if the period does not carry
+one, the latest `collection_window_wait_fraction`) must be **< 0.9**; if either
+fails the run is stopped and diagnosed, exactly as before. **Both thresholds are
+unchanged** — they are still the re-measured random baseline's 5.495 − 0.3 and
+the 0.9 degenerate-policy guard — and the early-stopping rule, the pre-declared
+checkpoint, the primary statistic and the verdict rule are untouched. Only *when*
+the check is read changes, and it is changed before the run it applies to
+starts. The price is that a doomed run now costs ~1.4 h of fleet time instead of
+~1 h before it can be stopped. The first attempt is recorded below as **"seed 0,
+attempt 1, stopped by the pre-amendment check"** and **does not count toward the
+verdict**: no arm, no checkpoint and no claim comes from it.
 
 ## M2-E006 — Observation-v2 on device
 

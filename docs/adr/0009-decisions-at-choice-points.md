@@ -76,7 +76,10 @@ every file written before this ADR is one.
   reset hands back the terminal state, and the episode is a valid, scored,
   zero-decision episode that submits nothing to replay. The evaluator counts it
   and its final wave; the collection loop counts it as an episode rather than a
-  port failure.
+  port failure. Because such an episode spends none of the decision budget,
+  consecutive ones count toward the same streak that withdraws an actor on
+  consecutive port failures, under their own name - an instance whose runs never
+  reach a choice point leaves the fleet loudly instead of collecting forever.
 - **The budget unit moves to game time in a follow-up.** Spending a budget in
   decisions was already a proxy for spending it in experience; with forced
   slices gone, a decision's game-time cost varies by an order of magnitude

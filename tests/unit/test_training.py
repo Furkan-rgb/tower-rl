@@ -743,3 +743,41 @@ def test_a_zero_decision_episode_is_collected_as_an_episode_not_a_failure() -> N
     assert first.summary.decisions == 0 and first.summary.valid
     assert report.episodes == len(report.collected)
     assert report.decisions >= 150, "the budget is still spent in decisions"
+
+
+def test_an_actor_whose_runs_never_reach_a_choice_point_is_withdrawn() -> None:
+    """A zero-decision episode is valid, but it spends none of the budget.
+
+    An actor producing only those would collect forever, so they count toward
+    the same streak a failing port does and withdraw the actor under their own
+    name. A decided episode resets the streak, which is why the ordinary runs
+    above never trip it.
+    """
+
+    class NeverOffersAnything(FakeRunPort):
+        """Every run dies before cash ever reaches a price."""
+
+        def begin_episode(self) -> None:
+            super().begin_episode()
+            self.cash = 0.0
+            self.health = 0.01
+
+    training = _run(max_consecutive_episode_failures=3)
+    withdrawn: list[str] = []
+    training.on_withdrawal = lambda progress: withdrawn.append(progress.withdrawn or "")
+    training.actors[0].environment = InstrumentedRunEnvironment(
+        port=NeverOffersAnything(
+            damage_per_second=2.0,
+            start_cash=0.0,
+            offered={"attack": 1, "defense": 0, "utility": 0},
+        ),
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+
+    with pytest.raises(RunPortError, match="ended before a choice point"):
+        training.run()
+
+    assert training.report.episodes == 3, "each one was a real episode, and counted"
+    assert training.report.failed_episodes == 0, "the port delivered every one of them"
+    assert withdrawn == ["3 consecutive episodes ended before a choice point"]

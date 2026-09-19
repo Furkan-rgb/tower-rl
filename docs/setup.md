@@ -125,38 +125,55 @@ handshake.
 build tree, which is how a bridge under development is run; every ordinary run
 leaves it unset and takes the installed one.
 
-## 3. Android tooling on Apple silicon
+## 3. Android tooling and the AVDs
 
-The M0 development host used Homebrew's Android command-line tools:
+The workstation's SDK lives at `~/.local/share/android-sdk`, which is one of the
+roots `tower_rl.simulation.android_sdk.sdk_roots` searches, so an unattended run
+finds `adb` and `emulator` without a shell exporting anything. `ANDROID_HOME` or
+`ANDROID_SDK_ROOT` overrides the search. The packages are:
 
 ```text
-brew install --cask android-commandlinetools
 sdkmanager --licenses
 sdkmanager \
   "platform-tools" \
   "emulator" \
   "build-tools;36.0.0" \
   "platforms;android-36" \
-  "system-images;android-36;google_apis_playstore;arm64-v8a"
+  "system-images;android-36;google_apis_playstore;x86_64"
 ```
 
-Review and accept Android's SDK licenses interactively. On this Homebrew setup,
-the SDK root is `/opt/homebrew/share/android-commandlinetools`. The relevant tools
-are not necessarily all linked into `PATH`:
+Review and accept Android's SDK licenses interactively. If the tools are not on
+`PATH`:
 
 ```text
-export ANDROID_SDK_ROOT=/opt/homebrew/share/android-commandlinetools
+export ANDROID_SDK_ROOT="$HOME/.local/share/android-sdk"
 export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
 ```
 
-Create the current candidate AVD once:
+Two AVDs exist, and nothing in the project confuses them:
+
+- **`tower_rl_api36_play_x86_64`** — the canonical, account-bearing AVD
+  (`CANONICAL_AVD` in `src/tower_rl/simulation/instance.py`), on
+  `emulator-5554`. It holds the Play sign-in and the golden snapshot, and
+  `CloneInstance` and `run_episodes.py` refuse to touch it. Create it once, with
+  the defaults `scripts/create_avd.sh` carries:
 
 ```text
-printf 'no\n' | avdmanager create avd \
-  --name tower_rl_api36_play_arm64 \
-  --package 'system-images;android-36;google_apis_playstore;arm64-v8a' \
-  --device pixel_2
+./scripts/create_avd.sh
 ```
+
+  The script is idempotent and takes optional positional overrides — name,
+  system image, device — so another image can be named explicitly; unqualified,
+  it creates `tower_rl_api36_play_x86_64` from
+  `system-images;android-36;google_apis_playstore;x86_64` on `pixel_2`. It
+  never installs the game and never touches account data.
+
+- **`tower_rl_instrumented_api36`** — the disposable rooted clone every
+  instrumented run uses (`CLONE_AVD`), starting at `emulator-5556` for index 0
+  and taking the next even console port per further index. It is a machine-local
+  rooted copy of the canonical AVD, recreated per host rather than carried
+  between them, and it is what `scripts/clone_session.py` and
+  `scripts/instrumented_bridge.sh` address.
 
 Do not place AVD data, snapshots, or Android user data in the repository.
 
@@ -169,17 +186,17 @@ There is no `tower-rl` console script. The checks are
 `tower_rl.doctor.render_json`; host tooling alone is
 `uv run python scripts/workstation_preflight.py`.
 
-Boot the candidate visibly for first-run characterization:
+Boot the canonical AVD visibly, which is what `scripts/launch_avd.sh` does —
+`-gpu <renderer> -no-audio -no-boot-anim` and, with no snapshot named,
+`-no-snapshot`:
 
 ```text
-emulator @tower_rl_api36_play_arm64 \
-  -gpu host \
-  -no-audio \
-  -no-boot-anim \
-  -no-snapshot
+./scripts/launch_avd.sh tower_rl_api36_play_x86_64 host
 ```
 
-Wait for `adb shell getprop sys.boot_completed` to return `1`.
+The renderer defaults to `host` (`TOWER_RL_RENDERER` overrides it), and a third
+argument names a snapshot to restore read-only (`TOWER_RL_SNAPSHOT`). Wait for
+`adb shell getprop sys.boot_completed` to return `1`.
 
 ### Which renderer
 
@@ -267,13 +284,12 @@ Use the pinned software renderer when restoring the snapshot. This avoids the
 host-renderer/Vulkan feature mismatch observed with `-gpu host` or `-gpu auto`:
 
 ```text
-emulator @tower_rl_api36_play_arm64 \
-  -gpu lavapipe \
-  -no-audio \
-  -no-boot-anim \
-  -snapshot tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914 \
-  -no-snapshot-save
+./scripts/launch_avd.sh tower_rl_api36_play_x86_64 lavapipe \
+  tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914
 ```
+
+A named snapshot is restored with `-no-snapshot-save`, so the baseline cannot be
+written over by the session that reads it.
 
 The restored process should be foreground at the Battle home with Tier 1
 selected, 53 coins, 0 gems, x1.00 speed, and Labs still locked. Airplane mode

@@ -797,7 +797,9 @@ whether resume should restore replay as well — a checkpoint that restores
 weights but not replay resumes into a very different learning problem from the
 one it stopped in, and recording that honestly matters more than the
 convenience. Not blocking: the budget is counted in game seconds, so an
-interrupted run is a shorter run rather than a corrupt one.
+interrupted run is a shorter run rather than a corrupt one. Closed by `#32`
+(2026-09-19): `train.py --resume <checkpoint>` restores optimizer, target,
+counters and the MLflow run.
 
 **Where the stacked agent's window length should sit.** `docs/rl-candidates.md`
 3.1 treats `k` as a tuned hyperparameter between 4 and 16 and section 5 names

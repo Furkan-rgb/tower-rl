@@ -123,6 +123,9 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             # Plays each arm of the protocol through the same selector.
             "test_evaluation_protocol",
             "test_script_bridge_directory",
+            # The observation-batch recorder, which lives beside this entry
+            # point and is read back by the diagnostic that test also holds.
+            "test_diagnose_plasticity",
         }
     ),
     "compare_arms": frozenset({"test_script_bridge_directory"}),
@@ -133,6 +136,10 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     # stream drawn in a terminal, owning no domain concept of its own. This is
     # the one file that reads them.
     "spectate": frozenset({"test_spectate"}),
+    # The capture seam and the diagnostic that reads what it writes are one
+    # pipeline joined by a file format, and that format is the thing worth
+    # holding; `run_episodes` picks up this reader for the wrapper that lives
+    # beside its entry point and nothing else.
     "diagnose_plasticity": frozenset({"test_diagnose_plasticity"}),
 }
 

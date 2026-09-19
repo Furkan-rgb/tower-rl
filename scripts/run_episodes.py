@@ -25,6 +25,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,11 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import torch  # noqa: E402
 
+from tower_rl.environment.features import (  # noqa: E402
+    ROW_COUNT,
+    ROW_WIDTH,
+    StateFeatures,
+)
 from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -75,6 +81,85 @@ POLICIES = {
 
 #: How a checkpoint is named as an arm, beside the names above.
 CHECKPOINT_SELECTOR = "checkpoint:"
+
+#: Steps in one recorded observation window. The stored sequence length the run
+#: trained on, so a window offers the diagnostic the same stacked history the
+#: learner and the actor both saw.
+OBSERVATION_WINDOW = 80
+
+
+@dataclass
+class RecordingPolicy:
+    """Plays exactly what it wraps, and keeps the states it was asked about.
+
+    No observation batch exists anywhere in this project: an actor record holds
+    episode summaries, a checkpoint holds `replay_provenance` rather than the
+    buffer, and `DecisionView` deliberately carries no observation. The offline
+    plasticity diagnostic (`diagnose_plasticity.py`) needs real states to push
+    through a network, so one short session writes them here.
+
+    A wrapper rather than a hook inside the learner: `Policy` is a protocol, so
+    this sees exactly the `StateFeatures` the wrapped policy acted on, in
+    decision order, without `learning` or `environment` growing a seam for a
+    diagnostic. The only thing it changes downstream is `EvaluationReport.policy`,
+    which names the acting class and carries no arm identity anyway - the arm
+    travels in `policy_identity`, which is built from the selector.
+    """
+
+    policy: Policy
+    path: Path
+    window: int = OBSERVATION_WINDOW
+    #: One list per episode, in the order the episodes ran.
+    episodes: list[list[StateFeatures]] = field(default_factory=list)
+
+    def initial_state(self) -> Any:
+        # An episode start is where the stacked history returns to zeros, so a
+        # window must never straddle two episodes. This is also the only
+        # boundary this wrapper sees, so it is where the batch so far is
+        # flushed: a session cut short still leaves the episodes it finished.
+        self.write()
+        self.episodes.append([])
+        return self.policy.initial_state()
+
+    def act(self, features: StateFeatures, state: Any, *, epsilon: float) -> tuple[int, Any]:
+        self.episodes[-1].append(features)
+        return self.policy.act(features, state, epsilon=epsilon)
+
+    def windows(self) -> list[list[StateFeatures]]:
+        """Each episode cut into whole windows from its start; the tail is dropped.
+
+        Non-overlapping, so no state is counted twice in an expectation taken
+        over the batch, and left-aligned, so every window begins where a real
+        history window began rather than part way through one.
+        """
+        return [
+            episode[start : start + self.window]
+            for episode in self.episodes
+            for start in range(0, len(episode) - self.window + 1, self.window)
+        ]
+
+    def write(self) -> int:
+        """Write the batch `diagnose_plasticity.py` reads; return its observations."""
+        windows = self.windows()
+        if not windows:
+            return 0
+        rows = torch.tensor(
+            [[state.rows for state in window] for window in windows], dtype=torch.float32
+        )
+        torch.save(
+            {
+                "scalars": torch.tensor(
+                    [[state.scalars for state in window] for window in windows],
+                    dtype=torch.float32,
+                ),
+                "rows": rows.view(len(windows), self.window, ROW_COUNT, ROW_WIDTH),
+                "mask": torch.tensor(
+                    [[state.mask for state in window] for window in windows], dtype=torch.bool
+                ),
+            },
+            self.path,
+        )
+        return len(windows) * self.window
 
 
 def policy_from(selector: str) -> tuple[Policy, dict[str, object]]:
@@ -189,6 +274,13 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
     parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-episodes.json"))
+    parser.add_argument(
+        "--record-observations",
+        type=Path,
+        default=None,
+        help="write the states this session acted on, as the observation batch "
+        "`diagnose_plasticity.py` reads; keep it outside the repository",
+    )
     arguments = parser.parse_args()
 
     if arguments.serial == "emulator-5554":
@@ -197,6 +289,12 @@ def main() -> int:
     # Before the device is touched: a checkpoint that cannot be rebuilt should
     # fail now, not after an emulator has been brought up for it.
     policy, identity = policy_from(arguments.policy)
+    recorder: RecordingPolicy | None = None
+    if arguments.record_observations is not None:
+        path = arguments.record_observations.expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        recorder = RecordingPolicy(policy, path)
+        policy = recorder
 
     expected = compatibility(bridge_build_directory())
 
@@ -234,6 +332,9 @@ def main() -> int:
     finally:
         adapter.release()
         client.close()
+
+    if recorder is not None:
+        print(f"{recorder.write()} observations written to {recorder.path}", flush=True)
 
     record = actor_record(
         report,

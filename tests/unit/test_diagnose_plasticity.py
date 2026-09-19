@@ -1,4 +1,4 @@
-"""The offline plasticity diagnostic: its three measurements and its batch.
+"""The offline plasticity diagnostic, and the capture that feeds it.
 
 The measurements are held against networks whose answer is known by
 construction - a layer whose units are deliberately silenced has a known
@@ -15,9 +15,10 @@ from pathlib import Path
 
 import diagnose_plasticity as diagnostic
 import pytest
+import run_episodes
 import torch
 
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.checkpoint import CheckpointIdentity, TrainingProgress, write_checkpoint
 from tower_rl.learning.network import NetworkConfig
@@ -224,3 +225,83 @@ def test_the_parameter_norms_alone_need_no_observations(tmp_path: Path) -> None:
     assert "dormant_fraction" not in row
     assert "rank" not in row
     assert row["parameter_norms"]["core.0.weight"] > 0.0
+
+
+class CountingPolicy:
+    """A policy that always waits and counts the episodes it was started for."""
+
+    def __init__(self) -> None:
+        self.episodes = 0
+
+    def initial_state(self) -> int:
+        self.episodes += 1
+        return 0
+
+    def act(self, features: StateFeatures, state: int, *, epsilon: float = 0.0) -> tuple[int, int]:
+        return 0, state + 1
+
+
+def one_state(value: float) -> StateFeatures:
+    """A state distinguishable from every other, so order can be asserted."""
+    return StateFeatures(
+        scalars=(value,) * SCALAR_COUNT,
+        rows=(value,) * (ROW_COUNT * ROW_WIDTH),
+        mask=(True,) * len(RUN_ACTIONS),
+    )
+
+
+def play(recorder: run_episodes.RecordingPolicy, decisions: int, *, value: float = 0.0) -> None:
+    """One episode of `decisions` states, driven the way an actor drives a policy."""
+    state = recorder.initial_state()
+    for step in range(decisions):
+        _action, state = recorder.act(one_state(value + step), state, epsilon=0.0)
+
+
+def test_a_recorded_window_never_straddles_two_episodes(tmp_path: Path) -> None:
+    """The stacked history returns to zeros at an episode start.
+
+    Two episodes of a window and a half produce one whole window each and not
+    three: the tail of an episode is dropped rather than joined to the start of
+    the next, which would offer the diagnostic a history no decision ever had.
+    """
+    inner = CountingPolicy()
+    recorder = run_episodes.RecordingPolicy(inner, tmp_path / "batch.pt", window=8)
+    play(recorder, 12)
+    play(recorder, 12)
+
+    windows = recorder.windows()
+    assert [len(window) for window in windows] == [8, 8]
+    assert inner.episodes == 2
+    # In decision order, from each episode's first decision.
+    assert windows[0][0].scalars[0] == 0.0
+    assert windows[1][0].scalars[0] == 0.0
+
+
+def test_the_batch_is_written_after_every_episode(tmp_path: Path) -> None:
+    """A session cut short still leaves the episodes it finished."""
+    path = tmp_path / "batch.pt"
+    recorder = run_episodes.RecordingPolicy(CountingPolicy(), path, window=8)
+    play(recorder, 8)
+    assert not path.exists()  # nothing is complete until the episode ends
+
+    play(recorder, 8)  # starting the second episode flushes the first
+    assert diagnostic.read_observations(path)["scalars"].shape[0] == 1
+
+    assert recorder.write() == 16
+    assert diagnostic.read_observations(path)["scalars"].shape[0] == 2
+
+
+def test_the_recorded_batch_is_what_the_diagnostic_reads(tmp_path: Path) -> None:
+    """The format is the contract between the capture and the measurement."""
+    path = tmp_path / "batch.pt"
+    recorder = run_episodes.RecordingPolicy(CountingPolicy(), path, window=8)
+    play(recorder, 20)
+    assert recorder.write() == 16
+
+    batch = diagnostic.read_observations(path)
+    assert batch["scalars"].shape == (2, 8, SCALAR_COUNT)
+    assert batch["rows"].shape == (2, 8, ROW_COUNT, ROW_WIDTH)
+    assert batch["mask"].shape == (2, 8, len(RUN_ACTIONS))
+    # Row features are flattened in action order by `StateFeatures`; the batch
+    # must present them as the network's [row, feature] grid, not transposed.
+    assert batch["rows"][0, 3].tolist() == [[3.0] * ROW_WIDTH] * ROW_COUNT

@@ -26,6 +26,117 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M2-E007 — Milestone 2, run 2 under `M2-P002`: the baselines, and the kill threshold they set
+
+**Date:** 2026-09-19
+**Status:** **in progress — stage 1 of 5 complete.** The random and scripted
+baselines are collected under the choice-point cadence and `observation-v2`;
+training, evaluation, recordings and the verdict are not. Nothing here is a
+verdict on the model. Board `#46`; protocol `M2-P002`, which is authoritative
+and is not restated.
+
+Code at `66082dd`, bridge `662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b`
+(the artifact hashes to the directory name it is filed under, so the installed
+build is self-verified before the fleet), seven `tower_rl_instrumented_api36`
+clones on `emulator-5556`…`emulator-5568`, all `-read-only`, host renderer, cold
+path (a host-renderer fleet has no snapshot to pin), 120 Hz confirmed per
+instance from the display vsync mode and the uid's applied frame rate, offline
+by interface per instance immediately before collection. The two arms ran
+sequentially, exactly as `M2-P002` writes them, `--episodes 16` on 7 actors =
+112 attempted an arm. Records: `state/records/m2-run2/eval-random`,
+`state/records/m2-run2/eval-scripted`.
+
+### The two arms
+
+| | random | scripted |
+| --- | --- | --- |
+| valid / attempted | **111 / 112** (99.1%) | **112 / 112** (100%) |
+| mean final wave | **5.495** | **6.429** |
+| IQM final wave (stratified by actor) | **5.68** [5.07, 6.21] | **6.57** [6.16, 6.95] |
+| per-episode sd of final wave | 2.312 | 2.209 |
+| median / min / max final wave | 6 / 1 / 10 | 6 / 1 / 10 |
+| decisions an episode | 27.49 | 20.73 |
+| decisions a wave | 5.00 | 3.23 |
+| advances a wave | 18.28 | 17.88 |
+| advances a decision | 3.65 | 5.54 |
+| `WAIT` share of decisions | **31.0%** | **0.0%** |
+| purchases an episode | 18.95 | 20.73 |
+| game-s an episode | 169.8 | 201.2 |
+| wall-s an episode | 91.9 | 108.3 |
+| arm wall time (bring-up to teardown) | **0.55 h** (1,962 s) | **0.65 h** (2,349 s) |
+
+Wait share is `(decisions − purchases) / decisions` over the valid episodes —
+under this cadence every decision that bought nothing was a refusal of an
+affordable purchase. Both arms: `bridge_event_divergence` 0,
+`advances_cut_short` 0, `episodes_not_started_fresh` 0, and **zero**
+`OBSERVATION_OUT_OF_RANGE` of any field. The one invalid episode in the whole
+stage is `action_pipeline_failed` on `emulator-5562` ("advance was not
+confirmed: stale_or_duplicate"), the arm's only `stale_or_duplicate` event. At
+99.1% and 100% valid, both arms clear `M2-P002`'s 99% device-failure line, and
+neither arm needs the whole-arm re-run its <100-valid-episode rule would force
+(111 and 112 against the 107 the power calculation asks for).
+
+1.20 h of fleet time for the pair, against the 1.3 h `M2-P002` priced.
+
+### The kill threshold for both training runs
+
+`M2-P002`'s kill criterion is two conditions on the near-greedy collection
+window after the ε anneal. With the random arm now measured at a mean final
+wave of **5.495**, condition 1 is:
+
+> `collection_window_near_greedy_mean_final_wave` > **5.195 waves**
+> (5.495 − 0.3),
+
+and condition 2 is unchanged — `collection_window_wait_fraction` < **0.9**. If
+either fails on the first ~60 near-greedy episodes after the anneal, that seed's
+run is stopped and diagnosed rather than finished. The threshold is stated here,
+before any training has started, which is the whole point of collecting the
+baselines first.
+
+### What these two arms already say
+
+- **The cadence took.** 5.00 decisions a wave and 27.5 an episode for random,
+  against `M2-E005`'s 4.59 and 29.4 and run 1's 21.3 a wave —
+  `M2-P002`'s prediction 2 (25–35 an episode, 4–6 a wave) **holds**, and advances
+  a wave are 18.28 against `M2-E005`'s 18.72, so the world is still advanced the
+  same way. The per-wave comparison shows it directly: the two arms differ in
+  decisions at 8 of 9 wave indices and are indistinguishable in `game_ms` at 8 of
+  9, i.e. the arms differ in how often they are asked, not in how the game runs.
+- **The scripted arm never waits**, 0.0% against random's 31.0%, which is the
+  behaviour `M2-P002` predicted from `CheapestFirstPolicy` at a choice point and
+  is now measured rather than argued.
+- **`M2-P002`'s prediction 1 fails.** The prediction was that the baselines would
+  *not* separate from each other, as in `M2-E002` (+0.25, [−0.79, +1.06]) and
+  `M1B-E021`. At n=111/112 they do: (random − scripted) final-wave IQM difference
+  is **−0.89 [−1.61, −0.22]**, excluding zero, with the mean difference
+  −0.93 [−1.51, −0.36] and d=−0.41 agreeing. Scripted is the stronger baseline
+  under this cadence, and the reason the earlier runs could not see it is
+  most likely sample size — `M2-E002` ran ~60 an arm and printed a resolution
+  floor of ~1.1–1.2 waves, wider than the 0.89 measured here. This is recorded
+  as a failed pre-registered prediction, not renegotiated: it does not change any
+  rule of `M2-P002`, whose verdict compares the model with each baseline
+  separately and never with their difference, but it does mean the model faces a
+  scripted floor that is genuinely above chance rather than level with it.
+- **The resolution this stage bought.** Per-episode sd is 2.31 and 2.21 waves,
+  above the 1.3 `M2-P002`'s power calculation assumed, so the realised resolution
+  on a pairwise difference is nearer 0.85 waves than the 0.5 designed for — the
+  printed detectable difference on final wave at these n is 0.848. A model effect
+  of run 1's size (+0.67 IQM waves) is therefore still marginal at this n, which
+  is a limit on stage 3 and is stated now rather than after the intervals are
+  known.
+
+**Cleanup, both arms.** On every one of the seven live serials, before its
+emulator was killed: `libunity_sha256`
+`ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionCode=1199`, `versionName=29.0.3`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, `game_frame_rate_override: reset`. After each arm:
+no attached device and no `qemu` process on the host.
+
+**Limits of this stage.** Two arms, one image state, one frame rate, one account
+progression, one session. These are baselines, not a comparison against any
+model; the arms the verdict needs do not exist yet.
+
 ## M2-P002 — Milestone 2, run 2: pre-registered protocol (written before any run)
 
 **Date:** 2026-09-19

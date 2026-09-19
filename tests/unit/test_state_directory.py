@@ -20,7 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from tower_rl.environment.project_state import repository_root, state_directory
+from tower_rl.environment.project_state import (
+    _resolve_checkout_root,
+    repository_root,
+    state_directory,
+)
 from tower_rl.simulation import bridge, instance
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -62,9 +66,15 @@ def default_expressions(source: Path) -> dict[str, str]:
 
 
 def test_the_state_directory_is_the_checkout_this_package_is_part_of() -> None:
-    """Resolved from the package's own location, so the cwd cannot move it."""
-    assert repository_root() == REPOSITORY
-    assert state_directory() == REPOSITORY / "state"
+    """Resolved from the package's own location, so the cwd cannot move it.
+
+    Run from a linked worktree, that location is the main checkout the worktree
+    was made from, not the worktree itself — `_resolve_checkout_root` is the
+    same resolution `repository_root` performs, applied to the same candidate.
+    """
+    expected = _resolve_checkout_root(REPOSITORY)
+    assert repository_root() == expected
+    assert state_directory() == expected / "state"
     assert state_directory().parent == repository_root()
 
 
@@ -116,6 +126,41 @@ def test_every_entry_point_defaults_to_writing_inside_the_state_directory(
             f"{script} {flag} defaults to {expression}"
         )
         assert "/tmp" not in expression and "home()" not in expression
+
+
+def test_a_main_checkout_with_a_dot_git_directory_resolves_to_itself(
+    tmp_path: Path,
+) -> None:
+    """No worktree indirection: a `.git` directory means the checkout is its own root."""
+    (tmp_path / ".git").mkdir()
+    assert _resolve_checkout_root(tmp_path) == tmp_path
+
+
+def test_a_linked_worktree_resolves_to_the_main_checkout(tmp_path: Path) -> None:
+    """A worktree's `.git` file points at `<main>/.git/worktrees/<name>`.
+
+    Following it lands back on `<main>`, the checkout that actually owns `state/`.
+    """
+    main = tmp_path / "main"
+    main_git_dir = main / ".git"
+    worktree_admin_dir = main_git_dir / "worktrees" / "agent-x"
+    worktree_admin_dir.mkdir(parents=True)
+
+    worktree = tmp_path / "worktrees" / "agent-x"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {worktree_admin_dir}\n")
+
+    assert _resolve_checkout_root(worktree) == main
+
+
+def test_a_malformed_worktree_dot_git_file_raises(tmp_path: Path) -> None:
+    """A `.git` file that isn't a `gitdir:` line pointing under `.git/worktrees/` is an error."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("not a gitdir line\n")
+
+    with pytest.raises(ValueError, match=r"malformed worktree \.git file"):
+        _resolve_checkout_root(worktree)
 
 
 def test_nothing_in_the_code_still_points_at_the_former_home_directory_location() -> None:

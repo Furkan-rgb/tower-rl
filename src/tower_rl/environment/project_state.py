@@ -26,8 +26,40 @@ from pathlib import Path
 
 
 def repository_root() -> Path:
-    """The checkout this package is part of: `src/tower_rl/environment/..`×3."""
-    return Path(__file__).resolve().parents[3]
+    """The checkout this package is part of: `src/tower_rl/environment/..`×3.
+
+    That location is the package's own checkout, which for a linked git
+    worktree is the worktree, not the main repository — a worktree has no
+    `state/` of its own, so resolving there would leave a worker looking at
+    an empty directory. A worktree's `.git` is a *file* (not a directory)
+    holding `gitdir: <main-repo>/.git/worktrees/<name>`; when that is what we
+    find, this follows it back to the main repository root instead, so every
+    worktree shares the one `state/` the main checkout owns.
+    """
+    return _resolve_checkout_root(Path(__file__).resolve().parents[3])
+
+
+def _resolve_checkout_root(candidate: Path) -> Path:
+    """The checkout `candidate` belongs to: itself, or its worktree's main repo."""
+    dot_git = candidate / ".git"
+    if dot_git.is_file():
+        return _main_checkout_root_from_worktree(dot_git)
+    return candidate
+
+
+def _main_checkout_root_from_worktree(worktree_git_file: Path) -> Path:
+    """Follow a linked worktree's `.git` file back to the main checkout root."""
+    contents = worktree_git_file.read_text().strip()
+    prefix = "gitdir: "
+    if not contents.startswith(prefix):
+        raise ValueError(f"malformed worktree .git file: {worktree_git_file}")
+    gitdir = Path(contents[len(prefix) :])
+    if gitdir.parent.name != "worktrees":
+        raise ValueError(f"malformed worktree .git file: {worktree_git_file}")
+    main_git_dir = gitdir.parent.parent
+    if main_git_dir.name != ".git":
+        raise ValueError(f"malformed worktree .git file: {worktree_git_file}")
+    return main_git_dir.parent
 
 
 def state_directory() -> Path:

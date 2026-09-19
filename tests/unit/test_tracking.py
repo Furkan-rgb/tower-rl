@@ -25,7 +25,7 @@ from test_train_entry_point import (
     session,
 )
 
-from tower_rl.environment.project_state import state_directory
+from tower_rl.environment.project_state import repository_root, state_directory
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.experiment.tracking import (
     ExperimentTracker,
@@ -298,7 +298,9 @@ def test_tracking_writes_only_into_the_git_ignored_state_directory(
     assert defaults.run_dir == state_directory() / "runs"
     assert store == f"sqlite:///{state_directory() / 'mlflow.db'}"
     assert artifacts == state_directory() / "mlartifacts"
-    assert state_directory().parent == REPOSITORY
+    # Not REPOSITORY: from a linked worktree, state/ lives under the main
+    # checkout repository_root() resolves to, not the worktree's own tree.
+    assert state_directory().parent == repository_root()
 
 
 def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ for a checkpoint a training run left behind, which is rebuilt into the backbone
 that wrote it and played greedily. Every record says which it was.
 
     ./scripts/run_episodes.py --episodes 50 \\
-        --policy checkpoint:~/.local/state/tower-rl/runs/.../checkpoint-0100000.pt
+        --policy checkpoint:state/runs/.../checkpoint-0100000.pt
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from tower_rl.environment.features import (  # noqa: E402
     ROW_WIDTH,
     StateFeatures,
 )
+from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -273,7 +274,9 @@ def main() -> int:
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
-    parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-episodes.json"))
+    parser.add_argument(
+        "--output", type=Path, default=state_directory() / "records" / "episodes.json"
+    )
     parser.add_argument(
         "--record-observations",
         type=Path,

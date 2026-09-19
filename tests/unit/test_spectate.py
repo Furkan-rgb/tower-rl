@@ -18,6 +18,7 @@ import spectate
 from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.episode import DecisionView, EpisodeSummary, TerminationOutcome
+from tower_rl.environment.project_state import state_directory
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.policies import Policy, RandomPolicy
@@ -469,6 +470,22 @@ def test_no_collecting_path_records_the_screen_or_reaches_for_the_panel(script: 
     assert "screenrecord" not in names
     assert "spectate" not in names
     assert "GuestRecording" not in names
+
+
+def test_a_recording_and_its_records_land_in_the_projects_state_directory() -> None:
+    """`state/recordings/`, not a `recordings/` beside whatever the cwd was.
+
+    An mp4 is far above GitHub's file limit and this repo is public, so the one
+    thing that must hold is that both the video and the per-run records land
+    under the git-ignored state directory — including the relative `--record`
+    filename, which is resolved against it rather than against the cwd.
+    """
+    assert state_directory() / "recordings" == spectate.RECORDINGS_DIRECTORY
+
+    arguments = spectate.parse_arguments(["--record", "session.mp4"])
+
+    assert arguments.record == state_directory() / "recordings" / "session.mp4"
+    assert arguments.output_directory == state_directory() / "recordings" / "records"
 
 
 # -- the recording's lifecycle ---------------------------------------------

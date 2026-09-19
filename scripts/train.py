@@ -35,10 +35,10 @@ does not, so the run re-warms it under the loaded policy before learning
 restarts. `--budget-decisions` stays the whole run's total.
 
     uv run --extra tracking python scripts/train.py \\
-        --resume ~/.local/state/tower-rl/runs/<session>/<run>/checkpoints/latest.pt \\
+        --resume state/runs/<session>/<run>/checkpoints/latest.pt \\
         --budget-decisions 400000
 
-The run records itself to the local MLflow store under `~/.local/state/tower-rl`;
+The run records itself to the local MLflow store under `state/`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
 run without recording, which leaves nothing to compare the run against later.
 """
@@ -59,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch  # noqa: E402
 from run_episodes import add_cadence_arguments, cadence_from  # noqa: E402
 
+from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
@@ -581,8 +582,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=Path.home() / ".local/state/tower-rl/runs",
-        help="outside the repository; checkpoints and reports are never committed",
+        default=state_directory() / "runs",
+        help=(
+            "the project's git-ignored state directory; checkpoints and "
+            "reports are never committed"
+        ),
     )
     parser.add_argument(
         "--experiment",

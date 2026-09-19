@@ -42,7 +42,82 @@ under `local/`, which is ignored by Git.
 There is no configuration file. Every entry point under `scripts/` is configured
 by its own command-line arguments, and the private bridge build directory is
 named by the `TOWER_BRIDGE_BUILD_DIR` environment variable. Keep credentials,
-account state, snapshots, and generated runtime paths out of the repository.
+account state and snapshots out of the repository.
+
+### Where project state lives
+
+Everything this project writes lives under `state/` at the repository root:
+
+```text
+state/bridge/<sha256>/   one installed bridge build, named for its own digest
+state/bridge/current     symlink to the bridge that is deployed
+state/bridge/config/     the private build configuration (never committed)
+state/runs/              training runs, checkpoints and reports
+state/mlflow.db          the MLflow store, with artifacts in state/mlartifacts/
+state/records/           evaluation records: actors, arms, episodes, selection
+state/recordings/        spectate recordings and their per-run records
+```
+
+`state/` is git-ignored in full — the artifacts in it are far above GitHub's
+file limit and this repository is public — and no project state is kept anywhere
+else on the host. The location is resolved from the package's own file location
+(`tower_rl.environment.project_state.state_directory`), never from the current
+directory, so an entry point started from anywhere finds the same tree. There is
+no environment variable that moves it.
+
+A host that still has the old `~/.local/state/tower-rl` tree brings it in once,
+with no emulator running:
+
+```text
+uv run python scripts/migrate_state.py
+```
+
+It renames each entry into `state/`, re-points `state/bridge/current` at its
+sibling relatively, prints what moved where, and leaves the old location absent.
+
+### Building and installing the bridge
+
+The bridge is ARM64 source under `native/tower_bridge/` built against the
+Android NDK (`~/.local/share/android-sdk/ndk/29.0.14206865` on the workstation).
+Its compatibility identity — package version and version code, official signer,
+original `libunity.so` and `libil2cpp.so` digests, profile id — is private and is
+supplied as CMake cache values from `state/bridge/config/profile.cmake`, which is
+not committed. **The reference for those values is the `CMakeCache.txt` beside
+the installed bridge**: it records exactly what the deployed artifact was
+configured with, so a lost `profile.cmake` is rewritten from
+`state/bridge/current/CMakeCache.txt` (`grep TOWER_BRIDGE_ state/bridge/current/CMakeCache.txt`)
+rather than guessed at.
+
+```text
+build=$(mktemp -d)
+cmake -S native/tower_bridge -B "$build" -C state/bridge/config/profile.cmake \
+  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-35
+cmake --build "$build"
+sha=$(sha256sum "$build/libtower_bridge.so" | cut -d' ' -f1)
+install -D -t state/bridge/$sha \
+  "$build/libtower_bridge.so" "$build/libunity-bridge.so" "$build/CMakeCache.txt"
+sha256sum state/bridge/$sha/libtower_bridge.so    # must print $sha
+ln -sfn $sha state/bridge/current
+```
+
+Copy, verify, *then* move the pointer, in that order. The patched
+`libunity-bridge.so` — an added `DT_NEEDED` entry and nothing else — is installed
+beside it, and `CMakeCache.txt` goes with them because the handshake identity is
+read back out of it rather than hard-coded in Python.
+
+The digest check is over the *installed* artifact against the directory name it
+is filed under, which is what makes the layout self-verifying and is what
+`bridge.installed_bridge_directory` refuses on. It is not a claim that a rebuild
+reproduces an earlier digest: a different NDK, build path or configuration
+produces a different `libtower_bridge.so`, which is a new directory and a new
+`current`, not a failure. An unconfigured build (the `unconfigured` defaults in
+`CMakeLists.txt`) compiles but answers a compatibility error instead of a
+handshake.
+
+`TOWER_BRIDGE_BUILD_DIR` overrides all of this and deploys straight out of a
+build tree, which is how a bridge under development is run; every ordinary run
+leaves it unset and takes the installed one.
 
 ## 3. Android tooling on Apple silicon
 
@@ -269,10 +344,10 @@ want the fleet's own renderer instead. The renderer in use is named on the
 panel's own title line.
 
 A relative `--record` filename, and the per-run episode JSON `--output-directory`
-writes, both land under `recordings/` at the repo root by default — one home
-for spectate output, resolved from the script's own location rather than the
-current directory. `recordings/` is git-ignored: an mp4 is far above GitHub's
-file limit, and this repo is public.
+writes, both land under `state/recordings/` by default — one home for spectate
+output, resolved from the package's own location rather than the current
+directory. All of `state/` is git-ignored: an mp4 is far above GitHub's file
+limit, and this repo is public.
 
 `--output-directory` writes the episodes the session played as the same
 per-episode records the fleet writes. Omit it and nothing is kept: the panel is

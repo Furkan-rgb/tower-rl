@@ -73,6 +73,7 @@ SCRIPT_MODULES = (
     "report_arms",
     "spectate",
     "diagnose_plasticity",
+    "migrate_state",
 )
 
 #: The test files allowed to import each entry point: the ones that test that
@@ -141,6 +142,8 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     # holding; `run_episodes` picks up this reader for the wrapper that lives
     # beside its entry point and nothing else.
     "diagnose_plasticity": frozenset({"test_diagnose_plasticity"}),
+    # The one-shot move of this host's former state tree into the project.
+    "migrate_state": frozenset({"test_migrate_state"}),
 }
 
 def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:

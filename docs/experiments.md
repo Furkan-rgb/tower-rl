@@ -7,6 +7,25 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+**2026-09-19 — project state moved into the repository.** Everything this
+project writes now lives under the git-ignored `state/` directory at the
+repository root instead of `~/.local/state/tower-rl`. The entries below keep the
+paths they were written with, because an evidence pointer records where a
+reading was taken from; read them through this mapping:
+
+| written as | now |
+| --- | --- |
+| `~/.local/state/tower-rl/bridge/…` | `state/bridge/…` |
+| `~/.local/state/tower-rl/runs/…` | `state/runs/…` |
+| `~/.local/state/tower-rl/mlflow.db` | `state/mlflow.db` |
+| `~/.local/state/tower-rl/<anything else>` | `state/<anything else>` |
+| `/tmp/tower-rl-<name>.json` | `state/records/<name>.json` |
+
+The move renames each entry as it stood, so a past run's directory keeps its
+name under `state/`. Where a *new* run writes has changed as well: spectate
+recordings and their records now default to `state/recordings/`, and evaluation
+records to `state/records/` instead of `/tmp`.
+
 ## M2-E004 — Plasticity diagnostic across run-1 checkpoints
 
 **Date:** 2026-09-19

@@ -285,7 +285,7 @@ tracked as open issues on the board.
 ### A small gap worth closing: `run_episodes.py` writes no per-episode data
 
 It writes one aggregate JSON record per invocation (`--output`, default
-`/tmp/tower-rl-episodes.json`) and nothing per episode. The `M1B-E018` sweep
+`state/records/episodes.json`) and nothing per episode. The `M1B-E018` sweep
 needed per-episode waves, decision counts, and timing to compute its bootstrap
 intervals and had to bootstrap that data through a scratchpad observer wrapper
 around the runner rather than reading it from the runner itself. Worth closing
@@ -331,27 +331,29 @@ launched), then `./scripts/instrumented_bridge.sh deploy`, then
 `clone_session.py launch` (the one online window, ending with the bridge
 reporting the game up and idle). `clone_session.py up` does all three.
 
-**The bridge this host deploys lives in
-`~/.local/state/tower-rl/bridge/`.** One directory per bridge, named for the
+**The bridge this project deploys lives in `state/bridge/`, inside the
+checkout and git-ignored.** One directory per bridge, named for the
 SHA-256 of the `libtower_bridge.so` inside it, holding that artifact, the
 patched `libunity-bridge.so` and the `CMakeCache.txt` the compatibility identity
 is read from; `current` is a symlink to the one that is deployed, so `ls -l`
-shows which bridge this host installs and what its digest is. Today that is
+shows which bridge this project installs and what its digest is; `config/`
+beside them holds the private build configuration. Today that is
 `7a98f50be6d6c6ec262f332e60511f4e6f84f61da66691c626e7d4bb8ad7f99a`. This
 replaces `/tmp/tower-bridge-live.latest`, which pointed into a session
 scratchpad and did not survive a reboot — and, before `M1B-E017`, pointed at a
 build that could neither deploy nor handshake.
 
 Rebuild and install a new one (the NDK is at
-`~/.local/share/android-sdk/ndk/29.0.14206865`):
+`~/.local/share/android-sdk/ndk/29.0.14206865`; the full recipe, including
+configuring from `state/bridge/config/profile.cmake`, is in `docs/setup.md`):
 
     cmake --build <build dir>
     sha=$(sha256sum <build dir>/libtower_bridge.so | cut -d' ' -f1)
-    install -D -t ~/.local/state/tower-rl/bridge/$sha \
+    install -D -t state/bridge/$sha \
       <build dir>/libtower_bridge.so <build dir>/libunity-bridge.so \
       <build dir>/CMakeCache.txt
-    sha256sum ~/.local/state/tower-rl/bridge/$sha/libtower_bridge.so   # must be $sha
-    ln -sfn $sha ~/.local/state/tower-rl/bridge/current
+    sha256sum state/bridge/$sha/libtower_bridge.so   # must be $sha
+    ln -sfn $sha state/bridge/current
 
 Copy, verify, *then* move the pointer, in that order. `TOWER_BRIDGE_BUILD_DIR`
 still overrides all of it, which is how a bridge under development is deployed
@@ -551,7 +553,7 @@ recognition and a destination-safe action for any modal that truly requires
 dismissal. Do not start the 100 gate before that path passes a fresh 10/10 run.
 
 The 2 GiB configuration backup is private local state at
-`$HOME/.local/state/tower-rl/avd-config-backups/20260914-workstation-2gb/`.
+`state/avd-config-backups/20260914-workstation-2gb/`.
 To launch the 6 GiB candidate explicitly:
 
 ```text
@@ -637,7 +639,7 @@ The clone's Play downloads a `com.google.android.webview` update during the one
 online window of a cold bring-up and installs it moments later, killing every
 process that holds WebView — the game included (`M1B-E045`, `M1B-E047`). On
 2026-09-18 the AVD was backed up whole to
-`~/.local/state/tower-rl/avd-backup-2026-09-18/` (35 GB, `MANIFEST.sha256` over
+`state/avd-backup-2026-09-18/` (35 GB, `MANIFEST.sha256` over
 all 53 files, `SIZES.txt`) and booted ONCE writable and online so that update
 could land in the base image: WebView 151.0.7922.199 (versionCode 792219908)
 installed, and the game identity was read back unchanged before shutdown
@@ -713,7 +715,7 @@ unchanged, unrooted, normal-speed, and pixel-observed.
 
 Operate the private clone with `scripts/instrumented_bridge.sh`
 (`verify`/`deploy`/`cleanup`), which deploys the installed bridge under
-`~/.local/state/tower-rl/bridge/current` by default; `TOWER_BRIDGE_BUILD_DIR`
+`state/bridge/current` by default; `TOWER_BRIDGE_BUILD_DIR`
 overrides that with a private NDK build directory holding `libtower_bridge.so`,
 the patched `libunity-bridge.so` and `CMakeCache.txt`, which is how a bridge
 under development is deployed. Launch that clone with `-gpu lavapipe`;

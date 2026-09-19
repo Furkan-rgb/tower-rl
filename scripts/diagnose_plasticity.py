@@ -9,9 +9,9 @@ designed against a measurement rather than against a hypothesis. No emulator is
 started and nothing is trained: it is minutes of CPU.
 
     uv run python scripts/diagnose_plasticity.py \\
-        --output ~/.local/state/tower-rl/m2-run1/plasticity/diagnosis.json \\
-        --observations ~/.local/state/tower-rl/m2-run1/plasticity/batch.pt \\
-        ~/.local/state/tower-rl/runs/.../checkpoints/checkpoint-*.pt
+        --output state/m2-run1/plasticity/diagnosis.json \\
+        --observations state/m2-run1/plasticity/batch.pt \\
+        state/runs/.../checkpoints/checkpoint-*.pt
 
 Three quantities per checkpoint, ordered by the decisions the checkpoint was
 written at:

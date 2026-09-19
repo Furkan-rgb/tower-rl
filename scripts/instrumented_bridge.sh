@@ -23,7 +23,7 @@ set -euo pipefail
 #   TOWER_BRIDGE_SERIAL     adb serial of the rooted clone (default emulator-5556)
 #   TOWER_BRIDGE_BUILD_DIR  private NDK build dir holding libtower_bridge.so and
 #                           the patched libunity-bridge.so; defaults to the
-#                           installed bridge under ~/.local/state/tower-rl/bridge
+#                           installed bridge under <repo>/state/bridge
 #   TOWER_BRIDGE_HOST_PORT  host port forwarded to device port 47651
 
 command="${1:?usage: instrumented_bridge.sh <verify|deploy|cleanup> [serial] [host_port]}"
@@ -42,13 +42,15 @@ derived_host_port() {
   esac
 }
 
-# The bridge this host deploys: an explicit build tree while one is being
+# The bridge this project deploys: an explicit build tree while one is being
 # developed, otherwise the installed one. `current` is a symlink to a directory
-# named for the SHA-256 of the `libtower_bridge.so` in it, under
-# ~/.local/state, so it survives the reboot that a /tmp build directory does
-# not. Kept in step with `bridge.installed_bridge_directory`, which is what
-# every scripted path resolves through; this is the hand-run path.
-installed_bridge="${XDG_STATE_HOME:-$HOME/.local/state}/tower-rl/bridge/current"
+# named for the SHA-256 of the `libtower_bridge.so` in it, under the project's
+# git-ignored `state/`, so it survives the reboot that a /tmp build directory
+# does not. The root comes from this script's own location, never the cwd, and
+# is kept in step with `bridge.BRIDGE_STATE_DIRECTORY`, which is what every
+# scripted path resolves through; this is the hand-run path.
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+installed_bridge="$repository_root/state/bridge/current"
 build_dir="${TOWER_BRIDGE_BUILD_DIR:-$installed_bridge}"
 host_port="${3:-${TOWER_BRIDGE_HOST_PORT:-$(derived_host_port)}}"
 adb="${ANDROID_SDK_ROOT:-$HOME/.local/share/android-sdk}/platform-tools/adb"
@@ -130,7 +132,7 @@ case "$command" in
   deploy)
     [ -d "$build_dir" ] || {
       echo "no bridge to deploy: $build_dir is not a directory" >&2
-      echo "install one under ~/.local/state/tower-rl/bridge/<sha256>/ and point current at it, or set TOWER_BRIDGE_BUILD_DIR" >&2
+      echo "install one under $repository_root/state/bridge/<sha256>/ and point current at it, or set TOWER_BRIDGE_BUILD_DIR" >&2
       exit 1
     }
     require_offline

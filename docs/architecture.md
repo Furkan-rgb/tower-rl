@@ -88,6 +88,12 @@ Owns the decision problem, and nothing about how a device is reached.
   and recovers the death-boundary transient.
 - `decision_time.py` — `DecisionTimeProfile` and `DecisionTimeBreakdown`: where
   a decision's wall time went, by bucket.
+- `project_state.py` — `repository_root` and `state_directory`: the git-ignored
+  `<repo>/state/` every artifact this project writes lives under, resolved from
+  the package's own location rather than the cwd. It is here because this is the
+  root package, so simulation (bridge builds), experiment (the MLflow store) and
+  the scripts (runs, records, recordings) may all import it and none of them
+  spells the location out for itself.
 
 **Stepping.** One `step` executes the semantic action and then advances the
 world until the policy has something to choose again: under the default

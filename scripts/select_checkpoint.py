@@ -13,7 +13,7 @@ evaluation directory as `run_actors.py --policy checkpoint:<path>` leaves it,
 holding one JSON record per actor.
 
     uv run python scripts/select_checkpoint.py \\
-        ~/.local/state/tower-rl/runs/session-.../stacked-dqn-... \\
+        state/runs/session-.../stacked-dqn-... \\
         /tmp/eval-0100000 /tmp/eval-0200000 /tmp/eval-0300000
 
 The selection is by the highest interquartile mean of the final wave. The
@@ -38,6 +38,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.experiment.arm_evaluation import (  # noqa: E402
     STATISTICS,
     ArmEvaluation,
@@ -223,7 +224,7 @@ def main() -> int:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=Path.home() / ".local/state/tower-rl/runs",
+        default=state_directory() / "runs",
         help="where the tracking store lives; only read with --mlflow-run",
     )
     parser.add_argument(
@@ -231,7 +232,9 @@ def main() -> int:
         default="tower-rl-training",
         help="the MLflow experiment the run belongs to; only read with --mlflow-run",
     )
-    parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-selection.json"))
+    parser.add_argument(
+        "--output", type=Path, default=state_directory() / "records" / "selection.json"
+    )
     arguments = parser.parse_args()
 
     checkpoints = run_checkpoints(arguments.run_directory)

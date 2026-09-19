@@ -22,8 +22,8 @@ measurement or a training run, whose throughput is what the host is for.
 The guest renders through `-gpu lavapipe` by default, not the host renderer the
 fleet uses: the host renderer glitches the picture, which makes a recording of
 it useless. `--record` and the per-run episode JSON both land under
-`recordings/`, a git-ignored directory beside the project — an mp4 is far above
-GitHub's file limit, and this repo is public.
+`state/recordings/`, inside the project's git-ignored state directory — an mp4
+is far above GitHub's file limit, and this repo is public.
 
 Everything else is exactly what the fleet does: the canonical AVD is refused by
 `CloneInstance`, the instance is `-read-only`, the bridge is deployed with its
@@ -51,13 +51,14 @@ from typing import Any, Protocol
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-#: The repo root, from the script's own location rather than the cwd, so
-#: `recordings/` lands beside the project whichever directory this is run from.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from tower_rl.environment.project_state import state_directory  # noqa: E402
+
 #: Where a spectated session's output lives: recordings and their per-run
-#: records in one place, git-ignored because an mp4 is far above GitHub's file
-#: limit and this repo is public.
-RECORDINGS_DIRECTORY = PROJECT_ROOT / "recordings"
+#: records in one place under the project's state directory, git-ignored
+#: because an mp4 is far above GitHub's file limit and this repo is public.
+#: `state_directory()` resolves from the package's own location rather than the
+#: cwd, so this lands beside the project whichever directory it is run from.
+RECORDINGS_DIRECTORY = state_directory() / "recordings"
 
 # One torch thread, for the same reason `run_episodes.py` sets it: acting is one
 # small forward pass per decision and a pool buys nothing.

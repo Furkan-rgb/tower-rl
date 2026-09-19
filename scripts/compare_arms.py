@@ -30,6 +30,7 @@ from run_episodes import (  # noqa: E402
 )
 
 from tower_rl.environment.episode import EpisodeSummary  # noqa: E402
+from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.experiment.comparison import (  # noqa: E402
@@ -66,7 +67,9 @@ def main() -> int:
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
-    parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-comparison.json"))
+    parser.add_argument(
+        "--output", type=Path, default=state_directory() / "records" / "comparison.json"
+    )
     arguments = parser.parse_args()
 
     if arguments.serial == "emulator-5554":

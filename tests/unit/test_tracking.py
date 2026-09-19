@@ -25,6 +25,7 @@ from test_train_entry_point import (
     session,
 )
 
+from tower_rl.environment.project_state import state_directory
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.experiment.tracking import (
     ExperimentTracker,
@@ -266,9 +267,17 @@ def test_a_tracked_point_resolves_to_the_exact_checkpoint_file(
         assert len(directory.split("/")[1]) >= 16
 
 
-def test_tracking_writes_nothing_inside_the_repository(
+def test_tracking_writes_only_into_the_git_ignored_state_directory(
     recorded: RecordedRun, tmp_path: Path
 ) -> None:
+    """The store and its artifacts live beside the runs, under `state/`.
+
+    They used to be held outside the repository altogether, on the reasoning
+    that nothing generated may be committed. The location is now inside the
+    checkout and git-ignored instead, so a checkout is the whole project — what
+    is committed and the state beside it — and the rule that none of it is
+    committed is `.gitignore`'s to keep (`test_state_directory.py`).
+    """
     for path, _ in recorded.artifacts:
         assert REPOSITORY not in path.resolve().parents
 
@@ -276,9 +285,10 @@ def test_tracking_writes_nothing_inside_the_repository(
     store = tracking_uri(defaults.run_dir)
     artifacts = Path(artifact_root(defaults.run_dir))
 
-    assert store == f"sqlite:///{Path.home()}/.local/state/tower-rl/mlflow.db"
-    assert REPOSITORY not in Path(store.removeprefix("sqlite:///")).parents
-    assert REPOSITORY not in artifacts.parents
+    assert defaults.run_dir == state_directory() / "runs"
+    assert store == f"sqlite:///{state_directory() / 'mlflow.db'}"
+    assert artifacts == state_directory() / "mlartifacts"
+    assert state_directory().parent == REPOSITORY
 
 
 def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:

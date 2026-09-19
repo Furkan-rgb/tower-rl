@@ -1531,12 +1531,12 @@ Operationally:
   missing rather than quietly producing an untracked run, so a device run is
   started as `uv run --extra tracking python scripts/train.py ...`; `--no-track`
   is the deliberate way out and `--experiment` names the experiment;
-- the store is SQLite at `~/.local/state/tower-rl/mlflow.db` with artifacts
-  under `~/.local/state/tower-rl/mlartifacts` - beside the run state, never
-  inside the repository. MLflow 3 refuses the plain filesystem backend, which is
-  why the backend is SQLite. `MLFLOW_TRACKING_URI` overrides it;
+- the store is SQLite at `state/mlflow.db` with artifacts under
+  `state/mlartifacts` - beside the run state, in the project's git-ignored state
+  directory and never committed. MLflow 3 refuses the plain filesystem backend,
+  which is why the backend is SQLite. `MLFLOW_TRACKING_URI` overrides it;
 - the UI is `uv run --extra tracking mlflow ui --backend-store-uri
-  sqlite:///~/.local/state/tower-rl/mlflow.db`, which `train.py` prints at
+  sqlite:///<repo>/state/mlflow.db`, which `train.py` prints at
   start beside the run ids it opened.
 
 ## 11. Commands and operator flow
@@ -1582,7 +1582,7 @@ for the instrumented profile. It trains one arm on the single backbone named by
 the `BACKBONE` constant (`stacked-dqn`) — the multi-backbone comparison of
 section 9.2b was retired and there is no `--backbone` flag — advancing the run
 in `--block-decisions` blocks to `--budget-decisions`, checkpointing atomically
-under `~/.local/state/tower-rl/runs`, and taking one exploration-free evaluation
+under `state/runs`, and taking one exploration-free evaluation
 on the final weights. Resume is not implemented — see the open question in
 `docs/workstation-handoff.md`; an interrupted run is a shorter run, not a corrupt
 one, because the budget is counted in decisions.

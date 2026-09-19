@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from run_episodes import CHECKPOINT_SELECTOR, POLICIES, add_cadence_arguments  # noqa: E402
 
+from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
 from tower_rl.simulation.bridge import ActorFailure, deploy_bridge  # noqa: E402
 from tower_rl.simulation.bring_up import (  # noqa: E402
@@ -423,10 +424,12 @@ def main() -> int:
     parser.add_argument(
         "--output-directory",
         type=Path,
-        default=Path("/tmp/tower-rl-actors"),
+        default=state_directory() / "records" / "actors",
         help="where each actor's own episode record is written",
     )
-    parser.add_argument("--output", type=Path, default=Path("/tmp/tower-rl-actors.json"))
+    parser.add_argument(
+        "--output", type=Path, default=state_directory() / "records" / "actors.json"
+    )
     # Passed straight through to the one runner that records. A fleet of more
     # than one actor would have them overwrite each other's batch, which is why
     # this is refused below rather than silently keeping the last writer's.

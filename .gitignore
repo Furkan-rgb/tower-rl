@@ -41,8 +41,11 @@ screenshots/
 *.onnx
 *.tfevents.*
 
-# spectate recordings: mp4s are far above GitHub's file limit, and this repo is public
-recordings/
+# All project state: installed bridge builds and the private build
+# configuration, runs and checkpoints, the MLflow store, evaluation records and
+# spectate recordings. Nothing under it is ever committed — the artifacts are
+# far above GitHub's file limit, and this repo is public.
+state/
 
 # Local configuration and secrets
 .env

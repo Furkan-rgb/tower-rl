@@ -16,6 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from tower_rl.environment.project_state import state_directory
 from tower_rl.simulation.instance import PACKAGE, CloneError, CloneInstance, adb
 from tower_rl.simulation.instrumented_bridge import BridgeCompatibility
 
@@ -35,20 +36,18 @@ DEPLOYED_BRIDGE_PATH = f"/data/user/0/{PACKAGE}/files/libtower_bridge.so"
 #: reading once already (`M1B-E047`).
 DIGEST_PATTERN = re.compile("[0-9a-f]{64}")
 
-#: Where this host keeps the bridge builds it can deploy. The artifact is never
-#: committed and is far too large to be, but it also cannot live in a build
-#: directory under `/tmp`: a session's scratchpad is gone after a reboot, and a
-#: pointer into one is how `/tmp/tower-bridge-live.latest` came to name a
-#: directory that no longer existed. One directory per bridge, named for the
-#: SHA-256 of the `libtower_bridge.so` inside it, with `current` a symlink to
-#: the one that is deployed — so `ls -l` shows which bridge this host installs
-#: and what its digest is without opening anything. A module-level path, so a
+#: Where this project keeps the bridge builds it can deploy: `state/bridge/`,
+#: inside the checkout and git-ignored. The artifact is never committed and is
+#: far too large to be, but it also cannot live in a build directory under
+#: `/tmp`: a session's scratchpad is gone after a reboot, and a pointer into one
+#: is how `/tmp/tower-bridge-live.latest` came to name a directory that no
+#: longer existed. One directory per bridge, named for the SHA-256 of the
+#: `libtower_bridge.so` inside it, with `current` a symlink to the one that is
+#: deployed — so `ls -l` shows which bridge this project installs and what its
+#: digest is without opening anything. `config/` beside them holds the private
+#: build configuration, which is also never committed. A module-level path, so a
 #: test can point it at a directory of its own.
-BRIDGE_STATE_DIRECTORY = (
-    Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    / "tower-rl"
-    / "bridge"
-)
+BRIDGE_STATE_DIRECTORY = state_directory() / "bridge"
 
 
 def artifact_digest(binary: Path) -> str:

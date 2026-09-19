@@ -230,25 +230,34 @@ not embed game offsets. The verified semantic fields include `towerMaxHealth`
 
 ## Private build and deployment
 
-Use a private Android NDK build directory outside this repository. The supplied
-CMake project expects an ARM64 Android target, for example:
+The supplied CMake project expects an ARM64 Android target, for example:
 
 ```sh
 cmake -S native/tower_bridge -B "$TOWER_BRIDGE_BUILD_DIR" \
+  -C state/bridge/config/profile.cmake \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-35
 cmake --build "$TOWER_BRIDGE_BUILD_DIR"
 ```
 
-Before a live build, replace the `unconfigured` package/profile compile
-definitions and all three SHA-256 values in private build configuration with an
-allowlisted profile. An unconfigured native build emits a compatibility error
-instead of a handshake.
+**The private build configuration lives at `state/bridge/config/profile.cmake`**
+— the package version and version code, the official signer SHA-256, the
+original `libunity.so` and `libil2cpp.so` SHA-256 values, and the profile id, as
+CMake cache values. It is machine-local and is never committed; `state/` is
+git-ignored in full. The configuration the deployed bridge was actually built
+with is readable from the `CMakeCache.txt` installed beside it
+(`state/bridge/current/CMakeCache.txt`), which is the reference to rebuild
+against. A build left at the `unconfigured` defaults compiles and then emits a
+compatibility error instead of a handshake.
+
+`docs/setup.md` has the full build-install-verify recipe, including the digest
+the installed directory is named for.
 
 `scripts/instrumented_bridge.sh` deploys to, verifies, and cleans the private
 rooted clone. It expects the build directory to hold both `libtower_bridge.so`
 and the patched `libunity-bridge.so` whose only change is an added `DT_NEEDED`
-entry for the bridge. Do not commit the resulting `.so`, extracted libraries,
+entry for the bridge, and defaults to the installed bridge at
+`state/bridge/current`. Do not commit the resulting `.so`, extracted libraries,
 overlays, APKs, device data, or logs.
 
 A live deployment still needs the remaining M1B gates: family cost coverage,

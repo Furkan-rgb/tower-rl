@@ -229,7 +229,9 @@ def test_every_rendered_and_recorded_result_carries_its_blind_spot() -> None:
 #: The exact per-wave keys `evaluator.episode_record` promises and
 #: `wave_observations` reads. Pinned on both sides so a rename cannot quietly
 #: drop the analysis back onto the `uncaptured` path.
-WAVE_RECORD_KEYS = {"wave", "completed", "game_ms", "decisions", "health_fraction", "cash_log"}
+WAVE_RECORD_KEYS = {
+    "wave", "completed", "game_ms", "decisions", "advances", "health_fraction", "cash_log",
+}
 
 
 def _fake_port_arm(seed: int, episodes: int = 6) -> list[dict[str, object]]:

@@ -18,20 +18,68 @@ from tower_rl.environment.run_environment import (
     GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
     CadenceConfig,
+    DecisionCadence,
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 
+#: The cadence `_environment` builds under, rebound per test by the autouse
+#: fixture below. Every test in this module therefore runs twice, once under
+#: each named cadence, so the invariants that predate choice points are pinned
+#: under both rather than only under the new default. A test about one cadence
+#: in particular names it explicitly and ignores this.
+CADENCE = DecisionCadence.CHOICE_POINTS
 
-def _environment(**port_kwargs: object) -> tuple[InstrumentedRunEnvironment, FakeRunPort]:
+
+@pytest.fixture(params=list(DecisionCadence), autouse=True)
+def both_cadences(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> DecisionCadence:
+    """Run every test in this module under each decision cadence.
+
+    The default fake always has cash for every slot it offers, so each of its
+    states is a choice point and a choice-point span is one advance long. That
+    is what makes the old assertions - one decision is one bridge command, the
+    per-wave rows partition the episode, the fidelity bounds - hold verbatim
+    under both names, which is the thing worth pinning: choice points changed
+    when the policy is asked, not what an advance is.
+    """
+    cadence: DecisionCadence = request.param
+    monkeypatch.setitem(globals(), "CADENCE", cadence)
+    return cadence
+
+
+def _environment(
+    decision_cadence: DecisionCadence | None = None,
+    **port_kwargs: object,
+) -> tuple[InstrumentedRunEnvironment, FakeRunPort]:
     port = FakeRunPort(**port_kwargs)  # type: ignore[arg-type]
     environment = InstrumentedRunEnvironment(
         port=port,
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
+        decision_cadence=decision_cadence or CADENCE,
     )
     return environment, port
+
+
+#: A world that goes broke the moment it buys. The default fake always has cash
+#: for every offered slot, so every one of its states is a choice point and the
+#: two cadences cannot be told apart on it. Here one slot is offered at 5, the
+#: run opens holding exactly that, and cash trickles back at 0.5/s - so the
+#: purchase leaves the agent with nothing it can buy for the next fifteen
+#: seconds of game time, which is three waves.
+def _broke_after_buying(**overrides: object) -> dict[str, object]:
+    settings: dict[str, object] = {
+        "offered": {"attack": 1, "defense": 0, "utility": 0},
+        "start_cash": 5.0,
+        "cash_per_second": 0.5,
+        "damage_per_second": 0.0,
+        "seconds_per_wave": 6.0,
+    }
+    settings.update(overrides)
+    return settings
 
 
 def test_reset_returns_a_valid_active_state() -> None:
@@ -83,6 +131,12 @@ def test_a_purchase_is_confirmed_and_immediately_re_decided() -> None:
 
 
 def test_waiting_advances_until_something_actionable_changes() -> None:
+    """One decision is one bridge command, under either cadence.
+
+    The default fake always has cash for every slot it offers, so every state
+    it produces is a choice point and a choice-point span is one advance long -
+    which is exactly why this pin holds unchanged under both names.
+    """
     environment, port = _environment()
     environment.reset()
 
@@ -348,6 +402,9 @@ def test_a_stalled_run_truncates_rather_than_running_forever() -> None:
     assert transition.termination is TerminationOutcome.MAX_EPISODE_DURATION
     assert not transition.admissible
     assert port.active, "truncation is an environment decision, not a game over"
+    # The deadline is met before the world is touched, so nothing was advanced.
+    assert transition.advances == 0 and transition.game_ms == 0.0
+    assert environment.summarize(transition.termination).advances == port.advances == 0
 
 
 def test_the_death_boundary_is_settled_by_advancing_not_by_reading_again() -> None:
@@ -458,6 +515,11 @@ def test_a_recovery_advance_that_is_not_confirmed_fails_the_episode_visibly() ->
     assert not transition.admissible
     assert any("death boundary did not settle" in reason for reason in transition.invalid_reasons)
     assert environment._tally.recovered_transients == 0
+    # The advance that found the boundary really happened, so the transition
+    # reports it rather than describing a span of nothing.
+    assert transition.advances == 1
+    assert transition.game_ms > 0.0
+    assert environment._tally.advances <= port.advances
 
 
 def test_the_summary_reports_the_speed_the_run_actually_executed_at() -> None:
@@ -835,3 +897,214 @@ def test_an_environment_with_no_observer_builds_no_views() -> None:
 
     assert environment.on_decision is None
     assert transition.admissible
+
+
+# -- the decision cadence (ADR 0009) ---------------------------------------
+
+
+def test_a_choice_point_span_advances_through_the_slices_that_offer_only_waiting() -> None:
+    """A slice whose only legal action is WAIT is not a decision.
+
+    The purchase leaves the agent broke, so the states that follow it offer
+    nothing but WAIT. The environment answers them itself and comes back only
+    when there is something to choose again, with the span it covered measured.
+    """
+    environment, port = _environment(
+        DecisionCadence.CHOICE_POINTS, **_broke_after_buying()
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+    advances_before = port.advances
+
+    transition = environment.step(target.action)
+
+    assert transition.outcome is ActionOutcome.EXECUTED
+    assert transition.next_state is not None
+    assert transition.next_state.is_choice_point, "the span stops where a choice exists"
+    assert transition.advances > 1, "the forced WAIT slices were advanced through"
+    assert port.advances - advances_before == transition.advances, (
+        "a transition counts the advances the port really made, and no more"
+    )
+    assert transition.game_ms > 0.0
+    assert transition.admissible
+
+
+def test_every_slice_asks_at_every_slice_however_little_it_offers() -> None:
+    """Run 1's protocol, by name: the same broke world, decided slice by slice."""
+    environment, port = _environment(
+        DecisionCadence.EVERY_SLICE, **_broke_after_buying()
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+
+    assert transition.advances == 0, "a settled purchase advances nothing"
+    assert transition.next_state is not None
+    assert not transition.next_state.is_choice_point, (
+        "every-slice asks for a decision the policy has only one answer to"
+    )
+    # And the next decision is one advance too, still with nothing to choose.
+    following = environment.step(WAIT)
+    assert following.advances == 1
+    assert following.next_state is not None
+    assert not following.next_state.is_choice_point
+    assert port.advances == 1, "the purchase itself advanced nothing"
+
+
+def test_the_reward_of_a_span_is_the_wave_progress_across_the_whole_of_it() -> None:
+    """Reward is the wave difference over the span, not over its last advance."""
+    environment, _ = _environment(
+        DecisionCadence.CHOICE_POINTS, **_broke_after_buying()
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+
+    assert transition.next_state is not None
+    assert transition.next_state.wave - transition.state.wave == 2, (
+        "the span crossed two wave boundaries while there was nothing to buy"
+    )
+    assert transition.reward == 2.0
+    assert DecisionEvent.WAVE_CHANGED in transition.events
+    assert transition.events.count(DecisionEvent.WAVE_CHANGED) == 1, "named once, not per wave"
+
+
+def test_a_run_that_ends_inside_a_span_terminates_that_decision() -> None:
+    """The tower dies while the agent is holding, with nothing to decide.
+
+    The transition is terminal and keeps the reward the span earned before the
+    end; the episode's final wave is the wave it died in, not the wave the
+    decision was taken in.
+    """
+    environment, _ = _environment(
+        DecisionCadence.CHOICE_POINTS,
+        **_broke_after_buying(damage_per_second=0.5, max_health=5.0),
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+
+    assert transition.terminated
+    assert transition.termination is TerminationOutcome.GAME_OVER
+    assert transition.next_state is not None and transition.next_state.terminal
+    assert transition.advances > 1, "the run ended partway through a span"
+    assert transition.reward == float(transition.next_state.wave - transition.state.wave) > 0.0
+    summary = environment.summarize(transition.termination)
+    assert summary.valid
+    assert summary.final_wave == transition.next_state.wave
+
+
+def test_an_episode_counts_choice_points_as_decisions_and_slices_as_advances() -> None:
+    """Both units stay visible: what was decided, and what was played through."""
+    environment, port = _environment(
+        DecisionCadence.CHOICE_POINTS, **_broke_after_buying()
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+    environment.step(target.action)
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.decisions == 1
+    assert summary.advances > summary.decisions
+    assert summary.advances == port.advances, "an episode counts the advances it really made"
+    assert sum(wave.decisions for wave in summary.waves) == summary.decisions
+    assert sum(wave.advances for wave in summary.waves) == summary.advances
+
+
+def test_the_first_observation_of_an_episode_is_a_choice_point() -> None:
+    """A reset advances to the first decision worth taking, exactly as a step does."""
+    environment, port = _environment(
+        DecisionCadence.CHOICE_POINTS,
+        **_broke_after_buying(start_cash=0.0, cash_per_second=1.0),
+    )
+
+    state = environment.reset()
+
+    assert state.is_choice_point
+    assert port.advances > 0, "a fresh run offering nothing is advanced, not decided on"
+    # Every one of those advances is charged to the episode like any other.
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+    assert summary.advances == port.advances
+    assert summary.decisions == 0
+    assert summary.starting_wave == 1, "the wave the run began at, not the one it opened on"
+
+
+def test_every_slice_leaves_the_first_observation_where_the_run_began() -> None:
+    """Run 1 was asked about the opening state, whatever it offered."""
+    environment, port = _environment(
+        DecisionCadence.EVERY_SLICE, **_broke_after_buying(start_cash=0.0)
+    )
+
+    state = environment.reset()
+
+    assert not state.is_choice_point
+    assert port.advances == 0
+
+
+def test_a_decision_never_counts_more_advances_than_the_port_made() -> None:
+    """The unconfirmed-purchase path returns before the world is touched.
+
+    An episode's `advances` is a count of what really happened to the game, so
+    no settle that moved nothing may be charged as one - or the density the
+    count is read as would be inflated by exactly the failures.
+    """
+    environment, port = _environment()
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    def could_not_say(*_args: object, **_kwargs: object) -> FakeCommandResult:
+        return FakeCommandResult("ambiguous", "no_answer_from_the_bridge")
+
+    port.buy_upgrade = could_not_say  # type: ignore[method-assign]
+    transition = environment.step(target.action)
+
+    assert transition.outcome is ActionOutcome.AMBIGUOUS
+    assert transition.advances == 0 and transition.game_ms == 0.0
+    summary = environment.summarize(TerminationOutcome.ACTION_PIPELINE_FAILED)
+    assert summary.advances == port.advances == 0
+
+
+def test_an_episode_counts_exactly_the_advances_the_port_made() -> None:
+    """Held across a whole episode, decided or not, under either cadence."""
+    environment, port = _environment(damage_per_second=4.0)
+    environment.reset()
+
+    for _ in range(50):
+        transition = environment.step(WAIT)
+        assert environment._tally.advances <= port.advances
+        if transition.terminated:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    assert environment.summarize(transition.termination).advances == port.advances
+
+
+def test_a_run_that_dies_before_it_offers_a_choice_took_no_decision() -> None:
+    """The world ending is not the pipeline breaking (ADR 0009).
+
+    A run that never reaches a choice point is an episode that happened and
+    took no decision: `reset` hands back the terminal state it ended at, and
+    the episode is classified through the ordinary path with the wave it died
+    at intact.
+    """
+    environment, _ = _environment(
+        DecisionCadence.CHOICE_POINTS,
+        **_broke_after_buying(
+            start_cash=0.0, cash_per_second=0.0, damage_per_second=4.0, max_health=1.0
+        ),
+    )
+
+    state = environment.reset()
+
+    assert state.terminal and state.valid
+    assert not state.is_choice_point
+    assert not any(state.action_mask), "there is nothing left to ask about"
+    summary = environment.summarize(TerminationOutcome.GAME_OVER)
+    assert summary.valid, "a death is a complete episode, whenever it happened"
+    assert summary.decisions == 0
+    assert summary.advances > 0 and summary.final_wave >= 1

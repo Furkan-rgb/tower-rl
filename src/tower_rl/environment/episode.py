@@ -83,6 +83,11 @@ class DecisionView:
     #: `wait`, or the upgrade slot bought, as `attack:3`.
     action: str
     reward: float
+    #: Measured game time the decision covers: how long the agent held this
+    #: choice before it was asked again. One cadence slice under `every-slice`;
+    #: under `choice-points` it is the whole span of forced WAIT slices the
+    #: environment advanced through.
+    game_ms: float
     #: Whether this decision ended the episode, however it ended.
     done: bool
     #: Why it ended, when it did.
@@ -115,11 +120,24 @@ class RunTransition:
     terminated: bool
     truncated: bool
     termination: TerminationOutcome | None
+    #: Every cadence condition the span stopped on, in the order the span met
+    #: them. One advance's events when the span is one advance, which is what
+    #: `every-slice` always produces.
     events: tuple[DecisionEvent, ...]
     elapsed_wall_seconds: float
     #: Game time the environment *requested*, not measured: this build exposes no
     #: live in-run clock (see M1B-E003), so the honest record is the request.
     requested_game_ms: int
+    #: Times the world was advanced for this one decision: one for an ordinary
+    #: wait, more when forced WAIT slices were advanced through to reach the
+    #: next choice point (ADR 0009), and zero when the decision moved nothing -
+    #: a masked action, an unconfirmed purchase, or a confirmed purchase whose
+    #: settled state was already worth deciding at. Never more than the port
+    #: was actually asked to advance.
+    advances: int = 0
+    #: Measured game time across the same span: the game's own round clock,
+    #: summed over its advances. Beside `requested_game_ms`, which is a budget.
+    game_ms: float = 0.0
     invalid_reasons: tuple[str, ...] = ()
     reward_schema_version: str = REWARD_SCHEMA_VERSION
 
@@ -154,8 +172,13 @@ class WaveRecord:
     #: crosses a wave boundary is charged whole to the wave that was current
     #: when it started.
     game_ms: float
-    #: Decisions the environment asked for while this wave was current.
+    #: Decisions the environment asked for while this wave was current. Under
+    #: `choice-points` these are choice points, not cadence slices.
     decisions: int
+    #: Internal advances made while this wave was current, decided or not. The
+    #: two counts are equal under `every-slice` and diverge once forced WAIT
+    #: slices are advanced through (ADR 0009).
+    advances: int
     #: The state at the *start* of this wave, as the observation carries it:
     #: cash exists only log-scaled in `observation-v1` and is recorded as such.
     health_fraction: float
@@ -169,6 +192,9 @@ class EpisodeSummary:
     episode_id: str
     profile_id: str
     final_wave: int
+    #: Decisions the policy was asked for. Under `choice-points` that is the
+    #: choice points this episode reached, which is a different unit from the
+    #: cadence slices run 1 counted - hence `advances` beside it.
     decisions: int
     purchases: int
     termination: TerminationOutcome
@@ -179,6 +205,11 @@ class EpisodeSummary:
     #: game time they were worth. Game seconds over wall seconds is the speed-up.
     frames: int = 0
     game_ms: float = 0.0
+    #: Internal advances the episode made, decided or not. Equal to `decisions`
+    #: under `every-slice`; under `choice-points` the difference between them is
+    #: what the agent was no longer asked about (ADR 0009). Both units are kept
+    #: so a run collected under either cadence can be read in the other's terms.
+    advances: int = 0
     #: The game's own per-round clock across the same advances. Beside
     #: `game_ms` it is what makes the intended 1:1 mapping between budgeted and
     #: passed game time checkable instead of assumed.

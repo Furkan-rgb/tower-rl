@@ -22,7 +22,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_episodes import POLICIES, add_cadence_arguments, cadence_from  # noqa: E402
+from run_episodes import (  # noqa: E402
+    POLICIES,
+    add_cadence_arguments,
+    cadence_from,
+    decision_cadence_from,
+)
 
 from tower_rl.environment.episode import EpisodeSummary  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
@@ -88,6 +93,7 @@ def main() -> int:
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
         cadence=cadence_from(arguments),
+        decision_cadence=decision_cadence_from(arguments),
     )
     actors = {
         name: Actor(

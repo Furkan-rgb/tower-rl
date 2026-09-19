@@ -69,6 +69,7 @@ from run_episodes import (  # noqa: E402
     POLICIES,
     add_cadence_arguments,
     cadence_from,
+    decision_cadence_from,
     policy_from,
 )
 
@@ -187,7 +188,11 @@ def panel_lines(
     else:
         lines.append(
             f"wave {view.wave}   cash {view.cash:,.0f}   "
-            f"health {view.health_fraction:.0%}   reward {view.reward:+.0f}"
+            f"health {view.health_fraction:.0%}   reward {view.reward:+.0f}   "
+            # How long the agent held this decision: under `choice-points` a
+            # decision covers every forced-WAIT slice the environment advanced
+            # through, so a watcher sees holds of seconds, not of one slice.
+            f"held {view.game_ms / 1000:.1f}s"
         )
         lines.append(
             f"episodes played {spectator.episodes_finished}   "
@@ -524,6 +529,7 @@ def session_record(
     identity: dict[str, object],
     *,
     frame_rate_hz: int,
+    decision_cadence: str,
     wall_seconds: float,
 ) -> dict[str, Any]:
     """The same per-episode rows the fleet writes, for the episodes just played.
@@ -539,6 +545,8 @@ def session_record(
     return {
         "policy_identity": dict(identity),
         "frame_rate_hz": frame_rate_hz,
+        # The protocol these episodes were played under (ADR 0009).
+        "decision_cadence": decision_cadence,
         "wall_seconds": round(wall_seconds, 1),
         "episodes": [episode_record(index, summary) for index, summary in enumerate(summaries)],
     }
@@ -670,6 +678,7 @@ def run(arguments: argparse.Namespace) -> int:
             port=adapter,
             builder=RunStateBuilder(profile_id=expected.profile_id),
             cadence=cadence_from(arguments),
+            decision_cadence=decision_cadence_from(arguments),
         )
         try:
             watch(environment, policy, spectator, summaries, arguments, identity)
@@ -692,6 +701,7 @@ def run(arguments: argparse.Namespace) -> int:
             summaries,
             identity,
             frame_rate_hz=arguments.frame_rate_hz,
+            decision_cadence=str(decision_cadence_from(arguments)),
             wall_seconds=time.monotonic() - started,
         )
         output = arguments.output_directory / f"{instance.serial}.json"

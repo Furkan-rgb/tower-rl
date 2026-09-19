@@ -24,7 +24,7 @@ import torch
 
 from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
-from tower_rl.environment.run_environment import CadenceConfig
+from tower_rl.environment.run_environment import CadenceConfig, DecisionCadence
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.network import NetworkConfig
@@ -74,15 +74,27 @@ class RunIdentity:
     backbone: str
     profile_id: str
     source_revision: str
+    #: Which cadence this run collects under (ADR 0009). A choice the operator
+    #: makes, like the arm and the profile, which is why it lives here and not
+    #: with the schema versions below.
+    decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS
 
     @classmethod
-    def started_now(cls, backbone: str, *, profile_id: str, source_revision: str) -> RunIdentity:
+    def started_now(
+        cls,
+        backbone: str,
+        *,
+        profile_id: str,
+        source_revision: str,
+        decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS,
+    ) -> RunIdentity:
         """A fresh identity for a run about to start, with a new run id."""
         return cls(
             run_id=new_run_id(backbone),
             backbone=backbone,
             profile_id=profile_id,
             source_revision=source_revision,
+            decision_cadence=decision_cadence,
         )
 
 
@@ -102,6 +114,7 @@ def checkpoint_identity(identity: RunIdentity) -> CheckpointIdentity:
         action_schema=ACTION_SCHEMA_VERSION,
         reward_schema=REWARD_SCHEMA_VERSION,
         source_revision=identity.source_revision,
+        decision_cadence=identity.decision_cadence,
     )
 
 
@@ -114,6 +127,7 @@ def resolved_config(
     learner: StackedDqnConfig,
     network: NetworkConfig,
     cadence: CadenceConfig,
+    decision_cadence: DecisionCadence,
     burn_in: int,
     stride: int,
     device: torch.device,
@@ -188,6 +202,10 @@ def resolved_config(
         "frame_game_ms": cadence.frame_game_ms,
         "max_quiet_game_ms": cadence.max_quiet_game_ms,
         "health_change_fraction": cadence.health_change_fraction,
+        # Which of those cadence stops the policy was actually asked about. The
+        # unit `budget_decisions` is spent in depends on it: run 1 counted
+        # slices, a choice-point run counts choices (ADR 0009).
+        "decision_cadence": str(decision_cadence),
         "block_decisions": arguments.block_decisions,
         "device": str(device),
         # The guest rate this arm actually collected at: a fleet run raises

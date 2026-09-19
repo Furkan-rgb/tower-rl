@@ -472,7 +472,8 @@ def test_every_episodes_wave_rows_partition_its_totals() -> None:
 def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
     """The keys are `experiment.wave_statistics.wave_observations` reads, exactly."""
     wave = WaveRecord(
-        wave=2, completed=True, game_ms=30_000.0, decisions=9, health_fraction=0.8, cash_log=4.1
+        wave=2, completed=True, game_ms=30_000.0, decisions=9, advances=14,
+        health_fraction=0.8, cash_log=4.1,
     )
 
     record = episode_record(0, _summary(waves=(wave,)))
@@ -483,7 +484,44 @@ def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
             "completed": True,
             "game_ms": 30_000.0,
             "decisions": 9,
+            "advances": 14,
             "health_fraction": 0.8,
             "cash_log": 4.1,
         }
     ]
+
+
+def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:
+    """A zero-decision episode is an episode (ADR 0009).
+
+    Under choice points a run can end before it ever offers a purchase. Nothing
+    was decided, so nothing reaches replay - but the tower did die at a wave,
+    which is what evaluation measures, so the episode is scored rather than
+    counted as an environment failure.
+    """
+    settings: dict[str, object] = {
+        "offered": {"attack": 1, "defense": 0, "utility": 0},
+        "start_cash": 0.0,
+        "cash_per_second": 0.0,
+        "damage_per_second": 4.0,
+        "max_health": 1.0,
+    }
+    buffer = PrioritizedSequenceReplay(capacity=64, seed=0)
+    actor = Actor(
+        environment=_environment(**settings), policy=CheapestFirstPolicy(), replay=buffer
+    )
+
+    result = actor.run_episode()
+
+    assert result.summary.valid and result.summary.decisions == 0
+    assert result.sequences_offered == 0 and result.sequences_accepted == 0
+    assert len(buffer) == 0, "there is no decision to learn from"
+
+    report = evaluate(
+        _environment(**settings), CheapestFirstPolicy(), episodes=3, profile_id=PROFILE
+    )
+
+    assert report.valid_episodes == 3 and report.invalid_episodes == 0
+    assert report.total_decisions == 0
+    assert report.decisions_per_episode == 0.0
+    assert report.distribution.mean >= 1.0

@@ -18,7 +18,11 @@ import torch
 from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.features import StateFeatures
-from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
+from tower_rl.environment.run_environment import (
+    CadenceConfig,
+    DecisionCadence,
+    InstrumentedRunEnvironment,
+)
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.checkpoint import (
     CheckpointIdentity,
@@ -178,7 +182,8 @@ def test_an_actor_record_names_the_checkpoint_that_produced_it(tmp_path: Path) -
 
     report = evaluate(environment(), policy, episodes=2, profile_id=PROFILE)
     record = run_episodes.actor_record(
-        report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000, wall_seconds=12.0
+        report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000,
+        decision_cadence=DecisionCadence.CHOICE_POINTS, wall_seconds=12.0,
     )
 
     assert record["policy_identity"] == arm
@@ -194,7 +199,8 @@ def test_the_fleet_report_carries_the_arm_its_actors_played(tmp_path: Path) -> N
     _, arm = run_episodes.policy_from(f"checkpoint:{path}")
     report = evaluate(environment(), CheapestFirstPolicy(), episodes=1, profile_id=PROFILE)
     record = run_episodes.actor_record(
-        report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000, wall_seconds=9.0
+        report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000,
+        decision_cadence=DecisionCadence.CHOICE_POINTS, wall_seconds=9.0,
     )
 
     aggregated = run_actors.aggregate(

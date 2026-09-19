@@ -887,6 +887,14 @@ class TrainingRun:
                 # decomposition sees this episode's learning in it.
                 progress.decision_time = profile.snapshot()
                 self._after_episode(profile)
+                barren = progress.withdrawn
+                if barren is not None and self.on_withdrawal is not None:
+                    self.on_withdrawal(progress)
+            if barren is not None:
+                # Episode after episode that spends none of the budget: the
+                # loop would never reach its target, so the actor leaves the
+                # fleet exactly as one on a failing port does.
+                raise RunPortError(barren)
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:
         """Count an episode the port could not deliver, against run and actor."""
@@ -916,9 +924,23 @@ class TrainingRun:
                 summary, wait_decisions=result.wait_decisions, actor_id=progress.actor_id
             )
         )
-        progress.consecutive_failures = 0
         progress.episodes += 1
         progress.decisions += summary.decisions
+        if summary.decisions:
+            progress.consecutive_failures = 0
+        else:
+            # A run that ended before it offered a single choice is a real,
+            # valid episode (ADR 0009) - and it spends none of the budget, so
+            # an actor producing nothing else would collect forever without
+            # ever reaching a target. It counts toward the same streak a
+            # failing port does, under its own name, so the condition is loud
+            # rather than an unattended run that never finishes.
+            progress.consecutive_failures += 1
+            if progress.consecutive_failures >= self.config.max_consecutive_episode_failures:
+                progress.withdrawn = (
+                    f"{progress.consecutive_failures} consecutive episodes ended "
+                    "before a choice point"
+                )
         if summary.valid:
             progress.valid_episodes += 1
         else:

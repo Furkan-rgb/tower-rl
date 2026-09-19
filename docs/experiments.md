@@ -595,6 +595,36 @@ starts. The price is that a doomed run now costs ~1.4 h of fleet time instead of
 attempt 1, stopped by the pre-amendment check"** and **does not count toward the
 verdict**: no arm, no checkpoint and no claim comes from it.
 
+**Amendment 3 (2026-09-19, at the period-1 close).** A correction of the kill
+check's **scope**, not of its thresholds. Amendment 2 moved the check to the
+close of the first checkpoint period so that it would not read an untrained
+network — but period 1 begins at decision 0, so the statistic it closes on
+pools the ε-anneal episodes *and* the pre-warm-up episodes the move was meant
+to exclude. Measured at seed 0 attempt 2's first crossing (60,000 game-s,
+decisions 10,849): the pooled
+`checkpoint_period_near_greedy_mean_final_wave` over the period's **221**
+near-greedy episodes is **4.855**, while the near-greedy collection windows
+inside the period rise **3.767 → 5.222 → 5.340** — the pooled mean is dragged
+below the bar by the phase the check is not supposed to read. The check
+therefore applies at the close of **period 2**, the first period that contains
+no pre-anneal and no pre-warm-up episodes, on the same statistic with the
+**same thresholds**: `checkpoint_period_near_greedy_mean_final_wave` > **5.195**
+and the latest `collection_window_wait_fraction` < **0.9**. Nothing else moves:
+the early-stopping rule, the pre-declared checkpoint, the primary statistic and
+the verdict rule are untouched, and the run is still stopped rather than
+finished if the check fails.
+
+This amendment does **not** rescue a failing run, which is the thing an
+amendment written mid-run must be able to show. At the moment of the ruling the
+two post-anneal windows were 5.222 and 5.340, both already **above** the 5.195
+bar — the scope correction changes which episodes the bar is applied to, not
+whether this run was clearing it. (The window that closed immediately
+afterwards, at decision 10,988, read 5.034, below the bar: the near-greedy
+window mean carries a standard error of roughly 0.3 waves at ~55 episodes, which
+is exactly why the pre-registered check is a period of ~220 episodes and not a
+window, and why no single window decides anything.) The price is device time: a
+run that fails is now stopped at 120,000 game-s, ~2.8 h, rather than at 60,000.
+
 ## M2-E006 — Observation-v2 on device
 
 **Date:** 2026-09-19

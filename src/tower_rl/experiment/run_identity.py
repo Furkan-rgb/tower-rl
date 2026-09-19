@@ -117,6 +117,7 @@ def resolved_config(
     burn_in: int,
     stride: int,
     device: torch.device,
+    parent_checkpoint: str | None = None,
 ) -> dict[str, object]:
     """Everything the run was actually fixed with, as one flat snapshot.
 
@@ -127,6 +128,12 @@ def resolved_config(
     return {
         "backbone": name,
         "budget_decisions": arguments.budget_decisions,
+        # The checkpoint this run continues, as `learning.checkpoint.ResumeState`
+        # cites it: the file and the identity hash of the run that wrote it.
+        # None for a run that started from scratch. The budget beside it is the
+        # whole run's, not this segment's - a resume continues a budget, it does
+        # not start a second one.
+        "parent_checkpoint": parent_checkpoint,
         # The fleet this arm actually collected with, and the instances it
         # addressed - one actor per emulator instance.
         "actors": len(actor_ids),

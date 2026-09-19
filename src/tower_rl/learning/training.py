@@ -354,7 +354,7 @@ def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribut
 
 
 def collection_windows(
-    collected: Sequence[CollectedEpisode], *, size: int
+    collected: Sequence[CollectedEpisode], *, size: int, spent_before: int = 0
 ) -> list[CollectionWindow]:
     """Cut the collection episodes into consecutive non-overlapping windows.
 
@@ -364,6 +364,12 @@ def collection_windows(
     trailing partial window is not emitted at all: a point averaged over fewer
     episodes than the rest has a different standard error and would be read as
     if it did not.
+
+    `spent_before` is the budget position these episodes start from, which is
+    not zero for a run resumed from a checkpoint: the episode list is this
+    segment's, but `decisions_at_end` is a position on the whole run's budget,
+    and a window keyed segment-relatively would land on the same axis as the
+    parent's points and beneath them.
     """
     if size < 1:
         raise ValueError("a collection window needs at least one episode")
@@ -372,7 +378,7 @@ def collection_windows(
     #: Every episode attempted while this window was filling, valid and invalid
     #: alike - the span `health` is pooled over, wider than `current`.
     attempted: list[CollectedEpisode] = []
-    spent = 0
+    spent = spent_before
     window_decisions = 0
     for episode in collected:
         spent += episode.summary.decisions
@@ -627,6 +633,14 @@ class TrainingRun:
             # name would report as one instance and hide a dead one.
             raise ValueError("every actor of a fleet needs an id of its own")
         self.learner = Learner(self.backbone)
+        # The cadence is continued rather than restarted: a run resumed at
+        # 50,123 decisions of a 100,000-decision period has already answered the
+        # multiple at 50,000, and the next checkpoint it owes is the one at
+        # 100,000. Derived from the report it was constructed with, so a fresh
+        # run - whose counter is zero - is unaffected.
+        if self.config.checkpoint_every_decisions:
+            period = self.config.checkpoint_every_decisions
+            self._numbered_at = self.report.decisions // period * period
         self.report.epsilon = self.config.epsilon(self.report.decisions)
         self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}

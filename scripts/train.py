@@ -28,6 +28,16 @@ and tears them all down when the run ends.
     uv run --extra tracking python scripts/train.py \\
         --actors 4 --budget-decisions 100000
 
+`--resume <checkpoint.pt>` continues a run that has already spent part of its
+budget. The weights, the optimizer moments, the decision counter and every
+schedule and cadence derived from it come back from the file; the replay buffer
+does not, so the run re-warms it under the loaded policy before learning
+restarts. `--budget-decisions` stays the whole run's total.
+
+    uv run --extra tracking python scripts/train.py \\
+        --resume ~/.local/state/tower-rl/runs/<session>/<run>/checkpoints/latest.pt \\
+        --budget-decisions 400000
+
 The run records itself to the local MLflow store under `~/.local/state/tower-rl`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
 run without recording, which leaves nothing to compare the run against later.
@@ -69,7 +79,12 @@ from tower_rl.experiment.tracking import (  # noqa: E402
 from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
-from tower_rl.learning.checkpoint import write_manifest  # noqa: E402
+from tower_rl.learning.checkpoint import (  # noqa: E402
+    CheckpointError,
+    ResumeState,
+    resume_state,
+    write_manifest,
+)
 from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
@@ -166,16 +181,24 @@ def build_arm(
     started: float,
     tracker: ExperimentTracker,
     tags: dict[str, str],
+    resume: ResumeState | None = None,
 ) -> tuple[TrainingReport, Callable[[bool], EvaluationReport]]:
     # Identity first: the run id every artefact is filed under, and the
     # compatibility key its checkpoints are written with, derived from it in the
-    # one place that knows which schemas this code is.
+    # one place that knows which schemas this code is. A resumed segment gets a
+    # run id and a directory of its own - it must not overwrite the resume point
+    # it was started from - and says which checkpoint it continues instead.
     identity = RunIdentity.started_now(name, profile_id=profile_id, source_revision=revision)
     run_id = identity.run_id
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     backbone, learner, network = build_backbone(arguments, device)
+    if resume is not None:
+        # The weights, the target network and the optimizer moments together:
+        # they are one `state_dict`, and a resume that took only the weights
+        # would restart Adam's moments silently mid-run.
+        backbone.load_state_dict(dict(resume.backbone_state))
     replay = PrioritizedSequenceReplay(
         capacity=arguments.replay_capacity,
         alpha=arguments.priority_alpha,
@@ -226,13 +249,36 @@ def build_arm(
         burn_in=burn_in,
         stride=stride,
         device=device,
+        parent_checkpoint=None if resume is None else resume.parent_checkpoint,
     )
-    run = tracker.start_run(
-        name=run_id,
-        params=tracked_params(resolved),
-        tags={**tags, "backbone": name, "run_id": run_id},
-    )
+    if resume is not None and resume.tracking_run_id is not None:
+        # The same run, not a second one beside it: the curve of a run trained
+        # in two sittings is one series, keyed by the decisions of the budget
+        # both segments spend. Its params were fixed when the first segment
+        # started and are not restated here.
+        run = tracker.open_run(resume.tracking_run_id)
+    else:
+        run = tracker.start_run(
+            name=run_id,
+            params=tracked_params(resolved),
+            tags={**tags, "backbone": name, "run_id": run_id},
+        )
     print(f"[{name}] tracking run {run.run_id}", flush=True)
+    # What a checkpoint of this run names as the series it belongs to. An
+    # untracked run has no such series, and must not write the untracked
+    # handle's placeholder into a file a later resume would try to attach to.
+    tracked_run_id = None if isinstance(tracker, NoExperimentTracker) else run.run_id
+    progress = TrainingProgressReport()
+    if resume is not None:
+        # The counters the budget, the schedules and the cadences are all read
+        # from. Epsilon and beta are not restored beside them: `TrainingRun`
+        # derives both from this counter, so they land where a run that had
+        # never stopped would have them.
+        progress = TrainingProgressReport(
+            decisions=resume.decisions,
+            episodes=resume.episodes,
+            optimisation_steps=resume.optimisation_steps,
+        )
     arm = TrainingReport(
         name=name,
         run_dir=run_dir,
@@ -243,11 +289,17 @@ def build_arm(
             replay=replay,
             backbone=backbone,
             config=config,
+            report=progress,
         ),
         started=started,
         run=run,
         identity=checkpoint_identity(identity),
         resolved=resolved,
+        # What the parent had spent, which is where this segment's series start
+        # on the run's budget and what its own throughput is measured net of.
+        resumed_decisions=progress.decisions,
+        resumed_episodes=progress.episodes,
+        tracking_run_id=tracked_run_id,
     )
 
     def run_evaluation(pre_registered_final: bool = False) -> EvaluationReport:
@@ -277,7 +329,31 @@ def build_arm(
             flush=True,
         )
 
+    # Learning is refused until the buffer holds `--warmup-sequences` again:
+    # replay is not persisted, so a resumed run re-warms it under the loaded
+    # policy at the epsilon its schedule has reached. That is the ordinary
+    # warm-up rule, not a mode, but where its boundary fell is the one thing a
+    # reading of the resumed segment cannot recover afterwards, so the first
+    # optimisation step past the resume point is reported when it happens.
+    warmed = resume is None
+
     def on_episode(report: TrainingProgressReport) -> None:
+        nonlocal warmed
+        if (
+            not warmed
+            and resume is not None
+            and report.optimisation_steps > resume.optimisation_steps
+        ):
+            warmed = True
+            arm.run.log_metrics(
+                {"warmup_finished_decisions": float(report.decisions)},
+                decisions=report.decisions,
+            )
+            print(
+                f"[{name}] replay re-warmed; learning restarted at "
+                f"{report.decisions} decisions",
+                flush=True,
+            )
         # The episode first: it is the tracked unit, and the window below it is
         # the smoothed view of the same series.
         arm.record_episodes()
@@ -300,6 +376,20 @@ def build_arm(
     manifest = run_dir / "manifest.json"
     write_manifest(manifest, {"run_id": run_id, **resolved})
     run.log_artifact(manifest)
+    if resume is not None:
+        # Where this segment picked the budget up, on the same axis every other
+        # point of the run is keyed by. The parent itself is named in
+        # `resolved_config`, which travels in the manifest above, in every
+        # checkpoint this segment writes, and in its summary.
+        run.log_metrics(
+            {"resumed_from_decisions": float(resume.decisions)},
+            decisions=resume.decisions,
+        )
+        print(
+            f"[{name}] resuming {resume.parent_checkpoint} at {resume.decisions} "
+            f"decisions of {config.budget_decisions}",
+            flush=True,
+        )
     # The evaluation comes back beside the report rather than on it: the report
     # records what an evaluation produced, and the session decides when the one
     # pre-registered evaluation is taken.
@@ -315,6 +405,18 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=2_000,
         help="decisions collected before the loop checks the budget; lands on an episode",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help=(
+            "a checkpoint to continue a run's budget from: the weights, the "
+            "optimizer, the decision counter and every schedule and cadence "
+            "derived from it come back, and the replay buffer is re-warmed "
+            "under the loaded policy. --budget-decisions stays the whole run's "
+            "total, so a checkpoint at or past it is refused"
+        ),
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--replay-capacity", type=int, default=4096)
@@ -521,6 +623,41 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return arguments
 
 
+def resume_point(
+    arguments: argparse.Namespace, *, profile_id: str, revision: str
+) -> ResumeState | None:
+    """The checkpoint this run continues, read and checked before a device is touched.
+
+    Two refusals, both here rather than an hour into collection. The identity
+    is the checkpoint's own: a file from another arm, another device profile or
+    another observation, action or reward schema is not experience this run can
+    go on from, and `CheckpointIdentity.incompatibilities` names which. The
+    budget is the second: `--budget-decisions` is the whole run's total, not
+    this segment's, so a checkpoint at 50,123 of 200,000 continues to 200,000
+    and a larger budget extends the run - but a checkpoint that has already
+    spent the budget is nothing this run can add to.
+    """
+    if arguments.resume is None:
+        return None
+    # Built exactly as the fresh-run path builds it, from the profile the bridge
+    # reported and the schema versions this code is; the run id and the source
+    # revision in it are deliberately not compared.
+    expected = checkpoint_identity(
+        RunIdentity.started_now(BACKBONE, profile_id=profile_id, source_revision=revision)
+    )
+    try:
+        state = resume_state(arguments.resume, expected=expected)
+    except CheckpointError as failure:
+        raise SystemExit(f"--resume {arguments.resume}: {failure}") from failure
+    if state.decisions >= arguments.budget_decisions:
+        raise SystemExit(
+            f"--resume {arguments.resume} is already at {state.decisions} decisions, "
+            f"which --budget-decisions {arguments.budget_decisions} does not extend; "
+            "raise the budget above it to continue the run"
+        )
+    return state
+
+
 def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
     """The tracker the session records itself through.
 
@@ -555,6 +692,7 @@ def train_session(
     tracker: ExperimentTracker | None = None,
     bridge_version: str | None = None,
     bring_up_failures: Sequence[str] = (),
+    resume: ResumeState | None = None,
 ) -> dict[str, object]:
     """Train the arm to its budget and return the session report.
 
@@ -587,9 +725,13 @@ def train_session(
         started=started,
         tracker=recorder,
         tags=tags,
+        resume=resume,
     )
 
-    blocks = -(-arguments.budget_decisions // arguments.block_decisions)
+    # The blocks this segment still owes, not the whole budget's: a resumed run
+    # starts with part of it already spent.
+    remaining = arguments.budget_decisions - arm.training.report.decisions
+    blocks = -(-remaining // arguments.block_decisions)
     try:
         for _ in range(blocks):
             if arm.training.finished:
@@ -683,6 +825,7 @@ def connect(
 
 def main() -> int:
     arguments = parse_arguments()
+    revision = source_revision()
 
     # Built before the device is touched: a session that cannot be recorded
     # should fail now rather than an hour into collection.
@@ -697,6 +840,24 @@ def main() -> int:
         print(f"artifacts: {artifact_root(arguments.run_dir)}", flush=True)
 
     expected = compatibility(bridge_build_directory())
+    # Read once the profile the checkpoint is checked against is known, and
+    # still before anything is brought up: a resume that cannot be honoured
+    # must fail now, not an hour into collection.
+    resume = resume_point(arguments, profile_id=expected.profile_id, revision=revision)
+    if (
+        resume is not None
+        and resume.tracking_run_id is not None
+        # There is nothing to attach to under `--no-track`: the parent's run id
+        # names a run in a store this session is not recording into, and saying
+        # it was resumed would be a claim about a curve nothing is writing.
+        and not isinstance(tracker, NoExperimentTracker)
+    ):
+        # The parent run is read back here, where a missing one costs nothing,
+        # rather than at `build_arm` - which runs with the fleet already up.
+        # The handle is discarded; the arm opens its own.
+        tracker.open_run(resume.tracking_run_id)
+        print(f"resuming tracked run {resume.tracking_run_id}", flush=True)
+
     opened: list[tuple[InstrumentedRunAdapter, InstrumentedBridgeClient]] = []
     started: list[CloneInstance] = []
 
@@ -750,11 +911,12 @@ def main() -> int:
             arguments,
             instances,
             profile_id=expected.profile_id,
-            revision=source_revision(),
+            revision=revision,
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             tracker=tracker,
             bridge_version=expected.bridge_version,
             bring_up_failures=failures,
+            resume=resume,
         )
     finally:
         tear_down_fleet(opened, started)

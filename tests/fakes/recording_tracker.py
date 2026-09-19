@@ -74,3 +74,16 @@ class RecordingTracker:
         run.calls.append("start_run")
         self.runs.append(run)
         return run
+
+    def open_run(self, run_id: str) -> TrackedRun:
+        """Attach to a run already recorded here, as a resumed segment does.
+
+        The same `RecordedRun` comes back, so what a resume reports lands on the
+        one series the first segment opened - which is the whole point of
+        reattaching rather than starting a second run beside it.
+        """
+        for run in self.runs:
+            if run.run_id == run_id:
+                run.calls.append("open_run")
+                return run
+        raise KeyError(f"no recorded run {run_id}")

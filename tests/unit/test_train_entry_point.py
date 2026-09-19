@@ -20,6 +20,7 @@ import pytest
 import torch
 import train
 from fakes.fake_run_port import FakeRunPort
+from fakes.recording_tracker import RecordingTracker
 
 from tower_rl.environment.episode import TerminationOutcome
 from tower_rl.environment.features import StateFeatures
@@ -28,8 +29,10 @@ from tower_rl.environment.run_environment import (
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.metrics import per_hour
+from tower_rl.experiment.tracking import NoExperimentTracker
 from tower_rl.learning.actor import ActorConfig
-from tower_rl.learning.checkpoint import load
+from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.simulation.instance import CloneInstance
@@ -98,6 +101,8 @@ def session(
     budget: str = "120",
     actors: int = 1,
     settings: dict[str, str] | None = None,
+    tracker: Any = None,
+    resume: Any = None,
     **fake: Any,
 ) -> dict[str, Any]:
     overrides = {"--budget-decisions": budget, **(settings or {})}
@@ -120,6 +125,8 @@ def session(
             profile_id=PROFILE,
             revision="test",
             device=torch.device("cpu"),
+            tracker=tracker,
+            resume=resume,
         )
 
 
@@ -645,3 +652,391 @@ def test_resolved_config_carries_the_frame_rate(tmp_path: Path) -> None:
     """A run's identity carries the rate it actually trained at."""
     report = session(tmp_path, settings={"--frame-rate-hz": "90"})
     assert report["arm"]["resolved_config"]["frame_rate_hz"] == 90
+
+
+# -- resume ----------------------------------------------------------------
+#
+# A run trained in two sittings is one run: the second segment continues the
+# first's budget, its schedules, its checkpoint cadence and its tracked curve.
+# What it does not continue is the replay buffer, which is not persisted - it
+# re-warms under the loaded policy, which is the ordinary warm-up rule applied
+# again from the resume point.
+
+#: A whole number of the 50-decision blocks these settings collect in.
+RESUME_PERIOD = 100
+
+
+def numbered(run_dir: Path, budget: int, **overrides: str) -> dict[str, Any]:
+    """One segment of a run, leaving a numbered checkpoint on every crossing."""
+    return session(
+        run_dir,
+        budget=str(budget),
+        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD), **overrides},
+    )
+
+
+def latest_checkpoint(report: dict[str, Any]) -> Path:
+    """The resume point of a finished segment, which is what a resume is given."""
+    return Path(report["session"]) / report["arm"]["run_id"] / "checkpoints" / "latest.pt"
+
+
+def resume_from(
+    run_dir: Path, checkpoint: Path, budget: int, profile_id: str = PROFILE
+) -> Any:
+    """The parsed `--resume` of a second segment, as `main` reads it.
+
+    The profile is the one the bridge reported, which is what the checkpoint's
+    identity is checked against before anything is brought up.
+    """
+    return train.resume_point(
+        arguments(
+            run_dir,
+            **{"--budget-decisions": str(budget), "--resume": str(checkpoint)},
+        ),
+        profile_id=profile_id,
+        revision="test",
+    )
+
+
+def resumed_arm(run_dir: Path, checkpoint: Path, budget: int) -> tuple[Any, Any]:
+    """`build_arm` alone, so what a resume restored can be read before a decision.
+
+    Everything under test here is settled at construction - the counters, the
+    schedule position the run publishes from them, the optimizer moments - and
+    a single collected episode would move all of it.
+    """
+    settings = arguments(
+        run_dir,
+        **{
+            "--budget-decisions": str(budget),
+            "--resume": str(checkpoint),
+            "--checkpoint-every-decisions": str(RESUME_PERIOD),
+        },
+    )
+    resume = train.resume_point(settings, profile_id=PROFILE, revision="test")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        arm, _ = train.build_arm(
+            train.BACKBONE,
+            settings,
+            instances=fleet(1),
+            device=torch.device("cpu"),
+            profile_id=PROFILE,
+            parent=run_dir / "resumed-session",
+            revision="test",
+            started=0.0,
+            tracker=NoExperimentTracker(),
+            tags={},
+            resume=resume,
+        )
+    return arm, resume
+
+
+def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) -> None:
+    """The state a second sitting continues from, before it collects anything."""
+    first = numbered(tmp_path / "first", 300)
+    checkpoint = latest_checkpoint(first)
+    parent = load(checkpoint)
+    spent = parent.progress.environment_decisions
+
+    arm, resume = resumed_arm(tmp_path / "second", checkpoint, budget=600)
+
+    progress = arm.training.report
+    config = arm.training.config
+    # The decision counter, which the budget, the schedules and the cadences
+    # are all read from.
+    assert progress.decisions == spent == first["arm"]["decisions"]
+    assert progress.episodes == parent.progress.episodes
+    assert progress.optimisation_steps == parent.progress.optimisation_steps
+    assert not arm.training.finished, "the budget was raised, so there is more to spend"
+    # Exploration and the importance exponent are derived from the counter
+    # rather than restored, so they are where a run that never stopped would
+    # have them - and not at the start of their schedules.
+    assert progress.epsilon == config.epsilon(spent) != config.epsilon(0)
+    assert progress.importance_beta == config.beta(spent) != config.beta(0)
+    # The optimizer's moments come back with the weights: one state dict, and a
+    # resume that took only the weights would restart Adam silently mid-run.
+    moments = parent.backbone_state["optimizer"]["state"]
+    assert moments, "the first segment took optimisation steps"
+    restored = arm.backbone.state_dict()["optimizer"]["state"]
+    for key, state in moments.items():
+        assert torch.equal(state["exp_avg"], restored[key]["exp_avg"])
+        assert torch.equal(state["exp_avg_sq"], restored[key]["exp_avg_sq"])
+        # Adam's own step count per parameter: it is what the bias correction
+        # divides by, so moments restored under a step count of zero would be
+        # scaled as if the run had just started.
+        assert float(state["step"]) == float(restored[key]["step"]) > 0
+    # The parent is named by file and by identity hash, not by path alone.
+    assert arm.resolved["parent_checkpoint"] == resume.parent_checkpoint
+    assert str(checkpoint) in resume.parent_checkpoint
+    assert identity_hash(parent.identity) in resume.parent_checkpoint
+    # The episode series is keyed on the budget, so it continues where the
+    # parent left off rather than restarting at zero.
+    assert arm.decisions_logged == spent
+
+
+def test_a_resumed_run_spends_the_rest_of_the_budget(tmp_path: Path) -> None:
+    """The budget is the run's total, and the second segment finishes it."""
+    first = numbered(tmp_path / "first", 200)
+    spent = first["arm"]["decisions"]
+
+    second = session(
+        tmp_path / "second",
+        budget="400",
+        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
+        resume=resume_from(tmp_path / "second", latest_checkpoint(first), 400),
+    )
+
+    arm = second["arm"]
+    assert arm["decisions"] >= 400, "the run continues to the whole budget"
+    assert arm["resolved_config"]["budget_decisions"] == 400
+    assert arm["resolved_config"]["parent_checkpoint"] is not None
+    # The second segment collected what was left, not the whole budget again.
+    collected = sum(int(episode["decisions"]) for episode in arm["collected_episodes"])
+    assert collected == arm["decisions"] - spent
+    # The numbered cadence carries on rather than restarting: every file this
+    # segment wrote is past the resume point, and none of them answers a
+    # multiple the first segment already answered.
+    _, _, written = numbered_checkpoints(second)
+    assert written and min(written) > spent
+    assert min(written) // RESUME_PERIOD > spent // RESUME_PERIOD
+    # Throughput is this sitting's: the counters above are the whole run's and
+    # came back restored, but the wall clock is this segment's alone, so the
+    # parent's decisions must not be charged to it.
+    assert arm["decisions_per_hour"] == per_hour(arm["decisions"] - spent, arm["wall_seconds"])
+    assert arm["episodes_per_hour"] == per_hour(
+        arm["episodes"] - first["arm"]["episodes"], arm["wall_seconds"]
+    )
+    assert arm["decisions_per_hour"] < per_hour(arm["decisions"], arm["wall_seconds"])
+
+
+def test_a_checkpoint_that_has_already_spent_the_budget_is_refused(tmp_path: Path) -> None:
+    """`--budget-decisions` is the run's total, so it must be raised to extend it."""
+    first = numbered(tmp_path / "first", 200)
+    spent = first["arm"]["decisions"]
+    checkpoint = latest_checkpoint(first)
+
+    with pytest.raises(SystemExit, match="does not extend"):
+        resume_from(tmp_path / "second", checkpoint, spent)
+
+    # One decision more is a run with something left to spend.
+    assert resume_from(tmp_path / "second", checkpoint, spent + 1).decisions == spent
+
+
+def test_a_missing_resume_point_is_refused_by_name(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="no checkpoint"):
+        resume_from(tmp_path, tmp_path / "absent.pt", 400)
+
+
+def test_a_checkpoint_from_another_profile_is_refused_before_bring_up(
+    tmp_path: Path,
+) -> None:
+    """Identity is checked, not assumed: the episodes behind a checkpoint from
+    another device profile or another schema are not experience this run can go
+    on from, and the refusal has to come before an emulator is started."""
+    first = numbered(tmp_path / "first", 200)
+
+    with pytest.raises(SystemExit, match="profile_id differs"):
+        resume_from(
+            tmp_path / "second",
+            latest_checkpoint(first),
+            400,
+            profile_id="some-other-profile-v1",
+        )
+
+
+def test_a_checkpoint_in_the_earlier_format_still_resumes(tmp_path: Path) -> None:
+    """The first run's files are resumable; what they lack is the tracked series.
+
+    A checkpoint written before the format carried a tracking run id is read
+    rather than refused - a run of hours must not become unusable for its age.
+    Everything else a resume needs was already in it, so the only consequence
+    is that the segment opens a tracked run of its own, with the parent named
+    in its resolved config.
+    """
+    first = numbered(tmp_path / "first", 200)
+    parent = load(latest_checkpoint(first))
+    legacy = tmp_path / "legacy.pt"
+    save(
+        Checkpoint(
+            identity=parent.identity,
+            progress=parent.progress,
+            backbone_state=parent.backbone_state,
+            resolved_config=parent.resolved_config,
+            format_version=1,
+        ),
+        legacy,
+    )
+
+    arm, resume = resumed_arm(tmp_path / "second", legacy, budget=400)
+
+    assert resume.tracking_run_id is None, "no run id to continue; a new one is started"
+    assert arm.training.report.decisions == parent.progress.environment_decisions
+    assert arm.backbone.state_dict()["steps"] == parent.backbone_state["steps"]
+    assert str(legacy) in arm.resolved["parent_checkpoint"]
+
+
+def test_a_checkpoint_without_optimizer_state_is_a_truncated_file(
+    tmp_path: Path,
+) -> None:
+    """Every checkpoint this project has written carries the optimizer.
+
+    One that does not is truncated, not old, so it raises on the missing key
+    rather than resuming on fresh moments - which would change how the next
+    steps are taken without saying so.
+    """
+    first = numbered(tmp_path / "first", 200)
+    parent = load(latest_checkpoint(first))
+    truncated = tmp_path / "truncated.pt"
+    save(
+        Checkpoint(
+            identity=parent.identity,
+            progress=parent.progress,
+            backbone_state={
+                key: value
+                for key, value in parent.backbone_state.items()
+                if key != "optimizer"
+            },
+        ),
+        truncated,
+    )
+
+    with pytest.raises(KeyError, match="optimizer"):
+        resumed_arm(tmp_path / "second", truncated, budget=400)
+
+
+def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) -> None:
+    """One curve, one run id: the second segment logs onto the first's series."""
+    tracker = RecordingTracker()
+    first = session(
+        tmp_path / "first",
+        budget="200",
+        tracker=tracker,
+        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
+    )
+    spent = first["arm"]["decisions"]
+    checkpoint = latest_checkpoint(first)
+    assert load(checkpoint).tracking_run_id == tracker.runs[0].run_id
+    logged_first = len(tracker.runs[0].points)
+
+    second = session(
+        tmp_path / "second",
+        budget="400",
+        tracker=tracker,
+        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
+        resume=resume_from(tmp_path / "second", checkpoint, 400),
+    )
+
+    assert len(tracker.runs) == 1, "no second run was opened beside the first"
+    assert second["arm"]["run_id"] != first["arm"]["run_id"], "its artefacts are its own"
+    run = tracker.runs[0]
+    assert "open_run" in run.calls
+    # The episode series is one series on one axis: every point the second
+    # segment placed is past the budget position the first ended at, and the
+    # first of them is exactly that position plus the episode that produced it.
+    episodes = [
+        point for point in run.points[logged_first:] if "episode_final_wave" in point.metrics
+    ]
+    assert episodes, "the second segment collected episodes"
+    assert episodes[0].decisions == spent + int(episodes[0].metrics["episode_decisions"])
+    assert [point.decisions for point in episodes] == sorted(
+        point.decisions for point in episodes
+    )
+    # Where the segment picked up, and where its re-warmed buffer let learning
+    # restart, both on the same axis.
+    resumed = [point for point in run.points if "resumed_from_decisions" in point.metrics]
+    assert [point.decisions for point in resumed] == [spent]
+    warmed = [point for point in run.points if "warmup_finished_decisions" in point.metrics]
+    assert len(warmed) == 1 and warmed[0].decisions > spent
+
+
+def test_an_untracked_resume_does_not_announce_a_tracked_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--no-track` records nothing, so there is no parent series to continue."""
+    tracker = RecordingTracker()
+    first = session(tmp_path / "first", budget="200", tracker=tracker)
+    checkpoint = latest_checkpoint(first)
+    assert load(checkpoint).tracking_run_id == tracker.runs[0].run_id
+
+    monkeypatch.setenv("TOWER_BRIDGE_BUILD_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        train,
+        "compatibility",
+        lambda build_dir: SimpleNamespace(profile_id=PROFILE, bridge_version="v1"),
+    )
+    monkeypatch.setattr(
+        train,
+        "connect",
+        lambda serial, port, arguments, expected, opened: train.ActorInstance(
+            serial=serial, environment=environment()
+        ),
+    )
+    monkeypatch.setattr(train, "train_session", lambda arguments, instances, **kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--no-track",
+            "--resume",
+            str(checkpoint),
+            "--budget-decisions",
+            "100000",
+            "--run-dir",
+            str(tmp_path / "second"),
+        ],
+    )
+
+    assert train.main() == 0
+    assert "resuming tracked run" not in capsys.readouterr().out
+
+
+def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path) -> None:
+    """The end-to-end claim: 300 in one sitting, or 150 and 150, is one run.
+
+    The two are not decision-for-decision identical and cannot be. Episode
+    length here depends on what the policy does, and the second segment learns
+    from a buffer it re-warmed rather than from the one the first ended with,
+    so its episodes are not the episodes a single sitting would have played and
+    its counter lands past the period's multiples in different places. What is
+    the same is what the budget bought: the whole budget spent, and one
+    numbered checkpoint per crossing of the period, in order, continuing
+    through the resume rather than restarting at it.
+    """
+
+    def crossings(report: dict[str, Any]) -> list[int]:
+        """Which multiples of the period this segment's files answered."""
+        _, _, written = numbered_checkpoints(report)
+        return [decisions // RESUME_PERIOD for decisions in written]
+
+    whole = numbered(tmp_path / "whole", 300)
+    once = crossings(whole)
+
+    first = numbered(tmp_path / "first", 150)
+    second = session(
+        tmp_path / "second",
+        budget="300",
+        settings={"--checkpoint-every-decisions": str(RESUME_PERIOD)},
+        resume=resume_from(tmp_path / "second", latest_checkpoint(first), 300),
+    )
+    split = crossings(first) + crossings(second)
+
+    assert whole["arm"]["decisions"] >= 300, "one sitting spends the budget"
+    assert second["arm"]["decisions"] >= 300, "two sittings spend the same budget"
+    # The collection curve is one series across the two sittings: every window
+    # is keyed by a position on the whole run's budget, so none of the second
+    # segment's points falls at or below where the first segment stopped.
+    resumed_at = first["arm"]["decisions"]
+    early_windows = [window["decisions_at_end"] for window in first["arm"]["collection_curve"]]
+    late_windows = [window["decisions_at_end"] for window in second["arm"]["collection_curve"]]
+    assert early_windows and late_windows, "both sittings closed a window"
+    assert min(late_windows) > resumed_at
+    windows = early_windows + late_windows
+    assert windows == sorted(windows) and len(set(windows)) == len(windows)
+    # Both arrangements answer each crossing once, in order, and the split run
+    # answers none of them twice across its two segments - the cadence went on
+    # through the resume instead of starting again from it.
+    for answered in (once, split):
+        assert answered == sorted(set(answered)) and answered
+    assert min(crossings(second)) > max(crossings(first))

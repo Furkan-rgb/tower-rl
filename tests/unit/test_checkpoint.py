@@ -14,7 +14,9 @@ from tower_rl.learning.checkpoint import (
     CheckpointIdentity,
     TrainingProgress,
     fingerprint,
+    identity_hash,
     load,
+    resume_state,
     save,
     write_manifest,
 )
@@ -157,6 +159,69 @@ def test_replay_provenance_and_config_survive_the_round_trip(tmp_path: Path) -> 
     assert checkpoint.resolved_config["n_step"] == 5
     # A checkpoint must state whether training resumed with a restored buffer.
     assert checkpoint.replay_provenance["restored"] is False
+
+
+def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
+    tmp_path: Path,
+) -> None:
+    """What a second segment of one run reads out of the checkpoint it is given."""
+    path = tmp_path / "latest.pt"
+    backbone = _backbone()
+    save(
+        Checkpoint(
+            identity=_identity(),
+            progress=TrainingProgress(
+                optimisation_steps=31, environment_decisions=900, episodes=12
+            ),
+            backbone_state=backbone.state_dict(),
+            tracking_run_id="mlflow-run-1",
+        ),
+        path,
+    )
+
+    state = resume_state(path)
+
+    assert state.decisions == 900 and state.episodes == 12
+    assert state.optimisation_steps == 31
+    assert state.tracking_run_id == "mlflow-run-1"
+    assert "optimizer" in state.backbone_state, "the moments travel with the weights"
+    # Identified by what it is as well as by where it is: a path alone stops
+    # meaning anything the moment the file is copied.
+    assert state.parent_checkpoint == f"{path}@{identity_hash(_identity())}"
+    # Epsilon and beta are deliberately not among them: both are functions of
+    # the decision counter, and a run derives them from it again.
+    assert not hasattr(state, "epsilon")
+
+
+def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
+    """A run of hours must not become unresumable for the format it was written in.
+
+    Version 1 carried no tracking run id, so a resume from one opens a new
+    tracked run instead of continuing the parent's series. Everything else a
+    resume needs was already in it.
+    """
+    path = tmp_path / "legacy.pt"
+    save(
+        Checkpoint(
+            identity=_identity(),
+            progress=TrainingProgress(environment_decisions=200_174),
+            backbone_state=_backbone().state_dict(),
+            format_version=1,
+        ),
+        path,
+    )
+
+    state = resume_state(path)
+
+    assert state.decisions == 200_174
+    assert state.tracking_run_id is None
+    assert load(path).format_version == 1
+
+    # A version this code does not know is still refused rather than guessed at.
+    future = tmp_path / "future.pt"
+    torch.save({"format_version": 3, "identity": {}}, future)
+    with pytest.raises(CheckpointError, match="format 3 is not supported"):
+        load(future)
 
 
 def test_manifests_are_written_atomically(tmp_path: Path) -> None:

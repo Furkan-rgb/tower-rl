@@ -92,21 +92,34 @@ class TrainingReport:
     #: next one is measured against.
     decision_time_baseline: dict[str, DecisionTimeBreakdown] = field(default_factory=dict)
     decision_time_emitted: float = 0.0
-    #: Collected episodes already reported to the tracker, and the decisions
-    #: spent by the end of the last of them. The episode is the tracked unit, so
-    #: both are carried rather than recomputed: an episode joins the series when
-    #: it ends, and is never reported twice. A running sum rather than a prefix
-    #: sum over `collected`, which would re-add the whole list once per episode
-    #: over the thousands a multi-hour run collects.
-    #:
-    #: This tracks `TrainingProgressReport.decisions` exactly today - that
-    #: counter has one writer, `_record_episode`, which appends to `collected`
-    #: in the same breath, and nothing restores it. A resume that restored it
-    #: from a checkpoint would break that: this would start at zero against a
-    #: non-zero total and key the whole episode series onto the wrong part of
-    #: the budget. Initialise it from `report.decisions` when resume lands.
-    episodes_logged: int = 0
-    decisions_logged: int = 0
+    #: What the parent segment had already spent, when this run resumed one.
+    #: Zero for a run that started from scratch. This is the one source of that
+    #: offset: both tracked series are placed on the whole run's budget from it
+    #: - the episode axis below starts at it, and the collection windows are cut
+    #: from it - and the rates at the end of `summary` subtract it so they
+    #: describe this segment rather than the parent's decisions over this
+    #: segment's clock.
+    resumed_decisions: int = 0
+    resumed_episodes: int = 0
+    #: How far the episode series has been reported: collected episodes already
+    #: sent to the tracker, and the decisions spent by the end of the last of
+    #: them. The episode is the tracked unit, so both are carried rather than
+    #: recomputed - an episode joins the series when it ends, and is never
+    #: reported twice. `decisions_logged` tracks
+    #: `TrainingProgressReport.decisions` exactly, so it begins at the resume
+    #: point rather than at zero; `episodes_logged` begins at zero either way,
+    #: because the episode list itself is not restored - only the decisions
+    #: behind it. A running sum rather than a prefix sum over `collected`, which
+    #: would re-add the whole list once per episode over the thousands a
+    #: multi-hour run collects.
+    episodes_logged: int = field(init=False, default=0)
+    decisions_logged: int = field(init=False, default=0)
+    #: The tracking run this report's checkpoints name as their own, so a resume
+    #: from one of them can continue that series. None when untracked.
+    tracking_run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        self.decisions_logged = self.resumed_decisions
 
     @property
     def checkpoint_path(self) -> Path:
@@ -155,6 +168,7 @@ class TrainingReport:
             backbone_state=self.backbone.state_dict(),
             resolved_config=self.resolved,
             replay_provenance={**self.replay.snapshot(), "restored": False},
+            tracking_run_id=self.tracking_run_id,
         )
 
     def record_point(
@@ -264,6 +278,10 @@ class TrainingReport:
         windows = collection_windows(
             self.training.report.collected,
             size=self.training.config.collection_window_episodes,
+            # This segment's episodes, on the whole run's budget: the curve of a
+            # run trained in two sittings is one series, and a window keyed from
+            # zero would land underneath the parent's own points.
+            spent_before=self.resumed_decisions,
         )
         for window in windows[len(self.collection_curve) :]:
             self.collection_curve.append(window)
@@ -375,8 +393,18 @@ class TrainingReport:
                 },
                 "fleet": pooled(list(cumulative.values())).as_record(),
             },
-            "episodes_per_hour": per_hour(report.episodes, report.wall_seconds),
-            "decisions_per_hour": per_hour(report.decisions, report.wall_seconds),
+            # This segment's own throughput. The counters above are the whole
+            # run's and come back restored on a resume, but the wall clock is
+            # this sitting's alone and is deliberately not restored - dividing
+            # one by the other would report the parent's decisions against this
+            # segment's hours and read as several times the rate the device
+            # collects at.
+            "episodes_per_hour": per_hour(
+                report.episodes - self.resumed_episodes, report.wall_seconds
+            ),
+            "decisions_per_hour": per_hour(
+                report.decisions - self.resumed_decisions, report.wall_seconds
+            ),
             # Kept for compatibility with the report's earlier shape; identical
             # to `health["invalid_by_reason"]`, which is where it is now pooled.
             "invalid_episodes_by_reason": health.invalid_by_reason,

@@ -240,5 +240,9 @@ class StackedDqnBackbone:
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self.online.load_state_dict(state["online"])
         self.target.load_state_dict(state["target"])
+        # Every state this project has ever written carries the optimizer, so a
+        # state that does not is a truncated file rather than an old one. It
+        # raises here on the missing key: resuming on fresh moments instead
+        # would change how the next steps are taken without saying so.
         self.optimizer.load_state_dict(state["optimizer"])
         self._steps = int(state["steps"])

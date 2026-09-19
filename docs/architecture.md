@@ -284,6 +284,19 @@ Every collected episode is reported to the tracked run as its own point, keyed
 by the decisions spent when it ended, beside the learner's trailing summaries
 and the collection windows that smooth them.
 
+`--resume <checkpoint>` makes the run a second segment of an earlier one:
+`resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
+device is touched — refusing one whose `CheckpointIdentity` names another arm,
+profile or schema, and one that has already spent `--budget-decisions`, which
+stays the whole run's total — and `build_arm`
+restores the weights and optimizer into the backbone, starts the
+`TrainingProgressReport` at the parent's counters so epsilon, beta and the
+numbered-checkpoint cadence are derived where a run that never stopped would
+have them, continues the parent's tracked run through `open_run` when it had
+one, and names the parent in `resolved_config.parent_checkpoint`; replay is not
+persisted, so the buffer re-warms under the loaded policy before learning
+restarts.
+
 ### The post-hoc selection path
 
 Choosing the strongest checkpoint of a run and reporting it are separate from

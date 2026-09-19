@@ -1047,6 +1047,24 @@ def test_a_checkpoint_written_before_early_stopping_restores_no_tracker() -> Non
     assert progress.best_period_near_greedy_mean is None
 
 
+def test_a_period_that_measured_nothing_leaves_the_plateau_where_it_was() -> None:
+    """No near-greedy episode in it is no evidence either way.
+
+    It is still a period that closed - the ordinals must not skip - but it
+    neither resets the streak, which would buy a plateaued run more budget for
+    having collected nothing, nor moves the best, which nothing measured.
+    """
+    plateau = NearGreedyPlateau()
+    plateau.close_period(5.0, min_improvement=0.2)
+    plateau.close_period(5.1, min_improvement=0.2)
+    before = (plateau.best_mean_final_wave, plateau.periods_without_improvement)
+
+    plateau.close_period(None, min_improvement=0.2)
+
+    assert (plateau.best_mean_final_wave, plateau.periods_without_improvement) == before
+    assert plateau.periods_closed == 3, "the period still closed"
+
+
 def test_early_stopping_needs_a_checkpoint_period_to_count_in() -> None:
     """Without a crossing there is no period, and the run would never stop."""
     with pytest.raises(ValueError, match="checkpoint_every_game_seconds"):

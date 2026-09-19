@@ -34,6 +34,18 @@ has started and no device time has been spent. This entry records the plan, its
 prices and its decision rule before any data exists; it is not a result. Board
 `#44`.
 
+**Prerequisites, before this protocol can be run.** Two, both outstanding at
+the time of writing. `observation-v2` must be on `main`: this entry links
+[ADR 0010](adr/0010-observation-v2-everything-the-player-sees.md), which is
+still on the `observation-v2` branch, so **the link resolves only once `#41`
+lands**. And the v2 schema must be verified against the game — every live
+reading held beside the HUD in its own unit, which ADR 0010 makes a device stage
+rather than a unit test. That verification is **`M2-E006`, which does not exist
+yet and is a prerequisite of this run**: training under a schema whose values
+have not been confirmed would put an unreadable run's worth of device time
+behind a field read at the wrong width, which is the failure `M1B-E017` already
+cost this project once.
+
 **Objective.** The milestone goal, as the handoff states it: *one committed
 model, trained under one budgeted protocol, reproducibly beats the random and
 scripted baselines*, with the evidence here. `M2-E002` reached half of that on
@@ -85,12 +97,21 @@ checkpoint, both being refused by identity anyway (ADR 0009, ADR 0010).
     scripts/train.py --actors 7 --renderer host --frame-rate-hz 120 \
         --decision-cadence choice-points --exploration ladder \
         --budget-game-seconds <option> --block-game-seconds 4000 \
-        --checkpoint-every-game-seconds 60000 --seed <seed>
+        --checkpoint-every-game-seconds 60000 \
+        --epsilon-anneal-decisions 2500 --seed <seed>
 
 Defaults elsewhere, as run 1: 0.25 gradient steps a decision, replay 4,096
-sequences, `priority_alpha` 0, 10,000-decision ε anneal, no mid-run evaluation.
-`--epsilon-end` may not be given under the ladder, where each actor has a floor
-of its own.
+sequences, `priority_alpha` 0, no mid-run evaluation. `--epsilon-end` may not be
+given under the ladder, where each actor has a floor of its own.
+
+**The ε anneal keeps run 1's game-time footprint, not its decision count.** The
+horizon is still expressed in decisions, but a decision is no longer the same
+thing: under choice points one spans about **4.5×** the game time it did under
+`every-slice` (`M2-E005`, 20.87 → 4.59 decisions a wave). Run 1's 10,000-decision
+anneal divided by that ratio is ~2,200, and **2,500** is the round figure taken,
+so run 2 anneals over the same amount of *experience* run 1 did rather than over
+4.5× as much. Carrying the 10,000 over unchanged would have spent the first ~1.5 h
+of every run on a near-random policy by arithmetic that no longer applies.
 
 **Evaluation: one pre-declared checkpoint, greedy.** The arm is the **final**
 numbered checkpoint — the highest-numbered `checkpoint-gs*.pt` in the run
@@ -157,13 +178,13 @@ would have wanted: under choice points a `WAIT` is always a refusal of an
 affordable purchase (`M2-E005` measured a 29% wait share for random), so a wait
 share at or above 0.9 is a policy that has stopped playing.
 
-**When this check lands.** The ε anneal is 10,000 **fleet** decisions; at
+**When this check lands.** The ε anneal is 2,500 **fleet** decisions; at
 `M2-E005`'s choice-point density (~29 decisions an episode for a near-random
-policy) that is ~340 fleet episodes, ~1.5 h at 7 instances and ~108 wall-s an
-episode. The 60 near-greedy episodes then take ~0.5 h more, as only four actors
-produce them. So the check is readable **at about 2 h**, roughly a quarter of
-option A's budget — not within the first hour, which the anneal horizon does not
-allow. Nothing before it is diagnostic: the pre-anneal episodes are a
+policy) that is ~86 fleet episodes, ~0.4 h at 7 instances and ~108 wall-s an
+episode. The 60 near-greedy episodes then take ~0.45 h more, as only the four
+near-greedy actors produce them — 15 episodes each. So the check is readable
+**about an hour after collection starts**, inside the first eighth of option A's
+budget. Nothing before it is diagnostic: the pre-anneal episodes are a
 near-random policy by construction.
 
 **Secondary readouts, watched but deciding nothing.**

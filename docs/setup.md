@@ -117,12 +117,37 @@ read back out of it rather than hard-coded in Python.
 
 The digest check is over the *installed* artifact against the directory name it
 is filed under, which is what makes the layout self-verifying and is what
-`bridge.installed_bridge_directory` refuses on. It is not a claim that a rebuild
-reproduces an earlier digest: a different NDK, build path or configuration
-produces a different `libtower_bridge.so`, which is a new directory and a new
-`current`, not a failure. An unconfigured build (the `unconfigured` defaults in
-`CMakeLists.txt`) compiles but answers a compatibility error instead of a
-handshake.
+`bridge.installed_bridge_directory` refuses on. An unconfigured build (the
+`unconfigured` defaults in `CMakeLists.txt`) compiles but answers a
+compatibility error instead of a handshake.
+
+**The build is reproducible: the same source, NDK and `profile.cmake` produce
+the same `libtower_bridge.so`, byte for byte, from any build directory and from
+any checkout or worktree.** That is what lets a digest name a *source* rather
+than the directory someone happened to build in, which is the whole basis for
+confirming the deployed bridge by digest. `native/tower_bridge/CMakeLists.txt`
+buys it with `-ffile-prefix-map` and `-ffile-compilation-dir` (no host path
+reaches the binary), `-Wl,--strip-all` (the debug sections, which carried the
+NDK's own absolute include paths, are dropped; the dynamic symbols a crash stack
+can name are kept), and `-Wl,--build-id=sha1` (the build id hashes the output
+instead of the path). Checking it is two builds and one comparison:
+
+```text
+a=$(mktemp -d); b=$(mktemp -d)/nested/deeper; mkdir -p "$b"
+for d in "$a" "$b"; do
+  cmake -S native/tower_bridge -B "$d" -C state/bridge/config/profile.cmake \
+    -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-35 >/dev/null
+  cmake --build "$d" >/dev/null
+done
+sha256sum "$a/libtower_bridge.so" "$b/libtower_bridge.so"   # the two digests must match
+```
+
+Two digests that differ mean something outside the source got in, and the
+installed directory name has stopped identifying what is in it. A *different*
+NDK or a different `profile.cmake` legitimately produces a different
+`libtower_bridge.so`, which is a new directory and a new `current`, not a
+failure — but the build path no longer does.
 
 `TOWER_BRIDGE_BUILD_DIR` overrides all of this and deploys straight out of a
 build tree, which is how a bridge under development is run; every ordinary run

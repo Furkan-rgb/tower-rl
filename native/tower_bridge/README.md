@@ -258,6 +258,13 @@ cmake -S native/tower_bridge -B "$TOWER_BRIDGE_BUILD_DIR" \
 cmake --build "$TOWER_BRIDGE_BUILD_DIR"
 ```
 
+The build is reproducible: no host path reaches the binary, so the same source,
+NDK and `profile.cmake` give the same `libtower_bridge.so` from any build
+directory or worktree, and the digest the install is filed under identifies the
+source rather than the machine it was built on. The flags that buy that are in
+`CMakeLists.txt` with the reasoning beside them; `docs/setup.md` says how to
+check it.
+
 **The private build configuration lives at `state/bridge/config/profile.cmake`**
 — the package version and version code, the official signer SHA-256, the
 original `libunity.so` and `libil2cpp.so` SHA-256 values, and the profile id, as

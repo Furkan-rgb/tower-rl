@@ -15,10 +15,10 @@ design.
 A run may also stop before its budget is spent.  The interval between two
 numbered-checkpoint crossings is a period, and at each crossing the run reads
 the mean final wave of the near-greedy actors' valid episodes that ended inside
-the period just closed.  A curve that has not improved on its best period for
-`early_stop_patience_periods` periods in a row has stopped learning, and the
-rest of the budget buys nothing, so the run ends after writing that crossing's
-checkpoint.
+the period just closed.  A curve that has not improved on the level it last
+really moved to for `early_stop_patience_periods` periods in a row has stopped
+learning, and the rest of the budget buys nothing, so the run ends after
+writing that crossing's checkpoint.
 
 A run collects with one actor or with a fleet of them, and the budget is the
 fleet's: N actors, each on its own emulator instance, collect concurrently into
@@ -414,8 +414,9 @@ class CheckpointPeriod:
     #: in it, which measures nothing rather than measuring zero.
     near_greedy_episodes: int
     mean_final_wave: float | None
-    #: The best period mean of the run including this one, which is what the
-    #: next period is judged against.
+    #: The level the next period is judged against: the mean of the last
+    #: period that improved on it by the threshold, which is not the highest
+    #: mean the run has seen - see `NearGreedyPlateau.close_period`.
     best_mean_final_wave: float | None
 
 
@@ -434,8 +435,9 @@ class NearGreedyPlateau:
 
     #: Periods closed so far, over the whole run.
     periods_closed: int = 0
-    #: The best period mean of the run, which every later period is judged
-    #: against. None until a period has produced one.
+    #: The level every later period is judged against: the mean of the last
+    #: period that cleared it by `min_improvement`, which is deliberately not
+    #: the highest mean the run has seen. None until a period has produced one.
     best_mean_final_wave: float | None = None
     #: Periods in a row that failed to improve on it.
     periods_without_improvement: int = 0
@@ -455,6 +457,15 @@ class NearGreedyPlateau:
         can be said to have stopped improving. A period no near-greedy actor
         finished a valid episode in is counted neither way - it measures
         nothing - though it is still a period that closed.
+
+        The baseline moves only on an improvement that counted, never on a mere
+        new maximum. A curve creeping up by less than `min_improvement` a
+        period would otherwise raise the bar it is judged against by exactly
+        what it gained, and a run gaining a tenth of a wave an hour would stop
+        while one gaining nothing at all carried on - the opposite of what the
+        threshold is for. Held here, the creep is judged against where the
+        curve last really moved and keeps the run alive as long as it clears
+        the threshold now and then.
         """
         self.periods_closed += 1
         if mean is None:
@@ -462,10 +473,9 @@ class NearGreedyPlateau:
         best = self.best_mean_final_wave
         if best is None or mean >= best + min_improvement:
             self.periods_without_improvement = 0
+            self.best_mean_final_wave = mean
         else:
             self.periods_without_improvement += 1
-        if best is None or mean > best:
-            self.best_mean_final_wave = mean
 
     def plateaued(self, patience_periods: int) -> bool:
         """Whether the curve has failed to improve for `patience_periods` in a row."""

@@ -207,8 +207,12 @@ between two numbered-checkpoint crossings
 `TrainingRun` closes the period just ended: it takes the mean final wave of the
 near-greedy actors' valid episodes that ended inside it — under a uniform
 schedule that is every actor — and hands it to `NearGreedyPlateau`, which keeps
-the best period mean of the run and how many periods in a row have failed to
-reach it plus `--early-stop-min-improvement` waves. The first period sets the
+the level the curve last really moved to and how many periods in a row have
+failed to reach it plus `--early-stop-min-improvement` waves. That level moves
+only on a period that clears the threshold, never on a mere new maximum: a
+curve creeping up by less than the threshold would otherwise raise the bar it
+is judged against by exactly what it gained, so a run gaining a tenth of a wave
+a period would stop while one gaining nothing carried on. The first period sets the
 baseline and cannot trigger a stop. When `--early-stop-patience-periods`
 periods in a row have failed to improve, the run stops after that crossing's
 checkpoint is written: the actors finish the episodes they are in and start no

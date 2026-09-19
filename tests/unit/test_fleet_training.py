@@ -903,7 +903,9 @@ def test_a_period_inside_the_threshold_has_not_improved_on_the_best() -> None:
     # Every period beat the one before it by a wave and none of them cleared
     # the threshold, so the run stopped on a curve that was still moving up.
     assert report.plateau.stopped_at_period == 3
-    assert report.plateau.best_mean_final_wave == 12
+    # The bar stayed where the curve last really moved: the first period's own
+    # mean, not the highest the run had seen by then.
+    assert report.plateau.best_mean_final_wave == 10
 
 
 def test_patience_zero_never_stops_a_run() -> None:
@@ -1045,6 +1047,26 @@ def test_a_checkpoint_written_before_early_stopping_restores_no_tracker() -> Non
 
     assert progress.checkpoint_periods_closed is None
     assert progress.best_period_near_greedy_mean is None
+
+
+def test_a_curve_creeping_up_below_the_threshold_is_never_stopped() -> None:
+    """The bar is where the curve last really moved, not the highest it reached.
+
+    Raising it on every new maximum would raise it by exactly what a creeping
+    curve gained, so a run gaining a tenth of a wave a period would stop while
+    one gaining nothing at all carried on. Held at the last counted
+    improvement, the creep clears the threshold every other period and the run
+    goes on collecting.
+    """
+    plateau = NearGreedyPlateau()
+
+    for mean in (5.0, 5.1, 5.2, 5.3):
+        plateau.close_period(mean, min_improvement=0.2)
+        assert not plateau.plateaued(2)
+
+    # 5.2 cleared 5.0 + 0.2 and reset the streak; 5.3 did not clear 5.2 + 0.2.
+    assert plateau.best_mean_final_wave == 5.2
+    assert plateau.periods_without_improvement == 1
 
 
 def test_a_period_that_measured_nothing_leaves_the_plateau_where_it_was() -> None:

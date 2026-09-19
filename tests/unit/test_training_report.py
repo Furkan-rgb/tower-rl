@@ -506,9 +506,11 @@ def test_the_summary_carries_the_periods_the_run_judged_itself_on(
     assert all(period["near_greedy_episodes"] > 0 for period in periods)
     assert all(period["mean_final_wave"] >= 1 for period in periods)
     assert arm["early_stopping"]["periods_closed"] == len(periods)
-    assert arm["early_stopping"]["best_period_near_greedy_mean_final_wave"] == max(
-        period["mean_final_wave"] for period in periods
-    )
+    # The bar is the mean of some period that cleared it, which is one of these
+    # and never above the highest of them - not necessarily the highest itself.
+    best = arm["early_stopping"]["best_period_near_greedy_mean_final_wave"]
+    assert best in [period["mean_final_wave"] for period in periods]
+    assert best <= max(period["mean_final_wave"] for period in periods)
     assert arm["early_stopping"]["closing_period_near_greedy_mean_final_wave"] == (
         periods[-1]["mean_final_wave"]
     )

@@ -98,7 +98,9 @@ checkpoint, both being refused by identity anyway (ADR 0009, ADR 0010).
         --decision-cadence choice-points --exploration ladder \
         --budget-game-seconds <option> --block-game-seconds 4000 \
         --checkpoint-every-game-seconds 60000 \
-        --epsilon-anneal-decisions 2500 --seed <seed>
+        --epsilon-anneal-decisions 2500 \
+        --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
+        --seed <seed>
 
 Defaults elsewhere, as run 1: 0.25 gradient steps a decision, replay 4,096
 sequences, `priority_alpha` 0, no mid-run evaluation. `--epsilon-end` may not be
@@ -112,6 +114,28 @@ anneal divided by that ratio is ~2,200, and **2,500** is the round figure taken,
 so run 2 anneals over the same amount of *experience* run 1 did rather than over
 4.5× as much. Carrying the 10,000 over unchanged would have spent the first ~1.5 h
 of every run on a near-random policy by arithmetic that no longer applies.
+
+**Early stopping** (developer decision, 2026-09-19). A **period** is the
+interval between consecutive numbered checkpoints — 60,000 game-seconds. At each
+crossing the near-greedy actors' mean final wave over the closed period is
+compared with the best previous period; **if it is below best + 0.2 waves for 2
+consecutive periods, training stops after writing that checkpoint**, and that
+checkpoint is the evaluated one — consistent with the "highest-numbered"
+pre-declaration below, which is why the two rules do not conflict.
+
+The rationale is the standard error. A period holds ~140 near-greedy episodes,
+and at run 1's post-anneal per-episode sd of 2.46 waves that is a standard error
+of ≈0.2 waves on a period's mean — so one flat period is noise and two in a row
+are a plateau. The earliest possible stop is after the **third** checkpoint, at
+180,000 game-s, about 4 h in: two periods must close before either can be a
+second consecutive failure to improve.
+
+**These two flags do not exist in `scripts/train.py` yet.** Neither
+`--early-stop-patience-periods` nor `--early-stop-min-improvement` is
+implemented on `main` at the time of writing, and no early-stopping logic exists
+anywhere in the tree. Implementing them is a prerequisite of this run, alongside
+`M2-E006`; the rule is pre-registered here rather than decided later, which is
+the point of writing it before the run.
 
 **Evaluation: one pre-declared checkpoint, greedy.** The arm is the **final**
 numbered checkpoint — the highest-numbered `checkpoint-gs*.pt` in the run
@@ -165,6 +189,13 @@ final-wave IQM excludes zero. "Beats random" likewise. Each claim is made
 separately; neither carries the other. An arm that returns fewer than 100 valid
 episodes is re-run whole, not padded. Under option B the claim is made per seed
 and the word "reproducibly" is used only if it fires on **both**.
+
+**Reported outcomes.** Whatever happens, the entry that records this run reports
+one of: both claims made; scripted only; random only; neither; **stopped at the
+kill criterion**; or **early stop fired at period `k`** — in which case `k`, the
+period means it was computed from, and the game time actually spent are reported
+beside the verdict, because a run that stopped at period 3 and one that spent
+its whole budget are not the same evidence even when their intervals agree.
 
 **Set size.** `comparison.required_episodes(standard_deviation=1.3,
 difference=0.5, power=0.8)` = **107 episodes an arm** — sd 1.3 waves is what
@@ -225,11 +256,17 @@ found a budget estimate must include and that run 1's estimate missed by 44 min.
 Each evaluation arm is 16 episodes an actor at ~108 wall-s plus bring-up and
 teardown, ≈0.65 h.
 
+Every figure below is an **upper bound** (`≤`): early stopping can end a
+training run at any checkpoint from the third onward, and a seed that stops at
+180,000 game-s costs ~3.9 h of arm time instead of ~7.8 h and produces three
+recordings instead of six. The table prices the budget being spent in full,
+which is the case that has to be approved.
+
 | | budget | training (arm + session) | baselines | evaluation | recordings | **total** |
 | --- | --- | --- | --- | --- | --- | --- |
-| **A** one seed | 360,000 game-s | 7.8 h + 0.9 h = **8.7 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | 6, **0.5 h** | **≈11.4 h** |
-| **B** two seeds, sequential — **approved** | 360,000 game-s each | 2 × 8.7 h = **17.4 h** | 2 arms, **1.3 h** (once) | 2 arms + 2 probes, **1.8 h** | 12, **1.0 h** | **≈21.5 h** |
-| **C** one seed, pilot | 180,000 game-s | 3.9 h + 0.9 h = **4.8 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | 3, **0.25 h** | **≈7.3 h** |
+| **A** one seed | ≤360,000 game-s | ≤7.8 h + 0.9 h = **≤8.7 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | ≤6, **≤0.5 h** | **≤11.4 h** |
+| **B** two seeds, sequential — **approved** | ≤360,000 game-s each | 2 × ≤8.7 h = **≤17.4 h** | 2 arms, **1.3 h** (once) | 2 arms + 2 probes, **1.8 h** | ≤12, **≤1.0 h** | **≤21.5 h** |
+| **C** one seed, pilot | ≤180,000 game-s | ≤3.9 h + 0.9 h = **≤4.8 h** | 2 arms, **1.3 h** | 1 arm + probe, **0.9 h** | ≤3, **≤0.25 h** | **≤7.3 h** |
 
 Flags per option, everything else as the protocol above:
 
@@ -270,7 +307,7 @@ evaluation arm and six more recordings, ~10.1 h, against the alternative of
 running A, getting a result, and then needing a second seed anyway before the
 word can be used. C was the cheap gate on four simultaneous changes; it was not
 taken, so the kill criterion above is the whole of what stands between the run
-and ~21.5 h of device time.
+and up to ~21.5 h of device time.
 
 ### Falsifiable predictions, written before the run
 

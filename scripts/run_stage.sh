@@ -27,10 +27,13 @@ set -euo pipefail
 # what is added here is that they are run on every abort path and that the host
 # is checked afterwards for a surviving qemu process or adb device.
 #
-# Device-safety invariants are refused, never warned about: only the
+# Device-safety invariants are refused, never warned about, and they are checked
+# against every *attached* instance rather than every answering one: only the
 # `tower_rl_instrumented_api36` AVD, even console ports from 5556, every
-# instance `-read-only`, and offline verified by interface. Never
-# `emulator-5554`, never `tower_rl_api36_play_x86_64`.
+# instance `-read-only`, and offline verified by interface — which an instance
+# that is attached but not answering cannot be, so it is refused too. Never
+# `emulator-5554`, never `tower_rl_api36_play_x86_64`, and neither is ever
+# killed by the teardown either.
 #
 # Two paths are read from the environment so a test can point them somewhere
 # harmless; both default to the real thing and neither is a runtime option:
@@ -53,6 +56,12 @@ canonical_serial="emulator-5554"
 first_console_port=5556
 #: How long the host is given to come back empty after the last kill.
 verify_timeout=30
+#: How long one instance's cleanup may take before it is given up on. Cleanup is
+#: a dozen adb round trips against a guest that may have stopped answering, and
+#: teardown ignores the signals that would otherwise have freed the supervisor
+#: from a hung one, so the bound is what keeps "ignore signals" from meaning
+#: "hang forever". Generous: a healthy instance's cleanup is seconds.
+cleanup_timeout=600
 #: How long the stage command is given to tear its own fleet down after SIGINT,
 #: before it is killed outright. A seven-instance fleet's teardown is minutes,
 #: not seconds: each instance is force-stopped, unmounted and re-verified.
@@ -76,6 +85,8 @@ done
 [ -n "$name" ] || { echo "usage: run_stage.sh --name <stage> --instances <N> -- <command...>" >&2; exit 2; }
 case "$instances" in ''|*[!0-9]*) echo "--instances must be a count" >&2; exit 2 ;; esac
 [ "$instances" -ge 1 ] || { echo "--instances must be at least 1" >&2; exit 2; }
+case "$shutdown_grace" in ''|*[!0-9]*) echo "--shutdown-grace must be a whole number of seconds" >&2; exit 2 ;; esac
+[ "$shutdown_grace" -ge 1 ] || { echo "--shutdown-grace must be at least 1 second" >&2; exit 2; }
 [ "${#stage_command[@]}" -gt 0 ] || { echo "nothing to run: give the stage command after --" >&2; exit 2; }
 
 # The repository root comes from this script's own location, never the cwd —
@@ -83,6 +94,8 @@ case "$instances" in ''|*[!0-9]*) echo "--instances must be a count" >&2; exit 2
 # anywhere finds the same bridge, the same logs and the same scripts.
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 log_directory="${TOWER_STAGE_LOG_DIRECTORY:-$repository_root/state/logs}"
+# A test seam and nothing else: no run ever sets it, and /proc is the only place
+# a real host's processes are.
 proc_root="${TOWER_STAGE_PROC_ROOT:-/proc}"
 
 # Whatever is on PATH wins, so a test can put a stub in front of both; the
@@ -118,6 +131,13 @@ attached_serials() {
   "$adb" devices 2>/dev/null | awk 'NR > 1 && NF >= 2 { print $1 }'
 }
 
+#: The same, each with the state adb reports it in: `device`, `offline`,
+#: `unauthorized`. Preflight needs the state as well as the serial, because an
+#: instance that is attached but not answering cannot be certified offline.
+attached_with_state() {
+  "$adb" devices 2>/dev/null | awk 'NR > 1 && NF >= 2 { print $1, $2 }'
+}
+
 #: The emulator's own command line, from the process holding that console port.
 #: Read from /proc rather than asked of the emulator, because `-read-only` is a
 #: launch argument and nothing on the device reports it.
@@ -149,25 +169,30 @@ qemu_process_count() {
 # Before anything is launched.
 #
 # The fleet runners bring their own instances up, so the ordinary case is a host
-# with nothing running on it and nothing here to check. What is checked is every
-# instance that *is* already up — the single-instance stages connect to one that
+# with nothing attached and nothing here to check. What is checked is every
+# instance that *is* attached — the single-instance stages connect to one that
 # was brought up for them — and the check is a refusal, not a warning.
+#
+# Attached, not live: an emulator adb reports as `offline` or `unauthorized` is
+# running all the same, and it cannot be asked what interfaces it holds, so it
+# cannot be certified offline and cannot be allowed to run alongside a stage.
 # ---------------------------------------------------------------------------
 preflight() {
-  local serial port command_line addresses refusals=0
+  local serial state port command_line addresses expected candidate refusals=0
 
-  for serial in $(live_serials); do
+  while read -r serial state; do
+    [ -n "$serial" ] || continue
     if [ "$serial" = "$canonical_serial" ]; then
-      echo "refusing: $canonical_serial is running; that is the canonical evaluation AVD's serial" >&2
+      echo "refusing: $canonical_serial is attached; that is the canonical evaluation AVD's serial" >&2
       refusals=$((refusals + 1))
       continue
     fi
-    local expected=no
+    expected=no
     for candidate in "${expected_serials[@]}"; do
       [ "$candidate" = "$serial" ] && expected=yes
     done
     if [ "$expected" = no ]; then
-      echo "refusing: $serial is running but is not one of this stage's $instances instances" >&2
+      echo "refusing: $serial is attached but is not one of this stage's $instances instances" >&2
       refusals=$((refusals + 1))
       continue
     fi
@@ -200,6 +225,12 @@ preflight() {
          refusals=$((refusals + 1)); continue ;;
     esac
 
+    if [ "$state" != device ]; then
+      echo "refusing: $serial is attached in state '$state', so it cannot be asked whether it is offline" >&2
+      refusals=$((refusals + 1))
+      continue
+    fi
+
     # Airplane mode reads 1 while the radio is still up, so the interface is
     # what decides — the same reading `instrumented_bridge.sh deploy` refuses on.
     addresses="$("$adb" -s "$serial" shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | grep -v ' lo ' || true)"
@@ -211,7 +242,7 @@ preflight() {
     fi
 
     echo "preflight: $serial is $clone_avd, read-only, offline"
-  done
+  done < <(attached_with_state)
 
   [ "$refusals" -eq 0 ]
 }
@@ -243,11 +274,17 @@ cleanup_ok=yes
 # exist, and its id is the pid of the process this script started.
 stop_stage() {
   local finished="" timer
+  # `finish` can run before the stage was ever launched — a failure between
+  # installing the trap and starting it — and then there is nothing to stop.
+  [ -n "$stage_pid" ] || return 0
   if ! kill -0 "$stage_pid" 2>/dev/null; then
     wait "$stage_pid" 2>/dev/null || true
     return 0
   fi
   echo "stage $name: interrupting the stage command (group $stage_pid) so it can tear its own fleet down"
+  # `-$stage_pid` is a process group, and it is one only because `set -m` below
+  # makes the stage its own group leader with the group id its pid. Without
+  # that, this signals nothing.
   kill -INT -"$stage_pid" 2>/dev/null || true
   sleep "$shutdown_grace" &
   timer=$!
@@ -258,13 +295,17 @@ stop_stage() {
     wait "$stage_pid" 2>/dev/null || true
     cleanup_ok=no
   else
-    kill "$timer" 2>/dev/null || true
+    # SIGKILL, not SIGTERM: this timer is started inside the teardown, which
+    # ignores SIGTERM, and a child inherits that — a TERM here is ignored and
+    # the `wait` below then sits out the whole grace period the stage just
+    # saved. Nothing is lost by killing a `sleep` outright.
+    kill -KILL "$timer" 2>/dev/null || true
     wait "$timer" 2>/dev/null || true
   fi
 }
 
 clean_instances() {
-  local serial live
+  local serial live candidate command_line
   for serial in "${expected_serials[@]}"; do
     live=no
     for candidate in $(live_serials); do
@@ -277,8 +318,16 @@ clean_instances() {
       echo "cleanup: $serial is not live; not cleaned"
       continue
     fi
-    if "$bridge_script" cleanup "$serial"; then
+    # Bounded, because cleanup talks to a device over adb and a device that has
+    # stopped answering would otherwise hold the supervisor open for as long as
+    # it liked — and teardown ignores the signals that would have freed it.
+    # `-k` follows the TERM with a KILL, which is what actually ends a child
+    # that inherited this phase's ignored SIGTERM.
+    if timeout -k 10 "$cleanup_timeout" "$bridge_script" cleanup "$serial"; then
       cleaned=$((cleaned + 1))
+    elif [ $? -eq 124 ]; then
+      echo "cleanup: $serial did not finish cleaning up within ${cleanup_timeout}s" >&2
+      cleanup_ok=no
     else
       echo "cleanup: $serial did not clean up" >&2
       cleanup_ok=no
@@ -287,13 +336,24 @@ clean_instances() {
   done
 
   # Whatever else is still attached goes down too: leaving an emulator running
-  # is a device-safety failure, not an inconvenience. The canonical serial is
-  # the one thing automation never touches, so it is reported and left alone.
+  # is a device-safety failure, not an inconvenience. The canonical evaluation
+  # AVD is the one thing automation never touches — not at its own serial and
+  # not at any other, which is why the process's own command line decides and
+  # not the port. Its presence is a failure, not a silent skip: the host is not
+  # clean and nothing here may make it so.
   for serial in $(attached_serials); do
     if [ "$serial" = "$canonical_serial" ]; then
       echo "cleanup: $canonical_serial is attached and was left untouched; put it down by hand" >&2
       cleanup_ok=no
       continue
+    fi
+    if command_line="$(emulator_command_line "${serial#emulator-}")"; then
+      case "$command_line" in
+        *"@$canonical_avd"*)
+          echo "cleanup: $serial is running the canonical evaluation AVD $canonical_avd and was left untouched; put it down by hand" >&2
+          cleanup_ok=no
+          continue ;;
+      esac
     fi
     "$adb" -s "$serial" emu kill > /dev/null 2>&1 || true
   done
@@ -319,7 +379,13 @@ verify_host_clean() {
 
 finish() {
   local status=$?
-  trap - EXIT INT TERM
+  # EXIT is cleared so this cannot re-enter itself; INT and TERM are *ignored*
+  # rather than restored to their default, which would let a second Ctrl-C or a
+  # second `kill` land in the middle of the teardown and leave the device
+  # dirty with nothing said about it. The bound on each cleanup below is what
+  # makes that safe: ignoring the signal cannot cost more than that bound.
+  trap - EXIT
+  trap '' INT TERM
   [ -n "${stage_status:-}" ] || stage_status="$status"
   stop_stage
   clean_instances
@@ -348,6 +414,9 @@ echo "stage $name: ${stage_command[*]}"
 # whole point of this script is that a signal reaches the teardown promptly.
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Set before the trap that reads it: `finish` runs on every exit from here on,
+# including one that happens before the stage is started at all.
+stage_pid=""
 trap finish EXIT
 
 # Job control, so that the stage can be interrupted at all. A shell without it

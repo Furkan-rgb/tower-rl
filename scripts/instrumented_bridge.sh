@@ -139,49 +139,57 @@ unmount_overlay() {
 # evidence a cleanup log is read for; the difference is that a mismatch here is
 # a failure rather than a line.
 check_identity() {
-  local target="$1" dump sha mounts version_name version_code installer expected
-  sha="$(target_sha256 "$target")"
-  echo "libunity_sha256: $sha"
+  local expected
+  # The readings are `report_identity`'s: one place takes them and prints them,
+  # and this adds what each one has to be. Reading the device twice would let
+  # the evidence in the log and the value that was checked disagree.
+  report_identity "$1"
   if expected="$(original_libunity_sha256)" && [ -n "$expected" ]; then
-    [ "$sha" = "$expected" ] ||
-      fail "libunity_sha256 on $serial is $sha, not the original $expected"
+    [ "$identity_sha256" = "$expected" ] ||
+      fail "libunity_sha256 on $serial is $identity_sha256, not the original $expected"
   else
     fail "nothing to check libunity_sha256 against: $build_dir holds no CMakeCache.txt"
   fi
-
-  dump="$(package_dump)"
-  version_name="$(dump_field versionName "$dump")"
-  version_code="$(dump_field versionCode "$dump")"
-  installer="$(dump_field installerPackageName "$dump")"
-  echo "versionName=$version_name"
-  echo "versionCode=$version_code"
-  echo "installerPackageName=$installer"
   if expected="$(expected_version_name)" && [ -n "$expected" ]; then
-    [ "$version_name" = "$expected" ] ||
-      fail "versionName is $version_name, not $expected"
+    [ "$identity_version_name" = "$expected" ] ||
+      fail "versionName is $identity_version_name, not $expected"
   else
     fail "nothing to check versionName against: $build_dir holds no CMakeCache.txt"
   fi
   if expected="$(expected_version_code)" && [ -n "$expected" ]; then
-    [ "$version_code" = "$expected" ] ||
-      fail "versionCode is $version_code, not $expected"
+    [ "$identity_version_code" = "$expected" ] ||
+      fail "versionCode is $identity_version_code, not $expected"
   else
     fail "nothing to check versionCode against: $build_dir holds no CMakeCache.txt"
   fi
-  [ "$installer" = "$expected_installer" ] ||
-    fail "installerPackageName is $installer, not $expected_installer"
-
-  mounts="$(libunity_mount_count)"
-  echo "libunity_mounts: $mounts"
-  [ "$mounts" = "0" ] || fail "$mounts libunity.so mount(s) survive on $serial"
+  [ "$identity_installer" = "$expected_installer" ] ||
+    fail "installerPackageName is $identity_installer, not $expected_installer"
+  [ "$identity_mounts" = "0" ] ||
+    fail "$identity_mounts libunity.so mount(s) survive on $serial"
 }
 
+#: The readings `report_identity` last took. `check_identity` compares these
+#: rather than reading the device again, so what a log shows and what was
+#: checked are the same numbers.
+identity_sha256=""
+identity_version_name=""
+identity_version_code=""
+identity_installer=""
+identity_mounts=""
+
 report_identity() {
-  local target="$1"
-  echo "libunity_sha256: $(su_device "sha256sum $target" | awk '{print $1}')"
-  device shell dumpsys package "$package" |
-    grep -E 'versionName=|versionCode=|installerPackageName=' | head -n 3 | sed 's/^ *//'
-  su_device "mount | grep -c libunity.so || true" | tr -d '\r' | sed 's/^/libunity_mounts: /'
+  local target="$1" dump
+  identity_sha256="$(target_sha256 "$target")"
+  dump="$(package_dump)"
+  identity_version_name="$(dump_field versionName "$dump")"
+  identity_version_code="$(dump_field versionCode "$dump")"
+  identity_installer="$(dump_field installerPackageName "$dump")"
+  identity_mounts="$(libunity_mount_count)"
+  echo "libunity_sha256: $identity_sha256"
+  echo "versionName=$identity_version_name"
+  echo "versionCode=$identity_version_code"
+  echo "installerPackageName=$identity_installer"
+  echo "libunity_mounts: $identity_mounts"
 }
 
 # Airplane mode alone does not take this emulator offline: the setting can read 1

@@ -30,6 +30,7 @@ RUN_STAGE = REPOSITORY / "scripts" / "run_stage.sh"
 ADB_STUB = """#!/usr/bin/env bash
 set -uo pipefail
 state="$TOWER_STUB_STATE"
+echo "$*" >> "$state/adb-calls"
 if [ "$1" = "devices" ]; then
   echo "List of devices attached"
   cat "$state/devices" 2>/dev/null || true
@@ -53,8 +54,22 @@ case "$*" in
 esac
 """
 
+#: `timeout` is resolved through `PATH` like every other tool the script runs,
+#: so the suite can put one in front of it: this records the real invocation —
+#: the production bound is 600s and no test can wait that out — and then applies
+#: a bound of its own through the real binary.
+TIMEOUT_STUB = """#!/usr/bin/env bash
+set -uo pipefail
+echo "timeout $*" >> "$TOWER_STUB_STATE/adb-calls"
+shift 3
+exec /usr/bin/timeout -k 1 3 "$@"
+"""
+
 BRIDGE_STUB = """#!/usr/bin/env bash
 set -uo pipefail
+# A device that has stopped answering, and one that is merely slow.
+[ -e "$TOWER_STUB_STATE/hang-$2" ] && sleep 60
+[ -e "$TOWER_STUB_STATE/slow-$2" ] && sleep 2
 echo "cleanup: $2 bridge_artifacts: removed"
 echo "$2" >> "$TOWER_STUB_STATE/cleaned"
 exit "${TOWER_STUB_CLEANUP_EXIT:-0}"
@@ -68,6 +83,11 @@ class Shims:
     environment: dict[str, str]
     state: Path
     logs: Path
+
+    @property
+    def adb_calls(self) -> str:
+        """Every argument list the stub adb and the stub timeout were given."""
+        return (self.state / "adb-calls").read_text()
 
     @property
     def cleaned(self) -> list[str]:
@@ -95,10 +115,12 @@ def shims(tmp_path: Path) -> Shims:
     binaries.mkdir()
     write_executable(binaries / "adb", ADB_STUB)
     write_executable(binaries / "instrumented_bridge.sh", BRIDGE_STUB)
+    write_executable(binaries / "timeout", TIMEOUT_STUB)
 
     state = tmp_path / "state"
     state.mkdir()
     (state / "devices").write_text("")
+    (state / "adb-calls").write_text("")
     proc = tmp_path / "proc"
     proc.mkdir()
     logs = tmp_path / "logs"
@@ -113,11 +135,17 @@ def shims(tmp_path: Path) -> Shims:
     return Shims(environment=environment, state=state, logs=logs)
 
 
-def bring_up(shims: Shims, *serials: str, read_only: bool = True, avd: str | None = None) -> None:
+def bring_up(
+    shims: Shims,
+    *serials: str,
+    read_only: bool = True,
+    avd: str | None = None,
+    state: str = "device",
+) -> None:
     """Put stub instances on the stub host: an adb device and a process each."""
     name = avd or "tower_rl_instrumented_api36"
     devices = shims.state / "devices"
-    devices.write_text(devices.read_text() + "".join(f"{serial}\tdevice\n" for serial in serials))
+    devices.write_text(devices.read_text() + "".join(f"{serial}\t{state}\n" for serial in serials))
     proc = Path(shims.environment["TOWER_STAGE_PROC_ROOT"])
     for serial in serials:
         port = serial.removeprefix("emulator-")
@@ -304,4 +332,118 @@ def test_the_canonical_evaluation_avd_is_refused_before_launch(shims: Shims) -> 
 
     assert result.returncode == 2
     assert "canonical evaluation AVD" in result.stdout + result.stderr
+    assert not (shims.state / "ran").exists()
+
+
+def launch(
+    shims: Shims, stage: Path, *, instances: int = 2, grace: int = 10
+) -> subprocess.Popen[bytes]:
+    """Start a supervisor the test will signal, with its output on a file."""
+    sink = (shims.state / "supervisor.out").open("w")
+    return subprocess.Popen(
+        [str(RUN_STAGE), "--name", "test-stage", "--instances", str(instances),
+         "--shutdown-grace", str(grace), "--", str(stage)],
+        env=shims.environment, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+
+
+def test_a_second_signal_during_teardown_does_not_abandon_the_cleanup(
+    shims: Shims, tmp_path: Path
+) -> None:
+    """Teardown ignores what would otherwise leave the device half cleaned."""
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    (shims.state / "slow-emulator-5556").touch()
+    started = tmp_path / "started"
+    stage = shims.stage(f'trap "exit 0" INT\ntouch {started}\nsleep 60 &\nwait $!')
+
+    supervisor = launch(shims, stage)
+    deadline = time.monotonic() + 30
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert started.exists(), "the stage command never started"
+    supervisor.send_signal(signal.SIGTERM)
+    # Inside the first instance's cleanup, which the stub holds open for 2s.
+    time.sleep(1.0)
+    supervisor.send_signal(signal.SIGTERM)
+    returncode = supervisor.wait(timeout=60)
+
+    written = (shims.state / "supervisor.out").read_text()
+    assert returncode != 0, written
+    assert shims.cleaned == ["emulator-5556", "emulator-5558"], written
+    assert "verified: no qemu process, no adb device" in written
+    assert "stage test-stage: exit 143, cleanup ok, instances 2/2 cleaned" in written
+
+
+def test_a_cleanup_that_never_returns_is_given_up_on_and_the_rest_still_runs(
+    shims: Shims,
+) -> None:
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    (shims.state / "hang-emulator-5556").touch()
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage))
+
+    assert result.returncode != 0
+    assert "cleanup: emulator-5556 did not finish cleaning up within 600s" in result.stdout
+    # The bound the supervisor actually asked for, whatever the suite shortened
+    # it to: a TERM at 600s and a KILL ten seconds after that.
+    assert "timeout -k 10 600" in shims.adb_calls
+    # The instance that hung is still killed, the next one is still cleaned,
+    # and the host is still verified.
+    assert "emu kill" in shims.adb_calls
+    assert shims.cleaned == ["emulator-5558"]
+    assert "verified: no qemu process, no adb device" in result.stdout
+    assert "stage test-stage: exit 0, cleanup failed, instances 1/2 cleaned" in result.stdout
+
+
+def test_an_attached_instance_that_is_not_answering_is_refused_before_launch(
+    shims: Shims,
+) -> None:
+    """Offline cannot be verified on an instance that will not answer."""
+    bring_up(shims, "emulator-5556", state="offline")
+    stage = shims.stage("touch " + str(shims.state / "ran"))
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 2
+    assert "attached in state 'offline'" in result.stdout + result.stderr
+    assert not (shims.state / "ran").exists()
+
+
+def test_an_emulator_running_the_canonical_avd_is_never_killed(shims: Shims) -> None:
+    """It appears only once the stage is running, so preflight cannot refuse it."""
+    bring_up(shims, "emulator-5556")
+    proc = Path(shims.environment["TOWER_STAGE_PROC_ROOT"])
+    stage = shims.stage(
+        f'printf "emulator-5558\\tdevice\\n" >> {shims.state / "devices"}\n'
+        f'mkdir -p {proc / "5558"}\n'
+        # `printf '%s\0'` rather than escapes inside one string: `\05558` reads
+        # as an octal escape and silently becomes something else.
+        f"printf '%s\\0' /opt/emulator @tower_rl_api36_play_x86_64 -port 5558"
+        f' > {proc / "5558" / "cmdline"}\n'
+    )
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode != 0
+    assert "emulator-5558 is running the canonical evaluation AVD" in result.stdout
+    assert "was left untouched" in result.stdout
+    assert "-s emulator-5558 emu kill" not in shims.adb_calls
+    assert "stage test-stage: exit 0, cleanup failed, instances 1/1 cleaned" in result.stdout
+
+
+@pytest.mark.parametrize("grace", ["0", "-5", "forever"], ids=["zero", "negative", "words"])
+def test_a_grace_period_that_is_not_a_positive_number_of_seconds_is_refused(
+    shims: Shims, grace: str
+) -> None:
+    stage = shims.stage("touch " + str(shims.state / "ran"))
+
+    result = subprocess.run(
+        [str(RUN_STAGE), "--name", "test-stage", "--instances", "1",
+         "--shutdown-grace", grace, "--", str(stage)],
+        env=shims.environment, capture_output=True, text=True, timeout=60, check=False,
+    )
+
+    assert result.returncode == 2
+    assert "--shutdown-grace must be" in result.stderr
     assert not (shims.state / "ran").exists()

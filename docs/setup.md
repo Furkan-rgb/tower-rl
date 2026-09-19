@@ -452,9 +452,20 @@ A stage — a training seed, an evaluation batch, a recording session — is hou
 of device time, so it is launched once and left alone rather than watched:
 
 ```text
-nohup ./scripts/run_stage.sh --name m2-run2-train-seed0 --instances 7 -- \
-  uv run --extra tracking python scripts/train.py --actors 7 ... &
+nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
+  uv run --extra tracking python scripts/train.py \
+      --actors 7 --renderer host --frame-rate-hz 120 \
+      --decision-cadence choice-points --exploration ladder \
+      --budget-game-seconds 360000 --block-game-seconds 4000 \
+      --checkpoint-every-game-seconds 60000 \
+      --epsilon-anneal-decisions 2500 \
+      --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
+      --seed 1 > /dev/null 2>&1 &
 ```
+
+That is `M2-P002`'s option-B training line for seed 1, unchanged, with
+`run_stage.sh` in front of it; `nohup`'s own stdout goes nowhere because the
+script already writes everything to the log below.
 
 The stage command after `--` is run exactly as written; `run_stage.sh` does not
 bring the fleet up, because `train.py` and `run_actors.py` bring up and tear
@@ -465,16 +476,26 @@ stage command so the runner can tear its own fleet down, then runs
 still live, kills every emulator that is still attached, and verifies the host
 is empty: no qemu process (counted through `/proc/*/exe`) and no adb device.
 Before it launches anything it refuses a host that is already running something
-it should not — an instance that is not `tower_rl_instrumented_api36`, not
-`-read-only`, not on an even console port from 5556, or still holding a routable
-interface, and `emulator-5554` or the canonical evaluation AVD at all.
+it should not. Every **attached** instance is checked, not only the ones adb
+reports as `device`: one that is not `tower_rl_instrumented_api36`, not
+`-read-only`, not on an even console port from 5556, still holding a routable
+interface, or attached in a state that cannot be asked about its interfaces at
+all, is a refusal — as is `emulator-5554` or the canonical evaluation AVD
+anywhere. The canonical AVD is never killed either: if one is running when the
+stage ends, the summary says the cleanup failed and it is left for you.
 
 Everything the stage and the script write goes to `state/logs/<name>-<timestamp>.log`
 and to stdout, ending in one summary line:
 
 ```text
-stage m2-run2-train-seed0: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12:44
+stage m2-run2-train-seed1: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12:44
 ```
+
+Once the teardown has begun, `SIGINT` and `SIGTERM` are **ignored**, so a second
+Ctrl-C cannot leave the device half cleaned; each instance's cleanup is bounded
+at 600 s so that ignoring them cannot hang the stage. `SIGKILL` of the
+supervisor is the one signal that abandons the teardown, and it leaves the
+cleanup and the verification to be run by hand.
 
 The exit status is the stage command's, or non-zero if cleanup or the
 verification failed while the stage itself succeeded — so a stage that left the

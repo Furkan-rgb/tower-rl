@@ -34,17 +34,17 @@ sequential). No run has started and no device time has been spent. This entry
 records the plan, its prices and its decision rule before any data exists; it is
 not a result. Board `#44`.
 
-**Prerequisites, before this protocol can be run.** Two, both outstanding at
-the time of writing. `observation-v2` must be on `main`: this entry links
-[ADR 0010](adr/0010-observation-v2-everything-the-player-sees.md), which is
-still on the `observation-v2` branch, so **the link resolves only once `#41`
-lands**. And the v2 schema must be verified against the game — every live
-reading held beside the HUD in its own unit, which ADR 0010 makes a device stage
-rather than a unit test. That verification is **`M2-E006`, which does not exist
-yet and is a prerequisite of this run**: training under a schema whose values
-have not been confirmed would put an unreadable run's worth of device time
-behind a field read at the wrong width, which is the failure `M1B-E017` already
-cost this project once.
+**Prerequisites, all satisfied.** Everything this protocol runs on is on
+`main`. `observation-v2` and [ADR
+0010](adr/0010-observation-v2-everything-the-player-sees.md) landed with `#41`;
+the schema's values were verified against the game in **`M2-E006`** — zero
+out-of-range readings, zero invalid episodes, `#39`'s capture reproduced field
+for field — which is the device stage ADR 0010 requires and the guard against
+repeating `M1B-E017`'s field read at the wrong width. The one thing `M2-E006`
+could not settle, the unit of six further percent candidates whose slots the
+frozen V1 baseline never offers, is carried as an open limit there and is not
+re-argued here. Early stopping landed with `#45`. Every flag in the command
+lines below was checked against its script's `--help` on `main` at `a9142d8`.
 
 **Objective.** The milestone goal, as the handoff states it: *one committed
 model, trained under one budgeted protocol, reproducibly beats the random and
@@ -63,7 +63,7 @@ device cost and is deliberately not attempted.
 | change | what it does | evidence |
 | --- | --- | --- |
 | choice-point cadence | a decision is asked for only where a purchase is legal; forced `WAIT` slices are played through and accrue to the surrounding decision | ADR 0009; `M2-E005` measured it on device — decisions per wave 20.87 → 4.59, advances per wave unchanged (18.00 → 18.72), zero environment failures |
-| `observation-v2` | the policy is shown what the player sees: 37 live `Main` fields, raw `level`/`max_level`, unclipped affordability | ADR 0010 (lands with `#41`); its device value-verification entry `M2-E006` **is pending** and is a prerequisite of this run |
+| `observation-v2` | the policy is shown what the player sees: 37 live `Main` fields, raw `level`/`max_level`, unclipped affordability | ADR 0010, `#41`; verified on device in `M2-E006` — zero out-of-range readings, zero invalid episodes |
 | Ape-X ε ladder | actor `i` of 7 acts at `0.4 ** (1 + 7i/6)`, spanning 0.4 to 0.00066 (mean 0.087) instead of one floor of 0.05 | `#37`; run 1's accounting: ε=0.05 gave **~1.7 exploratory deviations an episode**, ~2,300 in the whole run, and by the binomial roughly **one episode in ~1,400** deviated eight or more times — essentially no alternative build order was ever played |
 | budget in game time | `--budget-game-seconds`, `--block-game-seconds`, `--checkpoint-every-game-seconds` | `#42`; under choice points a decision's game-time cost varies by an order of magnitude, so a decision budget no longer bounds a run's length (ADR 0009's own consequence) |
 
@@ -118,10 +118,19 @@ of every run on a near-random policy by arithmetic that no longer applies.
 **Early stopping** (developer decision, 2026-09-19). A **period** is the
 interval between consecutive numbered checkpoints — 60,000 game-seconds. At each
 crossing the near-greedy actors' mean final wave over the closed period is
-compared with the best previous period; **if it is below best + 0.2 waves for 2
-consecutive periods, training stops after writing that checkpoint**, and that
-checkpoint is the evaluated one — consistent with the "highest-numbered"
-pre-declaration below, which is why the two rules do not conflict.
+compared with the bar the curve last cleared; **if it is below that bar + 0.2
+waves for 2 consecutive periods, training stops after writing that
+checkpoint**, and that checkpoint is the evaluated one — consistent with the
+"highest-numbered" pre-declaration below, which is why the two rules do not
+conflict.
+
+Two details of the shipped rule (`NearGreedyPlateau`, `learning/training.py`),
+recorded here so the pre-registration says what will actually happen. The bar is
+**the mean of the last period that cleared it**, not the highest mean the run
+has seen: a curve creeping up by less than 0.2 a period would otherwise raise
+the bar by exactly what it gained and stop a run that is still improving. And a
+period in which no near-greedy actor finished a valid episode measures nothing
+and counts **neither way**, though it still closed.
 
 The rationale is the standard error. A period holds ~140 near-greedy episodes,
 and at run 1's post-anneal per-episode sd of 2.46 waves that is a standard error
@@ -129,13 +138,6 @@ of ≈0.2 waves on a period's mean — so one flat period is noise and two in a 
 are a plateau. The earliest possible stop is after the **third** checkpoint, at
 180,000 game-s, about 4 h in: two periods must close before either can be a
 second consecutive failure to improve.
-
-**These two flags do not exist in `scripts/train.py` yet.** Neither
-`--early-stop-patience-periods` nor `--early-stop-min-improvement` is
-implemented on `main` at the time of writing, and no early-stopping logic exists
-anywhere in the tree. Implementing them is a prerequisite of this run, alongside
-`M2-E006`; the rule is pre-registered here rather than decided later, which is
-the point of writing it before the run.
 
 **Evaluation: one pre-declared checkpoint, greedy.** The arm is the **final**
 numbered checkpoint — the highest-numbered `checkpoint-gs*.pt` in the run

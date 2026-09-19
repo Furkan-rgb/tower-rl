@@ -601,14 +601,20 @@ recent wave, health, and cash deltas is a documented ablation, added only if it
 demonstrably helps, not a default. `play_time` is provenance and liveness
 evidence and is never a policy feature.
 
-Two deliberate deviations from strict player parity are recorded here. All three
-upgrade families are supplied at once, although a player sees one tab at a time,
-because tab switching is free and controller-owned and memorizing hidden tabs
-carries no strategic content. Against that, the observation is currently poorer
-than a player's view: it carries no enemy, threat, or boss-wave information, so
-the agent must infer pressure from how health moves. Closing that gap with the
-game's own visible boss and wave flags is the first observation extension to
-evaluate.
+One deliberate deviation from strict player parity remains. All three upgrade
+families are supplied at once, although a player sees one tab at a time, because
+tab switching is free and controller-owned and memorizing hidden tabs carries no
+strategic content.
+
+The other deviation recorded here — an observation poorer than a player's view,
+carrying no enemy, threat or boss-wave information — is closed by
+`observation-v2` (ADR 0010). The agent now reads the tower's live combat stats,
+the wave's base health and damage, the enemies spawned, killed and expected, the
+nearest enemy's distance, the boss and mini-boss flags, the wave clock, the
+economy and the round clock: everything the player reads off the run screen,
+rescaled rather than summarised. What deliberately stays out — boss health and
+per-enemy objects, and the upgrade panel's "current → next" preview — is named
+with its reason in that ADR.
 
 ### 7.2 Action schema
 

@@ -17,7 +17,7 @@ component owns game rules or normalizes observations for an RL policy.
 
 Frames are a four-byte unsigned big-endian payload length followed by at most
 65,536 bytes of UTF-8 JSON. The first message is a `handshake` containing
-protocol version `1`, bridge version, configured package version and version
+protocol version `2`, bridge version, configured package version and version
 code, official signer SHA-256, original `libunity.so` SHA-256,
 `libil2cpp.so` SHA-256, Unity/metadata/profile compatibility values, and the
 current `game_speed`. All hashes must be lowercase 64-hex values. It advertises
@@ -33,6 +33,17 @@ include `lifecycle`, `wave`, `cash`, `health`, `max_health`, `terminal`,
 ```
 
 Families are `attack`, `defense`, and `utility`; each is capped at 64 entries.
+
+Each observation also carries a `live` object: every `Main` field
+`observation-v2` shows the policy, under the game's own field name, read at the
+width its own declared IL2CPP type names. The list is `kLiveFieldNames` in
+`tower_bridge.cpp` and `LIVE_WIRE_NAMES` in `environment/run_state.py`, which
+are one schema in two languages; the host refuses a state message that does not
+carry exactly that set. A field the class does not carry, or one declared at a
+type this bridge cannot read, fails initialization by name — a silent zero for a
+field the schema declares would be wrong in every observation after it, which is
+the M1B-E017 failure repeated thirty-seven times.
+
 Each observation also carries the current `game_speed` and `play_time`.
 `game_speed` is the multiplier the game holds at that instant and is reported,
 never gated on: every observation the host reads is taken from a world the
@@ -97,6 +108,11 @@ separate controller-owned kinds and can never become learned actions:
   the requested value, not that the world runs at it: the read-back is of the
   field the bridge just wrote, and no readable field reports the effective rate.
   The verification is the next `advance`'s `round_ms` against `game_ms`;
+- `slot_labels` answers once with the game's own name and description for every
+  upgrade row, in a `slot_labels` frame sent before the state and the result.
+  The arrays are constant for a build, so the host asks once per session and
+  before the first round; the labels are for humans and never enter the
+  observation tensor;
 - `advance` runs the world frame by frame and pauses again, returning the settled
   observation. It carries `budget_game_ms`, `frame_game_ms`, and
   `health_change_fraction`.

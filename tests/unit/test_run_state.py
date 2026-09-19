@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -16,7 +17,11 @@ from tower_rl.environment.run_actions import (
     upgrade_action,
 )
 from tower_rl.environment.run_state import (
-    MAX_AFFORDABILITY_RATIO,
+    LIVE_FIELDS,
+    LIVE_WIRE_NAMES,
+    NO_ENEMY_DISTANCE,
+    OUT_OF_RANGE_REASON,
+    LiveTransform,
     RunStateBuilder,
     action_is_allowed,
     validate_transition,
@@ -57,6 +62,7 @@ def _reading(
     health: float = 4.0,
     max_health: float = 5.0,
     overrides: dict[tuple[str, int], UpgradeInventoryEntry] | None = None,
+    live: dict[str, float] | None = None,
 ) -> BridgeObservation:
     entries = []
     for family in ("attack", "defense", "utility"):
@@ -75,6 +81,7 @@ def _reading(
         game_speed=1.5,
         play_time=1234.5,
         upgrades=tuple(entries),
+        live={**dict.fromkeys(LIVE_WIRE_NAMES, 0.0), **(live or {})},
     )
 
 
@@ -120,13 +127,95 @@ def test_exact_readings_become_normalized_run_state() -> None:
     assert state.health_fraction == pytest.approx(0.8)
     assert state.game_speed == 1.5
     assert len(state.rows) == 3 * SLOTS_PER_FAMILY
-    assert state.schema_version == "observation-v1"
+    assert state.schema_version == "observation-v2"
 
     row = state.rows[0]
     assert row.action == upgrade_action("attack", 0)
     assert row.cost_log == pytest.approx(math.log1p(10.0))
-    assert row.affordability == pytest.approx(10.0)
+    assert row.affordability == pytest.approx(math.log1p(10.0))
     assert row.headroom == pytest.approx(1.0)
+
+
+def test_every_live_reading_round_trips_through_its_own_transform() -> None:
+    """One raw reading per declared field, scaled the way the contract says.
+
+    The raw values are chosen so each transform produces something no other
+    transform would, which is what makes this a round trip rather than a check
+    that the keys exist.
+    """
+    raw = {
+        "damage": 12.09,  # magnitude
+        "criticalChance": 5.0,  # percent on the wire
+        "multishotTargets": 2.0,  # small count, raw
+        "bossWaveBool": 1.0,  # boolean
+        "closestEnemyDistance": 1.5,  # a real distance
+        "waveTimer": 34.47,  # seconds
+    }
+    state = BUILDER.build(_reading(live=raw), captured_at_monotonic=1.0)
+
+    assert state.valid, state.invalid_reasons
+    assert state.live["damage_log"] == pytest.approx(math.log1p(12.09))
+    assert state.live["critical_chance_fraction"] == pytest.approx(0.05)
+    assert state.live["multishot_targets"] == pytest.approx(2.0)
+    assert state.live["boss_wave"] == pytest.approx(1.0)
+    assert state.live["closest_enemy_distance"] == pytest.approx(1.5)
+    assert state.live["enemy_present"] == pytest.approx(1.0)
+    assert state.live["wave_timer_log"] == pytest.approx(math.log1p(34.47))
+    # Nothing the schema declares may be absent from a valid state.
+    assert set(state.live) == {name for live in LIVE_FIELDS for name in live.features}
+
+
+def test_the_no_enemy_sentinel_is_an_absence_not_a_distance() -> None:
+    state = BUILDER.build(
+        _reading(live={"closestEnemyDistance": NO_ENEMY_DISTANCE}), captured_at_monotonic=1.0
+    )
+
+    assert state.valid, state.invalid_reasons
+    assert state.live["closest_enemy_distance"] == pytest.approx(0.0)
+    assert state.live["enemy_present"] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("wire", "raw"),
+    [
+        ("damage", -1.0),  # a magnitude cannot be negative
+        ("criticalChance", 250.0),  # a fraction cannot exceed one
+        ("enemiesSpawnedThisWave", -3.0),  # a count cannot be negative
+        ("bossWaveBool", 7.0),  # a boolean is 0 or 1
+        ("closestEnemyDistance", -2.0),  # a distance cannot be negative
+        ("gameplayTimeThisRound", -0.5),  # a clock cannot run backwards
+    ],
+)
+def test_an_impossible_live_reading_names_its_own_field(wire: str, raw: float) -> None:
+    """The M1B-E017 invariant: an anomaly is attributable, never a plausible zero."""
+    state = BUILDER.build(_reading(live={wire: raw}), captured_at_monotonic=1.0)
+
+    assert not state.valid
+    assert f"{OUT_OF_RANGE_REASON}:{wire}" in state.invalid_reasons
+    # Zeroed as well as named, so nothing downstream reads the bad value.
+    field = next(live for live in LIVE_FIELDS if live.wire == wire)
+    assert all(state.live[name] == 0.0 for name in field.features)
+
+
+def test_a_reading_the_source_never_sent_is_refused_rather_than_assumed() -> None:
+    reading = _reading()
+    without = replace(reading, live={k: v for k, v in reading.live.items() if k != "damage"})
+
+    state = BUILDER.build(without, captured_at_monotonic=1.0)
+
+    assert not state.valid
+    assert "observation is missing the live reading damage" in state.invalid_reasons
+
+
+def test_every_declared_field_names_a_transform_and_a_unit() -> None:
+    """The contract table is generated from this, so it cannot be half-declared."""
+    for live in LIVE_FIELDS:
+        assert live.wire and live.feature and live.unit
+        assert isinstance(live.transform, LiveTransform)
+        assert (live.presence_feature is not None) == (
+            live.transform is LiveTransform.DISTANCE
+        )
+    assert len(set(LIVE_WIRE_NAMES)) == len(LIVE_WIRE_NAMES)
 
 
 def test_mask_follows_game_owned_availability() -> None:
@@ -152,12 +241,17 @@ def test_a_terminal_run_offers_no_action_at_all() -> None:
     assert not action_is_allowed(state, WAIT)
 
 
-def test_affordability_is_clipped_but_cost_is_not_lost() -> None:
+def test_affordability_is_unclipped_so_late_wealth_still_reads_as_wealth() -> None:
+    """v1 clipped the ratio at ten, which erased every difference above it."""
     overrides = {("attack", 0): _entry("attack", 0, cost=1.0)}
-    state = BUILDER.build(_reading(cash=10_000.0, overrides=overrides), captured_at_monotonic=1.0)
+    rich = BUILDER.build(_reading(cash=10_000.0, overrides=overrides), captured_at_monotonic=1.0)
+    richer = BUILDER.build(
+        _reading(cash=1_000_000.0, overrides=overrides), captured_at_monotonic=1.0
+    )
 
-    assert state.rows[0].affordability == pytest.approx(MAX_AFFORDABILITY_RATIO)
-    assert state.rows[0].cost_log == pytest.approx(math.log1p(1.0))
+    assert rich.rows[0].affordability == pytest.approx(math.log1p(10_000.0))
+    assert richer.rows[0].affordability > rich.rows[0].affordability
+    assert rich.rows[0].cost_log == pytest.approx(math.log1p(1.0))
 
 
 def test_impossible_readings_invalidate_rather_than_normalize() -> None:
@@ -170,20 +264,7 @@ def test_impossible_readings_invalidate_rather_than_normalize() -> None:
 
 
 def test_a_short_inventory_is_invalid_and_its_missing_slots_are_masked() -> None:
-    reading = _reading()
-    truncated = BridgeObservation(
-        sequence=reading.sequence,
-        lifecycle=reading.lifecycle,
-        wave=reading.wave,
-        cash=reading.cash,
-        health=reading.health,
-        max_health=reading.max_health,
-        terminal=reading.terminal,
-        round_active=reading.round_active,
-        game_speed=reading.game_speed,
-        play_time=reading.play_time,
-        upgrades=reading.upgrades[:10],
-    )
+    truncated = replace(_reading(), upgrades=_reading().upgrades[:10])
 
     state = BUILDER.build(truncated, captured_at_monotonic=1.0)
 

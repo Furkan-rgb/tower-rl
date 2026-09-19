@@ -82,7 +82,7 @@ class WaveObservation:
     #: Health fraction observed in the first state of this wave.
     health_fraction: float | None = None
     #: Log-scaled cash observed in the first state of this wave, as the state
-    #: schema carries it; raw cash is not part of `observation-v1`.
+    #: schema carries it; raw cash is not part of `observation-v2`.
     cash_log: float | None = None
 
 

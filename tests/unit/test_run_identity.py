@@ -9,6 +9,7 @@ arguments but that the settings the run was built with are the ones it records.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +198,24 @@ def test_a_run_1_checkpoint_refuses_to_be_resumed_under_choice_points() -> None:
     assert any("decision_cadence differs" in reason for reason in reasons)
     assert run_one.incompatibilities(run_one) == ()
     assert today.decision_cadence == DecisionCadence.CHOICE_POINTS
+
+
+def test_a_checkpoint_from_the_previous_observation_schema_is_refused_by_name() -> None:
+    """`observation-v2` shows the policy a different world; v1 weights are not it.
+
+    The refusal is by name rather than by tensor width on purpose: two schemas
+    of the same width would still mean different things, and a shape mismatch
+    surfaces as a torch error nobody can attribute.
+    """
+    today = checkpoint_identity(
+        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+    )
+    v1 = replace(today, observation_schema="observation-v1")
+
+    reasons = today.incompatibilities(v1)
+
+    assert any("observation_schema differs" in reason for reason in reasons)
+    assert today.observation_schema == OBSERVATION_SCHEMA_VERSION == "observation-v2"
 
 
 def test_the_resolved_configuration_says_which_cadence_collected_the_run(

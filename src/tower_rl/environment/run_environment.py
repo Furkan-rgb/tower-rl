@@ -36,6 +36,7 @@ from tower_rl.environment.run_state import (
     ExactRunReadingLike,
     RunState,
     RunStateBuilder,
+    hud_readings,
     validate_transition,
 )
 
@@ -890,6 +891,7 @@ class InstrumentedRunEnvironment:
             wave=shown.wave,
             cash=math.expm1(shown.cash_log),
             health_fraction=shown.health_fraction,
+            hud=hud_readings(shown),
             action="wait" if action.is_wait else str(action),
             reward=transition.reward,
             game_ms=transition.game_ms,

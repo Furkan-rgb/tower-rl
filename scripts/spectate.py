@@ -76,7 +76,10 @@ from run_episodes import (  # noqa: E402
 
 from tower_rl.environment.episode import DecisionView, EpisodeSummary  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
-from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.environment.run_state import (  # noqa: E402
+    NO_ENEMY_DISTANCE,
+    RunStateBuilder,
+)
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.evaluator import episode_record  # noqa: E402
 from tower_rl.learning.policies import Policy  # noqa: E402
@@ -94,7 +97,10 @@ from tower_rl.simulation.bring_up import (  # noqa: E402
 from tower_rl.simulation.fleet import tear_down_instance  # noqa: E402
 from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
 from tower_rl.simulation.instance import CloneInstance, adb  # noqa: E402
-from tower_rl.simulation.instrumented_bridge import InstrumentedBridgeClient  # noqa: E402
+from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    InstrumentedBridgeClient,
+    UpgradeSlotLabel,
+)
 from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
 #: The rate a spectated instance runs at. 60 Hz is the guest's stock rate, which
@@ -153,6 +159,73 @@ class Spectator:
         return statistics.fmean(self.final_waves) if self.final_waves else 0.0
 
 
+#: The tower stats the panel shows, and what the HUD calls each one. Compact on
+#: purpose: these are the rows a watcher can find on screen and check against,
+#: not every reading `observation-v2` carries.
+TOWER_STATS: tuple[tuple[str, str, str], ...] = (
+    ("damage", "dmg", "{:.1f}"),
+    ("attackSpeed", "aspd", "{:.2f}"),
+    ("criticalChance", "crit%", "{:.1f}"),
+    ("criticalMult", "critx", "{:.2f}"),
+    ("towerRangeDistance", "range", "{:.2f}"),
+    ("towerHealthRegen", "regen", "{:.3f}"),
+    ("defenseAbs", "defabs", "{:.1f}"),
+    ("defenseRel", "def%", "{:.1f}"),
+    ("wallHealth", "wall", "{:.1f}"),
+)
+
+
+def hud_lines(view: DecisionView) -> list[str]:
+    """The tower stats and the wave/enemy block, as the HUD shows them.
+
+    Two lines, compact, in the game's own units, so a watcher can hold them
+    beside the screen. This is the whole check that `observation-v2` reads what
+    the player reads: the agent's view of the game, written where a human can
+    see it disagree with the game.
+    """
+    hud = view.hud
+    stats = "  ".join(
+        f"{label} {form.format(hud[wire])}" for wire, label, form in TOWER_STATS
+    )
+    distance = hud["closestEnemyDistance"]
+    nearest = "none" if distance >= NO_ENEMY_DISTANCE else f"{distance:.2f}"
+    boss = ""
+    if hud["bossWaveBool"]:
+        boss = "  BOSS" + (" spawned" if hud["bossSpawnedBool"] else "")
+    elif hud["miniBossWaveBool"]:
+        boss = "  mini-boss"
+    wave = (
+        f"enemies {hud['enemiesKilledThisWave']:.0f}/{hud['enemiesSpawnedThisWave']:.0f}"
+        f" of ~{hud['estimatedEnemiesToSpawnThisWave']:.0f}   nearest {nearest}   "
+        f"wave clock {hud['waveTimer']:.1f}/{hud['waveLengthSeconds']:.0f}"
+        f"+{hud['waveCooldownSeconds']:.0f}s   base hp {hud['currentWaveBaseHealth']:.1f}"
+        f"   base dmg {hud['currentWaveBaseDamage']:.2f}   "
+        f"round {hud['gameplayTimeThisRound']:.0f}s{boss}"
+    )
+    return [stats, wave]
+
+
+def label_lines(labels: Sequence[UpgradeSlotLabel]) -> list[str]:
+    """What each offered upgrade row is called, one line per family.
+
+    The policy sees a numbered slot; a human cannot. These names are the game's
+    own, read once per session, and they are here and in the session record for
+    exactly that reason - never in the observation tensor, where a renamed row
+    would change what a checkpoint means.
+    """
+    if not labels:
+        return []
+    lines = []
+    for family in ("attack", "defense", "utility"):
+        named = [
+            f"{label.index}:{label.name}"
+            for label in labels
+            if label.family == family and label.name
+        ]
+        lines.append(f"  {family:<8}{' '.join(named)}")
+    return ["upgrade rows:", *lines]
+
+
 def panel_lines(
     spectator: Spectator,
     *,
@@ -160,6 +233,7 @@ def panel_lines(
     renderer: str,
     episodes_requested: int,
     elapsed_seconds: float,
+    labels: Sequence[UpgradeSlotLabel] = (),
     holding: bool = False,
 ) -> list[str]:
     """The lines to draw, top to bottom. The whole of the rendering decision.
@@ -208,6 +282,12 @@ def panel_lines(
         ended = f"episode {view.episode} ended at wave {view.wave}: {outcome}"
     lines.append(ended)
     lines.append("")
+    if view is not None:
+        lines.extend(hud_lines(view))
+        lines.append("")
+    lines.extend(label_lines(labels))
+    if labels:
+        lines.append("")
     lines.append(f"last {RECENT_ACTIONS} actions, newest first:")
     lines.extend(f"  {action}" for action in reversed(spectator.recent))
     lines.append("")
@@ -477,6 +557,7 @@ def spectate_session(
     policy_name: str,
     actor_id: str,
     renderer: str,
+    labels: Sequence[UpgradeSlotLabel] = (),
 ) -> None:
     """Play episodes, drawing the panel once per decision, until told to stop.
 
@@ -503,6 +584,7 @@ def spectate_session(
                 renderer=renderer,
                 episodes_requested=episodes,
                 elapsed_seconds=time.monotonic() - begun,
+                labels=labels,
             )
         )
         if panel.key().lower() == "q":
@@ -532,6 +614,7 @@ def session_record(
     frame_rate_hz: int,
     decision_cadence: str,
     wall_seconds: float,
+    labels: Sequence[UpgradeSlotLabel] = (),
 ) -> dict[str, Any]:
     """The same per-episode rows the fleet writes, for the episodes just played.
 
@@ -549,6 +632,16 @@ def session_record(
         # The protocol these episodes were played under (ADR 0009).
         "decision_cadence": decision_cadence,
         "wall_seconds": round(wall_seconds, 1),
+        # What the game calls each slot the actions address. For the human
+        # reading this record afterwards: `attack:3` alone does not say which
+        # upgrade the agent bought. Never an input to anything - a renamed row
+        # must not change what a checkpoint means.
+        "upgrade_rows": [
+            {"family": label.family, "index": label.index, "name": label.name,
+             "description": label.description}
+            for label in labels
+            if label.name
+        ],
         "episodes": [episode_record(index, summary) for index, summary in enumerate(summaries)],
     }
 
@@ -657,6 +750,7 @@ def run(arguments: argparse.Namespace) -> int:
     started = time.monotonic()
     summaries: list[EpisodeSummary] = []
     spectator = Spectator()
+    labels: tuple[UpgradeSlotLabel, ...] = ()
     try:
         require_offline(instance)
         require_game_activity(instance)
@@ -675,6 +769,10 @@ def run(arguments: argparse.Namespace) -> int:
         )
         client.connect()
         adapter = InstrumentedRunAdapter(client=client)
+        # Before the first round, which is the only time a command of the
+        # adapter's own initiative may be issued: the labels are constant for
+        # the build, so once is all this session needs.
+        labels = adapter.slot_labels()
         environment = InstrumentedRunEnvironment(
             port=adapter,
             builder=RunStateBuilder(profile_id=expected.profile_id),
@@ -682,7 +780,7 @@ def run(arguments: argparse.Namespace) -> int:
             decision_cadence=decision_cadence_from(arguments),
         )
         try:
-            watch(environment, policy, spectator, summaries, arguments, identity)
+            watch(environment, policy, spectator, summaries, arguments, identity, labels)
         finally:
             adapter.release()
             client.close()
@@ -704,6 +802,7 @@ def run(arguments: argparse.Namespace) -> int:
             frame_rate_hz=arguments.frame_rate_hz,
             decision_cadence=str(decision_cadence_from(arguments)),
             wall_seconds=time.monotonic() - started,
+            labels=labels,
         )
         output = arguments.output_directory / f"{instance.serial}.json"
         output.write_text(json.dumps(record, indent=2))
@@ -720,6 +819,7 @@ def watch(
     summaries: list[EpisodeSummary],
     arguments: argparse.Namespace,
     identity: dict[str, object],
+    labels: Sequence[UpgradeSlotLabel] = (),
 ) -> None:
     """Run the session inside whichever panel was asked for, and hold at the end.
 
@@ -743,6 +843,7 @@ def watch(
             policy_name=name,
             actor_id=actor_id,
             renderer=arguments.renderer,
+            labels=labels,
         )
         panel.draw(
             panel_lines(
@@ -751,6 +852,7 @@ def watch(
                 renderer=arguments.renderer,
                 episodes_requested=arguments.episodes,
                 elapsed_seconds=0.0,
+                labels=labels,
                 holding=True,
             )
         )

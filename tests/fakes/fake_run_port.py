@@ -9,10 +9,12 @@ primary experience come from the real game.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from tower_rl.environment.run_actions import SLOTS_PER_FAMILY
 from tower_rl.environment.run_port import RunPortError
+from tower_rl.environment.run_state import LIVE_WIRE_NAMES, NO_ENEMY_DISTANCE
 
 FAMILIES = ("attack", "defense", "utility")
 
@@ -54,6 +56,11 @@ class FakeRunReading:
     game_speed: float
     play_time: float
     upgrades: tuple[FakeUpgradeReading, ...]
+    #: Every `observation-v2` live reading, raw, under the game's own `Main`
+    #: field name. The whole set is always present, because the real bridge
+    #: refuses to start without it and a double that omitted one would let a
+    #: missing reading pass every test.
+    live: Mapping[str, float]
 
 
 @dataclass
@@ -192,6 +199,7 @@ class FakeRunPort:
             # samples speed at the wrong moment looks correct here.
             game_speed=self.game_speed if self.active else 0.0,
             play_time=100.0 + self.elapsed_ms / 1000.0,
+            live=self._live(),
             upgrades=tuple(
                 FakeUpgradeReading(
                     family=family,
@@ -206,6 +214,42 @@ class FakeRunPort:
                 for (family, index), slot in self.slots.items()
             ),
         )
+
+    def _live(self) -> dict[str, float]:
+        """Every live reading this world has, and a resting zero for the rest.
+
+        The few this double genuinely models move with its own run, so a test of
+        the schema sees values that change the way the game's do. Everything
+        else reads zero, which is exactly what the device saw for every upgrade
+        a run never bought (board #39) and is therefore a legitimate reading
+        rather than a hole.
+        """
+        seconds = self.elapsed_ms / 1000.0
+        wave_seconds = seconds % self.seconds_per_wave
+        live = dict.fromkeys(LIVE_WIRE_NAMES, 0.0)
+        live["damage"] = 3.0 + sum(slot.level for slot in self.slots.values())
+        live["attackSpeed"] = 1.0
+        # Percent on the wire, as `criticalChance` reads on the device.
+        live["criticalChance"] = 1.0
+        live["criticalMult"] = 1.2
+        live["multishotTargets"] = 2.0
+        live["towerRangeDistance"] = 2.7 if self.active else 0.0
+        live["wallHealth"] = 0.2 * self.max_health
+        live["currentWaveBaseHealth"] = 2.35 * 1.29 ** (self.wave - 1)
+        live["currentWaveBaseDamage"] = 1.176 * 1.18 ** (self.wave - 1)
+        live["currentWaveBaseKillCash"] = 1.0
+        live["enemiesSpawnedThisWave"] = float(int(wave_seconds))
+        live["enemiesKilledThisWave"] = float(int(wave_seconds))
+        live["estimatedEnemiesToSpawnThisWave"] = float(20 + self.wave)
+        # The game stores a sentinel rather than an absence, and an idle world
+        # has no enemy at all.
+        live["closestEnemyDistance"] = 1.5 if self.active else NO_ENEMY_DISTANCE
+        live["waveTimer"] = wave_seconds
+        live["waveLengthSeconds"] = self.seconds_per_wave
+        live["waveCooldownSeconds"] = 1.0
+        live["cashEarnedThisWave"] = self.cash_per_second * wave_seconds
+        live["gameplayTimeThisRound"] = seconds
+        return live
 
     def buy_upgrade(
         self, family: str, slot_index: int, *, expected_sequence: int

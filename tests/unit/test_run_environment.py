@@ -11,6 +11,12 @@ from tower_rl.environment.episode import (
     DecisionView,
     TerminationOutcome,
 )
+from tower_rl.environment.features import (
+    ROW_FEATURES,
+    SCALAR_COUNT,
+    SCALAR_FEATURES,
+    encode_state,
+)
 from tower_rl.environment.run_actions import WAIT, upgrade_action
 from tower_rl.environment.run_environment import (
     ADVANCE_TRUNCATED_BY_WALL,
@@ -22,7 +28,7 @@ from tower_rl.environment.run_environment import (
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.environment.run_state import LIVE_FEATURES, RunStateBuilder, hud_readings
 
 #: The cadence `_environment` builds under, rebound per test by the autouse
 #: fixture below. Every test in this module therefore runs twice, once under
@@ -90,6 +96,44 @@ def test_reset_returns_a_valid_active_state() -> None:
     assert state.valid and state.lifecycle == "active"
     assert state.wave == 1
     assert environment.state is state
+
+
+def test_a_state_carries_every_live_reading_and_encodes_all_of_them() -> None:
+    """End to end through the double: source, schema, tensor.
+
+    The fake produces a v2 state because the real bridge does, so the widths the
+    learner is built from are the widths a real observation produces - a double
+    that stopped at v1 would let the whole schema pass untested.
+    """
+    environment, _ = _environment()
+
+    state = environment.reset()
+    features = encode_state(state)
+
+    assert state.valid and set(state.live) == set(LIVE_FEATURES)
+    assert len(features.scalars) == SCALAR_COUNT == 4 + len(LIVE_FEATURES)
+    assert SCALAR_FEATURES[4:] == LIVE_FEATURES
+    # The values are the ones the schema's own transforms produce, in order.
+    assert features.scalars[4 + LIVE_FEATURES.index("damage_log")] == pytest.approx(
+        state.live["damage_log"]
+    )
+    # The round trip back to the unit a human reads is exact.
+    assert hud_readings(state)["damage"] == pytest.approx(math.expm1(state.live["damage_log"]))
+    # An idle-world sentinel is an absence, whatever the distance field says.
+    assert state.live["enemy_present"] == 1.0
+
+
+def test_a_row_carries_its_raw_level_beside_the_fraction() -> None:
+    """v1 fed only `level/max_level`; 3 of 5 and 30 of 50 were the same state."""
+    environment, _ = _environment()
+    state = environment.reset()
+
+    features = encode_state(state)
+    row = features.rows[: len(ROW_FEATURES)]
+
+    assert ROW_FEATURES.index("level") < ROW_FEATURES.index("level_fraction")
+    assert row[ROW_FEATURES.index("level")] == float(state.rows[0].level)
+    assert row[ROW_FEATURES.index("max_level")] == float(state.rows[0].max_level)
 
 
 def test_reset_surfaces_an_instance_that_will_not_start() -> None:

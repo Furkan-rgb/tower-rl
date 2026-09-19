@@ -56,7 +56,8 @@ def _backbone(**overrides: object) -> StackedDqnBackbone:
 
 def test_the_window_carries_the_previous_steps_not_the_current_one() -> None:
     network = StackedPolicyNetwork(SMALL, history_length=3)
-    scalars = torch.arange(12, dtype=torch.float32).view(1, 3, SCALAR_COUNT)
+    # Three steps of distinct scalar vectors, however wide the schema is.
+    scalars = torch.arange(3 * SCALAR_COUNT, dtype=torch.float32).view(1, 3, SCALAR_COUNT)
     state = network.initial_state(1)
 
     stacked = network.stack(scalars, state)

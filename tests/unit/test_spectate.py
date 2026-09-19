@@ -20,9 +20,14 @@ from fakes.fake_run_port import FakeRunPort
 from tower_rl.environment.episode import DecisionView, EpisodeSummary, TerminationOutcome
 from tower_rl.environment.project_state import state_directory
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
-from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.environment.run_state import (
+    LIVE_WIRE_NAMES,
+    NO_ENEMY_DISTANCE,
+    RunStateBuilder,
+)
 from tower_rl.learning.policies import Policy, RandomPolicy
 from tower_rl.simulation.instance import CloneInstance
+from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
@@ -73,6 +78,21 @@ def _view(**overrides: object) -> DecisionView:
         "wave": 3,
         "cash": 1240.0,
         "health_fraction": 0.5,
+        # Every live reading at its resting value, with a few set to something a
+        # watcher could check against the HUD.
+        "hud": {
+            **dict.fromkeys(LIVE_WIRE_NAMES, 0.0),
+            "damage": 12.09,
+            "criticalChance": 5.0,
+            "closestEnemyDistance": NO_ENEMY_DISTANCE,
+            "enemiesKilledThisWave": 26.0,
+            "enemiesSpawnedThisWave": 27.0,
+            "estimatedEnemiesToSpawnThisWave": 21.0,
+            "waveTimer": 12.5,
+            "waveLengthSeconds": 26.0,
+            "waveCooldownSeconds": 9.0,
+            "gameplayTimeThisRound": 343.0,
+        },
         "action": "wait",
         "reward": 0.0,
         "game_ms": 2000.0,
@@ -105,6 +125,78 @@ def test_the_panel_shows_the_state_the_latest_decision_left() -> None:
     assert "attack:2" in text
     assert "episode 1 of 1" in text
     assert "1.0/min" in text, "one decision in one minute"
+
+
+def test_the_panel_shows_the_tower_stats_and_the_wave_in_the_games_own_units() -> None:
+    """The whole point of the block: a watcher can check it against the HUD."""
+    spectator = spectate.Spectator()
+    spectator.observe(_view())
+
+    lines = spectate.panel_lines(
+        spectator,
+        policy="random",
+        renderer="lavapipe",
+        episodes_requested=1,
+        elapsed_seconds=60.0,
+    )
+    text = "\n".join(lines)
+
+    assert "dmg 12.1" in text, "damage is a HUD number, not a log"
+    assert "crit% 5.0" in text, "percent as the game stores it, not a fraction"
+    assert "enemies 26/27 of ~21" in text
+    assert "nearest none" in text, "the sentinel is an absence, never a distance"
+    assert "wave clock 12.5/26+9s" in text
+    assert "round 343s" in text
+
+
+def test_the_panel_names_the_upgrade_rows_a_slot_index_cannot() -> None:
+    spectator = spectate.Spectator()
+    spectator.observe(_view(action="attack:2"))
+    labels = (
+        UpgradeSlotLabel("attack", 0, "Damage", "Tower damage"),
+        UpgradeSlotLabel("attack", 2, "Critical Chance", "Chance to crit"),
+        # The game's own trailing empties: carried on the wire to keep the slot
+        # indices aligned, and never shown.
+        UpgradeSlotLabel("attack", 19, "", ""),
+        UpgradeSlotLabel("defense", 0, "Health", "Tower max health"),
+        UpgradeSlotLabel("utility", 1, "Cash / Wave", "Cash each wave"),
+    )
+
+    text = "\n".join(
+        spectate.panel_lines(
+            spectator,
+            policy="random",
+            renderer="lavapipe",
+            episodes_requested=1,
+            elapsed_seconds=60.0,
+            labels=labels,
+        )
+    )
+
+    assert "2:Critical Chance" in text
+    assert "defense 0:Health" in text
+    assert "1:Cash / Wave" in text
+    assert "19:" not in text
+
+
+def test_a_session_record_names_the_rows_the_actions_addressed() -> None:
+    labels = (
+        UpgradeSlotLabel("attack", 0, "Damage", "Tower damage"),
+        UpgradeSlotLabel("attack", 19, "", ""),
+    )
+
+    record = spectate.session_record(
+        (),
+        {"name": "random"},
+        frame_rate_hz=60,
+        decision_cadence="choice-points",
+        wall_seconds=12.0,
+        labels=labels,
+    )
+
+    assert record["upgrade_rows"] == [
+        {"family": "attack", "index": 0, "name": "Damage", "description": "Tower damage"}
+    ]
 
 
 def test_the_panel_says_how_long_the_agent_held_the_decision() -> None:

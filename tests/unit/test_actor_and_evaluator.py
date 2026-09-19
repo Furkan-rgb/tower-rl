@@ -472,7 +472,8 @@ def test_every_episodes_wave_rows_partition_its_totals() -> None:
 def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
     """The keys are `experiment.wave_statistics.wave_observations` reads, exactly."""
     wave = WaveRecord(
-        wave=2, completed=True, game_ms=30_000.0, decisions=9, health_fraction=0.8, cash_log=4.1
+        wave=2, completed=True, game_ms=30_000.0, decisions=9, advances=14,
+        health_fraction=0.8, cash_log=4.1,
     )
 
     record = episode_record(0, _summary(waves=(wave,)))
@@ -483,6 +484,7 @@ def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
             "completed": True,
             "game_ms": 30_000.0,
             "decisions": 9,
+            "advances": 14,
             "health_fraction": 0.8,
             "cash_log": 4.1,
         }

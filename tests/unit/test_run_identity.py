@@ -19,6 +19,7 @@ from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environmen
 
 from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
+from tower_rl.environment.run_environment import DecisionCadence
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.experiment.run_identity import (
     REFERENCE_FINAL_WAVES,
@@ -170,3 +171,43 @@ def test_the_floors_the_curve_is_read_against_travel_with_the_run() -> None:
     assert params["seed"] == 0
     assert params["reference_scripted"] == REFERENCE_FINAL_WAVES["scripted"]
     assert params["reference_source"] == REFERENCE_FINAL_WAVES["source"]
+
+
+def test_a_run_1_checkpoint_refuses_to_be_resumed_under_choice_points() -> None:
+    """The two cadences pose different decision problems (ADR 0009).
+
+    A checkpoint collected at every slice is not experience a choice-point run
+    can continue, and the refusal names the difference rather than leaving the
+    two to be compared as if they were the same arm.
+    """
+    run_one = checkpoint_identity(
+        RunIdentity.started_now(
+            train.BACKBONE,
+            profile_id="p",
+            source_revision="abc",
+            decision_cadence=DecisionCadence.EVERY_SLICE,
+        )
+    )
+    today = checkpoint_identity(
+        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+    )
+
+    reasons = run_one.incompatibilities(today)
+
+    assert any("decision_cadence differs" in reason for reason in reasons)
+    assert run_one.incompatibilities(run_one) == ()
+    assert today.decision_cadence == DecisionCadence.CHOICE_POINTS
+
+
+def test_the_resolved_configuration_says_which_cadence_collected_the_run(
+    tmp_path: Path,
+) -> None:
+    """A record that cannot say which protocol produced it compares with nothing.
+
+    Read from the environment the arm was built with, like every other cadence
+    setting in the snapshot, rather than from the command line.
+    """
+    arm = _arm(tmp_path)
+
+    assert arm.resolved["decision_cadence"] == "choice-points"
+    assert arm.identity.decision_cadence == DecisionCadence.CHOICE_POINTS

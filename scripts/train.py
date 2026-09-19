@@ -57,7 +57,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import torch  # noqa: E402
-from run_episodes import add_cadence_arguments, cadence_from  # noqa: E402
+from run_episodes import (  # noqa: E402
+    add_cadence_arguments,
+    cadence_from,
+    decision_cadence_from,
+)
 
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
@@ -198,7 +202,12 @@ def build_arm(
     # one place that knows which schemas this code is. A resumed segment gets a
     # run id and a directory of its own - it must not overwrite the resume point
     # it was started from - and says which checkpoint it continues instead.
-    identity = RunIdentity.started_now(name, profile_id=profile_id, source_revision=revision)
+    identity = RunIdentity.started_now(
+        name,
+        profile_id=profile_id,
+        source_revision=revision,
+        decision_cadence=instances[0].environment.decision_cadence,
+    )
     run_id = identity.run_id
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
@@ -260,6 +269,7 @@ def build_arm(
         learner=learner,
         network=network,
         cadence=instances[0].environment.cadence,
+        decision_cadence=instances[0].environment.decision_cadence,
         burn_in=burn_in,
         stride=stride,
         device=device,
@@ -691,7 +701,14 @@ def resume_point(
     # reported and the schema versions this code is; the run id and the source
     # revision in it are deliberately not compared.
     expected = checkpoint_identity(
-        RunIdentity.started_now(BACKBONE, profile_id=profile_id, source_revision=revision)
+        RunIdentity.started_now(
+            BACKBONE,
+            profile_id=profile_id,
+            source_revision=revision,
+            # The cadence this run will collect under: a checkpoint collected
+            # under the other one is not experience it can continue (ADR 0009).
+            decision_cadence=decision_cadence_from(arguments),
+        )
     )
     try:
         state = resume_state(arguments.resume, expected=expected)
@@ -866,6 +883,7 @@ def connect(
             port=adapter,
             builder=RunStateBuilder(profile_id=expected.profile_id),
             cadence=cadence_from(arguments),
+            decision_cadence=decision_cadence_from(arguments),
         ),
     )
 

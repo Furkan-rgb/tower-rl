@@ -19,6 +19,8 @@ from typing import Any
 
 import torch
 
+from tower_rl.environment.run_environment import DecisionCadence
+
 #: Version 2 added `tracking_run_id`, so a resumed run can carry on recording
 #: into the run its parent was recorded under instead of starting a second
 #: series. Everything else a resume needs was already in version 1 - the
@@ -44,6 +46,11 @@ class CheckpointIdentity:
     action_schema: str
     reward_schema: str
     source_revision: str
+    #: Which cadence the experience behind these weights was collected under
+    #: (ADR 0009). Absent from every checkpoint written before choice points
+    #: existed, and those are exactly the every-slice ones - so the default is
+    #: the honest reading of a file that does not say, not a convenience.
+    decision_cadence: str = DecisionCadence.EVERY_SLICE
 
     def incompatibilities(self, other: CheckpointIdentity) -> tuple[str, ...]:
         """Differences that make a resume unsafe. The run id may legitimately differ."""
@@ -54,6 +61,10 @@ class CheckpointIdentity:
             "observation_schema",
             "action_schema",
             "reward_schema",
+            # A policy that learned to act at every slice did not learn the
+            # problem a choice-point run poses it, so the weights are not
+            # experience either run can continue or be measured against.
+            "decision_cadence",
         ):
             mine, theirs = getattr(self, field_name), getattr(other, field_name)
             if mine != theirs:

@@ -85,6 +85,35 @@ Unity-main-thread purchase plus a valid watchdog state. `WAIT` produces `waited`
 and requires its bounded advance and a strictly newer valid observation. A
 failed or ambiguous action is not treated as a successful purchase or as `WAIT`.
 
+## Decision cadence
+
+Two cadences are in play and they are not the same thing. The *world's* cadence
+is `CadenceConfig`: the bridge advances frames until the run ends, the wave
+turns, an upgrade becomes newly affordable, health moves by
+`health_change_fraction`, or the quiet budget `max_quiet_game_ms` is spent. The
+*decision* cadence says which of those stops the policy is asked about.
+
+**The contract is choice points.** A decision is asked for only at a state whose
+legal set contains at least one purchase (`RunState.is_choice_point`, read off
+the action mask so legality and decision-worthiness cannot drift apart). A stop
+whose only legal action is `WAIT` is not a decision — the policy has exactly one
+answer available — so the environment takes that answer itself and advances
+again, inside `InstrumentedRunEnvironment.step` and inside the reset that
+produces an episode's first observation. Reward and game time accrue to the
+surrounding decision: the transition covers the whole span. Every advance in the
+span is an ordinary advance, checked against the host predicate and charged to
+the wave and episode tallies exactly as a decided one is; only the decision is
+withheld. 68% of run 1's decisions were such forced slices (`M2-E004`); see
+[ADR 0009](adr/0009-decisions-at-choice-points.md).
+
+**`every-slice` is the legacy mode.** `DecisionCadence.EVERY_SLICE`, selected by
+`--decision-cadence every-slice`, asks at every cadence stop, which is what run
+1 collected under. It exists to reproduce run 1's protocol and to replay its
+checkpoints, and for nothing else. The cadence is recorded in `resolved_config`,
+in evaluation and session records, and in `CheckpointIdentity`, which refuses a
+cross-cadence resume or evaluation by name; a checkpoint whose identity names no
+cadence is read as `every-slice`.
+
 ## Transition and reward
 
 `RunTransition` contains the previous observation, optional next observation,
@@ -96,11 +125,23 @@ record is the request, `M1B-E003`), invalid reasons, and
 `reward_schema_version`. Its `admissible` property is what gates replay: both
 states valid, a next state present, and no invalid reason.
 
+A transition covers the span between two decisions, which under choice points
+may be several advances. `advances` says how many — one for an ordinary
+decision, zero for one the environment refused before the game was touched — and
+`game_ms` is the measured round-clock game time across them; `events` names
+every cadence condition the span met, each once, in the order they were first
+met. The reward is the wave progress across the whole span, so a decision held
+through two wave boundaries while nothing was affordable is paid for both. A run
+that ends inside a span terminates that transition, with the reward the span
+earned before the end.
+
 The episode record additionally carries `waves`: one row per wave index the
 episode entered, each holding the wave number, whether the episode went on past
 it (`completed`, false only for the wave it ended in), the measured game time it
-took on the game's own round clock, the decisions taken while it was current,
-and the health fraction and log-scaled cash the run held when it began. An
+took on the game's own round clock, the decisions taken and the advances made
+while it was current, and the health fraction and log-scaled cash the run held
+when it began. Decisions are choice points and advances are cadence slices; both
+are recorded because they are the same number only under `every-slice`. An
 advance that crosses a wave boundary is charged whole to the wave that was
 current when it started: the bridge reports one round-clock delta per advance
 and cannot say how it split, so the attribution is stated rather than guessed.

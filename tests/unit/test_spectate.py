@@ -74,6 +74,7 @@ def _view(**overrides: object) -> DecisionView:
         "health_fraction": 0.5,
         "action": "wait",
         "reward": 0.0,
+        "game_ms": 2000.0,
         "done": False,
         "termination": None,
     }
@@ -103,6 +104,26 @@ def test_the_panel_shows_the_state_the_latest_decision_left() -> None:
     assert "attack:2" in text
     assert "episode 1 of 1" in text
     assert "1.0/min" in text, "one decision in one minute"
+
+
+def test_the_panel_says_how_long_the_agent_held_the_decision() -> None:
+    """A decision covers every forced-WAIT slice the environment played through.
+
+    Under choice points a watcher sees one line for what used to be dozens, so
+    the panel says how much game time that one line stands for (ADR 0009).
+    """
+    spectator = spectate.Spectator()
+    spectator.observe(_view(game_ms=15_000.0))
+
+    lines = spectate.panel_lines(
+        spectator,
+        policy="random",
+        renderer="lavapipe",
+        episodes_requested=1,
+        elapsed_seconds=60.0,
+    )
+
+    assert "held 15.0s" in "\n".join(lines)
 
 
 def test_the_panel_counts_episodes_and_means_their_final_waves() -> None:
@@ -347,7 +368,8 @@ def test_a_session_plays_the_episodes_it_was_asked_for_and_draws_every_decision(
     assert environment.on_decision is None, "the observer is handed back"
 
     record = spectate.session_record(
-        summaries, {"name": "random"}, frame_rate_hz=60, wall_seconds=12.0
+        summaries, {"name": "random"}, frame_rate_hz=60,
+        decision_cadence="choice-points", wall_seconds=12.0,
     )
     assert [row["episode_index"] for row in record["episodes"]] == [0, 1, 2]
     assert [row["final_wave"] for row in record["episodes"]] == [
@@ -359,7 +381,10 @@ def test_a_session_plays_the_episodes_it_was_asked_for_and_draws_every_decision(
 
 def test_a_record_names_the_rate_the_session_actually_ran_at() -> None:
     """A session watched at 120 Hz must not be recorded as the 60 Hz default."""
-    record = spectate.session_record((), {"name": "random"}, frame_rate_hz=120, wall_seconds=1.0)
+    record = spectate.session_record(
+        (), {"name": "random"}, frame_rate_hz=120,
+        decision_cadence="choice-points", wall_seconds=1.0,
+    )
 
     assert record["frame_rate_hz"] == 120
     assert spectate.SPECTATE_FRAME_RATE_HZ == 60, "the default is still real time"
@@ -420,7 +445,8 @@ def test_ctrl_c_keeps_every_episode_that_had_already_finished() -> None:
     assert environment.on_decision is None, "the observer is still handed back"
 
     record = spectate.session_record(
-        summaries, {"name": "random"}, frame_rate_hz=60, wall_seconds=9.0
+        summaries, {"name": "random"}, frame_rate_hz=60,
+        decision_cadence="choice-points", wall_seconds=9.0,
     )
     assert [row["episode_index"] for row in record["episodes"]] == [0, 1]
 

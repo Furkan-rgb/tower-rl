@@ -50,6 +50,7 @@ from tower_rl.environment.features import (  # noqa: E402
 )
 from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
+    DecisionCadence,
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
@@ -204,6 +205,7 @@ def actor_record(
     *,
     frame_game_ms: float,
     max_quiet_game_ms: int,
+    decision_cadence: DecisionCadence,
     wall_seconds: float,
 ) -> dict[str, Any]:
     """One actor's durable record: the episodes, and which arm produced them.
@@ -217,6 +219,10 @@ def actor_record(
     record["policy_identity"] = dict(identity)
     record["frame_game_ms"] = frame_game_ms
     record["max_quiet_game_ms"] = max_quiet_game_ms
+    # Which protocol these episodes were played under. Decisions mean different
+    # things under the two, so a record that could not say which cadence
+    # produced it could not be compared with anything (ADR 0009).
+    record["decision_cadence"] = str(decision_cadence)
     record["wall_seconds"] = round(wall_seconds, 1)
     record["episodes_per_hour"] = (
         round(report.valid_episodes / wall_seconds * 3600, 1) if wall_seconds > 0 else 0.0
@@ -249,6 +255,13 @@ def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
         default=600.0,
         help="hang deadline in wall seconds; wall time is not bounded by game time",
     )
+    parser.add_argument(
+        "--decision-cadence",
+        choices=[cadence.value for cadence in DecisionCadence],
+        default=DecisionCadence.CHOICE_POINTS.value,
+        help="which cadence stops the policy is asked about: choice-points is "
+        "the contract, every-slice reproduces run 1's protocol (ADR 0009)",
+    )
 
 
 def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
@@ -257,6 +270,11 @@ def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
         max_quiet_game_ms=arguments.max_quiet_game_ms,
         max_episode_wall_seconds=arguments.max_episode_wall_seconds,
     )
+
+
+def decision_cadence_from(arguments: argparse.Namespace) -> DecisionCadence:
+    """The named cadence policy this invocation collects or plays under."""
+    return DecisionCadence(arguments.decision_cadence)
 
 
 def main() -> int:
@@ -318,6 +336,7 @@ def main() -> int:
         port=adapter,
         builder=RunStateBuilder(profile_id=expected.profile_id),
         cadence=cadence_from(arguments),
+        decision_cadence=decision_cadence_from(arguments),
     )
 
     started = time.monotonic()
@@ -341,6 +360,7 @@ def main() -> int:
         identity,
         frame_game_ms=arguments.frame_game_ms,
         max_quiet_game_ms=arguments.max_quiet_game_ms,
+        decision_cadence=decision_cadence_from(arguments),
         wall_seconds=time.monotonic() - started,
     )
     arguments.output.write_text(json.dumps(record, indent=2))

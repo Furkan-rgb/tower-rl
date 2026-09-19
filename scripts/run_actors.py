@@ -364,6 +364,7 @@ def collect_episodes(
             "--frame-game-ms", str(arguments.frame_game_ms),
             "--max-quiet-game-ms", str(arguments.max_quiet_game_ms),
             "--max-episode-wall-seconds", str(arguments.max_episode_wall_seconds),
+            "--decision-cadence", str(arguments.decision_cadence),
             "--output", str(output),
             *(
                 ["--record-observations", str(arguments.record_observations)]
@@ -458,6 +459,7 @@ def main() -> int:
     report["policy"] = arguments.policy
     report["episodes_per_actor"] = arguments.episodes
     report["frame_game_ms"] = arguments.frame_game_ms
+    report["decision_cadence"] = str(arguments.decision_cadence)
     report["cores_per_instance"] = arguments.cores
     # Per instance index, because one fleet may hold two arms; each actor's
     # entry and each actor's own record carry the rate it collected at.

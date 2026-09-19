@@ -142,6 +142,7 @@ EPISODE_RECORD_KEYS = {
     "valid",
     "final_wave",
     "decisions",
+    "advances",
     "purchases",
     "frames",
     "budgeted_game_ms",

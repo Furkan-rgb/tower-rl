@@ -26,7 +26,11 @@ import train
 from fakes.fake_run_port import FakeRunPort
 from fakes.recording_tracker import RecordedRun
 
-from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
+from tower_rl.environment.run_environment import (
+    CadenceConfig,
+    DecisionCadence,
+    InstrumentedRunEnvironment,
+)
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
@@ -617,6 +621,7 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
             identity,
             frame_game_ms=100.0,
             max_quiet_game_ms=4000,
+            decision_cadence=DecisionCadence.CHOICE_POINTS,
             wall_seconds=60.0,
         )
         (directory / f"fake-{index}.json").write_text(json.dumps(record, indent=2))

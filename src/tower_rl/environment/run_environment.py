@@ -13,6 +13,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 
 from tower_rl.environment.decision_time import (
     BRIDGE_ROUND_TRIP,
@@ -29,7 +30,7 @@ from tower_rl.environment.episode import (
     WaveRecord,
     wave_progress_reward,
 )
-from tower_rl.environment.run_actions import RunActionId, action_index
+from tower_rl.environment.run_actions import WAIT, RunActionId, action_index
 from tower_rl.environment.run_port import AdvanceResultLike, RunPort, RunPortError
 from tower_rl.environment.run_state import (
     ExactRunReadingLike,
@@ -37,6 +38,28 @@ from tower_rl.environment.run_state import (
     RunStateBuilder,
     validate_transition,
 )
+
+
+class DecisionCadence(StrEnum):
+    """When the environment asks the policy for a decision (ADR 0009).
+
+    Not the same thing as `CadenceConfig`, which says when the *world* stops
+    advancing. This says which of those stops the policy is actually asked
+    about. The two are independent: every stop is a normal cadence stop,
+    checked against the host predicate and charged to the episode's tallies
+    either way.
+    """
+
+    #: The contract. A decision is asked for only at a choice point - a state
+    #: whose legal set contains at least one purchase. A slice whose only legal
+    #: action is WAIT is answered by the environment and advanced through, and
+    #: its reward and game time accrue to the surrounding decision.
+    CHOICE_POINTS = "choice-points"
+    #: Run 1's protocol: every cadence slice is a decision, including the 68%
+    #: of them that offered nothing but WAIT (M2-E004). Kept for one purpose -
+    #: reproducing run 1 and replaying its checkpoints under the protocol they
+    #: were collected under - and for nothing else.
+    EVERY_SLICE = "every-slice"
 
 
 @dataclass(frozen=True)
@@ -175,12 +198,17 @@ class _WaveTally:
     #: current - measured time, not budget.
     game_ms: float = 0.0
     decisions: int = 0
+    #: Advances made while this wave was current, decided or not.
+    advances: int = 0
     completed: bool = False
 
 
 @dataclass
 class _EpisodeTally:
     decisions: int = 0
+    #: Advances made inside this episode's decision spans, decided or not.
+    #: Equal to `decisions` under `every-slice`.
+    advances: int = 0
     purchases: int = 0
     invalid_transitions: int = 0
     recovered_transients: int = 0
@@ -242,10 +270,27 @@ class _EpisodeTally:
         if self.waves:
             self.waves[-1].decisions += 1
 
+    def charge_span_advance(self) -> None:
+        """Count one advance of a decision span against the episode and its wave.
+
+        Charged to the wave that was current when the advance began, exactly as
+        its round time is, and counted only for advances a transition covers -
+        the death-boundary settle is a recovery, not a slice of the decision
+        problem, and is already counted as a recovered transient.
+        """
+        self.advances += 1
+        if self.waves:
+            self.waves[-1].advances += 1
+
 
 @dataclass(frozen=True)
 class _Advance:
-    """What advancing to the next decision produced."""
+    """What advancing to the next decision produced.
+
+    One advance, or a whole span of them once forced WAIT slices have been
+    folded together by `_advance_to_choice_point`. The span reads as one
+    advance on purpose: the transition it becomes covers the span.
+    """
 
     state: RunState | None
     events: tuple[DecisionEvent, ...]
@@ -255,6 +300,22 @@ class _Advance:
     #: action's own outcome so the episode is classified as a pipeline failure
     #: rather than as an ordinary wait.
     failure: ActionOutcome | None = None
+    #: Measured round-clock game time across this advance, and how many
+    #: advances it covers.
+    round_ms: float = 0.0
+    advances: int = 1
+
+    def followed_by(self, step: _Advance) -> _Advance:
+        """This span extended by the advance that continued it."""
+        return _Advance(
+            state=step.state,
+            events=_merged(self.events, step.events),
+            requested_game_ms=self.requested_game_ms + step.requested_game_ms,
+            reasons=self.reasons + step.reasons,
+            failure=step.failure,
+            round_ms=self.round_ms + step.round_ms,
+            advances=self.advances + step.advances,
+        )
 
 
 @dataclass
@@ -264,6 +325,9 @@ class InstrumentedRunEnvironment:
     port: RunPort
     builder: RunStateBuilder
     cadence: CadenceConfig = field(default_factory=CadenceConfig)
+    #: Which cadence stops the policy is asked about. `CHOICE_POINTS` is the
+    #: contract; `EVERY_SLICE` exists to reproduce run 1 (ADR 0009).
+    decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS
     #: Where this instance's decision time goes. One profile per instance,
     #: mutated only by the actor thread that drives it (see
     #: `environment/decision_time.py`); a run publishes snapshots of it.
@@ -285,7 +349,13 @@ class InstrumentedRunEnvironment:
     # -- episode lifecycle -------------------------------------------------
 
     def reset(self) -> RunState:
-        """Begin an episode and return its first valid active state."""
+        """Begin an episode and return the first state the policy is asked about.
+
+        Under `CHOICE_POINTS` that is the run's first choice point, which a
+        fresh run need not open on: the environment advances through the
+        opening slices exactly as it does inside `step`, so the first
+        observation of an episode is the same kind of state as every later one.
+        """
         with self.profile.span(BRIDGE_ROUND_TRIP):
             self.port.begin_episode()
         state = self._read_state()
@@ -302,7 +372,8 @@ class InstrumentedRunEnvironment:
         )
         self._tally.enter_wave(state)
         self._last_reasons = ()
-        return state
+        self._state = self._first_choice_point(state)
+        return self._state
 
     @property
     def state(self) -> RunState:
@@ -318,6 +389,7 @@ class InstrumentedRunEnvironment:
             profile_id=state.profile_id,
             final_wave=self._tally.peak_wave,
             decisions=self._tally.decisions,
+            advances=self._tally.advances,
             purchases=self._tally.purchases,
             termination=termination,
             elapsed_wall_seconds=round(time.monotonic() - self._tally.started_at, 3),
@@ -337,6 +409,7 @@ class InstrumentedRunEnvironment:
                     completed=wave.completed,
                     game_ms=round(wave.game_ms, 3),
                     decisions=wave.decisions,
+                    advances=wave.advances,
                     health_fraction=wave.health_fraction,
                     cash_log=wave.cash_log,
                 )
@@ -347,7 +420,14 @@ class InstrumentedRunEnvironment:
     # -- stepping ----------------------------------------------------------
 
     def step(self, action: RunActionId) -> RunTransition:
-        """Execute one semantic decision and advance to the next decision point."""
+        """Execute one semantic decision and advance to the next one.
+
+        Under `CHOICE_POINTS` the next decision is the next choice point, so
+        the transition this returns may cover several advances. Its reward is
+        the wave progress across the whole span and its `game_ms` the measured
+        game time of it; what the environment withheld is the decision, never
+        an advance's accounting.
+        """
         state = self.state
         started = time.monotonic()
         self._tally.decisions += 1
@@ -360,7 +440,7 @@ class InstrumentedRunEnvironment:
             # attributable to the policy instead of to the device.
             return self._finish(
                 state, None, action, ActionOutcome.UNAVAILABLE, started, 0, (),
-                ("action is masked",),
+                ("action is masked",), advances=0, game_ms=0.0,
             )
 
         outcome = ActionOutcome.WAITED
@@ -384,14 +464,16 @@ class InstrumentedRunEnvironment:
                     return self._finish(
                         state, after, action, outcome, started, 0, (),
                         (f"purchase was not confirmed: {purchase_result.reason}",),
+                        advances=0, game_ms=0.0,
                     )
 
-            advanced = self._advance_to_decision(state, action, purchase_result)
+            advanced = self._advance_to_choice_point(state, action, purchase_result)
         except _DeathBoundaryUnresolved as unresolved:
             # A death boundary the world would not settle is a pipeline failure,
             # not a wait: nothing here can say what the game did next.
             return self._finish(
-                state, None, action, unresolved.outcome, started, 0, (), (unresolved.reason,)
+                state, None, action, unresolved.outcome, started, 0, (), (unresolved.reason,),
+                advances=0, game_ms=0.0,
             )
         return self._finish(
             state,
@@ -402,9 +484,94 @@ class InstrumentedRunEnvironment:
             advanced.requested_game_ms,
             advanced.events,
             advanced.reasons,
+            advances=advanced.advances,
+            game_ms=advanced.round_ms,
         )
 
     # -- internals ---------------------------------------------------------
+
+    def _advance_to_choice_point(
+        self,
+        state: RunState,
+        action: RunActionId,
+        purchase_result: AdvanceResultLike | None = None,
+    ) -> _Advance:
+        """Advance until the policy has something to choose, or the run ends.
+
+        Under `EVERY_SLICE` this is one advance and nothing else, which is what
+        run 1 collected. Under `CHOICE_POINTS` a settled state offering only
+        WAIT is not a decision - the policy has one answer available - so the
+        environment takes that answer itself and advances again. Every advance
+        in the span is an ordinary one: same cadence, same divergence check,
+        same wave and episode tallies. The span stops at a choice point, at the
+        end of the run, or at the first thing that makes the transition
+        inadmissible, because a span may not be built across a state the record
+        cannot describe.
+        """
+        span = self._advance(state, action, purchase_result)
+        if self.decision_cadence is DecisionCadence.EVERY_SLICE:
+            return span
+        while self._span_continues(span):
+            assert span.state is not None
+            self._enter(span.state)
+            span = span.followed_by(self._advance(span.state, WAIT))
+        return span
+
+    def _advance(
+        self,
+        state: RunState,
+        action: RunActionId,
+        purchase_result: AdvanceResultLike | None = None,
+    ) -> _Advance:
+        """One advance of a decision span, counted against the episode."""
+        self._tally.charge_span_advance()
+        return self._advance_to_decision(state, action, purchase_result)
+
+    def _span_continues(self, span: _Advance) -> bool:
+        """Whether the environment may withhold the decision and advance again."""
+        return (
+            span.state is not None
+            and span.failure is None
+            and not span.reasons
+            and span.state.valid
+            and span.state.lifecycle == "active"
+            and not span.state.terminal
+            and not span.state.is_choice_point
+        )
+
+    def _first_choice_point(self, state: RunState) -> RunState:
+        """Advance a freshly begun run to the first state worth deciding at.
+
+        The same loop `step` runs, from the state `begin_episode` left. It
+        fails rather than returns when the run ends or goes invalid on the way:
+        an episode whose first observation is not a state a policy can act in
+        never began, exactly as one that never reached an active run did not.
+        """
+        if self.decision_cadence is DecisionCadence.EVERY_SLICE:
+            return state
+        span = _Advance(state, (), 0, (), advances=0)
+        while self._span_continues(span):
+            assert span.state is not None
+            self._enter(span.state)
+            span = span.followed_by(self._advance(span.state, WAIT))
+        if (
+            span.reasons
+            or span.state is None
+            or not span.state.valid
+            or span.state.lifecycle != "active"
+        ):
+            detail = "; ".join(span.reasons) or "the run ended"
+            raise RunPortError(f"the run reached no choice point: {detail}")
+        self._enter(span.state)
+        return span.state
+
+    def _enter(self, state: RunState) -> None:
+        """Make one settled state current for the episode's tallies."""
+        self._tally.peak_wave = max(self._tally.peak_wave, state.wave)
+        if self._tally.waves and state.wave != self._tally.waves[-1].wave:
+            self._tally.enter_wave(state)
+        if state.lifecycle == "active":
+            self._tally.active_game_speed = state.game_speed
 
     def _advance_to_decision(
         self,
@@ -478,6 +645,7 @@ class InstrumentedRunEnvironment:
                 budget,
                 (f"advance was not confirmed: {result.reason}",) + clock_fidelity + truncated,
                 failure=_advance_failure(result.outcome),
+                round_ms=result.round_ms,
             )
 
         # The advance already carries the state the world settled at when it
@@ -500,6 +668,7 @@ class InstrumentedRunEnvironment:
                 self._divergence(result.reason, (DecisionEvent.RUN_ENDED,))
                 + clock_fidelity
                 + truncated,
+                round_ms=result.round_ms,
             )
         events = self._events_between(state, observed)
         return _Advance(
@@ -510,6 +679,7 @@ class InstrumentedRunEnvironment:
             + self._divergence(result.reason, events)
             + clock_fidelity
             + truncated,
+            round_ms=result.round_ms,
         )
 
     def _round_clock_fidelity(self, *, advance_ended_run: bool) -> tuple[str, ...]:
@@ -655,6 +825,9 @@ class InstrumentedRunEnvironment:
         requested_ms: int,
         events: tuple[DecisionEvent, ...],
         reasons: tuple[str, ...],
+        *,
+        advances: int,
+        game_ms: float,
     ) -> RunTransition:
         termination = _classify(next_state, outcome, reasons)
         if termination is not None:
@@ -664,11 +837,7 @@ class InstrumentedRunEnvironment:
             self._last_reasons = tuple(detail)
         if next_state is not None:
             self._state = next_state
-            self._tally.peak_wave = max(self._tally.peak_wave, next_state.wave)
-            if self._tally.waves and next_state.wave != self._tally.waves[-1].wave:
-                self._tally.enter_wave(next_state)
-            if next_state.lifecycle == "active":
-                self._tally.active_game_speed = next_state.game_speed
+            self._enter(next_state)
         transition = RunTransition(
             state=state,
             next_state=next_state,
@@ -682,6 +851,8 @@ class InstrumentedRunEnvironment:
             events=events,
             elapsed_wall_seconds=round(time.monotonic() - started, 4),
             requested_game_ms=requested_ms,
+            advances=advances,
+            game_ms=round(game_ms, 3),
             invalid_reasons=reasons,
         )
         if not transition.admissible:
@@ -709,9 +880,22 @@ class InstrumentedRunEnvironment:
             health_fraction=shown.health_fraction,
             action="wait" if action.is_wait else str(action),
             reward=transition.reward,
+            game_ms=transition.game_ms,
             done=transition.termination is not None,
             termination=transition.termination,
         )
+
+
+def _merged(
+    seen: tuple[DecisionEvent, ...], found: tuple[DecisionEvent, ...]
+) -> tuple[DecisionEvent, ...]:
+    """The events of a span so far, extended by one advance's, without repeats.
+
+    A span that crossed three waves stopped on `wave_changed` three times; the
+    transition says the span changed wave, in the order the conditions were
+    first met, and the count of advances says how often.
+    """
+    return seen + tuple(event for event in found if event not in seen)
 
 
 def _advance_failure(outcome: str) -> ActionOutcome:

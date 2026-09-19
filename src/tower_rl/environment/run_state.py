@@ -120,6 +120,19 @@ class RunState:
     def terminal(self) -> bool:
         return self.lifecycle == "terminal"
 
+    @property
+    def is_choice_point(self) -> bool:
+        """Whether this state offers the policy a purchase to choose.
+
+        A state whose only legal action is `WAIT` is not a decision: the policy
+        has exactly one answer available and the environment already knows what
+        it is. The mask is built from cash and prices in `_build_row`, so this
+        is read off the mask rather than recomputed - what is legal and what is
+        a choice point cannot drift apart. Index 0 is `WAIT`; every other index
+        is a purchase.
+        """
+        return any(self.action_mask[1:])
+
     def available_actions(self) -> tuple[RunActionId, ...]:
         return tuple(
             action for action, allowed in zip(RUN_ACTIONS, self.action_mask, strict=True) if allowed

@@ -80,13 +80,28 @@ Owns the decision problem, and nothing about how a device is reached.
   `InstrumentedRunEnvironment.on_decision`.
 - `run_port.py` — the `RunPort` protocol and `RunPortError`: the whole surface a
   run is driven through.
-- `run_environment.py` — `InstrumentedRunEnvironment` and `CadenceConfig`. It
-  decides when a decision is due, charges the game clock, checks fidelity
+- `run_environment.py` — `InstrumentedRunEnvironment`, `CadenceConfig` and
+  `DecisionCadence`. It decides when a decision is due, charges the game clock,
+  checks fidelity
   (`MIN_ROUND_CLOCK_RATIO`/`MAX_ROUND_CLOCK_RATIO`, `GAME_TIME_INFLATED`,
   `GAME_TIME_DEFLATED`, `ADVANCE_TRUNCATED_BY_WALL`, `BRIDGE_EVENT_DIVERGENCE`)
   and recovers the death-boundary transient.
 - `decision_time.py` — `DecisionTimeProfile` and `DecisionTimeBreakdown`: where
   a decision's wall time went, by bucket.
+
+**Stepping.** One `step` executes the semantic action and then advances the
+world until the policy has something to choose again: under the default
+`DecisionCadence.CHOICE_POINTS` it keeps advancing while the settled observation
+offers only `WAIT` (`RunState.is_choice_point`), and stops at the first choice
+point, at the end of the run, or at the first thing that makes the transition
+inadmissible. The reset that produces an episode's first observation runs the
+same loop. Each internal advance is an ordinary one — same `CadenceConfig`, same
+`_events_between` divergence check, same wave and episode tallies — so what is
+withheld is the decision, never an advance's accounting; the transition that
+comes back carries the span's `advances`, its measured `game_ms`, its events and
+the wave progress across all of it. `DecisionCadence.EVERY_SLICE` asks at every
+stop instead, which is what run 1 collected under, and exists to reproduce it
+(ADR 0009).
 
 **State.** The per-episode tally (`_EpisodeTally`, `_WaveTally`) lives inside
 one `InstrumentedRunEnvironment` instance and leaves it only as an immutable

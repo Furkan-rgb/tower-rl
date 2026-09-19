@@ -264,6 +264,10 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "valid": summary.valid,
         "final_wave": summary.final_wave,
         "decisions": summary.decisions,
+        # Decisions are choice points and advances are cadence slices, so both
+        # units are recorded: a run collected under either cadence can be read
+        # in the other's terms (ADR 0009).
+        "advances": summary.advances,
         "purchases": summary.purchases,
         "frames": summary.frames,
         "budgeted_game_ms": summary.game_ms,
@@ -291,6 +295,7 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
                 "completed": wave.completed,
                 "game_ms": wave.game_ms,
                 "decisions": wave.decisions,
+                "advances": wave.advances,
                 "health_fraction": wave.health_fraction,
                 "cash_log": wave.cash_log,
             }

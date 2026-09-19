@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -222,6 +223,35 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
     torch.save({"format_version": 3, "identity": {}}, future)
     with pytest.raises(CheckpointError, match="format 3 is not supported"):
         load(future)
+
+
+def test_a_checkpoint_that_names_no_cadence_is_read_as_run_1_s(tmp_path: Path) -> None:
+    """Every file written before choice points existed is every-slice experience.
+
+    Its identity dict has no cadence key at all, so the default is the honest
+    reading of what it holds rather than a convenience - and a choice-point run
+    is refused it by name (ADR 0009).
+    """
+    backbone = _backbone().state_dict()
+    identity = asdict(_identity())
+    del identity["decision_cadence"]
+    path = tmp_path / "run-1.pt"
+    torch.save(
+        {
+            "format_version": 1,
+            "identity": identity,
+            "progress": asdict(TrainingProgress(environment_decisions=200_174)),
+            "backbone_state": backbone,
+            "backbone_fingerprint": fingerprint(backbone),
+        },
+        path,
+    )
+
+    loaded = load(path)
+
+    assert loaded.identity.decision_cadence == "every-slice"
+    with pytest.raises(CheckpointError, match="decision_cadence differs"):
+        load(path, expected=_identity(decision_cadence="choice-points"))
 
 
 def test_manifests_are_written_atomically(tmp_path: Path) -> None:

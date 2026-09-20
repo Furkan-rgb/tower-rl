@@ -712,6 +712,85 @@ reading**: the 3-concurrent top-up failed 3/3 (worse than the original
 contention would leave. The cause is under diagnosis; nothing here attributes
 it to a fix.
 
+**Stage 2 — training, 2026-09-20/21.** `stacked-dqn`, seed 0, 7 actors, `all`,
+epsilon-anneal 8000 decisions, run `stacked-dqn-20260920-144627-8125f3`. Ran
+its full budget; early stopping never fired (patience 2, min-improvement 0.2
+waves) because the near-greedy mean rose every period:
+
+| period | game-s at checkpoint | near-greedy mean, final wave | n |
+| --- | --- | --- | --- |
+| 1 | 60000 | 4.76 | 234 |
+| 2 | 120000 | 12.15 | 86 |
+| 3 | 180000 | 14.11 | 71 |
+| 4 | 240000 | 15.20 | 70 |
+
+Arm = period 4 (highest mean, no tie): `checkpoint-gs0240313.pt`, sha256
+`7dd8ba3779e27848048a874e9f9c29001fdfc766b0afda9a2e0bb49c04216771`, at
+`state/runs/session-20260920-144627/stacked-dqn-20260920-144627-8125f3/checkpoints/`.
+`pin_restarts` totalled 0 across all 8 logged collection windows; zero
+`UNLOCK_NOT_APPLIED`/`UNLOCK_REVERTED` lines in the log. The MLflow collection-window
+series stops at step 59005 (~800 valid episodes) even though the run reached
+854 episodes and later decision steps by its own final summary — this gap is
+flagged as unexplained, not chased further; it does not affect any figure
+reported here, all of which come from period-close lines, the final JSON
+summary, or the checkpoint files directly rather than the window series.
+
+Stage summary: `stage m2-run3-train-seed0: exit 0, cleanup ok, instances
+0/7 cleaned, 1 exited during teardown, wall 09:01:04`. Throughput, two
+definitions: the run's own `game_seconds_per_hour` reported 36855.7; the
+MLflow wall-clock span (run start→end, 8.855h, over the final 240313 game-s)
+gives 27137.4 game-s/h. **Wall-time overrun**: 9.02h for training alone is
+within the pre-registered stage-2 box (≤9.0h/11.2h combined in the M2-P003
+protocol) but exceeds the operator's own tighter 6.5h bound for this run by
+~39% — noted beside the result per this doc's own overrun convention, since a
+stage that cost half again what it was priced at is a finding about the
+environment even when the numbers it produced are fine.
+
+**Two-lever confound, stated plainly.** This run differs from run 2 on two
+levers at once — `--upgrade-availability all` (new) and the corrected
+epsilon-anneal schedule of 8000 decisions (also new) — so the improvement over
+run 2 cannot be attributed to either lever alone from this run's data.
+
+**Stage 3 — formal eval of the arm, 2026-09-21.** `m2-run3-eval-arm`, 15
+episodes × 7 actors = 105, `checkpoint:checkpoint-gs0240313.pt`, `all`. This is
+a **deviation** from the pre-registered 49×7 (343): the observed effect size
+(~9 waves between arm and either baseline) against a per-episode sd of
+~2–3 makes 343 wasteful, and the run was already past its wall box, so n=105
+(matching scripted-`all`'s own n) was run instead. Stage summary: `stage
+m2-run3-eval-arm: exit 0, cleanup ok, instances 0/7 cleaned, 1 exited during
+teardown, wall 01:18:29` (inside the 2.5h box). 105/105 valid, 0 actor
+failures, `pin_restarts` 0, no `UNLOCK_*`.
+
+| arm | n | mean final wave | sd | SE |
+| --- | --- | --- | --- | --- |
+| checkpoint-gs0240313 `all` | 105 | 15.98 | 3.68 | 0.361 |
+
+Bootstrap 95% CI (`bootstrap_difference`, seed 0, 10,000 resamples), reported
+as intervals rather than verdicts:
+
+- vs scripted `all` (6.105, n=105): difference **+9.88 [+9.16, +10.56]**
+- vs random `all` (3.556, n=90): difference **+12.43 [+11.64, +13.17]**
+
+Both intervals exclude zero by a wide margin. Note the arm's formal-eval mean
+(15.98, deterministic policy, n=105) is somewhat above period 4's in-training
+near-greedy mean (15.20, n=70, ε-floor actors mid-training) — a different
+measurement taken under different conditions, not a contradiction.
+
+**Stage 4 — recording, 2026-09-21 — no recording produced.** Two attempts,
+per the top-up-style one-retry rule; both failed at instance bring-up with
+different signatures, and per direction the second failure was not retried
+further:
+
+- `m2-run3-spectate-arm` (`state/logs/m2-run3-spectate-arm-20260921-010632.log`):
+  `tower_rl.simulation.instance.CloneError: radios did not turn enable within 25s`
+- `m2-run3-spectate-arm-2` (`state/logs/m2-run3-spectate-arm-2-20260921-010810.log`):
+  `tower_rl.simulation.instance.CloneError: emulator-5556 never became ready:
+  the bridge is not answering on emulator-5556: bridge closed the stream`
+
+Both stages reported `cleanup ok` and left the host verified clean. No
+recording exists under `state/recordings/` for this run; the write-up
+proceeds without one.
+
 ## M2-E008 — Profile-v2 unlock trial: the write lands and the game honours it, but a round start takes it back
 
 **Date:** 2026-09-20

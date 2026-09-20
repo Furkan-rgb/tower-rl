@@ -20,16 +20,18 @@ from tower_rl.simulation.instrumented_run_adapter import (
 )
 
 
-def _observation(sequence: int = 1, *, terminal: bool = False, speed: float = 64.0):
+def _observation(
+    sequence: int = 1, *, terminal: bool = False, idle: bool = False, speed: float = 64.0
+):
     return BridgeObservation(
         sequence=sequence,
-        lifecycle="terminal" if terminal else "active",
+        lifecycle="idle" if idle else ("terminal" if terminal else "active"),
         wave=3,
         cash=100.0,
         health=0.0 if terminal else 4.0,
         max_health=5.0,
         terminal=terminal,
-        round_active=not terminal,
+        round_active=not (terminal or idle),
         game_speed=speed,
         play_time=12.0,
         upgrades=(
@@ -481,3 +483,37 @@ def test_a_game_already_at_home_waits_for_nothing_but_its_own_confirmations() ->
 
     pressed = dict(zip(_actions(client), client.reads_at_send, strict=True))
     assert pressed["start_round"] - pressed["go_home"] == 3
+
+
+def test_the_home_screen_counts_however_the_game_reports_it() -> None:
+    """`M1B-E015`: at home the game may stream an ordinary idle observation.
+
+    Its `terminal` flag is false - nothing is over, nothing is running - so a
+    wait that asked for terminality would never see the home screen it is
+    waiting for and would hold the boundary until its deadline. What the wait
+    asks is the bridge's own question: is a run running.
+    """
+    client = FakeClient(
+        states=[
+            _observation(terminal=True),  # the resume check
+            _observation(terminal=True),  # the boundary's own reading
+            _observation(idle=True),
+            _observation(idle=True),
+            _observation(idle=True),
+        ]
+    )
+
+    _adapter(client).begin_episode()
+
+    pressed = dict(zip(_actions(client), client.reads_at_send, strict=True))
+    assert pressed["start_round"] - pressed["go_home"] == 3
+
+
+def test_a_run_that_will_not_end_fails_the_boundary_rather_than_starting_a_round() -> None:
+    """The wait is bounded by the same budget the rest of the boundary spends."""
+    client = FakeClient(states=[_observation(terminal=True), _observation(terminal=True)])
+
+    with pytest.raises(RunPortError, match="did not settle out of its finished run"):
+        _adapter(client, episode_start_timeout=0.2).begin_episode()
+
+    assert "start_round" not in _actions(client)

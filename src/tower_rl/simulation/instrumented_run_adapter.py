@@ -289,6 +289,11 @@ class InstrumentedRunAdapter:
     def _await_settled_home(self, deadline: float) -> BridgeObservation | BridgeRunUnavailable:
         """Wait until no run is running, and stay sure of it for `HOME_CONFIRMATIONS` states.
 
+        "No run is running" is the bridge's own `RunIsActive` - a round in
+        progress that is not over - read off the streamed state, so the home
+        screen satisfies it however it reports itself and so does a run whose
+        game-over panel is still up.
+
         Returns the last reading, which is the one the round start binds. Each
         read is a streamed state rather than a poll of a cached value, so a game
         that is already at home pays three reads and nothing else; there is no
@@ -297,10 +302,17 @@ class InstrumentedRunAdapter:
         confirmations = 0
         while time.monotonic() < deadline:
             state = self._latest_state()
-            if isinstance(state, BridgeObservation) and not state.terminal:
+            if isinstance(state, BridgeObservation) and state.lifecycle == "active":
                 # The run the boundary just closed is running again - the ending
                 # round's own flow, still going. Start over: what matters is
                 # consecutive agreement, not how many settled states were seen.
+                #
+                # A live run is the *only* reading that starts the wait over.
+                # The home screen reports itself two ways - `run_unavailable`
+                # when the game holds no initialized run, and an ordinary
+                # observation whose scalars describe no run (`lifecycle: idle`,
+                # `M1B-E015`) - and treating the second as a live run would
+                # hang every boundary here until the deadline.
                 confirmations = 0
                 continue
             confirmations += 1

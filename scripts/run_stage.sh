@@ -161,13 +161,20 @@ serial_state() {
 
 #: Whether an instance is gone rather than broken.
 #:
-#: Both readings, never adb alone: adb drops a serial as soon as the device
-#: stops answering, which an emulator with a mounted overlay and a deployed
-#: bridge on it can do while its process is still very much there — and that
-#: process is the thing a cleanup exists to undo. Gone means gone from both.
+#: The process is the discriminator; adb is corroboration, there to catch a
+#: `/proc` read that found nothing because it was looking in the wrong place
+#: or at an unexpected command line rather than because the emulator is gone.
+#:
+#: Which is why the adb half asks whether the instance still *answers*, not
+#: whether it is still listed. A dying emulator is listed as `offline` for a
+#: tick or so after its process is gone, and a cleanup that got
+#: `adb: device offline` is asking milliseconds later: demanding it be dropped
+#: from the listing already reads a transitional state as though it were
+#: settled, and lands back on the false failure this exists to remove. An
+#: instance that is still answering is still never mistaken for a gone one.
 instance_exited() {
   local serial="$1"
-  [ -z "$(serial_state "$serial")" ] || return 1
+  [ "$(serial_state "$serial")" != device ] || return 1
   ! emulator_command_line "${serial#emulator-}" > /dev/null
 }
 

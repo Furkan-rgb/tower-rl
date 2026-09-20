@@ -638,3 +638,28 @@ def test_an_instance_whose_process_survives_is_a_failure_even_if_adb_forgot_it(
     assert result.returncode == 1
     assert "cleanup: emulator-5556 did not clean up" in result.stdout
     assert "cleanup: emulator-5556 exited during teardown" not in result.stdout
+
+
+def test_an_instance_listed_offline_with_no_process_left_has_exited(shims: Shims) -> None:
+    """One adb tick earlier than the case above, and the same situation.
+
+    A dying emulator is listed as `offline` for a moment after its process is
+    gone, and a cleanup that was told `adb: device offline` asks milliseconds
+    later. Requiring adb to have dropped it already would read that
+    transitional state as though it were settled.
+    """
+    bring_up(shims, "emulator-5556")
+    (shims.state / "vanished-emulator-5556").touch()
+    shims.devices_from(3, "emulator-5556\toffline\n")
+    proc = Path(shims.environment["TOWER_STAGE_PROC_ROOT"])
+    stage = shims.stage(f'echo collecting\nrm -rf {proc / "5556"}')
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 0, result.stdout
+    assert "cleanup: emulator-5556 exited during teardown; not cleaned" in result.stdout
+    assert "did not clean up" not in result.stdout
+    assert (
+        "stage test-stage: exit 0, cleanup ok, instances 0/1 cleaned, 1 exited during teardown"
+        in result.stdout
+    )

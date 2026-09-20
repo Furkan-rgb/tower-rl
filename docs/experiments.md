@@ -162,20 +162,20 @@ set the kill threshold it is watched against. `M2-E007`'s 5.495 and 6.429 are
 **not** carried over: they were measured on profile v1's six purchasable rows,
 and `M2-E008` shows the roster under `all` is a different environment.
 
-    scripts/run_actors.py --actors 7 --episodes 48 --policy random \
+    scripts/run_actors.py --actors 7 --episodes 49 --policy random \
         --decision-cadence choice-points --upgrade-availability all \
         --renderer host --frame-rate-hz 120 \
         --output-directory <records>/eval-random
-    scripts/run_actors.py --actors 7 --episodes 48 --policy scripted ...
+    scripts/run_actors.py --actors 7 --episodes 49 --policy scripted ...
 
-`--episodes 48` on 7 actors = **336 attempted**, for the **333 valid episodes an
+`--episodes 49` on 7 actors = **343 attempted**, for the **333 valid episodes an
 arm** that `M2-P002`'s first amendment fixed from the sd stage 1 actually
-measured (`required_episodes(2.3, 0.5, power=0.8)`). At 336 attempted the target
-is reached only at run 2's own validity (≥99.107%, which is exactly what its
-random arm returned), so the baselines carry no margin of their own and are
-guarded instead by the 300-valid re-run floor below; the model arm, which is
-collected once from a checkpoint that cannot be recollected cheaply, is given
-the extra episode an actor. `CheapestFirstPolicy` still
+measured (`required_episodes(2.3, 0.5, power=0.8)`). Every arm of this run —
+both baselines and the model — is collected at 343 attempted, because 336 would
+reach 333 valid only at ≥99.107% validity, exactly the rate run 2's random arm
+returned and therefore no margin at all; at 343 an arm clears 333 down to 97.1%
+validity, below anything run 2 recorded (99.1%, 100%, 99.4%, 99.8%).
+`CheapestFirstPolicy` still
 never holds at a choice point; under `all` it buys the cheapest affordable row
 of a much wider menu, which is a different floor and is why it is re-measured
 rather than assumed.
@@ -269,11 +269,10 @@ the alternative is an arm chosen, by construction, for being its worst.
     scripts/report_arms.py random=<...> scripted=<...> stacked-dqn=<...> \
         --mlflow-run <the training run>
 
-**`--episodes 49` on 7 actors = 343 attempted**, one more an actor than the
-baselines, because 336 attempted reaches 333 valid only at ≥99.107% validity —
-exactly run 2's random-arm rate, so a set at 336 has no margin at all. At 343
-the arm clears 333 valid down to a validity of 97.1%, below anything run 2
-recorded (99.1%, 100%, 99.4%, 99.8%).
+**`--episodes 49` on 7 actors = 343 attempted**, the same set the baselines are
+collected at and for the same reason: 343 clears 333 valid down to a validity
+of 97.1%, where 336 would need the ≥99.107% run 2's random arm happened to
+return.
 
 There is still **no set-A selection** over candidate checkpoints, for
 `M2-P002`'s reason: `M2-E002` ran one at n=14 and could not separate its
@@ -439,17 +438,17 @@ line below is priced on the slowest of the four, **35,539** (360,000 ÷ 35,539 =
 matches how a stage's clock actually runs. Evaluation arms are priced from
 `M2-E007`'s two measured arms decomposed into fixed overhead and per-episode
 cost — random 1,962 s at 91.9 wall-s an episode is 492 s of overhead, scripted
-2,349 s at 108.3 is 616 s — which at 48–49 episodes an actor gives ~1.36 h
-(random) and ~1.62 h (scripted). Every training line includes the ~0.9 h of bring-up, session report and
+2,349 s at 108.3 is 616 s — which at 49 episodes an actor gives **~1.39 h**
+(random) and **~1.65 h** (scripted). Every training line includes the ~0.9 h of bring-up, session report and
 teardown that `M2-E002` found a budget estimate must include.
 
 | stage | what runs | timebox |
 | --- | --- | --- |
-| 1 — baselines under `all` | random + scripted, `--episodes 48` each (≈2.98 h at v1 density) | **≤4.0 h** |
+| 1 — baselines under `all` | random + scripted, `--episodes 49` each (≈3.03 h at v1 density) | **≤4.0 h** |
 | 2 — training | one seed, ≤360,000 game-s, + session | **≤11.1 h** |
 | 3 — evaluation | the declared arm at `--episodes 49`, + the greedy probe (≈1.9 h at v1 density) | **≤2.3 h** |
-| 4 — recordings | ≤6 checkpoints × ~5 min | **≤0.5 h** |
-| | | **≤17.9 h total** |
+| 4 — recordings | ≤6 checkpoints × ~5 min **+ bring-up per recording** | **≤1.0 h** |
+| | | **≤18.4 h total** |
 
 Every figure is an **upper bound**. Early stopping can end stage 2 at any
 checkpoint from the third onward: run 2 stopped both seeds at period 4, which
@@ -458,8 +457,10 @@ failure at period 2 ends stage 2 at **≤4.3 h** (3.4 h of collection plus the
 session).
 
 The stage-1 and stage-3 boxes carry the headroom the density change asks for:
-≈2.98 h against ≤4.0 h absorbs a 38% rise in per-episode wall time, and ≈1.9 h
-against ≤2.3 h about 20%. Run 2's own arms suggest the rise will be smaller than
+≈3.03 h against ≤4.0 h absorbs a 32% rise in per-episode wall time, and ≈1.9 h
+against ≤2.3 h about 20%. Stage 4 is priced at ≤1.0 h rather than the ~0.5 h
+the six five-minute rounds themselves cost, because each recording brings an
+instance up and tears it down and that overhead was never measured. Run 2's own arms suggest the rise will be smaller than
 that — random and scripted cost 0.541 and 0.538 wall-seconds a game-second
 despite 27.5 against 20.7 decisions an episode, so wall time tracks advances per
 game-second rather than decision count — while seed 1, which took 41% more

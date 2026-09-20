@@ -284,6 +284,18 @@ applied; timeout or contradictory change is ambiguous and quarantines the actor.
 In-run cash rises continuously from kills, so a cash delta is evidence recorded
 with the transition, never the confirmation signal itself.
 
+Which rows are available at all is a configuration of the environment rather
+than a property of the image. `--upgrade-availability image` is the default and
+is what every baseline so far was measured under: the six rows the v1 image
+offers. Under `all` the environment reopens every row the game really has, at
+each round start, through the bridge - the game recomputes its real rows'
+availability whenever a round begins, so the write belongs to the round start
+and nowhere else, and a "profile v2 base image" could not have carried it
+(`M2-E008`, [ADR 0011](adr/0011-upgrade-availability-is-applied-at-round-start.md)).
+The profile id is the image's under either value; the availability travels in
+the run identity and in every record, and the baselines belong to the
+availability they were collected under.
+
 Live 29.0.3 evidence in `M1B-E001` constrains two further details. In-run
 availability is `unlocked`, not `maxed`, and a positive cost within current cash;
 `tier_unlocked` is reported state and is false for every offered upgrade, so it

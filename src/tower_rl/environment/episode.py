@@ -274,6 +274,20 @@ class EpisodeSummary:
     #: One row per wave index this episode entered, in order. Empty only for a
     #: summary assembled without the environment's per-wave tally.
     waves: tuple[WaveRecord, ...] = ()
+    #: Which upgrade rows this episode was playable with (ADR 0011). `image` is
+    #: what the profile image offers and what every baseline so far was measured
+    #: under; `all` means every real row was reopened at the round start. Two
+    #: episodes played under different availability are not the same decision
+    #: problem, so the episode says which it was rather than leaving it to the
+    #: run it happened to be filed under.
+    upgrade_availability: str = "image"
+    #: Which cadence stops the policy was asked at (ADR 0009), for the same
+    #: reason: a decision means a different thing under each. Both are strings
+    #: rather than the environment's own enums because this module is below
+    #: `run_environment`, which imports it; the environment sets both from its
+    #: own configuration, and the defaults here are only what a summary
+    #: assembled without one reads as.
+    decision_cadence: str = "choice-points"
 
     @property
     def valid(self) -> bool:

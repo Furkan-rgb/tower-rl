@@ -8,6 +8,7 @@ wire protocol, which the environment should not know about.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from tower_rl.environment.run_state import ExactRunReadingLike
@@ -54,6 +55,44 @@ class AdvanceResultLike(CommandResultLike, Protocol):
     def state(self) -> ExactRunReadingLike | None: ...
 
 
+@runtime_checkable
+class UpgradeSlotLabelLike(Protocol):
+    """What the game calls one upgrade row.
+
+    The environment wants one thing from a label: whether the row exists at
+    all. The three name arrays are twenty slots wide and their tails are empty,
+    so a slot with no name is a slot the game does not offer - which is what
+    `upgrade availability` has to be read against (ADR 0011).
+    """
+
+    @property
+    def family(self) -> str: ...
+
+    @property
+    def index(self) -> int: ...
+
+    @property
+    def name(self) -> str: ...
+
+
+@runtime_checkable
+class UnlockFamilyStateLike(Protocol):
+    """How much of one family's in-run availability array stands true.
+
+    A length and a count, read back out of the game after the write, never a
+    restatement of what was asked for: a write that did not take reports as one.
+    """
+
+    @property
+    def family(self) -> str: ...
+
+    @property
+    def length(self) -> int: ...
+
+    @property
+    def true_count(self) -> int: ...
+
+
 class RunPortError(RuntimeError):
     """The port could not complete a request; the caller classifies the episode."""
 
@@ -67,6 +106,25 @@ class RunPort(Protocol):
 
     def begin_episode(self) -> None:
         """Bring the instance into an active run, raising `RunPortError` if it cannot."""
+        ...
+
+    def slot_labels(self) -> Sequence[UpgradeSlotLabelLike]:
+        """What the game calls each upgrade row; constant for a build.
+
+        Asked for before a round rather than inside one, and answered from the
+        port's own cache thereafter.
+        """
+        ...
+
+    def unlock_all_upgrades(self) -> Sequence[UnlockFamilyStateLike]:
+        """Make every in-run upgrade row purchasable, and report what then stands.
+
+        Issued at a round start under `UpgradeAvailability.ALL` and never
+        otherwise. The game recomputes its real rows' availability whenever a
+        round begins (`M2-E008`), so this is a round-scoped capability rather
+        than a property of the image, and the counts come back read out of the
+        game after the write so a write that did not take is visible here.
+        """
         ...
 
     def buy_upgrade(self, family: str, slot: int, *, expected_sequence: int) -> AdvanceResultLike:

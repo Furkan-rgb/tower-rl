@@ -259,6 +259,7 @@ def test_a_session_record_names_the_rows_the_actions_addressed() -> None:
         {"name": "random"},
         frame_rate_hz=60,
         decision_cadence="choice-points",
+        upgrade_availability="image",
         wall_seconds=12.0,
         labels=labels,
     )
@@ -538,7 +539,7 @@ def test_a_session_plays_the_episodes_it_was_asked_for_and_draws_every_decision(
 
     record = spectate.session_record(
         summaries, {"name": "random"}, frame_rate_hz=60,
-        decision_cadence="choice-points", wall_seconds=12.0,
+        decision_cadence="choice-points", upgrade_availability="image", wall_seconds=12.0,
     )
     assert [row["episode_index"] for row in record["episodes"]] == [0, 1, 2]
     assert [row["final_wave"] for row in record["episodes"]] == [
@@ -552,11 +553,14 @@ def test_a_record_names_the_rate_the_session_actually_ran_at() -> None:
     """A session watched at 120 Hz must not be recorded as the 60 Hz default."""
     record = spectate.session_record(
         (), {"name": "random"}, frame_rate_hz=120,
-        decision_cadence="choice-points", wall_seconds=1.0,
+        decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
     )
 
     assert record["frame_rate_hz"] == 120
     assert spectate.SPECTATE_FRAME_RATE_HZ == 60, "the default is still real time"
+    # And which rows it could buy from: two sessions under different
+    # availability are two decision problems (ADR 0011).
+    assert record["upgrade_availability"] == "image"
 
 
 def test_q_stops_at_the_next_decision_and_keeps_the_episodes_already_finished() -> None:
@@ -615,7 +619,7 @@ def test_ctrl_c_keeps_every_episode_that_had_already_finished() -> None:
 
     record = spectate.session_record(
         summaries, {"name": "random"}, frame_rate_hz=60,
-        decision_cadence="choice-points", wall_seconds=9.0,
+        decision_cadence="choice-points", upgrade_availability="image", wall_seconds=9.0,
     )
     assert [row["episode_index"] for row in record["episodes"]] == [0, 1]
 
@@ -1013,12 +1017,12 @@ def test_a_record_says_where_the_recording_and_its_track_are() -> None:
     """A record read afterwards is where the two files are lined up from."""
     record = spectate.session_record(
         (), {"name": "random"}, frame_rate_hz=60,
-        decision_cadence="choice-points", wall_seconds=1.0,
+        decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
         recording={"video": "/tmp/session.mp4", "anchor_monotonic": 50.0},
     )
 
     assert record["recording"] == {"video": "/tmp/session.mp4", "anchor_monotonic": 50.0}
     assert "recording" not in spectate.session_record(
         (), {"name": "random"}, frame_rate_hz=60,
-        decision_cadence="choice-points", wall_seconds=1.0,
+        decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
     ), "a session that recorded nothing says nothing about a recording"

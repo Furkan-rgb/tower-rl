@@ -19,7 +19,7 @@ from typing import Any
 
 import torch
 
-from tower_rl.environment.run_environment import DecisionCadence
+from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailability
 
 #: Version 2 added `tracking_run_id`, so a resumed run can carry on recording
 #: into the run its parent was recorded under instead of starting a second
@@ -67,6 +67,12 @@ class CheckpointIdentity:
     #: existed, and those are exactly the every-slice ones - so the default is
     #: the honest reading of a file that does not say, not a convenience.
     decision_cadence: str = DecisionCadence.EVERY_SLICE
+    #: Which upgrade rows the experience behind these weights was collected with
+    #: (ADR 0011). Absent from every checkpoint written before upgrade
+    #: availability existed, and those were all collected on what the profile
+    #: image offers - so the default is the honest reading of a file that does
+    #: not say.
+    upgrade_availability: str = UpgradeAvailability.IMAGE
 
     def incompatibilities(self, other: CheckpointIdentity) -> tuple[str, ...]:
         """Differences that make a resume unsafe. The run id may legitimately differ."""
@@ -81,8 +87,18 @@ class CheckpointIdentity:
             # problem a choice-point run poses it, so the weights are not
             # experience either run can continue or be measured against.
             "decision_cadence",
+            # Nor did a policy that learned on six purchasable rows learn the
+            # problem a fully unlocked run poses: the legal set is a different
+            # one, so the weights and the baselines are not interchangeable
+            # (ADR 0011).
+            "upgrade_availability",
         ):
-            mine, theirs = getattr(self, field_name), getattr(other, field_name)
+            # Read as the strings they are declared as. Two of these are
+            # written from `StrEnum` members, and a reason quoting
+            # `<UpgradeAvailability.IMAGE: 'image'>` at an operator names the
+            # type rather than the value they chose.
+            mine = str(getattr(self, field_name))
+            theirs = str(getattr(other, field_name))
             if mine != theirs:
                 reasons.append(f"{field_name} differs: {mine!r} vs {theirs!r}")
         return tuple(reasons)
@@ -97,12 +113,13 @@ def identity_hash(identity: CheckpointIdentity) -> str:
     record that only carried a path would stop meaning anything the moment the
     file was copied.
 
-    `decision_cadence` is deliberately not hashed. This token names a run, and a
-    run collects under one cadence from beginning to end, so the field can never
-    distinguish two identities that share a run id - while hashing it would
-    re-key every checkpoint and record written before the field existed, and the
-    tokens already cited in selection records and reports would stop resolving.
-    Using a checkpoint under the wrong cadence is refused by
+    `decision_cadence` and `upgrade_availability` are deliberately not hashed.
+    This token names a run, and a run collects under one cadence and one
+    availability from beginning to end, so neither field can distinguish two
+    identities that share a run id - while hashing either would re-key every
+    checkpoint and record written before it existed, and the tokens already
+    cited in selection records and reports would stop resolving. Using a
+    checkpoint under the wrong cadence or the wrong availability is refused by
     `incompatibilities`, which says which field differs; that is the instrument
     for the refusal, and this is the instrument for naming the run.
     """
@@ -113,6 +130,7 @@ def identity_hash(identity: CheckpointIdentity) -> str:
 def _hashed_fields(identity: CheckpointIdentity) -> dict[str, Any]:
     fields = asdict(identity)
     del fields["decision_cadence"]
+    del fields["upgrade_availability"]
     return fields
 
 

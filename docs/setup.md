@@ -149,6 +149,30 @@ NDK or a different `profile.cmake` legitimately produces a different
 `libtower_bridge.so`, which is a new directory and a new `current`, not a
 failure — but the build path no longer does.
 
+#### Production digests, and the one that has to be reinstalled
+
+The digest is a property of the source, this NDK and this `profile.cmake`, so a
+source change moves it. The current ones, each built with the recipe above,
+host cross-compile only, nothing installed:
+
+```text
+662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b   installed at state/bridge/current
+b9852e6494056fedaf1b142af2368dbaa4ac975c7dfea2ffbff44b16f1d76284   source before ADR 0011
+f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with ADR 0011, 2026-09-20
+```
+
+`f9d5f161…` is the production build with `unlock_state` and
+`unlock_all_upgrades` in it, which is how `--upgrade-availability all` is
+applied at each round start ([ADR 0011](adr/0011-upgrade-availability-is-applied-at-round-start.md)).
+The move changed the production artifact and nothing else: the diagnostics build
+is byte-for-byte what it was (`1a8d2467b2a1f73a0e3e2ca7e6e8fb780a0b8cbec9d97e005e448c3fa5777289`,
+the digest `M2-E008` ran on), because the code only left an `#ifdef` it was
+inside.
+
+**`state/bridge/current` must be reinstalled** before any run uses the new
+commands — install and repoint per the recipe above, copy, verify, then move the
+pointer. That is a device-side step and is not done by this change.
+
 `TOWER_BRIDGE_BUILD_DIR` overrides all of this and deploys straight out of a
 build tree, which is how a bridge under development is run; every ordinary run
 leaves it unset and takes the installed one.

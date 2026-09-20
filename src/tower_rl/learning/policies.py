@@ -13,7 +13,7 @@ nothing but which policy is asked for an action.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -113,7 +113,11 @@ class WaitOnlyPolicy:
 
 
 def checkpoint_policy(
-    path: Path, *, device: torch.device | None = None
+    path: Path,
+    *,
+    decision_cadence: str,
+    upgrade_availability: str,
+    device: torch.device | None = None,
 ) -> tuple[StackedDqnBackbone, CheckpointIdentity]:
     """Rebuild the backbone a checkpoint holds, as a policy to evaluate.
 
@@ -125,6 +129,16 @@ def checkpoint_policy(
     weights, and one rebuilt with a shorter history would load them and act on a
     window the run never saw.
 
+    The two settings that are *not* in the weights are taken from the caller and
+    checked: the cadence the policy will be asked at (ADR 0009) and the upgrade
+    rows it will be offered (ADR 0011). Neither changes a tensor, so neither
+    would fail to load - a checkpoint trained on the image's six purchasable
+    rows would quietly play a fully unlocked run, and the wave it scored would
+    be read against floors measured under something else. They are required
+    arguments rather than optional ones because a caller that forgot to say is
+    exactly the silent case; this is the refusal the resume path already has
+    (`checkpoint.load(expected=...)`), through the same `incompatibilities`.
+
     On the CPU by default. Evaluation is one forward pass per decision against
     an emulator that takes orders of magnitude longer to answer, so a GPU buys
     nothing and a fleet of evaluating actors would contend for one.
@@ -133,6 +147,17 @@ def checkpoint_policy(
     played has to name which checkpoint played it.
     """
     checkpoint = load(path)
+    played = replace(
+        checkpoint.identity,
+        decision_cadence=str(decision_cadence),
+        upgrade_availability=str(upgrade_availability),
+    )
+    # Every other field is copied from the checkpoint, so only these two can
+    # differ: `incompatibilities` stays the one place that says what a
+    # difference means, and its reasons name both values.
+    refusals = checkpoint.identity.incompatibilities(played)
+    if refusals:
+        raise ValueError(f"{path} cannot be played here: {'; '.join(refusals)}")
     settings = checkpoint.resolved_config
     if checkpoint.identity.backbone != "stacked-dqn":
         raise ValueError(

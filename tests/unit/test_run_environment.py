@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
-from fakes.fake_run_port import FakeCommandResult, FakeRunPort
+from fakes.fake_run_port import DEVICE_REAL_ROWS, FakeCommandResult, FakeRunPort
 
 from tower_rl.environment.episode import (
     ActionOutcome,
@@ -23,12 +24,20 @@ from tower_rl.environment.run_environment import (
     BRIDGE_EVENT_DIVERGENCE,
     GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
+    UNLOCK_NOT_APPLIED,
+    UNLOCK_REVERTED,
     CadenceConfig,
     DecisionCadence,
     InstrumentedRunEnvironment,
+    UpgradeAvailability,
 )
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.environment.run_state import LIVE_FEATURES, RunStateBuilder, hud_readings
+from tower_rl.environment.run_state import (
+    INVENTORY_TOO_WIDE,
+    LIVE_FEATURES,
+    RunStateBuilder,
+    hud_readings,
+)
 
 #: The cadence `_environment` builds under, rebound per test by the autouse
 #: fixture below. Every test in this module therefore runs twice, once under
@@ -58,6 +67,7 @@ def both_cadences(
 
 def _environment(
     decision_cadence: DecisionCadence | None = None,
+    upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE,
     **port_kwargs: object,
 ) -> tuple[InstrumentedRunEnvironment, FakeRunPort]:
     port = FakeRunPort(**port_kwargs)  # type: ignore[arg-type]
@@ -66,8 +76,26 @@ def _environment(
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
         decision_cadence=decision_cadence or CADENCE,
+        upgrade_availability=upgrade_availability,
     )
     return environment, port
+
+
+def _unlocked_environment(
+    **port_kwargs: object,
+) -> tuple[InstrumentedRunEnvironment, FakeRunPort]:
+    """An environment playing every real row, on an instance shaped like the device.
+
+    The device's arrays are twenty wide with 17 / 18 / 13 real rows and an
+    unpriced tail (`M2-E008`), and the image offers six of them; both are what
+    the availability has to be read against.
+    """
+    return _environment(
+        upgrade_availability=UpgradeAvailability.ALL,
+        real_rows=dict(DEVICE_REAL_ROWS),
+        offered={"attack": 4, "defense": 2, "utility": 0},
+        **port_kwargs,
+    )
 
 
 #: A world that goes broke the moment it buys. The default fake always has cash
@@ -1188,3 +1216,141 @@ def test_a_run_that_dies_before_it_offers_a_choice_took_no_decision() -> None:
     assert summary.valid, "a death is a complete episode, whenever it happened"
     assert summary.decisions == 0
     assert summary.advances > 0 and summary.final_wave >= 1
+
+
+def test_availability_all_reopens_every_real_row_at_the_round_start() -> None:
+    """ADR 0011: the round start is where an unlocked run is made, and remade.
+
+    The image offers six rows. Under `all` every row the game really has is
+    purchasable in the first observation of the episode - and the empty tail
+    stays unpurchasable, because a row the game does not have is priced zero
+    and no availability flag changes that.
+    """
+    environment, port = _unlocked_environment()
+
+    state = environment.reset()
+
+    real = {
+        upgrade_action(family, index)
+        for family, count in DEVICE_REAL_ROWS.items()
+        for index in range(count)
+    }
+    assert all(row.unlocked for row in state.rows if row.action in real)
+    assert state.valid
+    tail = [row for row in state.rows if row.action not in real]
+    assert tail, "the device's arrays are wider than its rows"
+    assert not any(row.available for row in tail), (
+        "an empty row is priced zero and is never legal, however it is flagged"
+    )
+    assert port.slots[("utility", 0)].unlocked, "a family the image offers nothing of"
+
+
+def test_availability_image_asks_the_game_for_no_unlock_at_all() -> None:
+    """The default is the profile image, and it touches nothing.
+
+    The port refuses the unlock command outright; an episode that never issues
+    one is unaffected, which is what says the write is configuration rather
+    than a step of the boundary.
+    """
+    environment, port = _environment(
+        refuse_to_unlock=True,
+        real_rows=dict(DEVICE_REAL_ROWS),
+        offered={"attack": 4, "defense": 2, "utility": 0},
+    )
+
+    state = environment.reset()
+
+    assert state.valid
+    utility = next(row for row in state.rows if row.action == upgrade_action("utility", 0))
+    assert not utility.unlocked, "the image offers no utility row and nothing reopened one"
+    assert environment.summarize(TerminationOutcome.OPERATOR_STOP).upgrade_availability == "image"
+
+
+def test_an_unlock_the_game_reads_back_short_is_not_an_unlocked_episode() -> None:
+    """A read-back below the family's real rows is a write that did not take.
+
+    No retry: the episode is not the episode it was configured to be, so the
+    boundary fails by name and the actor counts it exactly as it counts a round
+    that would not open.
+    """
+    environment, _ = _unlocked_environment(unlock_short_families=frozenset({"defense"}))
+
+    with pytest.raises(RunPortError, match=UNLOCK_NOT_APPLIED):
+        environment.reset()
+
+
+def test_an_unlock_the_bridge_cannot_carry_is_not_an_unlocked_episode() -> None:
+    """The other half of the same failure: the command never landed at all."""
+    environment, _ = _unlocked_environment(refuse_to_unlock=True)
+
+    with pytest.raises(RunPortError, match=UNLOCK_NOT_APPLIED):
+        environment.reset()
+
+
+def test_a_real_row_that_locks_again_inside_an_episode_is_never_silent() -> None:
+    """The invariant `all` is worth anything for, checked at every decision.
+
+    The game recomputes availability at a round start (`M2-E008`). If it ever
+    does so under a running episode, the decision problem has changed and every
+    number the episode goes on to report is measured against nothing - so the
+    state is invalid and the episode is classified, loudly.
+    """
+    environment, _ = _unlocked_environment(revert_unlocks_after_advances=0)
+
+    environment.reset()
+    transition = environment.step(WAIT)
+
+    assert transition.next_state is not None and not transition.next_state.valid
+    assert any(
+        reason.startswith(UNLOCK_REVERTED)
+        for reason in transition.next_state.invalid_reasons
+    )
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+    assert not transition.admissible
+    detail = environment.summarize(TerminationOutcome.OBSERVATION_INVALID).termination_detail
+    assert any(UNLOCK_REVERTED in reason for reason in detail)
+
+
+def test_an_episode_says_which_upgrade_availability_it_was_played_under() -> None:
+    """Two episodes under different availability are two decision problems."""
+    environment, _ = _unlocked_environment()
+
+    environment.reset()
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.upgrade_availability == "all"
+
+
+def test_the_contract_names_both_ways_an_unlocked_run_can_stop_being_one() -> None:
+    """`docs/environment-contract.md` is what a reader trusts; this proves it says it.
+
+    An invariant that fails an episode by name has to be findable by that name:
+    a record holding `UNLOCK_REVERTED` is only diagnosable if the contract
+    explains what it means.
+    """
+    contract = (
+        Path(__file__).resolve().parents[2] / "docs" / "environment-contract.md"
+    ).read_text()
+
+    assert UNLOCK_NOT_APPLIED in contract and UNLOCK_REVERTED in contract
+    assert "--upgrade-availability" in contract
+    assert "adr/0011-upgrade-availability-is-applied-at-round-start.md" in contract
+    # And that the refusal it claims is the one that exists: an evaluation is
+    # refused by `checkpoint_policy`, a resume by `checkpoint.load`.
+    assert "policies.checkpoint_policy" in contract
+
+
+def test_a_game_with_more_rows_than_the_schema_numbers_fails_closed() -> None:
+    """A wider inventory is a different action schema, and says so by name.
+
+    `run-action-v1` numbers twenty slots a family. A build that named more of
+    them is not something to renumber silently, and it must not surface as a
+    `ValueError` out of the action constructor either: the round start refuses
+    the episode with the reason the observation builder gives the same fact.
+    """
+    environment, _ = _unlocked_environment(extra_named_slots=1)
+
+    with pytest.raises(RunPortError, match=INVENTORY_TOO_WIDE) as refused:
+        environment.reset()
+
+    assert UNLOCK_NOT_APPLIED in str(refused.value)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -31,9 +32,15 @@ from tower_rl.environment.episode import (
     WaveRecord,
     wave_progress_reward,
 )
-from tower_rl.environment.run_actions import WAIT, RunActionId, action_index
+from tower_rl.environment.run_actions import (
+    WAIT,
+    RunActionId,
+    action_index,
+    upgrade_action,
+)
 from tower_rl.environment.run_port import AdvanceResultLike, RunPort, RunPortError
 from tower_rl.environment.run_state import (
+    INVENTORY_TOO_WIDE,
     ExactRunReadingLike,
     RunState,
     RunStateBuilder,
@@ -62,6 +69,38 @@ class DecisionCadence(StrEnum):
     #: reproducing run 1 and replaying its checkpoints under the protocol they
     #: were collected under - and for nothing else.
     EVERY_SLICE = "every-slice"
+
+
+class UpgradeAvailability(StrEnum):
+    """Which upgrade rows a run is played with (ADR 0011).
+
+    A property of the environment configuration, not of the profile image. The
+    image is still profile v1 either way: what changes is whether the
+    environment reopens the rows the image keeps shut, at each round start,
+    through the bridge (`M2-E008`).
+    """
+
+    #: Whatever the profile image offers, which is what every run so far was
+    #: measured under: six purchasable rows, 4 attack, 2 defense, 0 utility.
+    IMAGE = "image"
+    #: Every row the game really has is purchasable. The game recomputes its
+    #: real rows' availability at each round start, so this is applied at each
+    #: round start and held to for every decision of the episode.
+    ALL = "all"
+
+
+#: The unlock a round start asked for did not land, so the episode was never the
+#: episode it was configured to be. Raised out of `reset` rather than recorded
+#: on a state: there is no episode yet to make invalid, and the actor's existing
+#: handling of a boundary that would not open already counts it.
+UNLOCK_NOT_APPLIED = "UNLOCK_NOT_APPLIED"
+
+#: A real upgrade row that was unlocked at the round start is locked again in a
+#: state the policy is being asked about. Whatever the cause, the decision
+#: problem stopped being the one this episode was configured for, and an episode
+#: measured across the change is measured against nothing. Loud rather than
+#: silent: the state is invalid and the episode is classified.
+UNLOCK_REVERTED = "UNLOCK_REVERTED"
 
 
 @dataclass(frozen=True)
@@ -332,6 +371,10 @@ class InstrumentedRunEnvironment:
     #: Which cadence stops the policy is asked about. `CHOICE_POINTS` is the
     #: contract; `EVERY_SLICE` exists to reproduce run 1 (ADR 0009).
     decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS
+    #: Which upgrade rows this environment plays with (ADR 0011). `IMAGE` is
+    #: what the profile image offers and is what every baseline so far was
+    #: measured under; `ALL` reopens every real row at each round start.
+    upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE
     #: Where this instance's decision time goes. One profile per instance,
     #: mutated only by the actor thread that drives it (see
     #: `environment/decision_time.py`); a run publishes snapshots of it.
@@ -349,6 +392,11 @@ class InstrumentedRunEnvironment:
     _episodes: int = field(default=0, init=False)
     _tally: _EpisodeTally = field(default_factory=_EpisodeTally, init=False)
     _last_reasons: tuple[str, ...] = field(default=(), init=False)
+    #: The rows the game really has, by action, read once from the port's slot
+    #: labels: a slot whose label is empty is a slot the game does not offer.
+    #: Resolved only under `ALL`, which is the only configuration that has
+    #: anything to say about them.
+    _real_rows: frozenset[RunActionId] | None = field(default=None, init=False)
 
     # -- episode lifecycle -------------------------------------------------
 
@@ -360,8 +408,18 @@ class InstrumentedRunEnvironment:
         opening slices exactly as it does inside `step`, so the first
         observation of an episode is the same kind of state as every later one.
         """
+        if self.upgrade_availability is UpgradeAvailability.ALL:
+            # Before the round, because the labels are a boundary command the
+            # port will not issue inside one. Cached after the first episode.
+            self._resolve_real_rows()
         with self.profile.span(BRIDGE_ROUND_TRIP):
             self.port.begin_episode()
+        if self.upgrade_availability is UpgradeAvailability.ALL:
+            # After the round has started and before the first observation: the
+            # game recomputes its real rows' availability at every round start,
+            # so a write made any earlier would already have been taken back
+            # (`M2-E008`).
+            self._apply_upgrade_availability()
         state = self._read_state()
         if state is None or state.lifecycle != "active":
             raise RunPortError("the instance did not reach an active run")
@@ -391,6 +449,8 @@ class InstrumentedRunEnvironment:
         return EpisodeSummary(
             episode_id=self._episode_id,
             profile_id=state.profile_id,
+            upgrade_availability=str(self.upgrade_availability),
+            decision_cadence=str(self.decision_cadence),
             final_wave=self._tally.peak_wave,
             decisions=self._tally.decisions,
             advances=self._tally.advances,
@@ -773,8 +833,95 @@ class InstrumentedRunEnvironment:
         with self.profile.span(OBSERVATION_DECODE):
             state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
         if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
-            return self._settle_death_boundary(state)
-        return state
+            state = self._settle_death_boundary(state)
+        return self._availability_held(state)
+
+    # -- upgrade availability ----------------------------------------------
+
+    def _resolve_real_rows(self) -> frozenset[RunActionId]:
+        """Which upgrade rows the game really has, by the names it gives them.
+
+        The three name arrays are twenty slots wide whatever the build offers,
+        and their tails are empty: 17 attack rows, 18 defense, 13 utility on the
+        supported baseline (`#39`, `M2-E008`). An empty-named slot is priced
+        zero and is never legal whatever its availability flag says, so it is
+        neither unlocked nor checked for.
+        """
+        if self._real_rows is None:
+            labels = [label for label in self.port.slot_labels() if label.name]
+            # A build that names more slots than `run-action-v1` numbers is a
+            # different action schema, and it fails closed here by the same
+            # reason the builder gives it - not as a `ValueError` out of
+            # `upgrade_action`, which nothing in this path is prepared to
+            # classify.
+            if any(label.index >= self.builder.slots_per_family for label in labels):
+                raise RunPortError(f"{UNLOCK_NOT_APPLIED}: {INVENTORY_TOO_WIDE}")
+            try:
+                self._real_rows = frozenset(
+                    upgrade_action(label.family, label.index) for label in labels
+                )
+            except ValueError as unknown:
+                # A family this schema has no actions for, for the same reason:
+                # what the game offers and what the policy can address have
+                # stopped being the same set.
+                raise RunPortError(f"{UNLOCK_NOT_APPLIED}: {unknown}") from unknown
+            if not self._real_rows:
+                raise RunPortError(
+                    f"{UNLOCK_NOT_APPLIED}: the port named no upgrade row, so there is "
+                    "nothing to hold unlocked"
+                )
+        return self._real_rows
+
+    def _apply_upgrade_availability(self) -> None:
+        """Reopen every real row for the round that has just begun.
+
+        One attempt and no retry loop: an unlock that did not land means this
+        episode is not the episode it was configured to be, which is a boundary
+        that would not open and is classified as one.
+        """
+        expected = Counter(
+            str(action.family) for action in self._resolve_real_rows() if action.family
+        )
+        try:
+            reported = self.port.unlock_all_upgrades()
+        except RunPortError as failure:
+            raise RunPortError(f"{UNLOCK_NOT_APPLIED}: {failure}") from failure
+        stood = {family.family: family.true_count for family in reported}
+        short = sorted(
+            f"{family} {stood.get(family, 0)}/{count}"
+            for family, count in expected.items()
+            if stood.get(family, 0) < count
+        )
+        if short:
+            raise RunPortError(
+                f"{UNLOCK_NOT_APPLIED}: the game read back fewer unlocked rows than it "
+                f"has: {', '.join(short)}"
+            )
+
+    def _availability_held(self, state: RunState) -> RunState:
+        """Refuse a state whose real rows are not the ones this run was configured with.
+
+        The invariant `ALL` is worth anything for: every real row is purchasable
+        at every decision. It is checked on the states the policy is asked about
+        - an active run - because a terminal run offers no decision and the game
+        legitimately recomputes availability at the round boundary behind it.
+        """
+        if self.upgrade_availability is not UpgradeAvailability.ALL:
+            return state
+        if state.lifecycle != "active" or self._real_rows is None:
+            return state
+        locked = tuple(
+            str(row.action) for row in state.rows
+            if row.action in self._real_rows and not row.unlocked
+        )
+        if not locked:
+            return state
+        return replace(
+            state,
+            valid=False,
+            invalid_reasons=state.invalid_reasons
+            + (f"{UNLOCK_REVERTED}: {len(locked)} real rows are locked, from {locked[0]}",),
+        )
 
     def _settle_death_boundary(self, state: RunState) -> RunState:
         """Let the game take one more frame so the death boundary can resolve.

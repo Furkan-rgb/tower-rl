@@ -25,8 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_episodes import (  # noqa: E402
     POLICIES,
     add_cadence_arguments,
+    add_upgrade_availability_argument,
     cadence_from,
     decision_cadence_from,
+    upgrade_availability_from,
 )
 
 from tower_rl.environment.episode import EpisodeSummary  # noqa: E402
@@ -67,6 +69,7 @@ def main() -> int:
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
+    add_upgrade_availability_argument(parser)
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "comparison.json"
     )
@@ -97,6 +100,10 @@ def main() -> int:
         builder=RunStateBuilder(profile_id=expected.profile_id),
         cadence=cadence_from(arguments),
         decision_cadence=decision_cadence_from(arguments),
+        # One availability for every arm, for the same reason there is one
+        # cadence: arms that differed in what they could buy would be measuring
+        # the availability rather than the policy (ADR 0011).
+        upgrade_availability=upgrade_availability_from(arguments),
     )
     actors = {
         name: Actor(

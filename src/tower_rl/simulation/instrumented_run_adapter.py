@@ -17,11 +17,13 @@ from tower_rl.environment.run_port import RunPortError
 from tower_rl.simulation.instrumented_bridge import (
     PROTOCOL_VERSION,
     BridgeCommandResult,
+    BridgeCompatibilityError,
     BridgeObservation,
     BridgeRunUnavailable,
     BridgeStaleObservationError,
     InstrumentedBridgeClient,
     InstrumentedBridgeError,
+    UnlockFamilyState,
     UpgradeSlotLabel,
 )
 
@@ -96,6 +98,41 @@ class InstrumentedRunAdapter:
                     f"{type(failure).__name__}: {failure}"
                 ) from failure
         return self._labels
+
+    def unlock_all_upgrades(self) -> tuple[UnlockFamilyState, ...]:
+        """Make every in-run upgrade row purchasable on the live game.
+
+        Issued at a round start, which is the one moment it can be: the game
+        recomputes its real rows' availability whenever a round begins, so the
+        write has to follow the start rather than precede it (`M2-E008`).
+
+        That makes it the one adapter command that is *not* routed through
+        `_command_between_rounds`. The hazard that guard exists for is stranding
+        the sequence the environment is holding, and this command is issued by
+        the environment itself, inside `reset`, before it has read the
+        observation its first decision will bind - so it binds the sequence it
+        reads here and the environment reads afresh afterwards.
+        """
+        state = self._latest_state()
+        try:
+            return self.client.unlock_all_upgrades(expected_sequence=state.sequence)
+        except BridgeCompatibilityError as incompatible:
+            # A bridge that cannot parse the command has no such kind: it was
+            # built before ADR 0011. That is an install problem with one answer,
+            # so the failure says the answer rather than the symptom.
+            raise RunPortError(
+                "the installed bridge has no unlock commands, so upgrade "
+                "availability cannot be applied: state/bridge/current must carry "
+                "a build that has them (see docs/setup.md, 'Production digests, "
+                f"and the one that has to be reinstalled'): {incompatible}"
+            ) from incompatible
+        except BridgeStaleObservationError as stale:
+            raise RunPortError(f"the bridge refused the unlock as stale: {stale}") from stale
+        except InstrumentedBridgeError as failure:
+            raise RunPortError(
+                f"the bridge could not reopen the upgrade rows: "
+                f"{type(failure).__name__}: {failure}"
+            ) from failure
 
     # -- lifecycle ---------------------------------------------------------
 

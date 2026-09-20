@@ -24,7 +24,11 @@ import torch
 
 from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
-from tower_rl.environment.run_environment import CadenceConfig, DecisionCadence
+from tower_rl.environment.run_environment import (
+    CadenceConfig,
+    DecisionCadence,
+    UpgradeAvailability,
+)
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.network import NetworkConfig
@@ -78,6 +82,12 @@ class RunIdentity:
     #: makes, like the arm and the profile, which is why it lives here and not
     #: with the schema versions below.
     decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS
+    #: Which upgrade rows this run plays with (ADR 0011). The same kind of
+    #: choice as the cadence - the operator makes it, and it changes what the
+    #: episodes mean - so it is named here beside it. The profile id stays the
+    #: image's either way: availability is applied at each round start, not
+    #: baked into the image.
+    upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE
 
     @classmethod
     def started_now(
@@ -87,6 +97,7 @@ class RunIdentity:
         profile_id: str,
         source_revision: str,
         decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS,
+        upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE,
     ) -> RunIdentity:
         """A fresh identity for a run about to start, with a new run id."""
         return cls(
@@ -95,6 +106,7 @@ class RunIdentity:
             profile_id=profile_id,
             source_revision=source_revision,
             decision_cadence=decision_cadence,
+            upgrade_availability=upgrade_availability,
         )
 
 
@@ -115,6 +127,7 @@ def checkpoint_identity(identity: RunIdentity) -> CheckpointIdentity:
         reward_schema=REWARD_SCHEMA_VERSION,
         source_revision=identity.source_revision,
         decision_cadence=identity.decision_cadence,
+        upgrade_availability=identity.upgrade_availability,
     )
 
 
@@ -128,6 +141,7 @@ def resolved_config(
     network: NetworkConfig,
     cadence: CadenceConfig,
     decision_cadence: DecisionCadence,
+    upgrade_availability: UpgradeAvailability,
     burn_in: int,
     stride: int,
     device: torch.device,
@@ -214,6 +228,11 @@ def resolved_config(
         # choice-point run counts choices (ADR 0009) - which is why the budget
         # beside it is game time, a unit the cadence cannot move.
         "decision_cadence": str(decision_cadence),
+        # Which upgrade rows the policy could actually buy. `image` is the
+        # profile image's own six; `all` reopens every real row at each round
+        # start, which is a different decision problem and a different set of
+        # baselines (ADR 0011).
+        "upgrade_availability": str(upgrade_availability),
         "block_game_seconds": arguments.block_game_seconds,
         "device": str(device),
         # The guest rate this arm actually collected at: a fleet run raises

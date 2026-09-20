@@ -536,12 +536,10 @@ struct Command {
   float speed;
   bool advance;
   bool slot_labels;
-#ifdef TOWER_BRIDGE_DIAGNOSTICS
-  // The profile-v2 trial instrument: `unlock_state` reports the three in-run
-  // availability arrays, `unlock_all` writes them true first.
+  // Upgrade availability: `unlock_state` reports the three in-run availability
+  // arrays, `unlock_all` writes them true first (ADR 0011).
   bool unlock_state;
   bool unlock_all;
-#endif
   uint32_t budget_game_millis;
   float frame_game_millis;
   float health_change_fraction;
@@ -703,7 +701,6 @@ bool ReadUpgradeEvidence(const Il2CppApi& api, const MainFields& fields, const c
          evidence->tier_unlocked <= 1 && evidence->maxed <= 1;
 }
 
-#ifdef TOWER_BRIDGE_DIAGNOSTICS
 // The mirror of `ReadPrimitiveArray`: the same bounds and element-size checks,
 // the same pointer arithmetic, the `memcpy` the other way round. Refuses a null
 // array, an index past the end, and an element type whose size is not `T`'s, so
@@ -740,11 +737,11 @@ bool ResolveUnlockArray(const Il2CppApi& api, Il2CppObject* main, const FamilyFi
   return *length != 0 && *length <= kMaxEntriesPerFamily;
 }
 
-// The profile-v2 trial instrument (board #54). `unlock_all` sets every element
-// of the three in-run availability arrays true on the live `Main`; either way
-// the three arrays are then read back and reported as a length and a count of
-// trues, which is the whole answer the trial needs - it asks whether a write
-// lands in memory at all, not what any one slot holds.
+// How upgrade availability is applied (ADR 0011). `unlock_all` sets every
+// element of the three in-run availability arrays true on the live `Main`;
+// either way the three arrays are then read back and reported as a length and a
+// count of trues. A count, not a per-slot picture: the host already sees every
+// slot's own flag in the observation, and holds the episode to it there.
 //
 // Every family is resolved and read before anything is written, so a schema
 // that has drifted - a missing array, a length the bridge refuses - costs
@@ -753,9 +750,11 @@ bool ResolveUnlockArray(const Il2CppApi& api, Il2CppObject* main, const FamilyFi
 // way, which is why the report is emitted either way and is a read-back rather
 // than a restatement of what was asked for.
 //
-// Diagnostics builds only, on both paths. A bridge that can change what the
-// game offers a policy has no place in a measured run, and the read-back is
-// gated with it so the production artifact stays byte-for-byte what it was.
+// In the production build, because an ordinary measured run depends on it: the
+// game recomputes its real rows' availability at every round start, so a run
+// played under `--upgrade-availability all` needs this command at each round
+// start (`M2-E008`). It is never issued under `image`, which is the default and
+// what every baseline so far was measured under.
 bool ReportUnlockState(const Il2CppApi& api, const MainFields& fields, bool unlock_all,
                        std::string* json) {
   Il2CppObject* main = nullptr;
@@ -827,7 +826,6 @@ bool ReportUnlockState(const Il2CppApi& api, const MainFields& fields, bool unlo
   json->append("]}");
   return true;
 }
-#endif
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
 // Value sampling for a named list of `Main` fields, so a candidate observation
@@ -1312,7 +1310,6 @@ bool ParseCommand(const std::string& payload, Command* command) {
     command->family = nullptr; command->index = 0;
     return true;
   }
-#ifdef TOWER_BRIDGE_DIAGNOSTICS
   command->unlock_state = false;
   command->unlock_all = false;
   if (tail == "unlock_state\"}" || tail == "unlock_all_upgrades\"}") {
@@ -1321,7 +1318,6 @@ bool ParseCommand(const std::string& payload, Command* command) {
     command->family = nullptr; command->index = 0;
     return true;
   }
-#endif
   constexpr char kAdvanceKey[] = "advance\",\"budget_game_ms\":";
   constexpr char kFrameKey[] = ",\"frame_game_ms\":";
   constexpr char kHealthKey[] = ",\"health_change_fraction\":";
@@ -2152,10 +2148,9 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           outcome = "rejected";
           reason = "slot_labels_unreadable";
         }
-#ifdef TOWER_BRIDGE_DIAGNOSTICS
       } else if (command.unlock_state) {
         // The report frame goes out before the state and the result, exactly as
-        // the slot labels do, so the trial reads one answer per round trip.
+        // the slot labels do, so one round trip carries one answer.
         std::string report;
         if (ReportUnlockState(api, fields, command.unlock_all, &report)) {
           if (!SendFrame(client, report)) return;
@@ -2164,7 +2159,6 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           outcome = "rejected";
           reason = "unlock_state_unreadable";
         }
-#endif
       } else if (command.set_speed) {
         // This confirms that the slot holds the requested value, which is not
         // the same claim as the world running at it: the loop below reads back

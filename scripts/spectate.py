@@ -69,9 +69,11 @@ from run_episodes import (  # noqa: E402
     CHECKPOINT_SELECTOR,
     POLICIES,
     add_cadence_arguments,
+    add_upgrade_availability_argument,
     cadence_from,
     decision_cadence_from,
     policy_from,
+    upgrade_availability_from,
 )
 
 from tower_rl.environment.episode import (  # noqa: E402
@@ -901,6 +903,7 @@ def session_record(
     *,
     frame_rate_hz: int,
     decision_cadence: str,
+    upgrade_availability: str,
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
     live_ranges: Mapping[str, Sequence[float]] | None = None,
@@ -921,6 +924,8 @@ def session_record(
         "frame_rate_hz": frame_rate_hz,
         # The protocol these episodes were played under (ADR 0009).
         "decision_cadence": decision_cadence,
+        # Which upgrade rows this session could buy from (ADR 0011).
+        "upgrade_availability": upgrade_availability,
         "wall_seconds": round(wall_seconds, 1),
         # What the game calls each slot the actions address. For the human
         # reading this record afterwards: `attack:3` alone does not say which
@@ -1018,6 +1023,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="where the episode records are written",
     )
     add_cadence_arguments(parser)
+    add_upgrade_availability_argument(parser)
     arguments = parser.parse_args(argv)
     if arguments.episodes < 0:
         raise SystemExit("--episodes cannot be negative; 0 means until you press q")
@@ -1037,7 +1043,11 @@ def run(arguments: argparse.Namespace) -> int:
     host_is_free()
     # Before the device is touched: a checkpoint that cannot be rebuilt should
     # fail now, not after an emulator has been brought up for it.
-    policy, identity = policy_from(arguments.policy)
+    policy, identity = policy_from(
+        arguments.policy,
+        decision_cadence=decision_cadence_from(arguments),
+        upgrade_availability=upgrade_availability_from(arguments),
+    )
     expected = compatibility(bridge_build_directory())
     instance = CloneInstance(index=arguments.instance_index)
 
@@ -1071,6 +1081,7 @@ def run(arguments: argparse.Namespace) -> int:
             identity,
             frame_rate_hz=arguments.frame_rate_hz,
             decision_cadence=str(decision_cadence_from(arguments)),
+            upgrade_availability=str(upgrade_availability_from(arguments)),
             wall_seconds=time.monotonic() - started,
             labels=labels,
             live_ranges=spectator.live_ranges,
@@ -1132,6 +1143,7 @@ def run(arguments: argparse.Namespace) -> int:
             builder=RunStateBuilder(profile_id=expected.profile_id),
             cadence=cadence_from(arguments),
             decision_cadence=decision_cadence_from(arguments),
+            upgrade_availability=upgrade_availability_from(arguments),
         )
         try:
             watch(

@@ -74,8 +74,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch  # noqa: E402
 from run_episodes import (  # noqa: E402
     add_cadence_arguments,
+    add_upgrade_availability_argument,
     cadence_from,
     decision_cadence_from,
+    upgrade_availability_from,
 )
 
 from tower_rl.environment.project_state import state_directory  # noqa: E402
@@ -225,11 +227,16 @@ def build_arm(
     # snapshot it records. Reading it back off an instance would let a fleet
     # whose instances somehow disagreed name one of them and say nothing.
     decision_cadence = decision_cadence_from(arguments)
+    # The availability is the run's in exactly the same way: one argument fixes
+    # what every actor may buy, for the identity its checkpoints are keyed on
+    # and for the snapshot it records (ADR 0011).
+    upgrade_availability = upgrade_availability_from(arguments)
     identity = RunIdentity.started_now(
         name,
         profile_id=profile_id,
         source_revision=revision,
         decision_cadence=decision_cadence,
+        upgrade_availability=upgrade_availability,
     )
     run_id = identity.run_id
     run_dir = parent / run_id
@@ -295,6 +302,7 @@ def build_arm(
         network=network,
         cadence=instances[0].environment.cadence,
         decision_cadence=decision_cadence,
+        upgrade_availability=upgrade_availability,
         burn_in=burn_in,
         stride=stride,
         device=device,
@@ -672,6 +680,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     add_cadence_arguments(parser)
+    add_upgrade_availability_argument(parser)
     parser.add_argument(
         "--run-dir",
         type=Path,
@@ -810,6 +819,9 @@ def resume_point(
             # The cadence this run will collect under: a checkpoint collected
             # under the other one is not experience it can continue (ADR 0009).
             decision_cadence=decision_cadence_from(arguments),
+            # A checkpoint collected on other rows is not experience this run
+            # can continue either (ADR 0011).
+            upgrade_availability=upgrade_availability_from(arguments),
         )
     )
     try:
@@ -1010,6 +1022,7 @@ def connect(
             builder=RunStateBuilder(profile_id=expected.profile_id),
             cadence=cadence_from(arguments),
             decision_cadence=decision_cadence_from(arguments),
+            upgrade_availability=upgrade_availability_from(arguments),
         ),
     )
 

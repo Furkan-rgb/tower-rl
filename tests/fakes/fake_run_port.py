@@ -18,6 +18,33 @@ from tower_rl.environment.run_state import LIVE_WIRE_NAMES, NO_ENEMY_DISTANCE
 
 FAMILIES = ("attack", "defense", "utility")
 
+#: How many of each family's twenty slots the supported baseline really has -
+#: the rest of each name array is empty and priced zero (`#39`, `M2-E008`). Not
+#: the default: this double's instance has twenty real rows per family, and a
+#: test of upgrade availability asks for these widths explicitly when it wants
+#: the device's shape - a named tail that no availability flag can make
+#: purchasable.
+DEVICE_REAL_ROWS = {"attack": 17, "defense": 18, "utility": 13}
+
+
+@dataclass(frozen=True)
+class FakeSlotLabel:
+    """What this instance calls one upgrade row (`UpgradeSlotLabelLike`)."""
+
+    family: str
+    index: int
+    name: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class FakeUnlockFamilyState:
+    """One family's availability array as this instance reads it back."""
+
+    family: str
+    length: int
+    true_count: int
+
 
 @dataclass(frozen=True)
 class FakeUpgradeReading:
@@ -102,6 +129,25 @@ class FakeRunPort:
     max_health: float = 5.0
     game_speed: float = 8.0
     start_cash: float = 80.0
+    #: How many rows of each family this instance really has; the rest of each
+    #: family's twenty slots is an empty, unpriced tail.
+    real_rows: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(FAMILIES, SLOTS_PER_FAMILY)
+    )
+    #: Families whose `unlock_all_upgrades` read-back reports one fewer true
+    #: than the instance really has, which is a write that did not take.
+    unlock_short_families: frozenset[str] = frozenset()
+    #: Set to raise from `unlock_all_upgrades`, the shape of a bridge that could
+    #: not carry the command at all.
+    refuse_to_unlock: bool = False
+    #: Extra named slots past `SLOTS_PER_FAMILY`, which is what a game build
+    #: wider than `run-action-v1` numbers would report. Nothing can address
+    #: them, so a host that met one has to fail closed rather than renumber.
+    extra_named_slots: int = 0
+    #: Advances after which one real row goes back to locked - the game having
+    #: recomputed availability under the episode, which the environment must
+    #: hear rather than absorb.
+    revert_unlocks_after_advances: int | None = None
     #: Set to raise from `begin_episode`, to exercise failure classification.
     refuse_to_start: bool = False
     #: Episode ordinals, counting from one, whose `begin_episode` fails. Unlike
@@ -158,8 +204,12 @@ class FakeRunPort:
         self.slots = {}
         for family in FAMILIES:
             for index in range(SLOTS_PER_FAMILY):
+                real = index < self.real_rows[family]
                 self.slots[(family, index)] = _Slot(
-                    cost=5.0 + 5.0 * index,
+                    # A slot the game does not really have is priced zero, as the
+                    # device's empty tail rows are, and is therefore never
+                    # purchasable however its availability flag reads.
+                    cost=5.0 + 5.0 * index if real else 0.0,
                     unlocked=index < self.offered[family],
                 )
 
@@ -176,6 +226,48 @@ class FakeRunPort:
         self.elapsed_ms = 0.0
         self.active = True
         self.sequence += 1
+
+    def slot_labels(self) -> tuple[FakeSlotLabel, ...]:
+        """Every slot, named only where this instance really has a row."""
+        return tuple(
+            FakeSlotLabel(
+                family=family,
+                index=index,
+                name=(
+                    f"{family} {index}"
+                    if index < self.real_rows[family] or index >= SLOTS_PER_FAMILY
+                    else ""
+                ),
+            )
+            for family in FAMILIES
+            for index in range(SLOTS_PER_FAMILY + self.extra_named_slots)
+        )
+
+    def unlock_all_upgrades(self) -> tuple[FakeUnlockFamilyState, ...]:
+        """Set every slot's availability flag, and report what then stands.
+
+        Every one of the twenty, as the bridge writes them: the empty tail is
+        priced zero, so a flag on it changes nothing a policy can do.
+        """
+        if self.refuse_to_unlock:
+            raise RunPortError("fake instance could not carry the unlock")
+        for slot in self.slots.values():
+            slot.unlocked = True
+        self.sequence += 1
+        return tuple(
+            FakeUnlockFamilyState(
+                family=family,
+                length=SLOTS_PER_FAMILY,
+                # A short read-back is a write that did not take: one row fewer
+                # than the family really has.
+                true_count=(
+                    self.real_rows[family] - 1
+                    if family in self.unlock_short_families
+                    else SLOTS_PER_FAMILY
+                ),
+            )
+            for family in FAMILIES
+        )
 
     def read_state(self) -> FakeRunReading | None:
         self.reads += 1
@@ -304,6 +396,11 @@ class FakeRunPort:
             self._ambiguous_seen.add(self.episodes)
             return FakeCommandResult("ambiguous", "no_answer_from_the_bridge")
         self.advances += 1
+        if (
+            self.revert_unlocks_after_advances is not None
+            and self.advances > self.revert_unlocks_after_advances
+        ):
+            self._revert_one_unlock()
         if not self.active:
             return FakeCommandResult("confirmed", "event:run_ended", state=self._observe())
         wave = self.wave
@@ -345,6 +442,10 @@ class FakeRunPort:
             wall_micros=frames * 100,
             state=self._observe(),
         )
+
+    def _revert_one_unlock(self) -> None:
+        """Lock one real row again, as a round-start recompute would."""
+        self.slots[("attack", 0)].unlocked = False
 
     def _step_one_frame(self, frame_game_ms: float) -> None:
         seconds = frame_game_ms * self.world_time_scale / 1000.0

@@ -38,6 +38,15 @@ from tower_rl.simulation.instrumented_bridge import (
 GAME_SPEED = 1.0
 
 
+def _describe_state(state: BridgeObservation) -> str:
+    """Render the fields a speed-pin diagnostic needs, as `key=value` pairs."""
+    return (
+        f"game_speed={state.game_speed} wave={state.wave} "
+        f"round_active={int(state.round_active)} terminal={int(state.terminal)} "
+        f"health={state.health} max_health={state.max_health}"
+    )
+
+
 @dataclass
 class InstrumentedRunAdapter:
     """One rooted clone, presented to the environment as a semantic run port."""
@@ -176,7 +185,7 @@ class InstrumentedRunAdapter:
         self._pin_game_speed(sequence)
         self._round_in_progress = True
 
-    def _press(self, action: str, expected_sequence: int) -> None:
+    def _press(self, action: str, expected_sequence: int) -> BridgeCommandResult:
         """Press one of the game's own controls and require its own confirmation."""
         result = self._command_between_rounds(
             {
@@ -190,6 +199,7 @@ class InstrumentedRunAdapter:
         )
         if result.outcome != "confirmed":
             raise RunPortError(f"the game did not honour {action}: {result.reason}")
+        return result
 
     def _resume_a_frozen_run(self) -> None:
         """Never start an episode on a reading of a world that is standing still.
@@ -356,7 +366,21 @@ class InstrumentedRunAdapter:
         state = self._latest_state()
         if not isinstance(state, BridgeObservation):
             raise RunPortError("the instance stopped reporting a run while the speed was pinned")
-        self._press("speed_down", state.sequence)
+        result = self._command_between_rounds(
+            {
+                "type": "command",
+                "protocol_version": PROTOCOL_VERSION,
+                "request_id": self._request_id("speed_down"),
+                "expected_observation_sequence": state.sequence,
+                "kind": "lifecycle",
+                "action": "speed_down",
+            }
+        )
+        if result.outcome != "confirmed":
+            detail = f"after speed_max: {_describe_state(state)}"
+            if isinstance(result.state, BridgeObservation):
+                detail += f"; at failure: {_describe_state(result.state)}"
+            raise RunPortError(f"the game did not honour speed_down: {result.reason} ({detail})")
 
     def release(self) -> None:
         """Leave the game running, whatever mode this adapter used.

@@ -48,6 +48,9 @@ class FakeClient:
     stale_kinds: frozenset[str] = frozenset()
     #: Lifecycle actions the game does not honour, whatever it does with the rest.
     unhonoured_actions: frozenset[str] = frozenset()
+    #: A state to attach to the result of one named lifecycle action, however it
+    #: is honoured - the real bridge can carry a state beside a rejection.
+    state_by_action: dict[str, object] = field(default_factory=dict)
 
     def read_state(self) -> object:
         if self.states:
@@ -61,7 +64,10 @@ class FakeClient:
         # The real bridge binds the settled observation it paused on to every
         # advance result, which is where the environment learns the sequence its
         # next command must bind.
-        settled = _observation(sequence=7) if message["kind"] == "advance" else None
+        if message["kind"] == "advance":
+            settled = _observation(sequence=7)
+        else:
+            settled = self.state_by_action.get(message.get("action"))
         outcome = self.outcome
         if message.get("action") in self.unhonoured_actions:
             outcome = "rejected"
@@ -204,6 +210,34 @@ def test_a_speed_control_the_game_does_not_honour_is_an_explicit_failure() -> No
 
     with pytest.raises(RunPortError, match="did not honour speed_max"):
         _adapter(client).begin_episode()
+
+
+def test_a_failed_speed_down_reports_the_state_it_was_observed_at() -> None:
+    """M2: a lost pin must be diagnosable from the error alone (Refs #46)."""
+    at_failure = _observation(sequence=9, speed=1.0)
+    client = FakeClient(
+        states=[BridgeRunUnavailable(1, "no_initialized_run")],
+        default_speed=1.5,
+        unhonoured_actions=frozenset({"speed_down"}),
+        state_by_action={"speed_down": at_failure},
+    )
+
+    with pytest.raises(RunPortError, match="did not honour speed_down") as excinfo:
+        _adapter(client).begin_episode()
+
+    message = str(excinfo.value)
+    # The state observed right after `speed_max`, before `speed_down` was even
+    # attempted - this is what tells a developer the pin was lost, not merely
+    # that it was.
+    assert "game_speed=1.5" in message
+    assert "wave=3" in message
+    assert "round_active=1" in message
+    assert "terminal=0" in message
+    assert "health=4.0" in message
+    assert "max_health=5.0" in message
+    # The bridge's own state for the failed `speed_down` attempt, labelled
+    # separately so the two moments are never confused.
+    assert "game_speed=1.0" in message
 
 
 def test_a_frozen_leftover_run_is_resumed_before_an_episode_begins() -> None:

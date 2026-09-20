@@ -29,9 +29,14 @@ records to `state/records/` instead of `/tmp`.
 ## M2-P003 — Milestone 2, run 3: upgrade availability `all`, corrected ε schedule, one seed (pre-registered, written before any run)
 
 **Date:** 2026-09-20
-**Status:** **draft pre-registration, not approved.** No run has started and no
-device time has been spent. This entry records the plan, its prices and its
-decision rules before any data exists; it is not a result. Board `#46`;
+**Status:** **pre-registered; approved by the developer 2026-09-20 subject to
+an independent numeric check of this entry, which has been carried out and
+whose corrections are applied here** — the replay warm-up's size and everything
+derived from it, the ε reached at the first gradient step, the arm-selection
+statistic, the evaluation set size, the standard error behind prediction 2 and
+the throughput definitions. No run has started and no device time has been
+spent. This entry records the plan, its prices and its decision rules before
+any data exists; it is not a result. Board `#46`;
 `M2-P002` is the protocol this one is a two-change edit of, and everything
 `M2-P002` says that is not contradicted below stands unchanged and is not
 restated.
@@ -53,14 +58,15 @@ reproducibly. That is stated before the run rather than discovered after it.
 | change | what it does | evidence |
 | --- | --- | --- |
 | upgrade availability `all` | the environment writes every in-run upgrade-availability flag true **at every round start**, so the policy is offered the full roster (17 attack, 18 defense, 13 utility rows) instead of profile v1's six purchasable rows | `M2-E008`: the bridge write takes (Q1), the game honours purchases on rows v1 never offers (Q3), it changes no starting scalar (Q4), and it is **taken back by the next round start** (Q2) — which is why it must be re-applied per round and cannot be a one-off at process start. Implemented under `#54` as `--upgrade-availability all`; ADR 0011 |
-| corrected ε schedule | `--epsilon-anneal-decisions` **2,500 → 8,000**, so the anneal runs *through* the replay warm-up instead of finishing before it | `#53` audit D1: warm-up is `--warmup-sequences` 100 = 100 episodes ≈ **2,690 decisions** (one episode is exactly one sequence under choice points), and `M2-E007` logs the first optimisation step at episode 94 — while the 2,500-decision anneal reached its floor at decision 2,500. Every gradient step of run 2 was therefore taken against a fully annealed fleet, and the four near-greedy actors played an untrained network deterministically from the first step onward |
+| corrected ε schedule | `--epsilon-anneal-decisions` **2,500 → 8,000**, so the anneal runs *through* the replay warm-up instead of finishing before it | `#53` audit D1: warm-up is `--warmup-sequences` 100 ≈ 100 episodes, and run 2's own artifacts put it at **≈3,450–3,600 fleet decisions** — the first 100 valid episodes spanned 3,463 (seed 0) and 3,594 (seed 1) decisions, and the same figure falls out of the gradient-step arithmetic (43,023 − 9,893/0.25 = 3,451; 60,820 − 14,338/0.25 = 3,468) and out of `M2-P002` amendment 2's "replay warm-up did not end until around decision 3,400". The 2,500-decision anneal therefore reached its floor **≈950 decisions before the first gradient step**: every gradient step of run 2 was taken against a fully annealed fleet, and the four near-greedy actors played an untrained network deterministically from the first step onward |
 
 ### The ε correction, as flags and as numbers
 
 The deviation is not "2,500 was too small"; it is that **the anneal and the
 warm-up were ordered the wrong way round**. Run 2's near-greedy actors reached
-their rungs (0.0162, 0.0056, 0.0019, 0.00066) at fleet decision 2,500, about 190
-decisions *before* the learner took its first gradient step, and a greedy actor
+their rungs (0.0162, 0.0056, 0.0019, 0.00066) at fleet decision 2,500, about
+**950 decisions** *before* the learner took its first gradient step (3,430 in
+attempt 1, 3,451 at seed 0, 3,468 at seed 1), and a greedy actor
 on a freshly initialised network is not a weak policy but a near-constant one:
 `#53`'s init-time probe over 12 seeds found the greedy argmax took one to five
 distinct actions over 200 states and was `WAIT` everywhere in half the seeds,
@@ -79,26 +85,41 @@ measured.
 - **Lower bound — warm-up.** The anneal must still be running when the learner
   starts, so that the network is trained on experience collected at a falling
   exploration rate rather than on experience collected entirely at the floor.
-  At 8,000, warm-up ends at **34%** of the anneal: the near-greedy actors are at
-  **ε ≈ 0.27** when the first gradient step is taken and reach their rungs 5,310
-  decisions later, which at 0.25 gradient steps a decision is **≈1,330
-  optimisation steps** of annealed exploration over a network that is being
-  trained. Run 2 had none. This is Mnih 2015's arrangement — anneal *while*
+  At 8,000, warm-up ends at **43%** of the anneal at run 2's density (3,463 of
+  8,000) and at **≈52%** under availability `all`, where the first 100 episodes
+  should cost ≈4,100–4,200 decisions if density rises as prediction 1 says. The
+  anneal starts from `--epsilon-start`'s default of **1.0**, not from the
+  ladder's top rung, so the near-greedy actors are still at **ε ≈ 0.58** when
+  the first gradient step is taken (0.574 at actor 3, 0.567 at actor 6; ≈0.49
+  under `all`) and reach their rungs **≈4,400–4,540 decisions later**, which at
+  0.25 gradient steps a decision is **≈1,100 optimisation steps** of annealed
+  exploration over a network that is being trained — ≈960 under `all`'s later
+  warm-up. Run 2 had none. This is Mnih 2015's arrangement — anneal *while*
   learning — at this run's scale rather than at Atari's 1M frames.
 - **Upper bound — the kill check's scope.** `M2-P002` amendment 3 places the
   kill check at the close of **period 2**, on the ground that period 2 is the
   first period containing no pre-anneal and no pre-warm-up episodes. That holds
   only if the anneal completes inside period 1. Run 2's period 1 held **10,849**
   decisions (seed 0) and **13,304** (seed 1), so 8,000 completes at 74% of the
-  smaller of the two, with ~2,800 decisions of margin. Under availability `all`
-  a period holds *more* decisions rather than fewer (prediction 1 below), so the
-  margin widens rather than narrows.
+  smaller of the two, with ~2,800 decisions of margin. The margin survives
+  either direction of the density change run 3 makes: a **20% fall** would still
+  leave seed 0's period 1 at ~8,700 > 8,000, and the ~20% *rise* `M2-E008`
+  points at (6.0 decisions a wave in its one episode against run 2 random's
+  5.00 — direction only, from one resumed episode on one instance, not a
+  threshold) would put 8,000 at **61%** of period 1.
+
+**Why not the shipped default of 10,000.** It would buy ~1,475 gradient steps
+under falling exploration instead of ~1,100, and it is rejected on the upper
+bound above: at run 2's density it completes at **92%** of seed 0's period 1,
+which leaves the period-2 kill check's scope argument with no margin at all. The
+extra 375 steps are not worth spending the only safety margin this horizon has.
 
 **The alternative that was not taken.** `#53` names two corrections: anneal
 through warm-up, or drop the anneal and use the fixed Ape-X ladder from step 0
 (Horgan 2018; R2D2 likewise holds each actor's ε fixed for the whole run). The
 fixed ladder **is** expressible today — `--epsilon-anneal-decisions 1` puts
-every actor on its rung from the first decision — and it is rejected here for
+every actor on its rung from the second decision onward, since `epsilon_for` is
+passed the count so far — and it is rejected here for
 one reason: it puts the four near-greedy actors on an untrained network from
 decision 0, the failure mode above, and `#53` says it must be paired with
 zero-initialising the output layers of `value_head`, `wait_advantage` and
@@ -149,7 +170,12 @@ and `M2-E008` shows the roster under `all` is a different environment.
 
 `--episodes 48` on 7 actors = **336 attempted**, for the **333 valid episodes an
 arm** that `M2-P002`'s first amendment fixed from the sd stage 1 actually
-measured (`required_episodes(2.3, 0.5, power=0.8)`). `CheapestFirstPolicy` still
+measured (`required_episodes(2.3, 0.5, power=0.8)`). At 336 attempted the target
+is reached only at run 2's own validity (≥99.107%, which is exactly what its
+random arm returned), so the baselines carry no margin of their own and are
+guarded instead by the 300-valid re-run floor below; the model arm, which is
+collected once from a checkpoint that cannot be recollected cheaply, is given
+the extra episode an actor. `CheapestFirstPolicy` still
 never holds at a choice point; under `all` it buys the cheapest affordable row
 of a much wider menu, which is a different floor and is why it is re-measured
 rather than assumed.
@@ -199,10 +225,17 @@ Run 3's arm is therefore the **checkpoint written at the close of the best
 near-greedy period** — the period with the highest
 `checkpoint_period_near_greedy_mean_final_wave` among periods **2 onward**
 (period 1 is excluded on `M2-P002` amendment 3's grounds: it pools the ε-anneal
-and pre-warm-up episodes). Ties go to the **lower**-numbered period. This is not
-a new statistic: it is the quantity the shipped early-stopping rule already
-tracks and logs as `best_period_near_greedy_mean_final_wave`
-(`NearGreedyPlateau`, `learning/training.py`). **The arm's identity — the period
+and pre-warm-up episodes). Ties go to the **lower**-numbered period, and a
+period that carries **no** near-greedy mean — no valid near-greedy episode
+closed inside it, which `close_period` counts neither way — is **ineligible for
+selection**. The statistic is the per-period series the run already logs at
+every crossing (`experiment/metrics.py`, and `checkpoint_periods[]` in the run's
+`summary.json`); the maximum over it is **not** the same quantity as
+`best_period_near_greedy_mean_final_wave`, which is the mean of the last period
+that cleared the bar by `min_improvement` rather than the highest mean the run
+has seen. Run 2 seed 0 shows the two diverging: the logged best is 5.5288
+(period 2) while period 3's mean was 5.5806, and this rule would select period 3.
+**The arm's identity — the period
 number, its mean, and the checkpoint file's name and sha256 — is written into
 board `#46` and into this entry's result before the evaluation stage is
 launched**, from the training run's own logged numbers, so the selection is
@@ -213,23 +246,34 @@ selected by a different rule, so run 3's evaluation number is not a
 like-for-like successor to them and the two must not be differenced. What stays
 comparable across the runs is the *collection curve* — the per-period
 near-greedy means — which is measured identically in both. (2) **Selection
-optimism.** Choosing the best of up to five period means, each carrying a
-standard error of ≈0.2 waves at ~200 near-greedy episodes, biases the *selected
-period's collection mean* upward by roughly 0.2–0.3 waves. It does **not** bias
-the reported interval: the evaluation is a fresh, independent sample of 333
-episodes played by that checkpoint. The bias enters only through the possibility
-of selecting a checkpoint that got a lucky period, and it is bounded by the same
-≈0.2 waves. This is stated now, before the arm exists, and it is accepted: an
+optimism.** A period mean over the 179–241 near-greedy episodes run 2's periods
+held carries a standard error of **≈0.163 waves** at the sd of 2.3 measured in
+stage 1, and the expected maximum of five such means is 1.163 standard errors
+above their common mean, so choosing the best of up to five biases the
+*selected period's collection mean* upward by **≈0.2 waves as an upper bound** —
+an upper bound because the true period means are not equal, which shrinks it.
+The **reported interval is unbiased for the checkpoint actually evaluated**: it
+is a fresh, independent sample of 333 episodes played by that checkpoint. What
+selection can still cost is choosing a checkpoint that is not the run's best —
+selection regret, which the period standard error does not bound and which one
+seed cannot quantify. This is stated now, before the arm exists, and it is
+accepted: an
 arm chosen for being the run's best moment is the honest thing to evaluate when
 the alternative is an arm chosen, by construction, for being its worst.
 
-    scripts/run_actors.py --actors 7 --episodes 48 \
+    scripts/run_actors.py --actors 7 --episodes 49 \
         --policy checkpoint:<run>/checkpoints/<the declared checkpoint> \
         --decision-cadence choice-points --upgrade-availability all \
         --renderer host --frame-rate-hz 120 \
         --output-directory <records>/eval-model
     scripts/report_arms.py random=<...> scripted=<...> stacked-dqn=<...> \
         --mlflow-run <the training run>
+
+**`--episodes 49` on 7 actors = 343 attempted**, one more an actor than the
+baselines, because 336 attempted reaches 333 valid only at ≥99.107% validity —
+exactly run 2's random-arm rate, so a set at 336 has no margin at all. At 343
+the arm clears 333 valid down to a validity of 97.1%, below anything run 2
+recorded (99.1%, 100%, 99.4%, 99.8%).
 
 There is still **no set-A selection** over candidate checkpoints, for
 `M2-P002`'s reason: `M2-E002` ran one at n=14 and could not separate its
@@ -246,9 +290,14 @@ repository. They are **not evidence for the verdict**.
 of final wave, (model − scripted) and (model − random), by
 `comparison.stratified_bootstrap_difference`, 95% percentile interval. The claim
 "`stacked-dqn` beats scripted" is made only if that interval excludes zero;
-"beats random" likewise; each claim stands alone. An arm returning fewer than
-100 valid episodes is re-run whole. The mean difference, Cohen's d and the
-per-wave families are secondary and decide nothing.
+"beats random" likewise; each claim stands alone. The mean difference, Cohen's
+d and the per-wave families are secondary and decide nothing.
+
+**The re-run floor is restated to the set size it now guards.** `M2-P002`'s
+"fewer than 100 valid episodes is re-run whole" was written for a set of 112;
+at a set of 333 it would let a 200-episode arm stand, which buys ~0.65-wave
+resolution instead of the 0.5 this design is priced on. For run 3 an arm
+returning **fewer than 300 valid episodes is re-run whole**, not padded.
 
 **Reported outcomes.** One of: both claims made; scripted only; random only;
 neither; stopped at the kill criterion; or early stop fired at period `k` — with
@@ -276,8 +325,11 @@ anneal it pools more of them than run 2's period 1 did, which is exactly why the
 period the check reads stays period 2. If either condition fails the run is
 **stopped and diagnosed** and the remaining budget is not spent; a doomed run
 costs the 120,000 game-seconds of two periods before it can be stopped —
-**2.9–3.4 h** of collection at run 2's two measured fleet throughputs, against
-the ~2.8 h `M2-P002` amendment 3 priced at the faster of them.
+**3.2–3.4 h** of collection at run 2's two measured wall-clock throughputs
+(37,727 and 35,539 game-s an hour). `M2-P002` amendment 3's "~2.8 h" is the same
+stop priced on the *report* throughput metric, which excludes everything
+`measured_apart`; the two figures are different definitions of the same wall,
+not a disagreement.
 
 **Secondary readouts, watched but deciding nothing.**
 `learner_value_fit_correlation` (run 2's rose, 0.42 → 0.61/0.66), and buy-slot
@@ -333,21 +385,69 @@ row. These are readouts, not tests, and neither settles attribution on one seed.
 `--upgrade-availability all` with run 2's `--epsilon-anneal-decisions 2500`,
 everything else identical, isolates the ε correction at ~11 h of device time.
 
+### Literature guidance
+
+- **ε anneal.** Mnih et al. 2015 (Nature 518): *"ε annealed linearly from 1.0 to 0.1 over the
+  first million frames, and fixed at 0.1 thereafter… a total of 50 million frames"* — the first
+  **2%** of training, annealing *while* the learner learns, which begins at **50,000 frames**
+  (0.1%). Run 3's 8,000 decisions are **13–19%** of a run-2-sized run (43,023–60,820 decisions),
+  first gradient step at ≈3,500 (**6–8%**): ~**7× DQN's fraction**, accepted because this budget
+  is four orders of magnitude smaller. What is copied is the ordering, not the fraction.
+- **Per-actor ladder.** Horgan et al. 2018, Ape-X (ICLR, arXiv:1803.00933), verbatim: *"Each
+  actor i ∈ {0,…,N−1} executes an ε_i-greedy policy where ε_i = ε^(1 + i/(N−1)·α) with ε = 0.4,
+  α = 7. Each ε_i is held constant throughout training."* N = **360** actors, n **3**, PER
+  α = 0.6 / β = 0.4; R2D2 (Kapturowski 2019) reuses the fixed ladder at n = **5** *(second-hand:
+  unreachable here)*. Run 3 takes the formula verbatim at **N = 7** and deviates once, annealing
+  into the rungs from ε = 1.0 instead of holding them fixed — `#53`'s probe found a greedy actor
+  on an untrained network here near-constant (1–5 actions over 200 states), and a fixed ladder
+  would additionally need zero-initialised heads.
+- **Warm-up.** Mnih 2015 starts learning at 50,000 frames, Rainbow (Hessel et al. 2018, AAAI,
+  arXiv:1710.02298) Table 1 at **80K frames**. Run 3's 100 sequences ≈ **3,500 fleet decisions**
+  sit far later in their own run than either, which is why the ordering is a live question here.
+- **Replay ratio, n-step, optimiser.** DQN and Rainbow both take one gradient step per 4 agent
+  steps = **0.25** a decision, exactly run 3's; BBF (arXiv:2305.19452) runs **8**, §3.1 asks 2–8.
+  n: Rainbow **3** (tuned over {1,3,5}), Ape-X **3**, R2D2 **5**, BBF *"10 to 3 over the first
+  10K gradient steps"*, run 3 **10** at 5.00 decisions a wave. Rainbow's optimiser: lr
+  **6.25e-5**, Adam ε **1.5e-4**, ω **0.5**, β **0.4→1.0**, against run 3's 1e-4 / 1e-8 /
+  uniform. Known deviations (`#53` D2–D5), unchanged so this run carries two variables, not six.
+- **Evaluation and selection.** Agarwal et al. 2021 (NeurIPS, arXiv:2108.13264): IQM *"discards
+  the bottom and top 25% of the runs and calculates the mean score of the remaining 50%"*, with
+  *"bootstrap CIs with stratified sampling"* giving *"good interval estimates for as few as
+  N = 10 runs"*. Run 3 uses that pair but stratifies over **episodes within one run's actors**,
+  so the interval carries episode and actor variance and never seed variance; and
+  `required_episodes(2.3, 0.5, 0.8) = 333` powers a **mean** difference while the verdict is an
+  **IQM** one. Henderson et al. 2018 (AAAI, arXiv:1709.06560) split ten trials of one algorithm
+  into two groups of **five seeds** and found them significantly different (TRPO,
+  HalfCheetah-v1, t = −9.0916, p = 0.0016), warning against *"selecting the top-N trials"*;
+  Colas et al. 2018 (arXiv:1806.08295) gives power-analysis guidelines for a seed count rather
+  than a number. Run 3 selects a **period**, not a seed, and answers that warning the only way
+  open to it: select on the training curve, report on a fresh 333-episode sample. No published
+  checkpoint-selection rule is followed and none is claimed.
+- **One seed** can show the curve moved and that the arm's fresh-sample interval excludes zero;
+  it cannot support *reproducibly*, attribute movement to either lever, or bound seed variance.
+
 ### Price and timeboxes
 
 Priced on run 2's **measured** fleet throughput rather than a solo figure, and
-on the low end of it: `M2-E007`'s two training runs delivered 41,487 and 35,539
-game-seconds an hour, and 35,539 is what the training line below is priced at
-(360,000 ÷ 35,539 = 10.1 h of collection). Evaluation arms are priced at ~3×
-`M2-E007`'s measured 0.55–0.65 h for a 112-episode arm, since the set size is
-333. Every training line includes the ~0.9 h of bring-up, session report and
+on the low end of it — with the two definitions kept apart, because `M2-E007`'s
+41,487 and 35,539 are not the same measurement. Like for like, run 2's seeds
+delivered **41,487 vs 40,952** game-seconds an hour by the run report's own
+metric (which excludes everything `measured_apart`, the learner steps and the
+periodic work) and **37,727 vs 35,539** on MLflow wall-clock span. The training
+line below is priced on the slowest of the four, **35,539** (360,000 ÷ 35,539 =
+10.1 h of collection), which is the conservative choice and the one that
+matches how a stage's clock actually runs. Evaluation arms are priced from
+`M2-E007`'s two measured arms decomposed into fixed overhead and per-episode
+cost — random 1,962 s at 91.9 wall-s an episode is 492 s of overhead, scripted
+2,349 s at 108.3 is 616 s — which at 48–49 episodes an actor gives ~1.36 h
+(random) and ~1.62 h (scripted). Every training line includes the ~0.9 h of bring-up, session report and
 teardown that `M2-E002` found a budget estimate must include.
 
 | stage | what runs | timebox |
 | --- | --- | --- |
-| 1 — baselines under `all` | random + scripted, `--episodes 48` each | **≤4.0 h** |
+| 1 — baselines under `all` | random + scripted, `--episodes 48` each (≈2.98 h at v1 density) | **≤4.0 h** |
 | 2 — training | one seed, ≤360,000 game-s, + session | **≤11.1 h** |
-| 3 — evaluation | the declared arm at n=333, + the greedy probe | **≤2.3 h** |
+| 3 — evaluation | the declared arm at `--episodes 49`, + the greedy probe (≈1.9 h at v1 density) | **≤2.3 h** |
 | 4 — recordings | ≤6 checkpoints × ~5 min | **≤0.5 h** |
 | | | **≤17.9 h total** |
 
@@ -357,10 +457,18 @@ would put stage 2 nearer **7.7 h** and stage 4 at four recordings. A kill-check
 failure at period 2 ends stage 2 at **≤4.3 h** (3.4 h of collection plus the
 session).
 
+The stage-1 and stage-3 boxes carry the headroom the density change asks for:
+≈2.98 h against ≤4.0 h absorbs a 38% rise in per-episode wall time, and ≈1.9 h
+against ≤2.3 h about 20%. Run 2's own arms suggest the rise will be smaller than
+that — random and scripted cost 0.541 and 0.538 wall-seconds a game-second
+despite 27.5 against 20.7 decisions an episode, so wall time tracks advances per
+game-second rather than decision count — while seed 1, which took 41% more
+decisions than seed 0 for the same game time at a ~6% lower span throughput, is
+the counter-evidence kept in view.
+
 **The stopping condition is the budget, not the clock.** A timebox is a price
 that was approved, not a rule of the protocol; if availability `all` lowers
-throughput (more affordable rows means more choice points, hence more bridge
-round-trips per game-second), stage 2 overruns its box and is still run to its
+throughput, stage 2 overruns its box and is still run to its
 360,000 game-seconds or to its early stop. An overrun beyond ~25% is reported
 beside the result, because a stage that cost half again what it was priced at is
 a finding about the environment even when the numbers it produced are fine.
@@ -394,9 +502,15 @@ new random arm is written down before stage 2 is launched.
    flag.
 2. **The scripted floor moves.** `CheapestFirstPolicy` buys the cheapest
    affordable row of a wider menu, so its mean final wave differs from
-   `M2-E007`'s **6.429 by more than 0.3 waves** — a shift well outside the
-   ≈0.13-wave standard error n=333 buys at the per-episode sd of 2.2 measured in
-   run 2. The direction is not predicted.
+   `M2-E007`'s **6.429 by more than 0.3 waves**. The direction is not predicted,
+   and **this is a weak prediction, stated as one**: the comparison is a
+   *difference* of two measured means — the new n=333 arm carries a standard
+   error of 0.121 at the sd of 2.2 measured in run 2, `M2-E007`'s own n=112
+   scripted mean carries 0.209, and the difference therefore carries **0.241**.
+   A 0.3-wave threshold is 1.24 standard errors and fires about **21%** of the
+   time with no true change at all, so it is not "well outside the standard
+   error" and nothing is claimed from it beyond a coarse check that the roster
+   change reached the scripted policy.
 3. **The kill check passes at period 2**, i.e. the near-greedy mean at the close
    of period 2 clears the new random bar. Run 2 passed it on both seeds; failing
    it under a *longer* anneal would say the correction made collection worse,

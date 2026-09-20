@@ -171,13 +171,12 @@ Checked again independently afterwards: zero qemu processes via `/proc/*/exe`,
 ## M2-E007 — Milestone 2, run 2 under `M2-P002`: the baselines, and the kill threshold they set
 
 **Date:** 2026-09-19, updated 2026-09-20
-**Status:** **in progress — stage 1 of 5 complete; stage 2 (training)
-complete for both seeds, each early-stopped at period 4.** The random and
-scripted baselines are collected under the choice-point cadence and
-`observation-v2`, and both seeds now have a trained arm to evaluate;
-evaluation, recordings and the verdict are not done. Nothing here is a verdict
-on the model. Board `#46`; protocol `M2-P002`, which is authoritative
-and is not restated.
+**Status:** **stopped at stage 3 by developer decision, 2026-09-20 — abandoned,
+no verdict.** Stage 1 (baselines) and stage 2 (training, both seeds,
+early-stopped at period 4) are complete; stage 3 (evaluation) got a full
+seed0 arm and an interrupted, recordless seed1 arm before the run was stopped.
+Nothing here is a verdict on the model. Board `#46`; protocol `M2-P002`, which
+is authoritative and is not restated.
 
 Code at `66082dd`, bridge `662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b`
 (the artifact hashes to the directory name it is filed under, so the installed
@@ -570,6 +569,23 @@ that hit the liveness race above.
 **Limits of this stage.** One seed, one image state, one frame rate, one
 account progression. The arm exists; it has not been evaluated, and nothing
 here compares it with either baseline or with seed 0.
+
+### Stage 3 — evaluation, abandoned before a verdict
+
+**seed0** evaluated to completion: `--episodes 48`, one actor failed at
+bring-up (`speed_down: lifecycle_timeout`, before any episode), topped up
+`--episodes 7`; pooled **336 valid** episodes (1 invalid,
+`stale_or_duplicate`), 99.7% valid. Records:
+`state/records/m2-run2/eval-seed0/`, `state/records/m2-run2/eval-seed0-topup/`.
+
+**seed1** was interrupted mid-collection by one `SIGINT` to its
+`run_stage.sh` supervisor (`stage m2-run2-eval-seed1: exit 130, cleanup ok,
+instances 0/7 cleaned, 1 exited during teardown, wall 00:54:35`); no actor had
+finished, so `state/records/m2-run2/eval-seed1/` holds no episode records.
+
+No pairwise comparison, no verdict, no recordings. **Reason: developer
+decision 2026-09-20 — profile v1 judged too limited to learn in; effort moves
+to `M2-P003` (availability all).**
 
 ## M2-P002 — Milestone 2, run 2: pre-registered protocol (written before any run)
 

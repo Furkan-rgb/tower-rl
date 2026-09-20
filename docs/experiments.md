@@ -26,16 +26,20 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
-## M2-P003 — Milestone 2, run 3: upgrade availability `all`, corrected ε schedule, one seed (pre-registered, written before any run)
+## M2-P003 — Milestone 2, run 3: upgrade availability `all`, corrected ε schedule, one seed, exploratory (pre-registered, written before any run)
 
 **Date:** 2026-09-20
-**Status:** **pre-registered; approved by the developer 2026-09-20 subject to
-an independent numeric check of this entry, which has been carried out and
-whose corrections are applied here** — the replay warm-up's size and everything
-derived from it, the ε reached at the first gradient step, the arm-selection
-statistic, the evaluation set size, the standard error behind prediction 2 and
-the throughput definitions. No run has started and no device time has been
-spent. This entry records the plan, its prices and its decision rules before
+**Status:** **pre-registered and approved by the developer 2026-09-20;
+exploratory — the confirmatory protocol is applied only if the stop criterion
+below is met.** Run 3 buys iteration speed rather than a claim: shorter
+baselines, a four-period training budget, and a formal evaluation that is
+**conditional** on the training curve clearing the scripted baseline. If that
+gate does not open, the training-time windows are the recorded result and the
+run ends there. An independent numeric check of this entry was carried out and
+its corrections are applied — the replay warm-up's size and everything derived
+from it, the ε reached at the first gradient step, the arm-selection statistic,
+the evaluation set size, the standard error behind prediction 2 and the
+throughput definitions. No run has started and no device time has been spent. This entry records the plan, its prices and its decision rules before
 any data exists; it is not a result. Board `#46`;
 `M2-P002` is the protocol this one is a two-change edit of, and everything
 `M2-P002` says that is not contradicted below stands unchanged and is not
@@ -162,19 +166,26 @@ set the kill threshold it is watched against. `M2-E007`'s 5.495 and 6.429 are
 **not** carried over: they were measured on profile v1's six purchasable rows,
 and `M2-E008` shows the roster under `all` is a different environment.
 
-    scripts/run_actors.py --actors 7 --episodes 49 --policy random \
+    scripts/run_actors.py --actors 7 --episodes 15 --policy random \
         --decision-cadence choice-points --upgrade-availability all \
         --renderer host --frame-rate-hz 120 \
         --output-directory <records>/eval-random
-    scripts/run_actors.py --actors 7 --episodes 49 --policy scripted ...
+    scripts/run_actors.py --actors 7 --episodes 15 --policy scripted ...
 
-`--episodes 49` on 7 actors = **343 attempted**, for the **333 valid episodes an
-arm** that `M2-P002`'s first amendment fixed from the sd stage 1 actually
-measured (`required_episodes(2.3, 0.5, power=0.8)`). Every arm of this run —
-both baselines and the model — is collected at 343 attempted, because 336 would
-reach 333 valid only at ≥99.107% validity, exactly the rate run 2's random arm
-returned and therefore no margin at all; at 343 an arm clears 333 down to 97.1%
-validity, below anything run 2 recorded (99.1%, 100%, 99.4%, 99.8%).
+**`--episodes 15` on 7 actors = 105 attempted, for n ≥ 100 valid an arm** — a
+deliberately short baseline, because of the two things stage 1 has to deliver,
+only one needs the full set. At n=100 and the per-episode sd of 2.3 measured in
+run 2 an arm's mean carries a standard error of **≈0.22 waves**, which is ample
+for the **kill bar** (the random mean − 0.3, a threshold, not an interval) and
+for a **coarse comparison** of where the near-greedy curve sits against the two
+floors. It is **not** enough for a claim: the pairwise IQM intervals this
+project's verdict rule needs were priced at **333 valid an arm**
+(`required_episodes(2.3, 0.5, power=0.8)`, `M2-P002`'s first amendment), so any
+verdict against these baselines requires **topping both arms up to n ≥ 333**
+under the identical image state, cadence, roster and schema and pooling them
+with the episodes stage 1 already recorded — which is exactly what `M2-P002`'s
+amendment did for run 2. That top-up is part of the **confirmatory** run, not
+of this one, and is not budgeted below.
 `CheapestFirstPolicy` still
 never holds at a choice point; under `all` it buys the cheapest affordable row
 of a much wider menu, which is a different floor and is why it is re-measured
@@ -185,7 +196,7 @@ rather than assumed.
     scripts/train.py --actors 7 --renderer host --frame-rate-hz 120 \
         --decision-cadence choice-points --upgrade-availability all \
         --exploration ladder \
-        --budget-game-seconds 360000 --block-game-seconds 4000 \
+        --budget-game-seconds 240000 --block-game-seconds 4000 \
         --checkpoint-every-game-seconds 60000 \
         --epsilon-anneal-decisions 8000 \
         --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
@@ -207,8 +218,20 @@ sequence.
 **Early stopping, unchanged.** A period is 60,000 game-seconds; the bar is the
 mean of the last period that cleared it; below bar + 0.2 waves for 2 consecutive
 periods stops the run after writing that checkpoint; a period with no valid
-near-greedy episode counts neither way. Patience 2, min-improvement 0.2, six
-numbered checkpoints at full budget, earliest possible stop after the third.
+near-greedy episode counts neither way. Patience 2, min-improvement 0.2,
+earliest possible stop after the third checkpoint.
+
+**The budget is 240,000 game-seconds — four periods, not six.** Both run-2 seeds
+early-stopped at period 4 (240,511 and 241,663 game-seconds spent of the 360,000
+budgeted), so the last two periods of a 360,000 budget are periods neither seed
+reached and are bought on the hope that run 3 behaves differently. Four periods
+is what run 2 actually used, it is what the early-stopping rule needs to be able
+to fire (a stop needs two consecutive non-improving periods after a period that
+set the bar), and it is the single largest saving available. The cost is stated
+plainly: if run 3's curve is still climbing at period 4, this run **cannot see
+past it**, and the result is "the budget closed while the curve was still
+improving" — which is a reason to buy a longer budget in the confirmatory run,
+not a result about the model.
 
 **Evaluation: the best near-greedy period's checkpoint, greedy.** This is the
 one rule of `M2-P002` that run 3 replaces, and the reason is a flaw run 2
@@ -248,18 +271,49 @@ comparable across the runs is the *collection curve* — the per-period
 near-greedy means — which is measured identically in both. (2) **Selection
 optimism.** A period mean over the 179–241 near-greedy episodes run 2's periods
 held carries a standard error of **≈0.163 waves** at the sd of 2.3 measured in
-stage 1, and the expected maximum of five such means is 1.163 standard errors
-above their common mean, so choosing the best of up to five biases the
-*selected period's collection mean* upward by **≈0.2 waves as an upper bound** —
-an upper bound because the true period means are not equal, which shrinks it.
-The **reported interval is unbiased for the checkpoint actually evaluated**: it
-is a fresh, independent sample of 333 episodes played by that checkpoint. What
+run 2, and at a four-period budget the eligible set is **three** periods (2, 3
+and 4), whose expected maximum is 0.846 standard errors above their common
+mean, so the selection biases the *selected period's collection mean* upward by
+**≈0.14 waves as an upper bound** — an upper bound because the true period means
+are not equal, which shrinks it, and smaller than the ≈0.2 a six-period budget
+would carry. The **reported interval is unbiased for the checkpoint actually
+evaluated**: it is a fresh, independent sample of 333 episodes played by that
+checkpoint, if that evaluation happens at all. What
 selection can still cost is choosing a checkpoint that is not the run's best —
 selection regret, which the period standard error does not bound and which one
 seed cannot quantify. This is stated now, before the arm exists, and it is
 accepted: an
 arm chosen for being the run's best moment is the honest thing to evaluate when
 the alternative is an arm chosen, by construction, for being its worst.
+
+**The formal evaluation is conditional, and this is the stop criterion.** Stage
+3 is launched **only if**
+
+> the **maximum over the per-period
+> `checkpoint_period_near_greedy_mean_final_wave` values for periods 2 onward**
+> — the same quantity that selects the arm — **exceeds the stage-1 scripted
+> arm's mean final wave** (the mean over that arm's valid episodes, the
+> availability-`all` successor to `M2-E007`'s 6.429).
+
+If it does not, **no evaluation arm is collected, no recording is made, and the
+run ends**: the recorded result is the training-time near-greedy windows and
+periods themselves, reported against both stage-1 baselines as the coarse
+comparison n≈100 supports, with the verdict stated as "the curve did not reach
+the scripted floor during training". That is a real outcome and it is reported
+as one; it is not a failed run and it is not a claim.
+
+Two things about the gate, said before it is read. It compares a **training-time
+collection** number (near-greedy actors, ε ≤ 0.02 but not zero, episodes played
+while the network was changing) with an **evaluation-time** number (greedy, a
+frozen checkpoint), so it is deliberately conservative in one direction and
+optimistic in the other, and it is a **gate on spending device time, not a
+verdict**: clearing it licenses the evaluation, and only the evaluation's
+pairwise interval can license a claim. And it is a one-sided threshold on a
+noisy quantity — a period mean carries ≈0.16 waves of standard error and the
+scripted arm's mean at n≈100 carries ≈0.22 — so a curve that sits within a few
+tenths of the scripted floor can fall either side of it by luck. That is
+accepted as the price of the gate; the alternative is spending ~1.9 h of device
+time on every run whatever the curve did.
 
     scripts/run_actors.py --actors 7 --episodes 49 \
         --policy checkpoint:<run>/checkpoints/<the declared checkpoint> \
@@ -269,21 +323,27 @@ the alternative is an arm chosen, by construction, for being its worst.
     scripts/report_arms.py random=<...> scripted=<...> stacked-dqn=<...> \
         --mlflow-run <the training run>
 
-**`--episodes 49` on 7 actors = 343 attempted**, the same set the baselines are
-collected at and for the same reason: 343 clears 333 valid down to a validity
-of 97.1%, where 336 would need the ≥99.107% run 2's random arm happened to
-return.
+**`--episodes 49` on 7 actors = 343 attempted**, for the 333 valid episodes the
+power calculation asks for: 343 clears 333 down to a validity of 97.1%, where
+336 would need the ≥99.107% run 2's random arm happened to return. The model
+arm is collected at the full set even though stage 1's baselines are not,
+because it is the arm a claim would rest on and it cannot be recollected
+without re-running the checkpoint; the baselines are topped up to match it only
+in the confirmatory run.
 
 There is still **no set-A selection** over candidate checkpoints, for
 `M2-P002`'s reason: `M2-E002` ran one at n=14 and could not separate its
 candidates. One arm is evaluated, and it is named before it is played.
 
-**Checkpoint recordings, after the evaluation.** Every numbered checkpoint plays
-one round to death, in checkpoint order, `scripts/spectate.py --policy
-checkpoint:<path> --episodes 1 --frame-rate-hz 60 --renderer lavapipe --record
-<checkpoint>.mp4`, under `--upgrade-availability all` like everything else.
-≤6 recordings, ≈5 min each, written under `state/recordings/` and never into the
-repository. They are **not evidence for the verdict**.
+**One recording, after the evaluation.** The **arm checkpoint only** plays one
+round to death — `scripts/spectate.py --policy checkpoint:<the arm> --episodes 1
+--frame-rate-hz 60 --renderer lavapipe --record <checkpoint>.mp4`, under
+`--upgrade-availability all` like everything else — written under
+`state/recordings/` and never into the repository. Run 2's per-checkpoint set
+existed so the developer could watch the policy develop across a run; at four
+periods there is little development to watch and the one video that matters is
+the arm's. It runs only if the gate above opened, and it is **not evidence for
+the verdict**.
 
 **Primary statistic and verdict rule, unchanged.** Pairwise **IQM difference**
 of final wave, (model − scripted) and (model − random), by
@@ -295,13 +355,28 @@ d and the per-wave families are secondary and decide nothing.
 **The re-run floor is restated to the set size it now guards.** `M2-P002`'s
 "fewer than 100 valid episodes is re-run whole" was written for a set of 112;
 at a set of 333 it would let a 200-episode arm stand, which buys ~0.65-wave
-resolution instead of the 0.5 this design is priced on. For run 3 an arm
-returning **fewer than 300 valid episodes is re-run whole**, not padded.
+resolution instead of the 0.5 this design is priced on. For run 3's **model
+arm** an arm returning **fewer than 300 valid episodes is re-run whole**, not
+padded. The stage-1 baselines, whose set is 105 attempted, keep a floor of
+**100 valid**, which is the n their ≈0.22-wave standard error is quoted at.
 
-**Reported outcomes.** One of: both claims made; scripted only; random only;
-neither; stopped at the kill criterion; or early stop fired at period `k` — with
-`k`, the period means, and the game time actually spent reported beside the
-verdict.
+Because stage 1 is collected at n≈100 rather than 333, **no verdict of this
+exploratory run rests on a pairwise interval against those baselines**. If the
+gate opens and the model arm is collected, the intervals are computed and
+reported, and they are read as *provisional*: the (model − baseline) interval
+at 343 against 105 carries the baseline's larger standard error, and the claim
+the milestone gate needs is made in the confirmatory run, not here.
+
+**Reported outcomes.** One of: **the gate did not open** — the best near-greedy
+period did not reach the scripted arm's mean, the training windows are the
+result and no arm was collected; both provisional claims made; scripted only;
+random only; neither; stopped at the kill criterion; or early stop fired at
+period `k`. In every case `k` or the closing period, the period means, and the
+game time actually spent are reported beside the outcome.
+
+**The confirmatory run, in one sentence:** the confirmatory run is **this same
+block with stage 1 at `--episodes 49` and stage 3 unconditional** — full-set
+baselines, and an evaluation arm collected whatever the training curve did.
 
 ### Kill criterion, checked once, at the close of period 2
 
@@ -432,45 +507,48 @@ on the low end of it — with the two definitions kept apart, because `M2-E007`'
 41,487 and 35,539 are not the same measurement. Like for like, run 2's seeds
 delivered **41,487 vs 40,952** game-seconds an hour by the run report's own
 metric (which excludes everything `measured_apart`, the learner steps and the
-periodic work) and **37,727 vs 35,539** on MLflow wall-clock span. The training
-line below is priced on the slowest of the four, **35,539** (360,000 ÷ 35,539 =
-10.1 h of collection), which is the conservative choice and the one that
-matches how a stage's clock actually runs. Evaluation arms are priced from
+periodic work) and **37,727 vs 35,539** on MLflow wall-clock span. Stage 2 is
+priced more directly than either: run 2's two seeds spent **240,511** and
+**241,663** game-seconds — the budget run 3 now buys — in **6.57 h** and
+**6.95 h** of *total stage wall*, launch to exit, which already includes
+bring-up, the session report and teardown. The arm stages are priced from
 `M2-E007`'s two measured arms decomposed into fixed overhead and per-episode
-cost — random 1,962 s at 91.9 wall-s an episode is 492 s of overhead, scripted
-2,349 s at 108.3 is 616 s — which at 49 episodes an actor gives **~1.39 h**
-(random) and **~1.65 h** (scripted). Every training line includes the ~0.9 h of bring-up, session report and
-teardown that `M2-E002` found a budget estimate must include.
+cost: random 1,962 s at 91.9 wall-s an episode is 492 s of overhead, scripted
+2,349 s at 108.3 is 616 s.
 
 | stage | what runs | timebox |
 | --- | --- | --- |
-| 1 — baselines under `all` | random + scripted, `--episodes 49` each (≈3.03 h at v1 density) | **≤4.0 h** |
-| 2 — training | one seed, ≤360,000 game-s, + session | **≤11.1 h** |
-| 3 — evaluation | the declared arm at `--episodes 49`, + the greedy probe (≈1.9 h at v1 density) | **≤2.3 h** |
-| 4 — recordings | ≤6 checkpoints × ~5 min **+ bring-up per recording** | **≤1.0 h** |
-| | | **≤18.4 h total** |
+| 1 — baselines under `all` | random + scripted, `--episodes 15` each (0.52 h + 0.62 h ≈ **1.14 h** at v1 density) | **≤1.5 h** |
+| 2 — training | one seed, ≤240,000 game-s (four periods), bring-up to teardown | **≤7.5 h** |
+| 3 — evaluation, **only if the gate opened** | the declared arm at `--episodes 49`, + the greedy probe | **≤1.9 h** |
+| 4 — recording, **only if the gate opened** | the arm checkpoint, 1 video + bring-up | **≤0.25 h** |
+| | gate opens | **≤11.2 h total** |
+| | gate does not open | **≤9.0 h total** |
 
-Every figure is an **upper bound**. Early stopping can end stage 2 at any
-checkpoint from the third onward: run 2 stopped both seeds at period 4, which
-would put stage 2 nearer **7.7 h** and stage 4 at four recordings. A kill-check
-failure at period 2 ends stage 2 at **≤4.3 h** (3.4 h of collection plus the
-session).
+Every figure is an **upper bound**, and two of the four stages may not run at
+all. Stage 2's ≤7.5 h boxes run 2's slower seed at this budget (6.95 h) with
+~8% margin. Early stopping can end it at the third checkpoint instead of the
+fourth, ~5.2 h; a kill-check failure at period 2 ends it at **≤4.3 h** (3.4 h of
+collection plus the session).
 
-The stage-1 and stage-3 boxes carry the headroom the density change asks for:
-≈3.03 h against ≤4.0 h absorbs a 32% rise in per-episode wall time, and ≈1.9 h
-against ≤2.3 h about 20%. Stage 4 is priced at ≤1.0 h rather than the ~0.5 h
-the six five-minute rounds themselves cost, because each recording brings an
-instance up and tears it down and that overhead was never measured. Run 2's own arms suggest the rise will be smaller than
-that — random and scripted cost 0.541 and 0.538 wall-seconds a game-second
-despite 27.5 against 20.7 decisions an episode, so wall time tracks advances per
-game-second rather than decision count — while seed 1, which took 41% more
-decisions than seed 0 for the same game time at a ~6% lower span throughput, is
-the counter-evidence kept in view.
+Stage 3's box is the scripted arm's per-episode cost applied to 49 episodes
+(1.65 h) plus the 0.25 h greedy probe; if the model's episodes cost what the
+random arm's did it is nearer **1.6 h**, and a 1.5 h box would hold only in that
+case, which is why the box is 1.9. Stage 1's ≈1.14 h against ≤1.5 h absorbs a
+~30% rise in per-episode wall time — the headroom the density change asks for.
+Run 2's own arms suggest that rise will be small: random and scripted cost 0.541
+and 0.538 wall-seconds a game-second despite 27.5 against 20.7 decisions an
+episode, so wall time tracks advances per game-second rather than decision
+count — while seed 1, which took 41% more decisions than seed 0 for the same
+game time at a ~6% lower span throughput, is the counter-evidence kept in view.
+Stage 4 is 0.25 h rather than the ~5 min the round itself costs, because the
+recording brings an instance up and tears it down and that overhead was never
+measured.
 
 **The stopping condition is the budget, not the clock.** A timebox is a price
 that was approved, not a rule of the protocol; if availability `all` lowers
 throughput, stage 2 overruns its box and is still run to its
-360,000 game-seconds or to its early stop. An overrun beyond ~25% is reported
+240,000 game-seconds or to its early stop. An overrun beyond ~25% is reported
 beside the result, because a stage that cost half again what it was priced at is
 a finding about the environment even when the numbers it produced are fine.
 
@@ -490,8 +568,9 @@ exists**, recording upgrade availability as an environment-level decision: what
 shows a round start takes it back, and what it does to the recorded environment
 profile identity — a run under `all` is not the frozen v1 baseline of ADR 0001
 and must not be silently pooled with one. **(3) The baselines are re-measured**
-under `all` at n=333 (stage 1), and the kill-check threshold derived from the
-new random arm is written down before stage 2 is launched.
+under `all` at n ≥ 100 (stage 1), and both the kill-check threshold (the random
+arm's mean − 0.3) and the stage-3 gate (the scripted arm's mean) are written
+down before stage 2 is launched.
 
 ### Falsifiable predictions, written before the run
 
@@ -505,13 +584,15 @@ new random arm is written down before stage 2 is launched.
    affordable row of a wider menu, so its mean final wave differs from
    `M2-E007`'s **6.429 by more than 0.3 waves**. The direction is not predicted,
    and **this is a weak prediction, stated as one**: the comparison is a
-   *difference* of two measured means — the new n=333 arm carries a standard
-   error of 0.121 at the sd of 2.2 measured in run 2, `M2-E007`'s own n=112
-   scripted mean carries 0.209, and the difference therefore carries **0.241**.
-   A 0.3-wave threshold is 1.24 standard errors and fires about **21%** of the
-   time with no true change at all, so it is not "well outside the standard
-   error" and nothing is claimed from it beyond a coarse check that the roster
-   change reached the scripted policy.
+   *difference* of two measured means — at the exploratory n≈100 the new
+   scripted arm carries a standard error of **0.22** at the sd of 2.2 measured
+   in run 2, `M2-E007`'s own n=112 scripted mean carries 0.209, and the
+   difference therefore carries **≈0.30**. (At the confirmatory n=333 those
+   figures are 0.121 and **0.241**.) A 0.3-wave threshold is about **one**
+   standard error here and fires roughly a third of the time with no true
+   change at all, so it is not "well outside the standard error" and nothing is
+   claimed from it beyond a coarse check that the roster change reached the
+   scripted policy.
 3. **The kill check passes at period 2**, i.e. the near-greedy mean at the close
    of period 2 clears the new random bar. Run 2 passed it on both seeds; failing
    it under a *longer* anneal would say the correction made collection worse,
@@ -520,10 +601,16 @@ new random arm is written down before stage 2 is launched.
    **≥ +0.5 waves** from period 2 to the best later period, against run 2's
    +0.05 (seed 0) and −0.62 (seed 1). This is the prediction the whole run
    exists to test.
-5. **The run survives past period 4.** Training reaches at least the **fifth**
-   numbered checkpoint before the early stop fires or the budget closes, where
-   both run-2 seeds stopped at the fourth. If it stops at period 4 again with a
-   best period at or below run 2's 5.53 / 5.90, prediction 4 has failed with it.
+5. **The run spends its whole four-period budget**, i.e. the early stop does
+   *not* fire at period 3 or 4, **and its best period is period 3 or 4 rather
+   than period 2** — where both run-2 seeds peaked before stalling. If it
+   early-stops again with the peak at period 2 and at or below run 2's
+   5.53 / 5.90, prediction 4 has failed with it.
+6. **The gate opens.** The best near-greedy period exceeds the stage-1 scripted
+   arm's mean, so stage 3 runs. This is the prediction the exploratory design
+   is built around: if it fails, the run cost ≤9.0 h instead of ≤11.2 h and the
+   next question is which of the `#53` deviations to change, not which arm to
+   collect.
 
 **What counts as failure**, so that it cannot be renegotiated afterwards: the
 kill criterion fires, and the result is "stopped at the kill criterion"; or
@@ -537,7 +624,11 @@ failure and reports nothing about the model.
 
 **Limits stated in advance.** One seed, one image state, one frame rate, one
 account progression, one session. Two changes at once, so no attribution, and no
-claim to reproducibility. Final wave is the statistic; nothing here measures how
+claim to reproducibility. **This run is exploratory and makes no milestone
+claim**: its baselines are n≈100, its budget stops at four periods, and its
+evaluation runs only if the gate opens — any claim the milestone gate accepts
+comes from the confirmatory run, which is this same block with stage 1 at 49
+and stage 3 unconditional. Final wave is the statistic; nothing here measures how
 the model plays. The evaluated checkpoint is chosen on the collection curve,
 which carries the selection optimism priced above. Availability `all` is a
 within-run capability written by the bridge, not a progressed account:

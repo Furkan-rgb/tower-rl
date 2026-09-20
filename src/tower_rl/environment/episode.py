@@ -259,6 +259,12 @@ class EpisodeSummary:
     #: loop and the state it reports are drifting apart. Not the wall-time
     #: ceiling, which fails the episode by name instead (M1B-E032).
     advances_cut_short: int = 0
+    #: Boundary restarts the port needed before this episode could begin,
+    #: because the speed pin was not held (`#57`). The episode itself is an
+    #: ordinary one - the restart happened before it started - but the count
+    #: rides on it because the episode record is where per-instance health is
+    #: read from.
+    pin_restarts: int = 0
     #: Why the episode ended the way it did. An outcome without its reason cannot
     #: be diagnosed later, and a rate without reasons cannot be fixed at all.
     termination_detail: tuple[str, ...] = ()

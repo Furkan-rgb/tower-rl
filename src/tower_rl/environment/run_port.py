@@ -100,6 +100,16 @@ class RunPortError(RuntimeError):
 class RunPort(Protocol):
     """One instrumented game instance, addressed semantically."""
 
+    @property
+    def pin_restarts(self) -> int:
+        """Boundaries this port restarted because the speed pin was not held.
+
+        Cumulative over the port's life. The environment reports the episode's
+        own share of it, so a recovery the port made silently still shows up in
+        the episode record it made room for (`#57`).
+        """
+        ...
+
     def read_state(self) -> ExactRunReadingLike | None:
         """Return the freshest exact reading, or None when no run is initialized."""
         ...

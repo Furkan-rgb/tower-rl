@@ -275,6 +275,11 @@ class _EpisodeTally:
     #: the wall-time ceiling, which is `ADVANCE_TRUNCATED_BY_WALL` and fails the
     #: episode, and not a frame budget, of which there is none (M1B-E032).
     advances_cut_short: int = 0
+    #: Boundary restarts the port made to begin *this* episode because the
+    #: speed pin was not held (`#57`). A recovered failure, so the episode is
+    #: an ordinary one; counted because an instance that needs the recovery
+    #: often is an instance in trouble.
+    pin_restarts: int = 0
     #: The speed the run was seen executing at while it was still running. The
     #: final state is always terminal and the game has stopped time by then, so
     #: sampling there reports zero for every episode (M1B-E009).
@@ -412,8 +417,10 @@ class InstrumentedRunEnvironment:
             # Before the round, because the labels are a boundary command the
             # port will not issue inside one. Cached after the first episode.
             self._resolve_real_rows()
+        restarts_before = self.port.pin_restarts
         with self.profile.span(BRIDGE_ROUND_TRIP):
             self.port.begin_episode()
+        pin_restarts = self.port.pin_restarts - restarts_before
         if self.upgrade_availability is UpgradeAvailability.ALL:
             # After the round has started and before the first observation: the
             # game recomputes its real rows' availability at every round start,
@@ -431,6 +438,7 @@ class InstrumentedRunEnvironment:
             peak_wave=state.wave,
             starting_wave=state.wave,
             active_game_speed=state.game_speed,
+            pin_restarts=pin_restarts,
         )
         self._tally.enter_wave(state)
         self._last_reasons = ()
@@ -463,6 +471,7 @@ class InstrumentedRunEnvironment:
             round_ms=round(self._tally.round_ms, 3),
             advance_wall_seconds=round(self._tally.advance_wall_micros / 1_000_000, 3),
             advances_cut_short=self._tally.advances_cut_short,
+            pin_restarts=self._tally.pin_restarts,
             invalid_transitions=self._tally.invalid_transitions,
             termination_detail=self._last_reasons,
             recovered_transients=self._tally.recovered_transients,

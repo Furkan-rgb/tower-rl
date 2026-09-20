@@ -150,6 +150,14 @@ class FakeRunPort:
     revert_unlocks_after_advances: int | None = None
     #: Set to raise from `begin_episode`, to exercise failure classification.
     refuse_to_start: bool = False
+    #: Boundary restarts this port has made because the speed pin was not held.
+    #: A real adapter counts its own; here it is set by a test that wants the
+    #: environment to report one, and rises by `pin_restarts_per_episode` when a
+    #: test wants a boundary that needed the recovery (`#57`).
+    pin_restarts: int = 0
+    #: How many restarts each `begin_episode` costs, for a test of the counter's
+    #: path out through the episode record.
+    pin_restarts_per_episode: int = 0
     #: Episode ordinals, counting from one, whose `begin_episode` fails. Unlike
     #: `refuse_to_start`, which refuses every episode, this makes one episode in
     #: the middle of a run fail the way a boundary that will not open does.
@@ -217,6 +225,7 @@ class FakeRunPort:
 
     def begin_episode(self) -> None:
         self.episodes += 1
+        self.pin_restarts += self.pin_restarts_per_episode
         if self.refuse_to_start or self.episodes in self.refuse_episodes:
             raise RunPortError("fake instance refused to start")
         self._build_slots()

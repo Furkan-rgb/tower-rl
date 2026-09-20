@@ -333,6 +333,11 @@ its settled snapshot then did not corroborate. It is benign — the settled stat
 is what the agent observes — but counted, because a rise in it says the loop and
 the state it reports are drifting apart.
 
+`pin_restarts` counts episode boundaries the port had to restart because the
+speed pin was not held — the run stopped being active between the two speed
+presses — and it is reported on the episode the restarted boundary went on to
+begin, which is an ordinary episode in every other way (`#57`).
+
 ## Meta environment contract (`meta-observation-v1`, `meta-action-v1`)
 
 The M8–M11 progression bounded context has its own `MetaEnv` and

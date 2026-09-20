@@ -45,7 +45,12 @@ from tower_rl.simulation.instance import (
 
 
 def summary(
-    *, final_wave: int, valid: bool = True, detail: tuple[str, ...] = (), cut_short: int = 0
+    *,
+    final_wave: int,
+    valid: bool = True,
+    detail: tuple[str, ...] = (),
+    cut_short: int = 0,
+    pin_restarts: int = 0,
 ) -> EpisodeSummary:
     return EpisodeSummary(
         episode_id="e",
@@ -60,6 +65,7 @@ def summary(
         game_speed=1.0,
         invalid_transitions=0 if valid else 1,
         advances_cut_short=cut_short,
+        pin_restarts=pin_restarts,
         termination_detail=detail,
         starting_wave=1,
     )
@@ -87,7 +93,7 @@ def actor_record(summaries: list[EpisodeSummary]) -> dict[str, object]:
 def test_health_counters_come_from_the_per_episode_records() -> None:
     record = actor_record(
         [
-            summary(final_wave=7, cut_short=2),
+            summary(final_wave=7, cut_short=2, pin_restarts=1),
             summary(
                 final_wave=3,
                 valid=False,
@@ -104,6 +110,9 @@ def test_health_counters_come_from_the_per_episode_records() -> None:
     assert health_counters(record) == {
         "bridge_event_divergence": 1,
         "stale_or_duplicate": 1,
+        # Boundaries the port restarted because the speed pin was not held; a
+        # recovered failure, so it is health rather than an episode outcome.
+        "pin_restarts": 1,
         "advances_cut_short": 3,
         "episodes_not_started_fresh": 0,
     }

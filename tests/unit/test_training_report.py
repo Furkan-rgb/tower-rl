@@ -157,6 +157,7 @@ EPISODE_RECORD_KEYS = {
     "invalid_reasons",
     "termination_detail",
     "advances_cut_short",
+    "pin_restarts",
     "recovered_transients",
     "starting_wave",
     "waves",

@@ -16,6 +16,7 @@ from tower_rl.simulation.instrumented_bridge import (
 from tower_rl.simulation.instrumented_run_adapter import (
     GAME_SPEED,
     InstrumentedRunAdapter,
+    PinNotHeld,
 )
 
 
@@ -48,11 +49,21 @@ class FakeClient:
     stale_kinds: frozenset[str] = frozenset()
     #: Lifecycle actions the game does not honour, whatever it does with the rest.
     unhonoured_actions: frozenset[str] = frozenset()
+    #: How many of the first presses of each named action the game does not
+    #: honour, and with what reason: an instance that fails a press and then
+    #: behaves, which is the shape the pin failure has (`#57`).
+    unhonoured_attempts: dict[str, int] = field(default_factory=dict)
+    unhonoured_reason: str = "lifecycle_timeout"
+    #: States handed out, and the count as it stood at each command sent, so a
+    #: test can say how many observations a boundary waited for before pressing.
+    reads: int = 0
+    reads_at_send: list[int] = field(default_factory=list)
     #: A state to attach to the result of one named lifecycle action, however it
     #: is honoured - the real bridge can carry a state beside a rejection.
     state_by_action: dict[str, object] = field(default_factory=dict)
 
     def read_state(self) -> object:
+        self.reads += 1
         if self.states:
             return self.states.pop(0)
         return _observation(speed=self.default_speed)
@@ -61,6 +72,7 @@ class FakeClient:
         if message["kind"] in self.stale_kinds:
             raise BridgeStaleObservationError("command does not bind the latest observation")
         self.sent.append(message)
+        self.reads_at_send.append(self.reads)
         # The real bridge binds the settled observation it paused on to every
         # advance result, which is where the environment learns the sequence its
         # next command must bind.
@@ -69,12 +81,18 @@ class FakeClient:
         else:
             settled = self.state_by_action.get(message.get("action"))
         outcome = self.outcome
+        reason = "ok"
         if message.get("action") in self.unhonoured_actions:
             outcome = "rejected"
+        remaining = self.unhonoured_attempts.get(str(message.get("action")), 0)
+        if remaining:
+            self.unhonoured_attempts[str(message["action"])] = remaining - 1
+            outcome = "ambiguous"
+            reason = self.unhonoured_reason
         return BridgeCommandResult(
             request_id=str(message["request_id"]),
             outcome=CommandOutcome(outcome),
-            reason="ok",
+            reason=reason,
             observation_sequence=1,
             state=settled,
         )
@@ -111,9 +129,7 @@ def test_an_episode_starts_through_the_games_own_control_and_reads_no_pixel() ->
 
 def test_a_terminal_run_is_sent_home_before_the_round_is_started() -> None:
     """`BattlePanel` only exists at home, so a finished run is closed first."""
-    client = FakeClient(
-        states=[_observation(terminal=True), _observation(terminal=True), _observation()]
-    )
+    client = FakeClient(states=[_observation(terminal=True)] * 5)
 
     _adapter(client).begin_episode()
 
@@ -266,9 +282,7 @@ def test_a_run_that_will_not_resume_refuses_to_start_an_episode() -> None:
 def test_a_finished_run_is_not_asked_to_resume() -> None:
     """The bridge never pauses a run that ended, and its `unpause` waits for an
     active run, so asking would only stall the boundary."""
-    client = FakeClient(
-        states=[_observation(terminal=True), _observation(terminal=True), _observation()]
-    )
+    client = FakeClient(states=[_observation(terminal=True)] * 5)
 
     _adapter(client).begin_episode()
 
@@ -375,3 +389,95 @@ def test_a_stale_command_fails_the_episode_instead_of_the_process() -> None:
 
     with pytest.raises(RunPortError, match="stale"):
         _advance(adapter)
+
+
+def _terminal_at_the_pin() -> BridgeObservation:
+    """What the bridge reports when the run stopped being active under the pin."""
+    return _observation(sequence=11, terminal=True, speed=0.0)
+
+
+def test_a_lost_pin_restarts_the_boundary_instead_of_ending_the_actor() -> None:
+    """`#57`: a spurious game-over between the two speed presses costs one round.
+
+    The press fails on an instance that is otherwise fine, so the boundary goes
+    round again - close the run, start another - rather than raising out of
+    `begin_episode`, which ends the actor for the whole stage.
+    """
+    client = FakeClient(
+        # Live while the boundary pins the speed, then over: the run stopped
+        # being active in the round trip between the two presses. It reads
+        # terminal from then on until the new round starts.
+        states=[_observation()] * 3 + [_observation(terminal=True)] * 4,
+        unhonoured_attempts={"speed_down": 1},
+        state_by_action={"speed_down": _terminal_at_the_pin()},
+    )
+    adapter = _adapter(client)
+
+    adapter.begin_episode()
+
+    assert adapter.pin_restarts == 1
+    # The recovery is a whole boundary - the dead run is closed and another
+    # started - not a second press of the pin on the run that just ended.
+    assert _actions(client) == [
+        "unpause", "speed_max", "speed_down",
+        "go_home", "start_round", "speed_max", "speed_down",
+    ]
+
+
+def test_a_pin_that_will_not_hold_is_given_up_on_after_three_restarts() -> None:
+    """The recovery is for a transient. A fourth failure is the instance itself."""
+    client = FakeClient(
+        default_speed=1.5,
+        unhonoured_attempts={"speed_down": 4},
+        state_by_action={"speed_down": _terminal_at_the_pin()},
+    )
+    adapter = _adapter(client)
+
+    with pytest.raises(PinNotHeld) as excinfo:
+        adapter.begin_episode()
+
+    assert adapter.pin_restarts == 3
+    # The fingerprint of the lost pin survives the retries intact (`#46`).
+    message = str(excinfo.value)
+    assert "did not honour speed_down: lifecycle_timeout" in message
+    assert "game_speed=1.5" in message and "terminal=0" in message
+    assert "at failure: game_speed=0.0" in message and "terminal=1" in message
+
+
+def test_the_battle_control_is_pressed_only_once_the_run_has_really_ended() -> None:
+    """`#57`: `go_home` confirms on a condition a finished run already satisfies.
+
+    So the press says nothing about the home screen being up, and a round
+    started into the previous round's still-running game-over flow is over
+    before it began. Consecutive readings that agree no run is running are what
+    the boundary waits for instead.
+    """
+    client = FakeClient(
+        states=[
+            _observation(terminal=True),  # the resume check
+            _observation(terminal=True),  # the boundary's own reading
+            _observation(),  # the finished run, still running, twice
+            _observation(),
+            _observation(terminal=True),
+            _observation(terminal=True),
+            _observation(terminal=True),
+        ]
+    )
+
+    _adapter(client).begin_episode()
+
+    pressed = dict(zip(_actions(client), client.reads_at_send, strict=True))
+    assert pressed["go_home"] == 2
+    # Two readings that still showed a live run, then three that agreed.
+    assert pressed["start_round"] == 7
+
+
+def test_a_game_already_at_home_waits_for_nothing_but_its_own_confirmations() -> None:
+    """The wait is agreement between readings, not a sleep, so a settled game
+    pays three observations and no wall time."""
+    client = FakeClient(states=[_observation(terminal=True)] * 5)
+
+    _adapter(client).begin_episode()
+
+    pressed = dict(zip(_actions(client), client.reads_at_send, strict=True))
+    assert pressed["start_round"] - pressed["go_home"] == 3

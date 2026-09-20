@@ -107,6 +107,10 @@ class EpisodeHealth:
     stale_or_duplicate: int
     game_time_inflated: int
     advances_cut_short: int
+    #: Speed-pin failures the port recovered from at an episode boundary,
+    #: pooled over the span. Recovered, so no episode is lost to one - which is
+    #: exactly why it has to be pooled somewhere a long run is read from (`#57`).
+    pin_restarts: int
     episodes_not_started_fresh: int
     #: The game's round clock over the budgeted game time, pooled across every
     #: episode that spent measurable game time. None until one has.
@@ -153,6 +157,7 @@ def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
         stale_or_duplicate=sum(1 for text in all_detail if STALE_OR_DUPLICATE in text),
         game_time_inflated=sum(1 for text in all_detail if GAME_TIME_INFLATED in text),
         advances_cut_short=sum(summary.advances_cut_short for summary in summaries),
+        pin_restarts=sum(summary.pin_restarts for summary in summaries),
         episodes_not_started_fresh=sum(1 for summary in summaries if summary.starting_wave > 1),
         round_budgeted_ratio=pooled_ratio,
         worst_round_budgeted_ratio=worst_ratio,

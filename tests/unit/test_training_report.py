@@ -95,6 +95,7 @@ HEALTH_KEYS = {
     "stale_or_duplicate",
     "game_time_inflated",
     "advances_cut_short",
+    "pin_restarts",
     "episodes_not_started_fresh",
     "round_budgeted_ratio",
     "worst_round_budgeted_ratio",
@@ -105,6 +106,7 @@ HEALTH_KEYS = {
 ZERO_HEALTH_COUNTERS = {
     "invalid_episodes",
     "advances_cut_short",
+    "pin_restarts",
     "episodes_not_started_fresh",
     "bridge_event_divergence",
     "stale_or_duplicate",

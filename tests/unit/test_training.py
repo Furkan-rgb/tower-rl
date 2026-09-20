@@ -507,6 +507,7 @@ def _collected(
     valid: bool = True,
     termination_detail: tuple[str, ...] = (),
     advances_cut_short: int = 0,
+    pin_restarts: int = 0,
     starting_wave: int = 0,
     game_ms: float = 0.0,
     round_ms: float = 0.0,
@@ -528,6 +529,7 @@ def _collected(
             invalid_transitions=0,
             termination_detail=termination_detail,
             advances_cut_short=advances_cut_short,
+            pin_restarts=pin_restarts,
             starting_wave=starting_wave,
             game_ms=game_ms,
             round_ms=round_ms,
@@ -711,6 +713,7 @@ def test_episode_health_counts_the_named_bridge_and_device_failures() -> None:
     assert health.stale_or_duplicate == 1
     assert health.game_time_inflated == 1
     assert health.advances_cut_short == 0
+    assert health.pin_restarts == 0
     assert health.episodes_not_started_fresh == 0
 
 
@@ -724,6 +727,23 @@ def test_episode_health_counts_a_leftover_run_and_cut_short_advances() -> None:
 
     assert health.episodes_not_started_fresh == 1
     assert health.advances_cut_short == 2
+
+
+def test_episode_health_pools_the_pin_failures_the_boundaries_recovered_from() -> None:
+    """`#57`: a recovered pin failure costs no episode, so nothing else shows it.
+
+    A six-hour run that needed the recovery dozens of times looks identical to
+    one that never did unless the count is pooled where the run is read from.
+    """
+    summaries = [
+        _collected(4, pin_restarts=2).summary,
+        _collected(6).summary,
+        _collected(5, pin_restarts=1).summary,
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.pin_restarts == 3
 
 
 def test_the_action_distribution_is_none_before_any_episode() -> None:

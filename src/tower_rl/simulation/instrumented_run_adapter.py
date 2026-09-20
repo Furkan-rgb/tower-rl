@@ -42,16 +42,6 @@ GAME_SPEED = 1.0
 #: this is not the transient this recovery is for.
 MAX_CONSECUTIVE_PIN_RESTARTS = 3
 
-#: How many observations in a row must agree that no run is running before the
-#: boundary presses BATTLE. `go_home`'s own confirmation asks the game whether a
-#: run is active, which a run that has just ended already answers, so the press
-#: is confirmed by a condition that held before it was sent. Agreement across
-#: consecutive streamed states is what actually witnesses the home screen: the
-#: ending round's own game-over flow is still running for a frame or two after
-#: it, and a round started into it is the round that is over before it began
-#: (`#57`).
-HOME_CONFIRMATIONS = 3
-
 
 class PinNotHeld(RunPortError):
     """The speed pin was not honoured at an episode boundary.
@@ -196,17 +186,15 @@ class InstrumentedRunAdapter:
                 state = self._latest_state()
                 if isinstance(state, BridgeObservation) and not state.terminal:
                     self._start_round(state.sequence)
-                    consecutive_pin_failures = 0
                     return
                 if isinstance(state, BridgeObservation):
                     self._press("go_home", state.sequence)
-                    state = self._await_settled_home(deadline)
+                    state = self._latest_state()
                 self._press("start_round", state.sequence)
                 self._await_active(deadline)
                 state = self._latest_state()
                 if isinstance(state, BridgeObservation) and not state.terminal:
                     self._start_round(state.sequence)
-                    consecutive_pin_failures = 0
                     return
             except PinNotHeld:
                 # The run stopped being active between the two speed presses,
@@ -285,40 +273,6 @@ class InstrumentedRunAdapter:
             raise RunPortError(
                 f"the previous run could not be resumed to start an episode: {result.reason}"
             )
-
-    def _await_settled_home(self, deadline: float) -> BridgeObservation | BridgeRunUnavailable:
-        """Wait until no run is running, and stay sure of it for `HOME_CONFIRMATIONS` states.
-
-        "No run is running" is the bridge's own `RunIsActive` - a round in
-        progress that is not over - read off the streamed state, so the home
-        screen satisfies it however it reports itself and so does a run whose
-        game-over panel is still up.
-
-        Returns the last reading, which is the one the round start binds. Each
-        read is a streamed state rather than a poll of a cached value, so a game
-        that is already at home pays three reads and nothing else; there is no
-        sleep here for the same reason.
-        """
-        confirmations = 0
-        while time.monotonic() < deadline:
-            state = self._latest_state()
-            if isinstance(state, BridgeObservation) and state.lifecycle == "active":
-                # The run the boundary just closed is running again - the ending
-                # round's own flow, still going. Start over: what matters is
-                # consecutive agreement, not how many settled states were seen.
-                #
-                # A live run is the *only* reading that starts the wait over.
-                # The home screen reports itself two ways - `run_unavailable`
-                # when the game holds no initialized run, and an ordinary
-                # observation whose scalars describe no run (`lifecycle: idle`,
-                # `M1B-E015`) - and treating the second as a live run would
-                # hang every boundary here until the deadline.
-                confirmations = 0
-                continue
-            confirmations += 1
-            if confirmations >= HOME_CONFIRMATIONS:
-                return state
-        raise RunPortError("the instance did not settle out of its finished run in time")
 
     def _await_active(self, deadline: float) -> None:
         while time.monotonic() < deadline:

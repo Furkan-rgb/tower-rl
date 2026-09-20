@@ -143,6 +143,7 @@ def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
         f"{prefix}valid_episodes": float(health.valid_episodes),
         f"{prefix}invalid_episodes": float(health.invalid_episodes),
         f"{prefix}advances_cut_short": float(health.advances_cut_short),
+        f"{prefix}pin_restarts": float(health.pin_restarts),
         f"{prefix}episodes_not_started_fresh": float(health.episodes_not_started_fresh),
         f"{prefix}bridge_event_divergence": float(health.bridge_event_divergence),
         f"{prefix}stale_or_duplicate": float(health.stale_or_duplicate),

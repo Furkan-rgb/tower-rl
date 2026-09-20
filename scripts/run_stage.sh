@@ -238,9 +238,13 @@ log_host_load() {
     echo "$timestamp host-load: $(cat /proc/loadavg 2>/dev/null || echo unavailable)"
     echo "$timestamp host-load: nproc $(nproc 2>/dev/null || echo unavailable)"
     echo "$timestamp host-load: top 5 by cpu"
+    # `|| true`: `head -6` closing the pipe on a host with more than a
+    # handful of processes can send `ps` SIGPIPE, and under `pipefail`
+    # that failure is the whole pipeline's exit status. Unguarded, that
+    # would abort this function inside the EXIT trap before teardown runs.
     ps -eo pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -6 | while IFS= read -r line; do
       echo "$timestamp host-load: $line"
-    done
+    done || true
   } >> "$log_path"
 }
 

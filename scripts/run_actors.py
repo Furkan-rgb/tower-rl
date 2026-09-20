@@ -153,13 +153,16 @@ def health_counters(record: dict[str, Any]) -> dict[str, int]:
 
     `advances_cut_short` and `episodes_not_started_fresh` are counted by the
     evaluator; the two bridge-level reasons are counted from the per-episode
-    termination detail, which is where the environment records them.
+    termination detail, which is where the environment records them, and
+    `pin_restarts` from the per-episode counts the environment takes off the
+    port.
     """
     episodes = record.get("episodes", ())
     detail = [text for episode in episodes for text in episode.get("termination_detail", ())]
     return {
         "bridge_event_divergence": sum(1 for text in detail if BRIDGE_EVENT_DIVERGENCE in text),
         "stale_or_duplicate": sum(1 for text in detail if STALE_OR_DUPLICATE in text),
+        "pin_restarts": sum(int(episode.get("pin_restarts", 0)) for episode in episodes),
         "advances_cut_short": int(record.get("advances_cut_short", 0)),
         "episodes_not_started_fresh": int(record.get("episodes_not_started_fresh", 0)),
     }
@@ -176,6 +179,7 @@ def aggregate(outcomes: list[ActorOutcome], wall_seconds: float) -> dict[str, An
     health = {
         "bridge_event_divergence": 0,
         "stale_or_duplicate": 0,
+        "pin_restarts": 0,
         "advances_cut_short": 0,
         "episodes_not_started_fresh": 0,
     }

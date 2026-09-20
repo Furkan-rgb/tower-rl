@@ -363,6 +363,7 @@ def test_per_episode_records_cover_valid_and_invalid_episodes_alike() -> None:
         "elapsed_wall_seconds",
         "termination_detail",
         "advances_cut_short",
+        "pin_restarts",
         "recovered_transients",
     ):
         assert key in first
@@ -373,6 +374,17 @@ def test_per_episode_records_cover_valid_and_invalid_episodes_alike() -> None:
     assert second["invalid_reasons"] == ("state: health exceeds maximum",)
     assert second["termination_detail"] == ("state: health exceeds maximum",)
     assert second["starting_wave"] == 3
+
+
+def test_the_episode_record_carries_the_restarts_its_boundary_needed() -> None:
+    """`#57`: a pin the port had to restart the boundary for is on the episode.
+
+    The episode itself is ordinary - the restart happened before it began - so
+    nothing about it says the instance needed help unless the count does.
+    """
+    record = episode_record(0, _summary(pin_restarts=2))
+
+    assert record["pin_restarts"] == 2
 
 
 def test_episode_record_matches_the_episode_summary_it_wraps() -> None:

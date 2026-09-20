@@ -329,6 +329,25 @@ def test_an_advance_cut_short_of_its_budget_is_counted_not_hidden() -> None:
     assert environment.summarize(TerminationOutcome.OPERATOR_STOP).advances_cut_short == 1
 
 
+def test_the_episode_reports_the_boundary_restarts_it_cost_the_port() -> None:
+    """`#57`: a boundary the port had to restart is charged to the episode it began.
+
+    Only this episode's share of it: the port counts restarts over its whole
+    life, and an episode that began cleanly after one that did not must not
+    inherit the count.
+    """
+    environment, port = _environment(pin_restarts_per_episode=2)
+    environment.reset()
+    first = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    port.pin_restarts_per_episode = 0
+    environment.reset()
+    second = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert first.pin_restarts == 2
+    assert second.pin_restarts == 0
+
+
 def test_an_advance_truncated_by_wall_time_fails_the_episode_by_name() -> None:
     """No advance may be truncated by wall time.
 

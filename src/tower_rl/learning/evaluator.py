@@ -289,6 +289,7 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "invalid_reasons": summary.termination_detail if not summary.valid else (),
         "termination_detail": summary.termination_detail,
         "advances_cut_short": summary.advances_cut_short,
+        "pin_restarts": summary.pin_restarts,
         "recovered_transients": summary.recovered_transients,
         "starting_wave": summary.starting_wave,
         # One row per wave index the episode entered. `game_ms` here is measured

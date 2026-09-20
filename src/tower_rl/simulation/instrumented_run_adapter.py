@@ -37,6 +37,22 @@ from tower_rl.simulation.instrumented_bridge import (
 #: and the speed the budgeted game time in `run_environment` assumes.
 GAME_SPEED = 1.0
 
+#: How many times in a row a boundary may re-press its way out of a lost pin
+#: before the actor gives up on the instance. A pin failure that repeats past
+#: this is not the transient this recovery is for.
+MAX_CONSECUTIVE_PIN_RESTARTS = 3
+
+
+class PinNotHeld(RunPortError):
+    """The speed pin was not honoured at an episode boundary.
+
+    Its own type only so `begin_episode` can tell the one failure it can
+    recover from - the run stopped being active in the round trip between the
+    two speed presses, which a fresh round start puts right - from every other
+    port failure, which it still refuses. The message is unchanged: it is the
+    diagnostic fingerprint of the lost pin (`#46`).
+    """
+
 
 def _describe_state(state: BridgeObservation) -> str:
     """Render the fields a speed-pin diagnostic needs, as `key=value` pairs."""
@@ -52,7 +68,14 @@ class InstrumentedRunAdapter:
     """One rooted clone, presented to the environment as a semantic run port."""
 
     client: InstrumentedBridgeClient
-    episode_start_timeout: float = 120.0
+    #: Room for the boundary to press its way out of a lost pin. One lost pin
+    #: costs the bridge's own 30 s lifecycle timeout, so the budget has to hold
+    #: several of those and still leave time for the round to start (`#57`).
+    episode_start_timeout: float = 240.0
+    #: Boundaries this adapter restarted because the speed pin was not held.
+    #: Reported per episode: a recovery nobody can count is a recovery that
+    #: hides how often the instance is failing.
+    pin_restarts: int = field(default=0, init=False)
     #: Whether a round is being played. While it is, the environment holds the
     #: observation sequence the next command must bind, so the adapter issues
     #: nothing of its own initiative: see `_command_between_rounds`.
@@ -156,21 +179,35 @@ class InstrumentedRunAdapter:
         """
         self._round_in_progress = False
         self._resume_a_frozen_run()
+        consecutive_pin_failures = 0
         deadline = time.monotonic() + self.episode_start_timeout
         while time.monotonic() < deadline:
-            state = self._latest_state()
-            if isinstance(state, BridgeObservation) and not state.terminal:
-                self._start_round(state.sequence)
-                return
-            if isinstance(state, BridgeObservation):
-                self._press("go_home", state.sequence)
+            try:
                 state = self._latest_state()
-            self._press("start_round", state.sequence)
-            self._await_active(deadline)
-            state = self._latest_state()
-            if isinstance(state, BridgeObservation) and not state.terminal:
-                self._start_round(state.sequence)
-                return
+                if isinstance(state, BridgeObservation) and not state.terminal:
+                    self._start_round(state.sequence)
+                    return
+                if isinstance(state, BridgeObservation):
+                    self._press("go_home", state.sequence)
+                    state = self._latest_state()
+                self._press("start_round", state.sequence)
+                self._await_active(deadline)
+                state = self._latest_state()
+                if isinstance(state, BridgeObservation) and not state.terminal:
+                    self._start_round(state.sequence)
+                    return
+            except PinNotHeld:
+                # The run stopped being active between the two speed presses,
+                # which a fresh round start puts right. The loop's own next
+                # pass does exactly that - the run it left behind reads
+                # terminal, so it is sent home and started again - so the
+                # recovery is to go round again rather than to end the actor
+                # for the rest of the stage (`#57`). Counted, never silent.
+                consecutive_pin_failures += 1
+                if consecutive_pin_failures > MAX_CONSECUTIVE_PIN_RESTARTS:
+                    raise
+                self.pin_restarts += 1
+                continue
         raise RunPortError("the instance did not reach an active run in time")
 
     def _start_round(self, sequence: int) -> None:
@@ -380,7 +417,7 @@ class InstrumentedRunAdapter:
             detail = f"after speed_max: {_describe_state(state)}"
             if isinstance(result.state, BridgeObservation):
                 detail += f"; at failure: {_describe_state(result.state)}"
-            raise RunPortError(f"the game did not honour speed_down: {result.reason} ({detail})")
+            raise PinNotHeld(f"the game did not honour speed_down: {result.reason} ({detail})")
 
     def release(self) -> None:
         """Leave the game running, whatever mode this adapter used.

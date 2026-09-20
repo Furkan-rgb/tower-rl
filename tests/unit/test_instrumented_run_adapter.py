@@ -16,6 +16,7 @@ from tower_rl.simulation.instrumented_bridge import (
 from tower_rl.simulation.instrumented_run_adapter import (
     GAME_SPEED,
     InstrumentedRunAdapter,
+    PinNotHeld,
 )
 
 
@@ -48,6 +49,11 @@ class FakeClient:
     stale_kinds: frozenset[str] = frozenset()
     #: Lifecycle actions the game does not honour, whatever it does with the rest.
     unhonoured_actions: frozenset[str] = frozenset()
+    #: How many of the first presses of each named action the game does not
+    #: honour, and with what reason: an instance that fails a press and then
+    #: behaves, which is the shape the pin failure has (`#57`).
+    unhonoured_attempts: dict[str, int] = field(default_factory=dict)
+    unhonoured_reason: str = "lifecycle_timeout"
     #: A state to attach to the result of one named lifecycle action, however it
     #: is honoured - the real bridge can carry a state beside a rejection.
     state_by_action: dict[str, object] = field(default_factory=dict)
@@ -69,12 +75,18 @@ class FakeClient:
         else:
             settled = self.state_by_action.get(message.get("action"))
         outcome = self.outcome
+        reason = "ok"
         if message.get("action") in self.unhonoured_actions:
             outcome = "rejected"
+        remaining = self.unhonoured_attempts.get(str(message.get("action")), 0)
+        if remaining:
+            self.unhonoured_attempts[str(message["action"])] = remaining - 1
+            outcome = "ambiguous"
+            reason = self.unhonoured_reason
         return BridgeCommandResult(
             request_id=str(message["request_id"]),
             outcome=CommandOutcome(outcome),
-            reason="ok",
+            reason=reason,
             observation_sequence=1,
             state=settled,
         )
@@ -375,3 +387,56 @@ def test_a_stale_command_fails_the_episode_instead_of_the_process() -> None:
 
     with pytest.raises(RunPortError, match="stale"):
         _advance(adapter)
+
+
+def _terminal_at_the_pin() -> BridgeObservation:
+    """What the bridge reports when the run stopped being active under the pin."""
+    return _observation(sequence=11, terminal=True, speed=0.0)
+
+
+def test_a_lost_pin_restarts_the_boundary_instead_of_ending_the_actor() -> None:
+    """`#57`: a spurious game-over between the two speed presses costs one round.
+
+    The press fails on an instance that is otherwise fine, so the boundary goes
+    round again - close the run, start another - rather than raising out of
+    `begin_episode`, which ends the actor for the whole stage.
+    """
+    client = FakeClient(
+        # Live while the boundary pins the speed, then over: the run stopped
+        # being active in the round trip between the two presses. It reads
+        # terminal from then on until the new round starts.
+        states=[_observation()] * 3 + [_observation(terminal=True)] * 2,
+        unhonoured_attempts={"speed_down": 1},
+        state_by_action={"speed_down": _terminal_at_the_pin()},
+    )
+    adapter = _adapter(client)
+
+    adapter.begin_episode()
+
+    assert adapter.pin_restarts == 1
+    # The recovery is a whole boundary - the dead run is closed and another
+    # started - not a second press of the pin on the run that just ended.
+    assert _actions(client) == [
+        "unpause", "speed_max", "speed_down",
+        "go_home", "start_round", "speed_max", "speed_down",
+    ]
+
+
+def test_a_pin_that_will_not_hold_is_given_up_on_after_three_restarts() -> None:
+    """The recovery is for a transient. A fourth failure is the instance itself."""
+    client = FakeClient(
+        default_speed=1.5,
+        unhonoured_attempts={"speed_down": 4},
+        state_by_action={"speed_down": _terminal_at_the_pin()},
+    )
+    adapter = _adapter(client)
+
+    with pytest.raises(PinNotHeld) as excinfo:
+        adapter.begin_episode()
+
+    assert adapter.pin_restarts == 3
+    # The fingerprint of the lost pin survives the retries intact (`#46`).
+    message = str(excinfo.value)
+    assert "did not honour speed_down: lifecycle_timeout" in message
+    assert "game_speed=1.5" in message and "terminal=0" in message
+    assert "at failure: game_speed=0.0" in message and "terminal=1" in message

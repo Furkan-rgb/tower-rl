@@ -108,7 +108,14 @@ class Shims:
         return record.read_text().split() if record.exists() else []
 
     def devices_from(self, call: int, listing: str) -> None:
-        """What `adb devices` answers from its `call`-th invocation onward."""
+        """What `adb devices` answers from its `call`-th invocation onward.
+
+        The call number is how a test says *when* an instance changed state,
+        and it counts every `adb devices` the script makes — preflight's
+        included. Adding or removing one anywhere moves every fixture below
+        silently rather than loudly, so a test that starts passing for a new
+        reason is the thing to watch for here.
+        """
         (self.state / f"devices.{call}").write_text(listing)
 
     def stage(self, script: str, name: str = "stage.sh") -> Path:
@@ -545,3 +552,23 @@ def test_an_instance_that_stays_offline_is_killed_and_reported_unverifiable(
         "stage test-stage: exit 0, cleanup failed, instances 0/1 cleaned, 0 exited during teardown"
         in result.stdout
     )
+
+
+#: An empty value is not here on purpose: `${…:-60}` reads it as unset and the
+#: default stands, which is the safe reading and needs no refusal.
+@pytest.mark.parametrize("settle", ["abc", "-1", "0"], ids=["words", "negative", "zero"])
+def test_a_settle_timeout_that_is_not_a_number_is_refused(shims: Shims, settle: str) -> None:
+    """The loop that reads it runs where signals are ignored, so it must refuse.
+
+    A value the comparison cannot evaluate never ends the wait: the supervisor
+    then sleeps in five-second steps for as long as it takes somebody to find
+    it and SIGKILL it.
+    """
+    shims.environment["TOWER_STAGE_SETTLE_TIMEOUT"] = settle
+    stage = shims.stage("touch " + str(shims.state / "ran"))
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 2
+    assert "TOWER_STAGE_SETTLE_TIMEOUT must be" in result.stderr + result.stdout
+    assert not (shims.state / "ran").exists()

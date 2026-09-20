@@ -493,7 +493,7 @@ Everything the stage and the script write goes to `state/logs/<name>-<timestamp>
 and to stdout, ending in one summary line:
 
 ```text
-stage m2-run2-train-seed1: exit 0, cleanup ok, instances 7/7 cleaned, wall 08:12:44
+stage m2-run2-train-seed1: exit 0, cleanup ok, instances 7/7 cleaned, 0 exited during teardown, wall 08:12:44
 ```
 
 Once the teardown has begun, `SIGINT` and `SIGTERM` are **ignored**, so a second

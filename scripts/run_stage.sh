@@ -35,10 +35,12 @@ set -euo pipefail
 # `emulator-5554`, never `tower_rl_api36_play_x86_64`, and neither is ever
 # killed by the teardown either.
 #
-# Two paths are read from the environment so a test can point them somewhere
-# harmless; both default to the real thing and neither is a runtime option:
-#   TOWER_STAGE_PROC_ROOT      the /proc to count qemu processes in
-#   TOWER_STAGE_LOG_DIRECTORY  where the stage log is written
+# Three things are read from the environment so a test need not use the real
+# one or wait out a real duration. Each defaults to the real thing, none is a
+# runtime option, and no run sets any of them:
+#   TOWER_STAGE_PROC_ROOT       the /proc to count qemu processes in
+#   TOWER_STAGE_LOG_DIRECTORY   where the stage log is written
+#   TOWER_STAGE_SETTLE_TIMEOUT  how long an instance on its way out is given
 
 # `stop_stage` waits on the stage and on a timer at once through `wait -n -p`,
 # which is bash 5.1 or newer. Under 5.0 the option is rejected, the variable it
@@ -61,15 +63,27 @@ verify_timeout=30
 #: teardown ignores the signals that would otherwise have freed the supervisor
 #: from a hung one, so the bound is what keeps "ignore signals" from meaning
 #: "hang forever". A healthy instance's cleanup is seconds, so this is already
-#: generous, and it is what holds the worst case a whole fleet can spend
-#: uninterruptible — the grace period plus one bound an instance — near half an
-#: hour rather than over an hour.
+#: generous, and it is the largest term in what a whole fleet can spend
+#: uninterruptible: the grace period, plus the settle wait and this bound and
+#: its kill delay once an instance — 900 + 7 × (60 + 120 + 10) ≈ 37 minutes for
+#: a seven-instance fleet in which every single instance misbehaves at once.
 cleanup_timeout=120
 #: How long an instance that is attached but not answering is given to either
 #: answer or go. A teardown reaches the fleet while the stage's own teardown is
 #: still killing it, so this is the ordinary case rather than a fault.
 #: Overridable only so the suite need not wait it out; no run ever sets it.
+#: Validated for the same reason `--shutdown-grace` is, and more urgently: the
+#: loop that reads it runs inside the teardown, where signals are ignored, and
+#: a value the comparison cannot evaluate never breaks out of it. A typo there
+#: is a supervisor that only SIGKILL can end.
 settle_timeout="${TOWER_STAGE_SETTLE_TIMEOUT:-60}"
+case "$settle_timeout" in
+  ''|*[!0-9]*)
+    echo "TOWER_STAGE_SETTLE_TIMEOUT must be a whole number of seconds: $settle_timeout" >&2
+    exit 2 ;;
+esac
+[ "$settle_timeout" -ge 1 ] ||
+  { echo "TOWER_STAGE_SETTLE_TIMEOUT must be at least 1 second" >&2; exit 2; }
 #: How long the stage command is given to tear its own fleet down after SIGINT,
 #: before it is killed outright. A seven-instance fleet's teardown is minutes,
 #: not seconds: each instance is force-stopped, unmounted and re-verified.

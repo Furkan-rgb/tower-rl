@@ -35,10 +35,12 @@ set -euo pipefail
 # `emulator-5554`, never `tower_rl_api36_play_x86_64`, and neither is ever
 # killed by the teardown either.
 #
-# Two paths are read from the environment so a test can point them somewhere
-# harmless; both default to the real thing and neither is a runtime option:
-#   TOWER_STAGE_PROC_ROOT      the /proc to count qemu processes in
-#   TOWER_STAGE_LOG_DIRECTORY  where the stage log is written
+# Three things are read from the environment so a test need not use the real
+# one or wait out a real duration. Each defaults to the real thing, none is a
+# runtime option, and no run sets any of them:
+#   TOWER_STAGE_PROC_ROOT       the /proc to count qemu processes in
+#   TOWER_STAGE_LOG_DIRECTORY   where the stage log is written
+#   TOWER_STAGE_SETTLE_TIMEOUT  how long an instance on its way out is given
 
 # `stop_stage` waits on the stage and on a timer at once through `wait -n -p`,
 # which is bash 5.1 or newer. Under 5.0 the option is rejected, the variable it
@@ -61,10 +63,27 @@ verify_timeout=30
 #: teardown ignores the signals that would otherwise have freed the supervisor
 #: from a hung one, so the bound is what keeps "ignore signals" from meaning
 #: "hang forever". A healthy instance's cleanup is seconds, so this is already
-#: generous, and it is what holds the worst case a whole fleet can spend
-#: uninterruptible — the grace period plus one bound an instance — near half an
-#: hour rather than over an hour.
+#: generous, and it is the largest term in what a whole fleet can spend
+#: uninterruptible: the grace period, plus the settle wait and this bound and
+#: its kill delay once an instance — 900 + 7 × (60 + 120 + 10) ≈ 37 minutes for
+#: a seven-instance fleet in which every single instance misbehaves at once.
 cleanup_timeout=120
+#: How long an instance that is attached but not answering is given to either
+#: answer or go. A teardown reaches the fleet while the stage's own teardown is
+#: still killing it, so this is the ordinary case rather than a fault.
+#: Overridable only so the suite need not wait it out; no run ever sets it.
+#: Validated for the same reason `--shutdown-grace` is, and more urgently: the
+#: loop that reads it runs inside the teardown, where signals are ignored, and
+#: a value the comparison cannot evaluate never breaks out of it. A typo there
+#: is a supervisor that only SIGKILL can end.
+settle_timeout="${TOWER_STAGE_SETTLE_TIMEOUT:-60}"
+case "$settle_timeout" in
+  ''|*[!0-9]*)
+    echo "TOWER_STAGE_SETTLE_TIMEOUT must be a whole number of seconds: $settle_timeout" >&2
+    exit 2 ;;
+esac
+[ "$settle_timeout" -ge 1 ] ||
+  { echo "TOWER_STAGE_SETTLE_TIMEOUT must be at least 1 second" >&2; exit 2; }
 #: How long the stage command is given to tear its own fleet down after SIGINT,
 #: before it is killed outright. A seven-instance fleet's teardown is minutes,
 #: not seconds: each instance is force-stopped, unmounted and re-verified.
@@ -123,12 +142,6 @@ for index in $(seq 0 $((instances - 1))); do
   expected_serials+=("$(serial_for "$index")")
 done
 
-#: The serials adb reports as `device` right now. A serial in any other state is
-#: not something cleanup can be run through, and is reported rather than used.
-live_serials() {
-  "$adb" devices 2>/dev/null | awk '$2 == "device" { print $1 }'
-}
-
 #: Every serial adb knows about, whatever state it is in.
 attached_serials() {
   "$adb" devices 2>/dev/null | awk 'NR > 1 && NF >= 2 { print $1 }'
@@ -139,6 +152,51 @@ attached_serials() {
 #: instance that is attached but not answering cannot be certified offline.
 attached_with_state() {
   "$adb" devices 2>/dev/null | awk 'NR > 1 && NF >= 2 { print $1, $2 }'
+}
+
+#: The state adb reports one serial in, empty if it is not attached at all.
+serial_state() {
+  attached_with_state | awk -v serial="$1" '$1 == serial { print $2 }'
+}
+
+#: Whether an instance is gone rather than broken.
+#:
+#: The process is the discriminator; adb is corroboration, there to catch a
+#: `/proc` read that found nothing because it was looking in the wrong place
+#: or at an unexpected command line rather than because the emulator is gone.
+#:
+#: Which is why the adb half asks whether the instance still *answers*, not
+#: whether it is still listed. A dying emulator is listed as `offline` for a
+#: tick or so after its process is gone, and a cleanup that got
+#: `adb: device offline` is asking milliseconds later: demanding it be dropped
+#: from the listing already reads a transitional state as though it were
+#: settled, and lands back on the false failure this exists to remove. An
+#: instance that is still answering is still never mistaken for a gone one.
+instance_exited() {
+  local serial="$1"
+  [ "$(serial_state "$serial")" != device ] || return 1
+  ! emulator_command_line "${serial#emulator-}" > /dev/null
+}
+
+#: What an instance that is attached but not in `device` state settles into.
+#:
+#: An emulator that is winding down is listed for a while before it goes: the
+#: first stage run under this script found `emulator-5566` there, ran cleanup
+#: against it, and was told `adb: device offline`. Neither answer this loop
+#: waits for is a failure — `device` means it is a live instance after all and
+#: is cleaned like any other, `gone` means the stage's own teardown had already
+#: finished with it. Only still being there, still not answering, is.
+await_settled() {
+  local serial="$1" waited=0 state
+  while :; do
+    state="$(serial_state "$serial")"
+    [ -z "$state" ] && { echo gone; return 0; }
+    [ "$state" = device ] && { echo device; return 0; }
+    [ "$waited" -ge "$settle_timeout" ] && break
+    sleep 5
+    waited=$((waited + 5))
+  done
+  echo stuck
 }
 
 #: The emulator's own command line, from the process holding that console port.
@@ -254,6 +312,10 @@ preflight() {
 # After the stage, however it ended.
 # ---------------------------------------------------------------------------
 cleaned=0
+#: Instances that were still winding down when the teardown reached them and
+#: had gone by the time it asked again. Counted apart from the cleaned ones
+#: because they are neither a cleanup this script did nor a failure.
+exited=0
 cleanup_ok=yes
 
 # The stage command is interrupted rather than killed, and then waited for: the
@@ -308,19 +370,35 @@ stop_stage() {
 }
 
 clean_instances() {
-  local serial live candidate command_line
+  local serial state command_line
   for serial in "${expected_serials[@]}"; do
-    live=no
-    for candidate in $(live_serials); do
-      [ "$candidate" = "$serial" ] && live=yes
-    done
-    if [ "$live" = no ]; then
-      # Either the stage never brought it up, or the stage's own teardown
-      # already put it down. Reported, because a stage that was meant to run N
-      # instances and cleaned fewer is a thing the summary has to say.
-      echo "cleanup: $serial is not live; not cleaned"
-      continue
+    state="$(serial_state "$serial")"
+    if [ -n "$state" ] && [ "$state" != device ]; then
+      echo "cleanup: $serial is attached in state '$state'; waiting up to ${settle_timeout}s for it to settle"
+      state="$(await_settled "$serial")"
     fi
+    case "$state" in
+      gone|"")
+        # Either the stage never brought it up, or the stage's own teardown
+        # already put it down. Reported, because a stage that was meant to run N
+        # instances and cleaned fewer is a thing the summary has to say.
+        if [ "$state" = gone ]; then
+          echo "cleanup: $serial exited during teardown; not cleaned"
+          exited=$((exited + 1))
+        else
+          echo "cleanup: $serial is not live; not cleaned"
+        fi
+        continue ;;
+      stuck)
+        # It is attached, it is not answering, and it has had its minute. The
+        # instance is `-read-only`, so nothing of it persists and killing it
+        # costs nothing — but its cleanup was never run and nobody may say it
+        # was, so this is a failure and is named as one.
+        echo "cleanup: unverifiable: $serial stayed offline" >&2
+        cleanup_ok=no
+        "$adb" -s "$serial" emu kill > /dev/null 2>&1 || true
+        continue ;;
+    esac
     # Bounded, because cleanup talks to a device over adb and a device that has
     # stopped answering would otherwise hold the supervisor open for as long as
     # it liked — and teardown ignores the signals that would have freed it.
@@ -331,6 +409,20 @@ clean_instances() {
     elif [ $? -eq 124 ]; then
       echo "cleanup: $serial did not finish cleaning up within ${cleanup_timeout}s" >&2
       cleanup_ok=no
+    elif instance_exited "$serial"; then
+      # It did not fail to clean up: it stopped existing while being cleaned.
+      # This is the seed-1 case — the runner's own teardown had already cleaned
+      # and killed all seven instances, and the backstop caught the last of them
+      # between adb's listing and the bridge's first command (`adb: device
+      # offline`). The instance is gone from adb and from /proc, it was
+      # `-read-only`, so nothing of it persists and there is nothing left to
+      # clean. Counted with the ones that exited, not against the cleanup.
+      #
+      # Only this branch. A cleanup that ran into its own timeout is not read
+      # this way however the instance ends up: hanging for two minutes is the
+      # signature of a wedged device, not of one that quietly went away.
+      echo "cleanup: $serial exited during teardown; not cleaned"
+      exited=$((exited + 1))
     else
       echo "cleanup: $serial did not clean up" >&2
       cleanup_ok=no
@@ -398,9 +490,10 @@ finish() {
     exit_code=1
   fi
   local wall=$SECONDS
-  printf 'stage %s: exit %d, cleanup %s, instances %d/%d cleaned, wall %02d:%02d:%02d\n' \
+  printf 'stage %s: exit %d, cleanup %s, instances %d/%d cleaned, %d exited during teardown, wall %02d:%02d:%02d\n' \
     "$name" "$stage_status" "$([ "$cleanup_ok" = yes ] && echo ok || echo failed)" \
-    "$cleaned" "$instances" "$((wall / 3600))" "$((wall % 3600 / 60))" "$((wall % 60))"
+    "$cleaned" "$instances" "$exited" \
+    "$((wall / 3600))" "$((wall % 3600 / 60))" "$((wall % 60))"
   exit "$exit_code"
 }
 

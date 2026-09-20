@@ -93,7 +93,12 @@ class CheckpointIdentity:
             # (ADR 0011).
             "upgrade_availability",
         ):
-            mine, theirs = getattr(self, field_name), getattr(other, field_name)
+            # Read as the strings they are declared as. Two of these are
+            # written from `StrEnum` members, and a reason quoting
+            # `<UpgradeAvailability.IMAGE: 'image'>` at an operator names the
+            # type rather than the value they chose.
+            mine = str(getattr(self, field_name))
+            theirs = str(getattr(other, field_name))
             if mine != theirs:
                 reasons.append(f"{field_name} differs: {mine!r} vs {theirs!r}")
         return tuple(reasons)

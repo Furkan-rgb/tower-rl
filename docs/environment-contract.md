@@ -135,11 +135,17 @@ evidence `M2-E008`). `--upgrade-availability` selects it on every runner:
   back true.
 
 The profile id is the same under both: the image is profile v1 either way. The
-availability travels in `resolved_config`, in the episode and session records,
-and in `CheckpointIdentity`, which refuses a cross-availability resume or
-evaluation by name. Two arms that differ in availability are not measuring the
-same decision problem, and the measured baselines belong to the availability
-they were collected under.
+availability travels in `resolved_config`, in every per-episode row
+(`learning/evaluator.episode_record`, so a comparison's own rows carry it) and
+in the session and actor records around them, and in `CheckpointIdentity`. Both
+directions are refused by name: a resume through
+`checkpoint.load(expected=...)`, and an evaluation through
+`learning/policies.checkpoint_policy`, which takes the cadence and the
+availability the session will play under and refuses a checkpoint collected
+under others - neither setting is in the weights, so neither would fail to load.
+Two arms that differ in availability are not measuring the same decision
+problem, and the measured baselines belong to the availability they were
+collected under.
 
 `validate_transition(previous, current)` rejects a non-advancing source sequence
 or capture time, a profile identity or schema version that changed inside an
@@ -216,9 +222,10 @@ Only a port that produces no state at all fails the reset.
 `--decision-cadence every-slice`, asks at every cadence stop, which is what run
 1 collected under. It exists to reproduce run 1's protocol and to replay its
 checkpoints, and for nothing else. The cadence is recorded in `resolved_config`,
-in evaluation and session records, and in `CheckpointIdentity`, which refuses a
-cross-cadence resume or evaluation by name; a checkpoint whose identity names no
-cadence is read as `every-slice`.
+in every per-episode row and in the session records around them, and in
+`CheckpointIdentity`, which refuses a cross-cadence resume (`checkpoint.load`)
+and a cross-cadence evaluation (`policies.checkpoint_policy`) by name; a
+checkpoint whose identity names no cadence is read as `every-slice`.
 
 ## Transition and reward
 

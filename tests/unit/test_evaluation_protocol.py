@@ -658,7 +658,11 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
     """
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(actors):
-        policy, identity = run_episodes.policy_from(selector)
+        policy, identity = run_episodes.policy_from(
+            selector,
+            decision_cadence=DecisionCadence.CHOICE_POINTS,
+            upgrade_availability=UpgradeAvailability.IMAGE,
+        )
         report = evaluate(environment(), policy, episodes=episodes, profile_id=PROFILE)
         record = run_episodes.actor_record(
             report,
@@ -913,6 +917,10 @@ def test_nothing_is_tracked_unless_a_run_is_named(
 def test_the_floors_go_through_the_same_selector_as_a_checkpoint(tmp_path: Path) -> None:
     """One protocol: the floors and a checkpoint are played by identical machinery."""
     for selector, expected in (("random", RandomPolicy), ("scripted", CheapestFirstPolicy)):
-        policy, identity = run_episodes.policy_from(selector)
+        policy, identity = run_episodes.policy_from(
+            selector,
+            decision_cadence=DecisionCadence.CHOICE_POINTS,
+            upgrade_availability=UpgradeAvailability.IMAGE,
+        )
         assert isinstance(policy, expected)
         assert identity == {"name": selector}

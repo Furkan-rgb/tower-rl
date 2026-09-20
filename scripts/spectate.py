@@ -1043,7 +1043,11 @@ def run(arguments: argparse.Namespace) -> int:
     host_is_free()
     # Before the device is touched: a checkpoint that cannot be rebuilt should
     # fail now, not after an emulator has been brought up for it.
-    policy, identity = policy_from(arguments.policy)
+    policy, identity = policy_from(
+        arguments.policy,
+        decision_cadence=decision_cadence_from(arguments),
+        upgrade_availability=upgrade_availability_from(arguments),
+    )
     expected = compatibility(bridge_build_directory())
     instance = CloneInstance(index=arguments.instance_index)
 

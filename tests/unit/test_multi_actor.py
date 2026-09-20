@@ -182,6 +182,12 @@ def test_a_teardown_failure_is_reported_without_losing_the_episodes() -> None:
     assert "overlay is still mounted" in (outcome.teardown_failure or "")
 
 
+#: The argv of every `run_episodes.py` the last `bring_up_steps` spawned. A
+#: fleet configures its actors by command line and by nothing else, so what it
+#: put there is the only evidence that a fleet-level setting reached them.
+EPISODE_ARGV: list[list[str]] = []
+
+
 def bring_up_steps(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -194,9 +200,11 @@ def bring_up_steps(
     asked: list[dict[str, object]] = []
     instance = CloneInstance()
     output = tmp_path / f"{instance.serial}.json"
+    EPISODE_ARGV.clear()
 
     def episode_process(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         steps.append(Path(command[1]).name)
+        EPISODE_ARGV.append(list(command))
         output.write_text(json.dumps(actor_record([summary(final_wave=4)])))
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -592,3 +600,24 @@ def test_a_game_that_lost_its_activity_before_the_raise_runs_no_episode(
     assert ran == []
 
 
+
+
+def test_a_fleet_tells_each_actor_which_protocol_to_collect_under(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The fleet configures its actors by command line and by nothing else.
+
+    `run_actors.py` decides the cadence and the upgrade availability once, for
+    every instance, and each actor is a separate `run_episodes.py` process - so
+    a setting that did not reach the argv did not reach the episodes, and the
+    fleet would report a protocol its actors never played (ADR 0009, ADR 0011).
+    """
+    bring_up_steps(monkeypatch, tmp_path)
+
+    argv = EPISODE_ARGV[0]
+    for flag, value in (
+        ("--decision-cadence", "choice-points"),
+        ("--upgrade-availability", "image"),
+    ):
+        assert flag in argv, f"{flag} never reached the actor"
+        assert argv[argv.index(flag) + 1] == value

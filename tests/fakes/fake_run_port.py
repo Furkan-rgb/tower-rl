@@ -140,6 +140,10 @@ class FakeRunPort:
     #: Set to raise from `unlock_all_upgrades`, the shape of a bridge that could
     #: not carry the command at all.
     refuse_to_unlock: bool = False
+    #: Extra named slots past `SLOTS_PER_FAMILY`, which is what a game build
+    #: wider than `run-action-v1` numbers would report. Nothing can address
+    #: them, so a host that met one has to fail closed rather than renumber.
+    extra_named_slots: int = 0
     #: Advances after which one real row goes back to locked - the game having
     #: recomputed availability under the episode, which the environment must
     #: hear rather than absorb.
@@ -229,10 +233,14 @@ class FakeRunPort:
             FakeSlotLabel(
                 family=family,
                 index=index,
-                name=f"{family} {index}" if index < self.real_rows[family] else "",
+                name=(
+                    f"{family} {index}"
+                    if index < self.real_rows[family] or index >= SLOTS_PER_FAMILY
+                    else ""
+                ),
             )
             for family in FAMILIES
-            for index in range(SLOTS_PER_FAMILY)
+            for index in range(SLOTS_PER_FAMILY + self.extra_named_slots)
         )
 
     def unlock_all_upgrades(self) -> tuple[FakeUnlockFamilyState, ...]:

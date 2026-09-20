@@ -163,6 +163,13 @@ LIVE_FEATURES: tuple[str, ...] = tuple(name for live in LIVE_FIELDS for name in 
 #: find every one of them and attribute each to the `Main` field it came from.
 OUT_OF_RANGE_REASON = "OBSERVATION_OUT_OF_RANGE"
 
+#: A source reporting more slots than `run-action-v1` numbers. Named once
+#: because two places meet it: the builder, which makes the observation invalid,
+#: and the round-start unlock, which has no observation yet and refuses the
+#: episode. A build reporting a different width is a different action schema and
+#: must fail closed rather than be silently renumbered.
+INVENTORY_TOO_WIDE = "upgrade inventory is wider than the supported action schema"
+
 
 def scale_live_reading(live: LiveField, raw: float) -> tuple[dict[str, float], str | None]:
     """Rescale one raw reading, and say when the reading cannot be legitimate.
@@ -412,7 +419,7 @@ class RunStateBuilder:
         entries: dict[RunActionId, UpgradeEntryLike] = {}
         for entry in reading.upgrades:
             if entry.index >= self.slots_per_family:
-                reasons.append("upgrade inventory is wider than the supported action schema")
+                reasons.append(INVENTORY_TOO_WIDE)
                 continue
             entries[upgrade_action(entry.family, entry.index)] = entry
         expected = len(UpgradeFamily) * self.slots_per_family

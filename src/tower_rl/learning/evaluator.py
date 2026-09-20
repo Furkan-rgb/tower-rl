@@ -263,6 +263,13 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "episode_index": index,
         "valid": summary.valid,
         "final_wave": summary.final_wave,
+        # The protocol this one episode was played under, on the episode rather
+        # than only on the record around it: a comparison's rows are pooled,
+        # filtered and quoted one at a time, and a row that cannot say which
+        # cadence asked it or which rows it could buy from is a number with no
+        # decision problem attached (ADR 0009, ADR 0011).
+        "decision_cadence": summary.decision_cadence,
+        "upgrade_availability": summary.upgrade_availability,
         "decisions": summary.decisions,
         # Decisions are choice points and advances are cadence slices, so both
         # units are recorded: a run collected under either cadence can be read

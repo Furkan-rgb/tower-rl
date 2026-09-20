@@ -8,7 +8,7 @@ context rather than as current truth.
 
 ### The protocol the project collects under
 
-Four things define what a run is, and all four are in force together:
+Five things define what a run is, and all five are in force together:
 
 - **A decision is asked for only at a choice point** — an observation whose mask
   offers at least one purchase. Forced `WAIT` slices are played through by the
@@ -28,6 +28,23 @@ Four things define what a run is, and all four are in force together:
   `i` of `N` to `0.4 ** (1 + 7 i / (N - 1))` instead of to one floor, and the
   collection curve is then read from the near-greedy actors alone (`#37`). The
   default is still `uniform`.
+- **Which upgrade rows are purchasable is configuration, not the image**:
+  `--upgrade-availability image|all` ([ADR
+  0011](adr/0011-upgrade-availability-is-applied-at-round-start.md), evidence
+  `M2-E008`). `image` is the default and is what every baseline so far was
+  measured under — the six rows the v1 image offers. `all` reopens every row the
+  game really has, applied through the bridge at each round start, because the
+  game recomputes its real rows' availability whenever a round begins; a
+  "profile v2 base image" could not have carried it. The profile id is the v1
+  image's either way, and floors measured under one availability do not read
+  against the other.
+
+**Before any `all` run: `state/bridge/current` must be reinstalled.** The
+unlock commands moved into the production build, so the installed artifact has
+to be a build that has them — digests and the install order are in
+[`docs/setup.md`](setup.md) under "Production digests, and the one that has to
+be reinstalled". A bridge without them refuses the episode by name rather than
+playing a locked run quietly.
 
 A run may also **stop before its budget is spent**: with
 `--early-stop-patience-periods` set, the near-greedy mean final wave of each

@@ -32,7 +32,12 @@ from tower_rl.environment.run_environment import (
     UpgradeAvailability,
 )
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.environment.run_state import LIVE_FEATURES, RunStateBuilder, hud_readings
+from tower_rl.environment.run_state import (
+    INVENTORY_TOO_WIDE,
+    LIVE_FEATURES,
+    RunStateBuilder,
+    hud_readings,
+)
 
 #: The cadence `_environment` builds under, rebound per test by the autouse
 #: fixture below. Every test in this module therefore runs twice, once under
@@ -1330,3 +1335,22 @@ def test_the_contract_names_both_ways_an_unlocked_run_can_stop_being_one() -> No
     assert UNLOCK_NOT_APPLIED in contract and UNLOCK_REVERTED in contract
     assert "--upgrade-availability" in contract
     assert "adr/0011-upgrade-availability-is-applied-at-round-start.md" in contract
+    # And that the refusal it claims is the one that exists: an evaluation is
+    # refused by `checkpoint_policy`, a resume by `checkpoint.load`.
+    assert "policies.checkpoint_policy" in contract
+
+
+def test_a_game_with_more_rows_than_the_schema_numbers_fails_closed() -> None:
+    """A wider inventory is a different action schema, and says so by name.
+
+    `run-action-v1` numbers twenty slots a family. A build that named more of
+    them is not something to renumber silently, and it must not surface as a
+    `ValueError` out of the action constructor either: the round start refuses
+    the episode with the reason the observation builder gives the same fact.
+    """
+    environment, _ = _unlocked_environment(extra_named_slots=1)
+
+    with pytest.raises(RunPortError, match=INVENTORY_TOO_WIDE) as refused:
+        environment.reset()
+
+    assert UNLOCK_NOT_APPLIED in str(refused.value)

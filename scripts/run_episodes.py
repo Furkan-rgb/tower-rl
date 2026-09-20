@@ -166,13 +166,23 @@ class RecordingPolicy:
         return len(windows) * self.window
 
 
-def policy_from(selector: str) -> tuple[Policy, dict[str, object]]:
+def policy_from(
+    selector: str,
+    *,
+    decision_cadence: DecisionCadence,
+    upgrade_availability: UpgradeAvailability,
+) -> tuple[Policy, dict[str, object]]:
     """The arm this run plays, and the identity every record of it carries.
 
     A selector is one of the non-learned floors by name, or `checkpoint:<path>`.
     The two are the same kind of thing to everything downstream - the actor, the
     evaluator, the per-episode records - which is the point: a checkpoint is
     measured by exactly the protocol its floors are.
+
+    Which is also why the protocol this session will run is passed in: a floor
+    plays whatever it is given, but a checkpoint learned one cadence and one set
+    of purchasable rows, and playing it under the others measures something the
+    run it came from never posed. `checkpoint_policy` refuses that by name.
 
     The identity travels with the record rather than being inferred from the
     directory a file happens to sit in. `run_actors.py` writes one file per
@@ -188,7 +198,11 @@ def policy_from(selector: str) -> tuple[Policy, dict[str, object]]:
         )
     path = Path(selector[len(CHECKPOINT_SELECTOR) :]).expanduser()
     try:
-        policy, identity = checkpoint_policy(path)
+        policy, identity = checkpoint_policy(
+            path,
+            decision_cadence=str(decision_cadence),
+            upgrade_availability=str(upgrade_availability),
+        )
     except (CheckpointError, ValueError) as failure:
         raise SystemExit(f"cannot play {path} as an arm: {failure}") from failure
     return policy, {
@@ -349,7 +363,11 @@ def main() -> int:
 
     # Before the device is touched: a checkpoint that cannot be rebuilt should
     # fail now, not after an emulator has been brought up for it.
-    policy, identity = policy_from(arguments.policy)
+    policy, identity = policy_from(
+        arguments.policy,
+        decision_cadence=decision_cadence_from(arguments),
+        upgrade_availability=upgrade_availability_from(arguments),
+    )
     recorder: RecordingPolicy | None = None
     if arguments.record_observations is not None:
         path = arguments.record_observations.expanduser()

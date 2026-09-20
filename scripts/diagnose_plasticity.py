@@ -207,7 +207,16 @@ def parameter_norms(network: StackedPolicyNetwork) -> tuple[dict[str, float], fl
 def diagnose(path: Path, batch: dict[str, Tensor] | None) -> dict[str, Any]:
     """Everything this reports about one checkpoint."""
     checkpoint = load(path)
-    backbone, identity = checkpoint_policy(path)
+    # This path plays nothing: it pushes stored observations through the network
+    # offline. There is no run whose cadence or availability could differ from
+    # the checkpoint's, so the checkpoint's own are what it is rebuilt under -
+    # said explicitly rather than by omission, because every path that *does*
+    # play has to state the protocol it will play under.
+    backbone, identity = checkpoint_policy(
+        path,
+        decision_cadence=checkpoint.identity.decision_cadence,
+        upgrade_availability=checkpoint.identity.upgrade_availability,
+    )
     network = backbone.online
     norms, total = parameter_norms(network)
     result: dict[str, Any] = {

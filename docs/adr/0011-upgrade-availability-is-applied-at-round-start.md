@@ -47,9 +47,12 @@ the profile image, and it is applied at each round start.**
   slot with a non-empty label from `slot_labels`. It does not retry.
 - The profile id is unchanged. The image is still profile v1 under either
   value; what differs is what the environment does at the round start.
-- Availability travels in the run identity, in MLflow params, and in the episode
-  and session records, and `CheckpointIdentity.incompatibilities` refuses a
-  resume or an evaluation across a difference in it.
+- Availability travels in the run identity, in MLflow params, and in the
+  per-episode rows and the session records around them, and
+  `CheckpointIdentity.incompatibilities` refuses a difference in it both ways:
+  a resume, through `checkpoint.load(expected=...)`, and an evaluation, through
+  `policies.checkpoint_policy`, which every path that plays a checkpoint tells
+  which cadence and which availability it is about to play under.
 - Every slot of every family is written, not only the real ones. The legal set
   already excludes an empty row without reference to its flag: an empty-named
   row is priced zero, and `_build_row` masks any row whose cost is not positive
@@ -65,9 +68,14 @@ the profile image, and it is applied at each round start.**
 ## Consequences
 
 - **Baselines must be re-measured per availability.** `M2-E007`'s random and
-  scripted floors, and every reference in `experiment/run_identity.py`, were
-  measured under `image`. They say nothing about a run played under `all`, and a
-  comparison across the two measures the availability, not the policy.
+  scripted floors, and `REFERENCE_FINAL_WAVES` / `SCRIPTED_REFERENCE` in
+  `experiment/run_identity.py`, are `image` measurements: mean final wave over
+  23 valid episodes per arm, `M1B-E021` at 86fcf3c, collected on the six rows
+  the v1 image offers. They are deliberately left pointing at that, rather than
+  re-pointed or parameterised, because no `all` floor has been measured yet;
+  they say nothing about a run played under `all`, and a comparison across the
+  two measures the availability, not the policy. An `all` arm's curve is not
+  readable against them until its own random and scripted floors exist.
 - **Two new invalid reasons.** `UNLOCK_NOT_APPLIED` fails the episode at the
   boundary when the unlock does not land — the actor counts it exactly as it
   counts a round that would not open. `UNLOCK_REVERTED` fails a decision when a

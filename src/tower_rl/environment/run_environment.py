@@ -40,6 +40,7 @@ from tower_rl.environment.run_actions import (
 )
 from tower_rl.environment.run_port import AdvanceResultLike, RunPort, RunPortError
 from tower_rl.environment.run_state import (
+    INVENTORY_TOO_WIDE,
     ExactRunReadingLike,
     RunState,
     RunStateBuilder,
@@ -449,6 +450,7 @@ class InstrumentedRunEnvironment:
             episode_id=self._episode_id,
             profile_id=state.profile_id,
             upgrade_availability=str(self.upgrade_availability),
+            decision_cadence=str(self.decision_cadence),
             final_wave=self._tally.peak_wave,
             decisions=self._tally.decisions,
             advances=self._tally.advances,
@@ -846,10 +848,23 @@ class InstrumentedRunEnvironment:
         neither unlocked nor checked for.
         """
         if self._real_rows is None:
-            labels = self.port.slot_labels()
-            self._real_rows = frozenset(
-                upgrade_action(label.family, label.index) for label in labels if label.name
-            )
+            labels = [label for label in self.port.slot_labels() if label.name]
+            # A build that names more slots than `run-action-v1` numbers is a
+            # different action schema, and it fails closed here by the same
+            # reason the builder gives it - not as a `ValueError` out of
+            # `upgrade_action`, which nothing in this path is prepared to
+            # classify.
+            if any(label.index >= self.builder.slots_per_family for label in labels):
+                raise RunPortError(f"{UNLOCK_NOT_APPLIED}: {INVENTORY_TOO_WIDE}")
+            try:
+                self._real_rows = frozenset(
+                    upgrade_action(label.family, label.index) for label in labels
+                )
+            except ValueError as unknown:
+                # A family this schema has no actions for, for the same reason:
+                # what the game offers and what the policy can address have
+                # stopped being the same set.
+                raise RunPortError(f"{UNLOCK_NOT_APPLIED}: {unknown}") from unknown
             if not self._real_rows:
                 raise RunPortError(
                     f"{UNLOCK_NOT_APPLIED}: the port named no upgrade row, so there is "

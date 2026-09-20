@@ -45,6 +45,14 @@ NETWORK = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 LEARNER = StackedDqnConfig(history_length=4, n_step=3, seed=7)
 
+#: The protocol these fixtures' checkpoint was collected under, which is what a
+#: session has to be playing for it to be playable at all. `identity()` leaves
+#: both at their defaults, so an every-slice checkpoint on the image's rows.
+PLAYED: dict[str, str] = {
+    "decision_cadence": DecisionCadence.EVERY_SLICE.value,
+    "upgrade_availability": UpgradeAvailability.IMAGE.value,
+}
+
 
 def identity() -> CheckpointIdentity:
     return CheckpointIdentity(
@@ -117,7 +125,7 @@ def test_a_rebuilt_checkpoint_chooses_what_the_backbone_that_wrote_it_chooses(
     """The weights are the arm; a rebuild that acted differently would be a new one."""
     path, original = trained_checkpoint(tmp_path)
 
-    rebuilt, restored = checkpoint_policy(path)
+    rebuilt, restored = checkpoint_policy(path, **PLAYED)
 
     assert restored == identity()
     for seed in range(8):
@@ -130,7 +138,7 @@ def test_a_rebuilt_checkpoint_chooses_what_the_backbone_that_wrote_it_chooses(
 def test_a_rebuilt_checkpoint_acts_greedily(tmp_path: Path) -> None:
     """Greedy is the argmax of its own values, taken the same way every time."""
     path, _ = trained_checkpoint(tmp_path)
-    rebuilt, _ = checkpoint_policy(path)
+    rebuilt, _ = checkpoint_policy(path, **PLAYED)
 
     for seed in range(4):
         state = features(seed)
@@ -150,8 +158,16 @@ def test_a_rebuilt_checkpoint_acts_greedily(tmp_path: Path) -> None:
 def test_a_checkpoint_is_selected_by_path_beside_the_named_floors(tmp_path: Path) -> None:
     path, _ = trained_checkpoint(tmp_path)
 
-    scripted, scripted_identity = run_episodes.policy_from("scripted")
-    _, checkpoint_identity = run_episodes.policy_from(f"checkpoint:{path}")
+    scripted, scripted_identity = run_episodes.policy_from(
+        "scripted",
+        decision_cadence=DecisionCadence.EVERY_SLICE,
+        upgrade_availability=UpgradeAvailability.IMAGE,
+    )
+    _, checkpoint_identity = run_episodes.policy_from(
+        f"checkpoint:{path}",
+        decision_cadence=DecisionCadence.EVERY_SLICE,
+        upgrade_availability=UpgradeAvailability.IMAGE,
+    )
 
     assert isinstance(scripted, CheapestFirstPolicy)
     assert scripted_identity == {"name": "scripted"}
@@ -165,9 +181,17 @@ def test_a_checkpoint_is_selected_by_path_beside_the_named_floors(tmp_path: Path
 
 def test_an_arm_that_is_neither_a_name_nor_a_checkpoint_is_refused(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="unknown policy"):
-        run_episodes.policy_from("greedy")
+        run_episodes.policy_from(
+            "greedy",
+            decision_cadence=DecisionCadence.EVERY_SLICE,
+            upgrade_availability=UpgradeAvailability.IMAGE,
+        )
     with pytest.raises(SystemExit, match="no checkpoint at"):
-        run_episodes.policy_from(f"checkpoint:{tmp_path / 'absent.pt'}")
+        run_episodes.policy_from(
+            f"checkpoint:{tmp_path / 'absent.pt'}",
+            decision_cadence=DecisionCadence.EVERY_SLICE,
+            upgrade_availability=UpgradeAvailability.IMAGE,
+        )
     # The fleet checks the same thing before it starts N emulators for it.
     with pytest.raises(SystemExit, match="unknown policy"):
         run_actors.checkpoint_arm("greedy")
@@ -179,7 +203,11 @@ def test_an_arm_that_is_neither_a_name_nor_a_checkpoint_is_refused(tmp_path: Pat
 def test_an_actor_record_names_the_checkpoint_that_produced_it(tmp_path: Path) -> None:
     """The arm is in the record, not in the directory the record sits in."""
     path, _ = trained_checkpoint(tmp_path)
-    policy, arm = run_episodes.policy_from(f"checkpoint:{path}")
+    policy, arm = run_episodes.policy_from(
+        f"checkpoint:{path}",
+        decision_cadence=DecisionCadence.EVERY_SLICE,
+        upgrade_availability=UpgradeAvailability.IMAGE,
+    )
 
     report = evaluate(environment(), policy, episodes=2, profile_id=PROFILE)
     record = run_episodes.actor_record(
@@ -199,7 +227,11 @@ def test_an_actor_record_names_the_checkpoint_that_produced_it(tmp_path: Path) -
 def test_the_fleet_report_carries_the_arm_its_actors_played(tmp_path: Path) -> None:
     """Resolved by the actors: the fleet process never loads the checkpoint."""
     path, _ = trained_checkpoint(tmp_path)
-    _, arm = run_episodes.policy_from(f"checkpoint:{path}")
+    _, arm = run_episodes.policy_from(
+        f"checkpoint:{path}",
+        decision_cadence=DecisionCadence.EVERY_SLICE,
+        upgrade_availability=UpgradeAvailability.IMAGE,
+    )
     report = evaluate(environment(), CheapestFirstPolicy(), episodes=1, profile_id=PROFILE)
     record = run_episodes.actor_record(
         report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000,
@@ -214,3 +246,50 @@ def test_the_fleet_report_carries_the_arm_its_actors_played(tmp_path: Path) -> N
 
     assert aggregated["actors"][0]["policy_identity"] == arm
     assert aggregated["policy_identity"] == arm
+
+
+def test_a_checkpoint_refuses_to_be_played_under_other_rows_or_another_cadence(
+    tmp_path: Path,
+) -> None:
+    """The evaluation half of the refusal, not just the resume half.
+
+    Neither setting is in the weights, so neither would fail to load: a
+    checkpoint trained on the image's six purchasable rows would quietly play a
+    fully unlocked run and report a wave nothing can be compared with. The
+    refusal names both values, which is what makes it actionable rather than a
+    puzzle (ADR 0009, ADR 0011).
+    """
+    path, _ = trained_checkpoint(tmp_path)
+
+    with pytest.raises(ValueError, match="upgrade_availability differs") as unlocked:
+        checkpoint_policy(
+            path,
+            decision_cadence=DecisionCadence.EVERY_SLICE.value,
+            upgrade_availability=UpgradeAvailability.ALL.value,
+        )
+    assert "'image' vs 'all'" in str(unlocked.value)
+
+    with pytest.raises(ValueError, match="decision_cadence differs"):
+        checkpoint_policy(
+            path,
+            decision_cadence=DecisionCadence.CHOICE_POINTS.value,
+            upgrade_availability=UpgradeAvailability.IMAGE.value,
+        )
+
+    # And the matching protocol plays, so the refusal is a refusal and not a
+    # path that never worked.
+    rebuilt, restored = checkpoint_policy(path, **PLAYED)
+    assert restored == identity()
+    assert rebuilt.online.training is False
+
+
+def test_the_fleet_runner_refuses_a_checkpoint_it_could_not_play(tmp_path: Path) -> None:
+    """Before N emulators are started for it, not after."""
+    path, _ = trained_checkpoint(tmp_path)
+
+    with pytest.raises(SystemExit, match="upgrade_availability differs"):
+        run_episodes.policy_from(
+            f"checkpoint:{path}",
+            decision_cadence=DecisionCadence.EVERY_SLICE,
+            upgrade_availability=UpgradeAvailability.ALL,
+        )

@@ -17,6 +17,7 @@ from tower_rl.environment.run_port import RunPortError
 from tower_rl.simulation.instrumented_bridge import (
     PROTOCOL_VERSION,
     BridgeCommandResult,
+    BridgeCompatibilityError,
     BridgeObservation,
     BridgeRunUnavailable,
     BridgeStaleObservationError,
@@ -115,6 +116,16 @@ class InstrumentedRunAdapter:
         state = self._latest_state()
         try:
             return self.client.unlock_all_upgrades(expected_sequence=state.sequence)
+        except BridgeCompatibilityError as incompatible:
+            # A bridge that cannot parse the command has no such kind: it was
+            # built before ADR 0011. That is an install problem with one answer,
+            # so the failure says the answer rather than the symptom.
+            raise RunPortError(
+                "the installed bridge has no unlock commands, so upgrade "
+                "availability cannot be applied: state/bridge/current must carry "
+                "a build that has them (see docs/setup.md, 'Production digests, "
+                f"and the one that has to be reinstalled'): {incompatible}"
+            ) from incompatible
         except BridgeStaleObservationError as stale:
             raise RunPortError(f"the bridge refused the unlock as stale: {stale}") from stale
         except InstrumentedBridgeError as failure:

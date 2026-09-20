@@ -474,7 +474,12 @@ down their own instances. What it adds is the guarantee on the way out. On
 stage command so the runner can tear its own fleet down, then runs
 `scripts/instrumented_bridge.sh cleanup` on each of the stage's serials that is
 still live, kills every emulator that is still attached, and verifies the host
-is empty: no qemu process (counted through `/proc/*/exe`) and no adb device.
+is empty: no qemu process (counted through `/proc/*/exe`) and no adb device. An
+instance the runner's own teardown is still killing is given up to 60 s to
+either answer or go — it exits during the teardown far more often than it needs
+cleaning, and neither outcome is a failure; one that is still attached and
+still not answering after that is killed and reported as unverifiable, which is
+a failure, because its cleanup was never run.
 Before it launches anything it refuses a host that is already running something
 it should not. Every **attached** instance is checked, not only the ones adb
 reports as `device`: one that is not `tower_rl_instrumented_api36`, not

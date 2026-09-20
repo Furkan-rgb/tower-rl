@@ -34,15 +34,26 @@ state="$TOWER_STUB_STATE"
 echo "$*" >> "$state/adb-calls"
 if [ "$1" = "devices" ]; then
   echo "List of devices attached"
-  cat "$state/devices" 2>/dev/null || true
+  # A `devices.<n>` beside the default is what that listing becomes on the nth
+  # call and after: an emulator winding down answers differently each time it
+  # is asked, which is the whole of what the settle loop is about.
+  calls=$(( $(cat "$state/devices-calls" 2>/dev/null || echo 0) + 1 ))
+  echo "$calls" > "$state/devices-calls"
+  listing="$state/devices"
+  for step in $(seq "$calls" -1 1); do
+    if [ -e "$state/devices.$step" ]; then listing="$state/devices.$step"; break; fi
+  done
+  cat "$listing" 2>/dev/null || true
   exit 0
 fi
 serial=""
 if [ "$1" = "-s" ]; then serial="$2"; shift 2; fi
 case "$*" in
   "emu kill")
-    grep -v "^$serial	" "$state/devices" > "$state/devices.next" || true
-    mv "$state/devices.next" "$state/devices"
+    grep -v "^$serial	" "$state/devices" > "$state/killed" || true
+    mv "$state/killed" "$state/devices"
+    # A killed emulator is gone from every later listing, scripted ones too.
+    rm -f "$state"/devices.[0-9]*
     rm -rf "$TOWER_STAGE_PROC_ROOT/${serial#emulator-}"
     ;;
   "shell ip -o -4 addr show")
@@ -96,6 +107,10 @@ class Shims:
         record = self.state / "cleaned"
         return record.read_text().split() if record.exists() else []
 
+    def devices_from(self, call: int, listing: str) -> None:
+        """What `adb devices` answers from its `call`-th invocation onward."""
+        (self.state / f"devices.{call}").write_text(listing)
+
     def stage(self, script: str, name: str = "stage.sh") -> Path:
         """A stage command of the suite's own, to be supervised."""
         path = self.state / name
@@ -132,6 +147,7 @@ def shims(tmp_path: Path) -> Shims:
         TOWER_STUB_STATE=str(state),
         TOWER_STAGE_PROC_ROOT=str(proc),
         TOWER_STAGE_LOG_DIRECTORY=str(logs),
+        TOWER_STAGE_SETTLE_TIMEOUT="10",
     )
     return Shims(environment=environment, state=state, logs=logs)
 
@@ -465,3 +481,67 @@ def test_a_grace_period_that_is_not_a_positive_number_of_seconds_is_refused(
     assert result.returncode == 2
     assert "--shutdown-grace must be" in result.stderr
     assert not (shims.state / "ran").exists()
+
+
+def test_an_instance_still_winding_down_is_waited_for_and_not_failed(shims: Shims) -> None:
+    """The first live stage's defect: the runner's own teardown got there first.
+
+    `train.py` cleans and kills its own fleet, so this script's backstop reaches
+    instances that are on their way out. One is listed, then not answering, then
+    gone — and none of that is a cleanup this script failed to do.
+    """
+    bring_up(shims, "emulator-5556")
+    shims.devices_from(2, "emulator-5556\toffline\n")
+    shims.devices_from(4, "")
+    # The stage's own teardown kills its fleet, which is why the serial is on
+    # its way out at all: the process goes first, adb's listing catches up.
+    proc = Path(shims.environment["TOWER_STAGE_PROC_ROOT"])
+    stage = shims.stage(f'echo collecting\nrm -rf {proc / "5556"}')
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 0, result.stdout
+    assert "attached in state 'offline'" in result.stdout
+    assert "cleanup: emulator-5556 exited during teardown; not cleaned" in result.stdout
+    assert shims.cleaned == []
+    assert (
+        "stage test-stage: exit 0, cleanup ok, instances 0/1 cleaned, 1 exited during teardown"
+        in result.stdout
+    )
+
+
+def test_an_instance_that_comes_back_is_cleaned_like_any_other(shims: Shims) -> None:
+    bring_up(shims, "emulator-5556")
+    shims.devices_from(2, "emulator-5556\toffline\n")
+    shims.devices_from(4, "emulator-5556\tdevice\n")
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 0, result.stdout
+    assert shims.cleaned == ["emulator-5556"]
+    assert (
+        "stage test-stage: exit 0, cleanup ok, instances 1/1 cleaned, 0 exited during teardown"
+        in result.stdout
+    )
+
+
+def test_an_instance_that_stays_offline_is_killed_and_reported_unverifiable(
+    shims: Shims,
+) -> None:
+    """Killing it is safe; saying it was cleaned would not be true."""
+    bring_up(shims, "emulator-5556")
+    shims.devices_from(2, "emulator-5556\toffline\n")
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 1
+    assert "cleanup: unverifiable: emulator-5556 stayed offline" in result.stdout
+    assert "-s emulator-5556 emu kill" in shims.adb_calls
+    assert shims.cleaned == []
+    assert "verified: no qemu process, no adb device" in result.stdout
+    assert (
+        "stage test-stage: exit 0, cleanup failed, instances 0/1 cleaned, 0 exited during teardown"
+        in result.stdout
+    )

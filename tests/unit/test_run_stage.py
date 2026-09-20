@@ -79,9 +79,14 @@ exec /usr/bin/timeout -k 1 3 "$@"
 
 BRIDGE_STUB = """#!/usr/bin/env bash
 set -uo pipefail
-# A device that has stopped answering, and one that is merely slow.
+# A device that has stopped answering, one that is merely slow, and one that
+# went away between adb's listing and this command.
 [ -e "$TOWER_STUB_STATE/hang-$2" ] && sleep 60
 [ -e "$TOWER_STUB_STATE/slow-$2" ] && sleep 2
+if [ -e "$TOWER_STUB_STATE/vanished-$2" ]; then
+  echo "adb: device offline" >&2
+  exit 1
+fi
 echo "cleanup: $2 bridge_artifacts: removed"
 echo "$2" >> "$TOWER_STUB_STATE/cleaned"
 exit "${TOWER_STUB_CLEANUP_EXIT:-0}"
@@ -572,3 +577,64 @@ def test_a_settle_timeout_that_is_not_a_number_is_refused(shims: Shims, settle: 
     assert result.returncode == 2
     assert "TOWER_STAGE_SETTLE_TIMEOUT must be" in result.stderr + result.stdout
     assert not (shims.state / "ran").exists()
+
+
+def test_an_instance_that_dies_mid_cleanup_is_not_counted_against_the_cleanup(
+    shims: Shims,
+) -> None:
+    """The seed-1 case, in the window the settle loop cannot see.
+
+    The runner's own teardown had already cleaned and killed all seven
+    instances; the backstop caught the last of them between adb's listing,
+    which still said `device`, and the bridge's first command, which got
+    `adb: device offline`. A cleanup with nothing left to clean is not a
+    cleanup that failed.
+    """
+    bring_up(shims, "emulator-5556")
+    (shims.state / "vanished-emulator-5556").touch()
+    # Listed as `device` when the teardown looks, absent when it asks again.
+    shims.devices_from(3, "")
+    proc = Path(shims.environment["TOWER_STAGE_PROC_ROOT"])
+    stage = shims.stage(f'echo collecting\nrm -rf {proc / "5556"}')
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 0, result.stdout
+    assert "adb: device offline" in result.stdout
+    assert "cleanup: emulator-5556 exited during teardown; not cleaned" in result.stdout
+    assert "did not clean up" not in result.stdout
+    assert (
+        "stage test-stage: exit 0, cleanup ok, instances 0/1 cleaned, 1 exited during teardown"
+        in result.stdout
+    )
+
+
+def test_a_failed_cleanup_on_an_instance_that_is_still_there_is_still_a_failure(
+    shims: Shims,
+) -> None:
+    bring_up(shims, "emulator-5556")
+    (shims.state / "vanished-emulator-5556").touch()
+
+    result = run_stage(shims, str(shims.stage("echo collecting")), instances=1)
+
+    assert result.returncode == 1
+    assert "cleanup: emulator-5556 did not clean up" in result.stdout
+    assert "cleanup: emulator-5556 exited during teardown" not in result.stdout
+    assert "cleanup failed, instances 0/1 cleaned, 0 exited during teardown" in result.stdout
+
+
+def test_an_instance_whose_process_survives_is_a_failure_even_if_adb_forgot_it(
+    shims: Shims,
+) -> None:
+    """Both readings, never adb alone: the process is what a cleanup undoes."""
+    bring_up(shims, "emulator-5556")
+    (shims.state / "vanished-emulator-5556").touch()
+    # adb has dropped it, but its emulator — and whatever is mounted inside
+    # it — is still in the process table.
+    shims.devices_from(3, "")
+
+    result = run_stage(shims, str(shims.stage("echo collecting")), instances=1)
+
+    assert result.returncode == 1
+    assert "cleanup: emulator-5556 did not clean up" in result.stdout
+    assert "cleanup: emulator-5556 exited during teardown" not in result.stdout

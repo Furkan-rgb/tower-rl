@@ -159,6 +159,18 @@ serial_state() {
   attached_with_state | awk -v serial="$1" '$1 == serial { print $2 }'
 }
 
+#: Whether an instance is gone rather than broken.
+#:
+#: Both readings, never adb alone: adb drops a serial as soon as the device
+#: stops answering, which an emulator with a mounted overlay and a deployed
+#: bridge on it can do while its process is still very much there — and that
+#: process is the thing a cleanup exists to undo. Gone means gone from both.
+instance_exited() {
+  local serial="$1"
+  [ -z "$(serial_state "$serial")" ] || return 1
+  ! emulator_command_line "${serial#emulator-}" > /dev/null
+}
+
 #: What an instance that is attached but not in `device` state settles into.
 #:
 #: An emulator that is winding down is listed for a while before it goes: the
@@ -390,6 +402,20 @@ clean_instances() {
     elif [ $? -eq 124 ]; then
       echo "cleanup: $serial did not finish cleaning up within ${cleanup_timeout}s" >&2
       cleanup_ok=no
+    elif instance_exited "$serial"; then
+      # It did not fail to clean up: it stopped existing while being cleaned.
+      # This is the seed-1 case — the runner's own teardown had already cleaned
+      # and killed all seven instances, and the backstop caught the last of them
+      # between adb's listing and the bridge's first command (`adb: device
+      # offline`). The instance is gone from adb and from /proc, it was
+      # `-read-only`, so nothing of it persists and there is nothing left to
+      # clean. Counted with the ones that exited, not against the cleanup.
+      #
+      # Only this branch. A cleanup that ran into its own timeout is not read
+      # this way however the instance ends up: hanging for two minutes is the
+      # signature of a wedged device, not of one that quietly went away.
+      echo "cleanup: $serial exited during teardown; not cleaned"
+      exited=$((exited + 1))
     else
       echo "cleanup: $serial did not clean up" >&2
       cleanup_ok=no

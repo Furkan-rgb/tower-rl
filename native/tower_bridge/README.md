@@ -210,10 +210,12 @@ that regresses, is `ambiguous` with `contradictory_state_change`; exhausting the
 confirmation window is `ambiguous` with `confirmation_timeout`. Both are
 quarantine-worthy and never count as a purchase.
 
-`unlock_state` and `unlock_all_upgrades` exist only in a build configured with
-`-DTOWER_BRIDGE_DIAGNOSTICS=ON`, and are the trial instrument for board #54 —
-whether the in-run availability arrays can be written at all, and whether a
-write survives. `unlock_state` reads `upgradeUnlocked`,
+`unlock_state` and `unlock_all_upgrades` are how upgrade availability is applied
+(ADR 0011). They are in the **production** build: the game recomputes its real
+rows' availability at every round start, so a run played under
+`--upgrade-availability all` issues `unlock_all_upgrades` at each round start,
+and a command an ordinary measured run depends on cannot live behind a
+diagnostics flag. `unlock_state` reads `upgradeUnlocked`,
 `upgradeDefenseUnlocked` and `upgradeUtilityUnlocked` and reports each array's
 length and how many of its elements are true; `unlock_all_upgrades` sets every
 element true through `WritePrimitiveArray`, the exact mirror of
@@ -234,17 +236,18 @@ first one found, and refuses if it is handed a different object: a held pointer
 would write to — and then dutifully read back — an array the game had swapped
 out, reporting a success the game never saw.
 
-Both commands are gated, not only the write. The read-only one could have been
-in both builds, but the production artifact's digest is the identity every
-deployment is checked against, and keeping it unchanged outranks the
-convenience: with the pair behind the flag, production is byte-for-byte what it
-was. A production bridge therefore does not *reject* these commands — its parser
-has no such kind, so the frame fails to parse, it answers `protocol_error` and
-drops the connection. Select a diagnostics bridge with `TOWER_BRIDGE_BUILD_DIR`;
-never repoint `state/bridge/current` at one.
+Moving the pair into production changed the production digest, which is the
+identity every deployment is checked against; the new digest is recorded in
+`docs/setup.md` beside the one it replaces, and `state/bridge/current` has to be
+reinstalled for it. The protocol version is unchanged: both kinds were already
+part of protocol 2's command set on the host side, and the `unlock_state` frame
+is additive.
 
-The write is in-memory only — nothing here calls a save, and
-`scripts/unlock_trial.py` leaves starting a round and re-reading to a human.
+Nothing here writes unless it is asked to: `unlock_state` reads and reports, and
+`unlock_all_upgrades` is issued only by an environment configured
+`--upgrade-availability all`. The write is in-memory only — nothing here calls a
+save, and `scripts/unlock_trial.py` leaves starting a round and re-reading to a
+human.
 
 ## Known live behavior
 

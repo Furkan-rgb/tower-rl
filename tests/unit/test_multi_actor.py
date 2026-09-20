@@ -231,6 +231,7 @@ def bring_up_steps(
         max_quiet_game_ms=2000,
         max_episode_wall_seconds=600.0,
         decision_cadence="choice-points",
+        upgrade_availability="image",
         output_directory=tmp_path,
         record_observations=None,
     )
@@ -371,6 +372,7 @@ def stagger_arguments(tmp_path: Path) -> argparse.Namespace:
         max_quiet_game_ms=2000,
         max_episode_wall_seconds=600.0,
         decision_cadence="choice-points",
+        upgrade_availability="image",
         output_directory=tmp_path,
         record_observations=None,
     )

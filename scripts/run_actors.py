@@ -54,7 +54,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_episodes import CHECKPOINT_SELECTOR, POLICIES, add_cadence_arguments  # noqa: E402
+from run_episodes import (  # noqa: E402
+    CHECKPOINT_SELECTOR,
+    POLICIES,
+    add_cadence_arguments,
+    add_upgrade_availability_argument,
+)
 
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
@@ -366,6 +371,7 @@ def collect_episodes(
             "--max-quiet-game-ms", str(arguments.max_quiet_game_ms),
             "--max-episode-wall-seconds", str(arguments.max_episode_wall_seconds),
             "--decision-cadence", str(arguments.decision_cadence),
+            "--upgrade-availability", str(arguments.upgrade_availability),
             "--output", str(output),
             *(
                 ["--record-observations", str(arguments.record_observations)]
@@ -421,6 +427,7 @@ def main() -> int:
         help="ignore the pinned snapshot and cold-start every actor",
     )
     add_cadence_arguments(parser)
+    add_upgrade_availability_argument(parser)
     parser.add_argument(
         "--output-directory",
         type=Path,
@@ -463,6 +470,9 @@ def main() -> int:
     report["episodes_per_actor"] = arguments.episodes
     report["frame_game_ms"] = arguments.frame_game_ms
     report["decision_cadence"] = str(arguments.decision_cadence)
+    # The whole fleet collects under one availability; each actor's own record
+    # carries it too (ADR 0011).
+    report["upgrade_availability"] = str(arguments.upgrade_availability)
     report["cores_per_instance"] = arguments.cores
     # Per instance index, because one fleet may hold two arms; each actor's
     # entry and each actor's own record carry the rate it collected at.

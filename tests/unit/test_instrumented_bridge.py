@@ -1239,7 +1239,7 @@ def test_the_final_evaluation_survives_a_client_left_idle_by_the_rest_of_the_fle
 
 
 def _unlock_state_frame(*, attack: int, defense: int, utility: int, wrote: bool) -> dict:
-    """The frame the diagnostics bridge sends before the state and the result."""
+    """The frame the bridge sends before the state and the result."""
     return {
         "type": "unlock_state",
         "protocol_version": 2,
@@ -1318,7 +1318,7 @@ def test_writing_every_unlock_reports_what_the_arrays_then_hold() -> None:
         requests: list[dict[str, object]] = []
 
         def bridge() -> None:
-            """Answer the way the diagnostics bridge does: report, state, result."""
+            """Answer the way the bridge does: report, state, result."""
             requests.append(read_frame(peer, timeout=2.0))
             peer.sendall(
                 encode_frame(_unlock_state_frame(attack=20, defense=12, utility=14, wrote=True))
@@ -1356,11 +1356,12 @@ def test_an_unlock_read_rejected_for_a_stale_sequence_is_an_error_not_an_empty_r
         requests: list[dict[str, object]] = []
 
         def bridge() -> None:
-            """A diagnostics bridge that knows the command but refuses this one.
+            """A bridge that knows the command but refuses this one.
 
             `stale_or_duplicate` is what a superseded sequence or a repeated
-            request id earns. It is not what a production bridge answers - that
-            one cannot parse the kind at all, which the next test covers.
+            request id earns. It is not what a bridge built before ADR 0011
+            answers - that one cannot parse the kind at all, which the next test
+            covers.
             """
             requests.append(read_frame(peer, timeout=2.0))
             peer.sendall(encode_frame(_observation(2)))
@@ -1387,14 +1388,14 @@ def test_an_unlock_read_rejected_for_a_stale_sequence_is_an_error_not_an_empty_r
         peer.close()
 
 
-def test_a_production_bridge_cannot_parse_an_unlock_command_and_the_client_gives_up() -> None:
+def test_a_bridge_without_the_unlock_commands_cannot_parse_one_and_the_client_gives_up() -> None:
     client, peer = _connected_client()
     try:
         peer.sendall(encode_frame(_observation(1)))
         assert client.read_observation().sequence == 1
 
         def bridge() -> None:
-            """What the production build actually does: no such kind exists.
+            """What a bridge built before ADR 0011 does: no such kind exists.
 
             Its parser reads the canonical encoding at fixed offsets and knows
             nothing of `unlock_state`, so the frame fails to parse, the bridge

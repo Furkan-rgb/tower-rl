@@ -32,7 +32,7 @@ the decision loop reads a pixel.
 | `max_health_log` | Log-scaled maximum health. |
 | `game_speed` | The world's speed multiplier as the game reports it. |
 | `live` | Every live reading below, scaled, keyed by feature name. |
-| `rows` | One `UpgradeRow` per upgrade action, encoded as the nine `ROW_FEATURES` in order: `cost_log`, `affordability` (`log1p(cash/cost)`, unclipped), `level`, `max_level`, `level_fraction` (`level / max_level`, derived at encoding), `headroom`, `unlocked`, `maxed`, `available`. |
+| `rows` | One `UpgradeRow` per upgrade action, encoded as the nine `ROW_FEATURES` in order: `cost_log`, `affordability` (`log1p(cash/cost)`, unclipped), `level`, `max_level`, `level_fraction` (`level / max_level`, derived at encoding), `headroom`, `unlocked`, `maxed`, `available`. `unlocked` is the game's own in-run availability flag, read and never assumed; under `--upgrade-availability all` it reads true for every *real* row of an active run, and an episode where it does not is invalid by name (see Upgrade availability). |
 | `action_mask` | One flag per entry of `RUN_ACTIONS`, in that order; authoritative for this observation. |
 | `valid`, `invalid_reasons` | Admission decision for replay and environment stepping. |
 | `schema_version` | `observation-v2`. |
@@ -114,6 +114,32 @@ they are constant for a build. They are for humans — the spectate panel and th
 `upgrade_rows` block of evaluation and session records — and are deliberately
 **not** part of the observation tensor. The policy addresses a slot by its
 stable index, and a renamed row must not change what a checkpoint means.
+
+### Upgrade availability
+
+Which upgrade rows a run is played with is a property of the **environment
+configuration**, not of the profile image ([ADR 0011](adr/0011-upgrade-availability-is-applied-at-round-start.md),
+evidence `M2-E008`). `--upgrade-availability` selects it on every runner:
+
+- **`image`** — the default, and what every baseline so far was measured under:
+  whatever the profile image offers, which on the supported v1 image is six
+  purchasable rows (4 attack, 2 defense, 0 utility).
+- **`all`** — every row the game really has is purchasable. The game recomputes
+  its real rows' availability at each round start, so the environment applies
+  the unlock **after the round has started and before the first observation**,
+  through the same `RunPort` it drives everything else with, and reads it back.
+  A *real* row is a slot with a non-empty `slot_labels` name — 17 attack, 18
+  defense, 13 utility on the supported baseline; the rest of each twenty-wide
+  array is an unpriced tail that is never legal whatever its flag says, which is
+  why writing every slot is safe and only the real rows are required to come
+  back true.
+
+The profile id is the same under both: the image is profile v1 either way. The
+availability travels in `resolved_config`, in the episode and session records,
+and in `CheckpointIdentity`, which refuses a cross-availability resume or
+evaluation by name. Two arms that differ in availability are not measuring the
+same decision problem, and the measured baselines belong to the availability
+they were collected under.
 
 `validate_transition(previous, current)` rejects a non-advancing source sequence
 or capture time, a profile identity or schema version that changed inside an
@@ -278,6 +304,17 @@ time its advances budgeted and fails the episode by name rather than counting it
   decision condition fired. The host's `_events_between` stays the only
   definition of what a decision condition is; the transition is recorded invalid
   rather than the host predicate being relaxed to match.
+- `UNLOCK_NOT_APPLIED` — under `all`, the unlock the round start asked for did
+  not land: the bridge could not carry it, or the game read back fewer true
+  flags than the family has real rows. There is no retry — the episode was never
+  the episode it was configured to be, so the boundary fails by name and the
+  actor counts it exactly as it counts a round that would not open.
+- `UNLOCK_REVERTED` — under `all`, a real row that was unlocked at the round
+  start reads locked in a state the policy is being asked about. The decision
+  problem changed under the episode, so the state is invalid and the episode is
+  classified `observation_invalid`; it is never absorbed. Checked on active
+  states, because a terminal run offers no decision and the game legitimately
+  recomputes availability at the round boundary behind it.
 - `DEATH_BOUNDARY_TRANSIENT` — the one inconsistency the bridge may legitimately
   show. Health and the round flag are read separately, so at the instant of
   death health goes negative a moment before game-over flips (`M1B-E008`). It is

@@ -88,13 +88,17 @@ Owns the decision problem, and nothing about how a device is reached.
   thing a spectator reads — one decision as a human sees it, emitted by
   `InstrumentedRunEnvironment.on_decision`.
 - `run_port.py` — the `RunPort` protocol and `RunPortError`: the whole surface a
-  run is driven through.
-- `run_environment.py` — `InstrumentedRunEnvironment`, `CadenceConfig` and
-  `DecisionCadence`. It decides when a decision is due, charges the game clock,
-  checks fidelity
+  run is driven through, including the upgrade-row labels and the round-start
+  unlock availability is applied with.
+- `run_environment.py` — `InstrumentedRunEnvironment`, `CadenceConfig`,
+  `DecisionCadence` and `UpgradeAvailability`. It decides when a decision is
+  due, charges the game clock, checks fidelity
   (`MIN_ROUND_CLOCK_RATIO`/`MAX_ROUND_CLOCK_RATIO`, `GAME_TIME_INFLATED`,
   `GAME_TIME_DEFLATED`, `ADVANCE_TRUNCATED_BY_WALL`, `BRIDGE_EVENT_DIVERGENCE`)
-  and recovers the death-boundary transient.
+  and recovers the death-boundary transient. It also owns upgrade availability
+  (ADR 0011): under `UpgradeAvailability.ALL` it reopens every real upgrade row
+  at each round start through the port and holds the episode to it
+  (`UNLOCK_NOT_APPLIED`, `UNLOCK_REVERTED`).
 - `decision_time.py` — `DecisionTimeProfile` and `DecisionTimeBreakdown`: where
   a decision's wall time went, by bucket.
 - `project_state.py` — `repository_root` and `state_directory`: the git-ignored
@@ -142,13 +146,16 @@ knows nothing about the run being driven on it.
   `scripts/instrumented_bridge.sh`; `compatibility` reads the build's identity.
 - `instrumented_bridge.py` — `InstrumentedBridgeClient` and the framed JSON
   protocol (version 2): handshake, compatibility, observation, command, advance,
-  slot labels, and the typed errors for every way it can fail. The one thing it
+  slot labels, the in-run availability arrays (`unlock_state`,
+  `unlock_all_upgrades`), and the typed errors for every way it can fail. The one thing it
   takes from the domain is `LIVE_WIRE_NAMES`, the set of `Main` fields a v2
   state message owes; it validates their presence and passes the values through
   raw, and does not scale them.
 - `instrumented_run_adapter.py` — `InstrumentedRunAdapter`, the `RunPort`
   implementation, plus `slot_labels()`, the once-per-session read of what the
-  game calls each upgrade row. This is the join to `environment`.
+  game calls each upgrade row, and `unlock_all_upgrades()`, the round-start
+  write `UpgradeAvailability.ALL` is applied with. This is the join to
+  `environment`.
 - `fleet.py` — many instances: `stagger_bring_up`, `bring_up_fleet`,
   `prepare_pinned_snapshot`, `tear_down_instance`, `tear_down_fleet`.
 

@@ -47,7 +47,7 @@ Repository-specific agent instructions are in [AGENTS.md](AGENTS.md).
 ## Important boundaries
 
 - The official APK is the sole authoritative gameplay environment.
-- V1 covers Tier 1 with a fixed permanent account state.
+- V1 covers Tier 1 with a fixed permanent account state. Which in-run upgrade rows a run is played with is a configuration of the environment, `--upgrade-availability image|all`, applied at each round start rather than baked into a profile image ([ADR 0011](docs/adr/0011-upgrade-availability-is-applied-at-round-start.md)).
 - No Tower clone or synthetic gameplay environment.
 - No APK modification, speed hacks, anti-cheat bypasses, purchases, ads, tournaments, or leaderboard automation.
 - The XAPK/APK, account state, emulator images, screenshots, replay data, and trained models must never be committed.

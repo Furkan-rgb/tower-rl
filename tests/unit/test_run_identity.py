@@ -20,7 +20,7 @@ from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environmen
 
 from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
-from tower_rl.environment.run_environment import DecisionCadence
+from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailability
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.experiment.run_identity import (
     REFERENCE_FINAL_WAVES,
@@ -30,6 +30,7 @@ from tower_rl.experiment.run_identity import (
     source_revision,
     tracked_params,
 )
+from tower_rl.learning.checkpoint import identity_hash
 
 
 def _arm(run_dir: Path, **overrides: str) -> Any:
@@ -230,3 +231,51 @@ def test_the_resolved_configuration_says_which_cadence_collected_the_run(
 
     assert arm.resolved["decision_cadence"] == "choice-points"
     assert arm.identity.decision_cadence == DecisionCadence.CHOICE_POINTS
+
+
+def test_an_arm_that_could_buy_every_row_refuses_to_resume_one_that_could_not() -> None:
+    """`image` and `all` are different decision problems (ADR 0011).
+
+    Six purchasable rows and every real row are not the same legal set, so the
+    weights collected under one are not experience the other can continue, and
+    the baselines measured under one do not read against the other. The identity
+    *hash* is deliberately unchanged by the field: a run has one availability
+    from beginning to end, so the token still names the run, and every token
+    already cited in a record still resolves.
+    """
+    image = checkpoint_identity(
+        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+    )
+    unlocked = checkpoint_identity(
+        RunIdentity.started_now(
+            train.BACKBONE,
+            profile_id="p",
+            source_revision="abc",
+            upgrade_availability=UpgradeAvailability.ALL,
+        )
+    )
+
+    reasons = image.incompatibilities(unlocked)
+
+    assert any("upgrade_availability differs" in reason for reason in reasons)
+    assert unlocked.incompatibilities(unlocked) == ()
+    assert image.upgrade_availability == "image", "the image is what a run says nothing about"
+    assert unlocked.profile_id == image.profile_id, (
+        "availability is applied at the round start; the image is still profile v1"
+    )
+    assert identity_hash(replace(image, upgrade_availability="all")) == identity_hash(image)
+
+
+def test_the_resolved_configuration_says_which_rows_the_run_could_buy(
+    tmp_path: Path,
+) -> None:
+    """The snapshot a curve is read against has to say what was purchasable."""
+    arm = _arm(tmp_path)
+
+    assert arm.resolved["upgrade_availability"] == "image"
+    assert arm.identity.upgrade_availability == UpgradeAvailability.IMAGE
+
+    unlocked = _arm(tmp_path / "all", **{"--upgrade-availability": "all"})
+
+    assert unlocked.resolved["upgrade_availability"] == "all"
+    assert unlocked.identity.upgrade_availability == UpgradeAvailability.ALL

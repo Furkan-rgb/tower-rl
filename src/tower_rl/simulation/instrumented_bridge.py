@@ -55,11 +55,11 @@ COMMAND_CAPABILITY = "semantic-v2"
 #: The game's three upgrade families, in the order the bridge reports them.
 UPGRADE_FAMILIES = ("attack", "defense", "utility")
 #: Commands whose whole payload is the observation sequence they bind.
-#: `unlock_state` and `unlock_all_upgrades` are answered by the diagnostics
-#: build only (board #54's profile-v2 trial instrument). A production bridge's
-#: parser has no such kind at all, so it answers `protocol_error` and drops the
-#: connection rather than rejecting a command it understands - which is what
-#: keeps a measured run unable to change what the game offers a policy.
+#: `unlock_state` and `unlock_all_upgrades` are how upgrade availability is
+#: applied (ADR 0011) and are answered by the production build. A bridge built
+#: before that decision has no such kind at all, so its parser answers
+#: `protocol_error` and drops the connection rather than rejecting a command it
+#: understands; that surfaces here as a `BridgeCompatibilityError`.
 SEQUENCE_ONLY_COMMAND_KINDS = frozenset({"slot_labels", "unlock_state", "unlock_all_upgrades"})
 LIFECYCLE_ACTIONS = frozenset(
     {
@@ -200,10 +200,10 @@ class UpgradeSlotLabel:
 class UnlockFamilyState:
     """How much of one family's in-run availability array is true, and how long it is.
 
-    The profile-v2 trial instrument (board #54) asks one question - does a
-    bridge write to `upgrade*Unlocked` land, and does it survive - so the answer
-    it needs is a count, not a per-slot picture. Reported by the diagnostics
-    build only; a production bridge answers neither unlock command.
+    A count, not a per-slot picture: what the host does with it is hold the
+    round start to it - at least as many true flags as the family has real rows
+    (ADR 0011) - and every slot's own flag is already in the observation, where
+    the episode invariant reads it.
     """
 
     family: str
@@ -780,22 +780,23 @@ class InstrumentedBridgeClient:
     def read_unlock_state(self, *, expected_sequence: int) -> tuple[UnlockFamilyState, ...]:
         """Ask how much of each family's in-run availability array is true.
 
-        Reads nothing else and writes nothing. Answered by a diagnostics bridge
-        only. A production bridge does not reject the command, it cannot parse
-        it: its parser has no such kind, so it answers `protocol_error` and
-        drops the connection, which surfaces here as a
-        `BridgeCompatibilityError` and a closed client.
+        Reads nothing else and writes nothing. A bridge built before ADR 0011
+        does not reject the command, it cannot parse it: its parser has no such
+        kind, so it answers `protocol_error` and drops the connection, which
+        surfaces here as a `BridgeCompatibilityError` and a closed client.
         """
         return self._unlock_command("unlock_state", expected_sequence=expected_sequence)
 
     def unlock_all_upgrades(self, *, expected_sequence: int) -> tuple[UnlockFamilyState, ...]:
         """Set every in-run availability flag true, and report what then stands.
 
-        The trial instrument for board #54, and nothing else: it changes what
-        the game offers inside the live process, so it exists only in the
-        diagnostics build and must never be pointed at the canonical profile.
-        The returned counts are read back out of the arrays after the write, so
-        a write that did not take reports as one.
+        How `UpgradeAvailability.ALL` is applied, at each round start and
+        nowhere else (ADR 0011): the game recomputes its real rows' availability
+        whenever a round begins, so the write has to follow the start. It
+        changes what the game offers inside the live process and must never be
+        pointed at the canonical evaluation AVD. The returned counts are read
+        back out of the arrays after the write, so a write that did not take
+        reports as one.
         """
         return self._unlock_command("unlock_all_upgrades", expected_sequence=expected_sequence)
 

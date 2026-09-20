@@ -53,6 +53,7 @@ from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
     DecisionCadence,
     InstrumentedRunEnvironment,
+    UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.learning.actor import ActorConfig  # noqa: E402
@@ -208,6 +209,7 @@ def actor_record(
     frame_game_ms: float,
     max_quiet_game_ms: int,
     decision_cadence: DecisionCadence,
+    upgrade_availability: UpgradeAvailability,
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
 ) -> dict[str, Any]:
@@ -226,6 +228,10 @@ def actor_record(
     # things under the two, so a record that could not say which cadence
     # produced it could not be compared with anything (ADR 0009).
     record["decision_cadence"] = str(decision_cadence)
+    # Which upgrade rows these episodes could buy from. A record collected on
+    # the image's six rows and one collected on every real row are measurements
+    # of two different decision problems (ADR 0011).
+    record["upgrade_availability"] = str(upgrade_availability)
     record["wall_seconds"] = round(wall_seconds, 1)
     # What the game calls each slot the actions address, so the human reading
     # this record afterwards can tell what `attack:3` was. Never an input: the
@@ -277,6 +283,27 @@ def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_upgrade_availability_argument(parser: argparse.ArgumentParser) -> None:
+    """Which upgrade rows the run is played with (ADR 0011).
+
+    Separate from the cadence arguments because it is a separate thing: the
+    cadence says when the policy is asked, this says what it may buy. `image` is
+    the default and is what every baseline so far was measured under.
+    """
+    parser.add_argument(
+        "--upgrade-availability",
+        choices=[availability.value for availability in UpgradeAvailability],
+        default=UpgradeAvailability.IMAGE.value,
+        help="which upgrade rows are purchasable: image is what the profile "
+        "image offers, all reopens every real row at each round start (ADR 0011)",
+    )
+
+
+def upgrade_availability_from(arguments: argparse.Namespace) -> UpgradeAvailability:
+    """The availability this invocation collects or plays under."""
+    return UpgradeAvailability(arguments.upgrade_availability)
+
+
 def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
     return CadenceConfig(
         frame_game_ms=arguments.frame_game_ms,
@@ -304,6 +331,7 @@ def main() -> int:
     parser.add_argument("--serial", default="emulator-5556")
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
+    add_upgrade_availability_argument(parser)
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "episodes.json"
     )
@@ -355,6 +383,7 @@ def main() -> int:
         builder=RunStateBuilder(profile_id=expected.profile_id),
         cadence=cadence_from(arguments),
         decision_cadence=decision_cadence_from(arguments),
+        upgrade_availability=upgrade_availability_from(arguments),
     )
 
     started = time.monotonic()
@@ -379,6 +408,7 @@ def main() -> int:
         frame_game_ms=arguments.frame_game_ms,
         max_quiet_game_ms=arguments.max_quiet_game_ms,
         decision_cadence=decision_cadence_from(arguments),
+        upgrade_availability=upgrade_availability_from(arguments),
         wall_seconds=time.monotonic() - started,
         labels=labels,
     )

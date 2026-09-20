@@ -30,6 +30,7 @@ from tower_rl.environment.run_environment import (
     CadenceConfig,
     DecisionCadence,
     InstrumentedRunEnvironment,
+    UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.checkpoint import (
@@ -665,6 +666,7 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
             frame_game_ms=100.0,
             max_quiet_game_ms=4000,
             decision_cadence=DecisionCadence.CHOICE_POINTS,
+            upgrade_availability=UpgradeAvailability.IMAGE,
             wall_seconds=60.0,
         )
         (directory / f"fake-{index}.json").write_text(json.dumps(record, indent=2))

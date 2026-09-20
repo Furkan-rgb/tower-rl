@@ -210,6 +210,42 @@ that regresses, is `ambiguous` with `contradictory_state_change`; exhausting the
 confirmation window is `ambiguous` with `confirmation_timeout`. Both are
 quarantine-worthy and never count as a purchase.
 
+`unlock_state` and `unlock_all_upgrades` exist only in a build configured with
+`-DTOWER_BRIDGE_DIAGNOSTICS=ON`, and are the trial instrument for board #54 —
+whether the in-run availability arrays can be written at all, and whether a
+write survives. `unlock_state` reads `upgradeUnlocked`,
+`upgradeDefenseUnlocked` and `upgradeUtilityUnlocked` and reports each array's
+length and how many of its elements are true; `unlock_all_upgrades` sets every
+element true through `WritePrimitiveArray`, the exact mirror of
+`ReadPrimitiveArray` (same bounds and element-size checks, same pointer
+arithmetic, the `memcpy` reversed), and then reports the same pairs read back
+out of the arrays, so a write that did not take reports as one. The report is a
+separate `unlock_state` frame sent before the state and the result, exactly as
+the slot labels are, and carries a `wrote` flag the client holds against the
+command it sent.
+
+All three families are resolved and every element proven readable before
+anything is written, so a drifted schema refuses the command whole and leaves
+the game exactly as it was. A write that fails *after* that pre-read can still
+leave the arrays part way; the frame is emitted either way and shows what the
+arrays then hold, which is the only honest report of a partial state. Each of
+the three passes re-reads the field rather than reusing the array pointer the
+first one found, and refuses if it is handed a different object: a held pointer
+would write to — and then dutifully read back — an array the game had swapped
+out, reporting a success the game never saw.
+
+Both commands are gated, not only the write. The read-only one could have been
+in both builds, but the production artifact's digest is the identity every
+deployment is checked against, and keeping it unchanged outranks the
+convenience: with the pair behind the flag, production is byte-for-byte what it
+was. A production bridge therefore does not *reject* these commands — its parser
+has no such kind, so the frame fails to parse, it answers `protocol_error` and
+drops the connection. Select a diagnostics bridge with `TOWER_BRIDGE_BUILD_DIR`;
+never repoint `state/bridge/current` at one.
+
+The write is in-memory only — nothing here calls a save, and
+`scripts/unlock_trial.py` leaves starting a round and re-reading to a human.
+
 ## Known live behavior
 
 IL2CPP resolution happens on the first client connection and is then cached.

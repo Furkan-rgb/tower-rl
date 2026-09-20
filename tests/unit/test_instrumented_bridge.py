@@ -30,6 +30,7 @@ from tower_rl.simulation.instrumented_bridge import (
     decode_handshake,
     decode_observation,
     decode_slot_labels,
+    decode_unlock_state,
     encode_frame,
     read_frame,
 )
@@ -1232,6 +1233,232 @@ def test_the_final_evaluation_survives_a_client_left_idle_by_the_rest_of_the_fle
             )
 
             assert report.valid_episodes == 2
+    finally:
+        client.close()
+        peer.close()
+
+
+def _unlock_state_frame(*, attack: int, defense: int, utility: int, wrote: bool) -> dict:
+    """The frame the diagnostics bridge sends before the state and the result."""
+    return {
+        "type": "unlock_state",
+        "protocol_version": 2,
+        "wrote": wrote,
+        "families": [
+            {"family": "attack", "length": 20, "true_count": attack},
+            {"family": "defense", "length": 12, "true_count": defense},
+            {"family": "utility", "length": 14, "true_count": utility},
+        ],
+    }
+
+
+def test_the_unlock_state_decodes_as_a_length_and_a_true_count_per_family() -> None:
+    wrote, families = decode_unlock_state(
+        _unlock_state_frame(attack=3, defense=0, utility=14, wrote=False)
+    )
+
+    assert wrote is False
+    assert [family.family for family in families] == ["attack", "defense", "utility"]
+    assert families[0].length == 20 and families[0].true_count == 3
+    assert families[2].true_count == families[2].length
+
+    # More trues than slots is not a state the arrays can be in, so it is a
+    # protocol error rather than something to report to the operator.
+    overflowing = _unlock_state_frame(attack=3, defense=0, utility=14, wrote=False)
+    overflowing["families"][0]["true_count"] = 21
+    with pytest.raises(BridgeProtocolError, match="out of bounds"):
+        decode_unlock_state(overflowing)
+
+    # A report that names one family twice has not reported the other, and a
+    # trial that read it would be comparing counts it does not have.
+    duplicated = _unlock_state_frame(attack=3, defense=0, utility=14, wrote=False)
+    duplicated["families"][1]["family"] = "attack"
+    with pytest.raises(BridgeProtocolError, match="duplicate unlock family state"):
+        decode_unlock_state(duplicated)
+
+    missing = _unlock_state_frame(attack=3, defense=0, utility=14, wrote=False)
+    del missing["families"][2]
+    with pytest.raises(BridgeProtocolError, match="every upgrade family"):
+        decode_unlock_state(missing)
+
+
+def test_the_unlock_commands_carry_only_the_sequence_they_bind() -> None:
+    for kind in ("unlock_state", "unlock_all_upgrades"):
+        command = decode_command(
+            {
+                "type": "command",
+                "protocol_version": 2,
+                "request_id": "unlock-1",
+                "expected_observation_sequence": 4,
+                "kind": kind,
+            }
+        )
+
+        assert command.kind == kind and command.family is None and command.index is None
+
+        with pytest.raises(BridgeProtocolError, match="must not contain an upgrade target"):
+            decode_command(
+                {
+                    "type": "command",
+                    "protocol_version": 2,
+                    "request_id": "unlock-1",
+                    "expected_observation_sequence": 4,
+                    "kind": kind,
+                    "family": "attack",
+                    "index": 0,
+                }
+            )
+
+
+def test_writing_every_unlock_reports_what_the_arrays_then_hold() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        assert client.read_observation().sequence == 1
+        requests: list[dict[str, object]] = []
+
+        def bridge() -> None:
+            """Answer the way the diagnostics bridge does: report, state, result."""
+            requests.append(read_frame(peer, timeout=2.0))
+            peer.sendall(
+                encode_frame(_unlock_state_frame(attack=20, defense=12, utility=14, wrote=True))
+            )
+            peer.sendall(encode_frame(_observation(2)))
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "command_result", "protocol_version": 2,
+                        "request_id": str(requests[0]["request_id"]),
+                        "outcome": "confirmed", "reason": "unlock_all_applied",
+                        "observation_sequence": 2,
+                    }
+                )
+            )
+
+        responder = threading.Thread(target=bridge)
+        responder.start()
+        families = client.unlock_all_upgrades(expected_sequence=1)
+        responder.join(timeout=5.0)
+
+        assert requests[0]["kind"] == "unlock_all_upgrades"
+        # Every slot in every family, which is the whole point of the write.
+        assert all(family.true_count == family.length for family in families)
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_an_unlock_read_rejected_for_a_stale_sequence_is_an_error_not_an_empty_report() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        assert client.read_observation().sequence == 1
+        requests: list[dict[str, object]] = []
+
+        def bridge() -> None:
+            """A diagnostics bridge that knows the command but refuses this one.
+
+            `stale_or_duplicate` is what a superseded sequence or a repeated
+            request id earns. It is not what a production bridge answers - that
+            one cannot parse the kind at all, which the next test covers.
+            """
+            requests.append(read_frame(peer, timeout=2.0))
+            peer.sendall(encode_frame(_observation(2)))
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "command_result", "protocol_version": 2,
+                        "request_id": str(requests[0]["request_id"]),
+                        "outcome": "rejected", "reason": "stale_or_duplicate",
+                        "observation_sequence": 2,
+                    }
+                )
+            )
+
+        responder = threading.Thread(target=bridge)
+        responder.start()
+        with pytest.raises(BridgeProtocolError, match="no unlock state"):
+            client.read_unlock_state(expected_sequence=1)
+        responder.join(timeout=5.0)
+
+        assert requests[0]["kind"] == "unlock_state"
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_a_production_bridge_cannot_parse_an_unlock_command_and_the_client_gives_up() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        assert client.read_observation().sequence == 1
+
+        def bridge() -> None:
+            """What the production build actually does: no such kind exists.
+
+            Its parser reads the canonical encoding at fixed offsets and knows
+            nothing of `unlock_state`, so the frame fails to parse, the bridge
+            answers `protocol_error` and drops the connection. There is no
+            command result at all.
+            """
+            read_frame(peer, timeout=2.0)
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "error", "protocol_version": 2,
+                        "code": "protocol_error", "message": "malformed command",
+                    }
+                )
+            )
+
+        responder = threading.Thread(target=bridge)
+        responder.start()
+        with pytest.raises(BridgeCompatibilityError, match="protocol_error"):
+            client.read_unlock_state(expected_sequence=1)
+        responder.join(timeout=5.0)
+
+        # The connection is gone, not merely unhappy: a bridge that dropped the
+        # socket cannot be asked anything else, and the sequence belongs to the
+        # connection, so a reconnect must start counting again.
+        assert client._socket is None
+        assert client._last_observation_sequence == 0
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_an_unlock_report_that_contradicts_the_command_it_answers_is_refused() -> None:
+    client, peer = _connected_client()
+    try:
+        peer.sendall(encode_frame(_observation(1)))
+        assert client.read_observation().sequence == 1
+        requests: list[dict[str, object]] = []
+
+        def bridge() -> None:
+            """A read command answered by a report claiming it wrote."""
+            requests.append(read_frame(peer, timeout=2.0))
+            peer.sendall(
+                encode_frame(_unlock_state_frame(attack=20, defense=12, utility=14, wrote=True))
+            )
+            peer.sendall(encode_frame(_observation(2)))
+            peer.sendall(
+                encode_frame(
+                    {
+                        "type": "command_result", "protocol_version": 2,
+                        "request_id": str(requests[0]["request_id"]),
+                        "outcome": "confirmed", "reason": "unlock_state_reported",
+                        "observation_sequence": 2,
+                    }
+                )
+            )
+
+        responder = threading.Thread(target=bridge)
+        responder.start()
+        # The two ends disagree about whether the game's state just changed,
+        # which is never something to reconcile quietly.
+        with pytest.raises(BridgeProtocolError, match="does not match the unlock_state command"):
+            client.read_unlock_state(expected_sequence=1)
+        responder.join(timeout=5.0)
     finally:
         client.close()
         peer.close()

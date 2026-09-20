@@ -283,8 +283,17 @@ def test_a_checkpoint_refuses_to_be_played_under_other_rows_or_another_cadence(
     assert rebuilt.online.training is False
 
 
-def test_the_fleet_runner_refuses_a_checkpoint_it_could_not_play(tmp_path: Path) -> None:
-    """Before N emulators are started for it, not after."""
+def test_an_arm_the_session_cannot_play_is_refused_before_the_episodes(
+    tmp_path: Path,
+) -> None:
+    """The selector is resolved before the first episode, and refuses there.
+
+    In an actor's own process, which is the only place a checkpoint is loaded:
+    `run_actors.checkpoint_arm` deliberately never loads one, so a fleet still
+    meets a mismatched arm once per actor rather than once before bring-up.
+    What this pins is that the refusal reaches the arm-selection path at all,
+    rather than surfacing as a played episode.
+    """
     path, _ = trained_checkpoint(tmp_path)
 
     with pytest.raises(SystemExit, match="upgrade_availability differs"):

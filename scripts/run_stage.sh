@@ -226,6 +226,28 @@ qemu_process_count() {
   echo "$count"
 }
 
+#: A snapshot of host load, appended to the stage log so a failure's time can
+#: be read against what the host was doing rather than inferred from
+#: `wall_seconds` alone. Written straight to `$log_path` with plain
+#: `>>` rather than through this script's own stdout, so it needs neither a
+#: pipe around the stage nor a subshell around it.
+log_host_load() {
+  local timestamp
+  timestamp="$(date '+%Y-%m-%dT%H:%M:%S')"
+  {
+    echo "$timestamp host-load: $(cat /proc/loadavg 2>/dev/null || echo unavailable)"
+    echo "$timestamp host-load: nproc $(nproc 2>/dev/null || echo unavailable)"
+    echo "$timestamp host-load: top 5 by cpu"
+    # `|| true`: `head -6` closing the pipe on a host with more than a
+    # handful of processes can send `ps` SIGPIPE, and under `pipefail`
+    # that failure is the whole pipeline's exit status. Unguarded, that
+    # would abort this function inside the EXIT trap before teardown runs.
+    ps -eo pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -6 | while IFS= read -r line; do
+      echo "$timestamp host-load: $line"
+    done || true
+  } >> "$log_path"
+}
+
 # ---------------------------------------------------------------------------
 # Before anything is launched.
 #
@@ -482,9 +504,13 @@ finish() {
   trap - EXIT
   trap '' INT TERM
   [ -n "${stage_status:-}" ] || stage_status="$status"
+  log_host_load
   stop_stage
   clean_instances
   verify_host_clean || cleanup_ok=no
+  if [ "$stage_status" -ne 0 ]; then
+    log_host_load
+  fi
   local exit_code="$stage_status"
   if [ "$exit_code" -eq 0 ] && [ "$cleanup_ok" = no ]; then
     exit_code=1
@@ -501,6 +527,8 @@ if ! preflight; then
   echo "stage $name: refused before launch; nothing was started and nothing was cleaned" >&2
   exit 2
 fi
+
+log_host_load
 
 echo "stage $name: $instances instance(s), log $log_path"
 echo "stage $name: ${stage_command[*]}"

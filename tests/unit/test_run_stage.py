@@ -232,6 +232,44 @@ def test_a_stage_that_succeeds_is_cleaned_up_per_instance(shims: Shims) -> None:
     assert summary in log_text(shims)
 
 
+def test_host_load_snapshots_bracket_a_successful_stage(shims: Shims) -> None:
+    """A snapshot after preflight and one before teardown, nothing more.
+
+    The summary line's format is untouched by this: it is asserted here
+    exactly as `test_a_stage_that_succeeds_is_cleaned_up_per_instance` does,
+    to catch a host-load change that accidentally reached it.
+    """
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    written = log_text(shims)
+    stamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    loadavg_lines = re.findall(rf"^{stamp} host-load: \d+\.\d+ \d+\.\d+", written, re.MULTILINE)
+    nproc_lines = re.findall(rf"^{stamp} host-load: nproc \d+", written, re.MULTILINE)
+    cpu_header_lines = re.findall(rf"^{stamp} host-load: top 5 by cpu", written, re.MULTILINE)
+    assert len(loadavg_lines) == 2, written
+    assert len(nproc_lines) == 2, written
+    assert len(cpu_header_lines) == 2, written
+    summary = "stage test-stage: exit 0, cleanup ok, instances 2/2 cleaned"
+    assert summary in result.stdout
+    assert summary in written
+
+
+def test_a_third_host_load_snapshot_is_taken_on_the_failure_path(shims: Shims) -> None:
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    stage = shims.stage("echo collapsing >&2; exit 3")
+
+    result = run_stage(shims, str(stage))
+
+    assert result.returncode == 3
+    written = log_text(shims)
+    nproc_lines = re.findall(r"host-load: nproc \d+", written)
+    assert len(nproc_lines) == 3, written
+
+
 def test_a_stage_that_fails_is_still_cleaned_up(shims: Shims) -> None:
     bring_up(shims, "emulator-5556", "emulator-5558")
     stage = shims.stage("echo collapsing >&2; exit 3")

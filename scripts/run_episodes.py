@@ -43,6 +43,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import torch  # noqa: E402
 
+from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.features import (  # noqa: E402
     ROW_COUNT,
     ROW_WIDTH,

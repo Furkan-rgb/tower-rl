@@ -51,6 +51,7 @@ from typing import IO, Any, Protocol
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 
 #: Where a spectated session's output lives: recordings and their per-run

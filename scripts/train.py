@@ -80,6 +80,7 @@ from run_episodes import (  # noqa: E402
     upgrade_availability_from,
 )
 
+from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402

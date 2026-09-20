@@ -635,6 +635,83 @@ within-run capability written by the bridge, not a progressed account:
 `M2-E008` did not test persistence, and nothing here says the official game
 would present this roster to a player at this progression.
 
+### Results, as run
+
+**Stage 0 — bridge reinstall.** Production digest
+`f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3` (ADR 0011's
+`unlock_state`/`unlock_all_upgrades` build) installed at `state/bridge/current`
+2026-09-20. Every `all` device stage run since — `m2-run3-eval-random`,
+`-topup`, `-diag-solo`, `-diag-label`, `-eval-scripted`, `-topup2`, `-topup3` —
+reported `cleanup ok` and the host verified clean (no qemu process, no adb
+device) on exit, and **zero** `UNLOCK_NOT_APPLIED` / `UNLOCK_REVERTED` lines
+appeared over the 231 episodes collected under `all` so far (90 random + 105
+scripted + 36 diag-label valid, none invalid). That is `#54`'s done-condition
+evidence: the reinstalled production bridge applies and holds the unlock
+correctly across every round boundary these stages exercised.
+
+**Stage 1 — baselines under `all`, 2026-09-20.**
+
+| arm | n | mean final wave | sd | SE |
+| --- | --- | --- | --- | --- |
+| random `all` | 90 | 3.556 | 1.500 | 0.158 |
+| scripted `all` | 105 | 6.105 | 0.338 | 0.033 |
+
+Random `all` pooled 60 valid episodes from the original stage-1 run
+(`m2-run3-eval-random`, 4/7 actors clean) with 30 valid from one top-up
+(`m2-run3-eval-random-topup2`, 2/3 actors clean); a second, single-actor
+top-up (`m2-run3-eval-random-topup3`) failed with zero episodes and was not
+retried further, so the pre-registered **n≥105 was not reached** — n=90 is
+accepted as the arm (developer decision 2026-09-20), on the ground that its
+SE (0.158) is adequate for a kill bar even though it falls short of the
+coarse-comparison target. Scripted `all` reached its full n=105 with zero
+actor failures.
+
+**Kill bar and comparator, fixed before stage 2.** Condition 1 at the close of
+period 2: `checkpoint_period_near_greedy_mean_final_wave` **> 3.256**
+(random-`all` mean 3.556 − 0.3). Condition 2 unchanged: wait fraction **< 0.9**.
+The stage-3 gate comparator is the scripted-`all` mean, **6.105**: stage 3 runs
+only if the best near-greedy period (2 onward) exceeds 6.105.
+
+**Actor loss at episode boundaries, dated 2026-09-20 — cause under diagnosis.**
+Across the `all` stages run so far: `m2-run3-eval-random` 3/7 actors failed
+zero-episode; `m2-run3-eval-random-topup` (3 concurrent) 3/3 failed;
+`m2-run3-diag-solo` (1 actor) 1/1 clean; `m2-run3-diag-label` (3 actors × 12,
+after `e766821` added observed-state reporting to the failure) 36/36 clean, 0
+failures; `m2-run3-eval-scripted` (7 actors × 15) 0/105 failures; the random
+top-ups above, 1/3 then 1/1 failed. Logs:
+`state/logs/m2-run3-eval-random-20260920-112017.log`,
+`state/logs/m2-run3-eval-random-topup-20260920-114231.log`,
+`state/logs/m2-run3-diag-solo-20260920-120102.log`,
+`state/logs/m2-run3-diag-label-20260920-123140.log`,
+`state/logs/m2-run3-eval-scripted-20260920-125601.log`,
+`state/logs/m2-run3-eval-random-topup2-20260920-133046.log`,
+`state/logs/m2-run3-eval-random-topup3-20260920-134926.log`.
+
+The failure is `RunPortError` on `speed_down: lifecycle_timeout`, always inside
+`_pin_game_speed`, but **it is not a bring-up failure**: any earlier wording in
+this block implying the pin fails while an actor is first coming up is
+corrected here. Every failure so far has occurred at an **episode boundary**,
+pinning speed for the episode after the first, and the two verbatim
+post-`e766821` fingerprints (`m2-run3-eval-random-topup2` and `-topup3`) show
+why — the game state at the moment of failure is already terminal:
+
+    the game did not honour speed_down: lifecycle_timeout (after speed_max:
+    game_speed=1.5 wave=1 round_active=1 terminal=0 health=5.0 max_health=5.0;
+    at failure: game_speed=0.0 wave=1 round_active=0 terminal=1 health=0.0
+    max_health=5.0)
+
+identically on both. Read literally: the prior episode's round is still
+reported active and healthy when `speed_max` is pressed, and the round has
+already ended (`terminal=1`, `health=0.0`, `round_active=0`) by the time
+`speed_down` is pressed moments later — a race between the episode ending and
+the pin's own two-step press, not obviously a function of fleet concurrency.
+**"Host load from simultaneous bring-up" is now a rejected-or-unconfirmed
+reading**: the 3-concurrent top-up failed 3/3 (worse than the original
+7-actor run's 3/7), a solo actor pinned cleanly once, and a later 3-actor and
+7-actor stage ran with zero failures, which is not the signature simple boot
+contention would leave. The cause is under diagnosis; nothing here attributes
+it to a fix.
+
 ## M2-E008 — Profile-v2 unlock trial: the write lands and the game honours it, but a round start takes it back
 
 **Date:** 2026-09-20

@@ -26,6 +26,148 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M2-E008 — Profile-v2 unlock trial: the write lands and the game honours it, but a round start takes it back
+
+**Date:** 2026-09-20
+**Status:** the four questions board `#54` asked are answered on device. A
+bridge write to `Main.upgradeUnlocked` / `upgradeDefenseUnlocked` /
+`upgradeUtilityUnlocked` **takes** (Q1), the game **honours** it for purchases
+inside the running round (Q3), it **survives that round** but **not the next
+round start** (Q2), and it changes **no starting scalar** (Q4). Nothing here
+decides whether to build a profile v2; that is a separate decision.
+**Purpose:** profile v1 offers six purchasable in-run rows (4 attack, 2
+defense, 0 utility), which caps what a policy can learn. `#54` asks whether the
+diagnostics bridge's unlock write can widen that, and what it costs.
+
+Repository at `ad50e69`. Diagnostics bridge
+`1a8d2467b2a1f73a0e3e2ca7e6e8fb780a0b8cbec9d97e005e448c3fa5777289`, built per
+`docs/setup.md` with `-DTOWER_BRIDGE_DIAGNOSTICS=ON` (NDK 29.0.14206865,
+`-C state/bridge/config/profile.cmake`, arm64-v8a, android-35) into
+`state/bridge/unlock-trial-54-diag` and selected for this session only through
+`TOWER_BRIDGE_BUILD_DIR`. The production pointer `state/bridge/current` read
+`662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b` before and
+after and was never repointed. One `tower_rl_instrumented_api36` clone on
+`emulator-5556`, `-read-only`, host renderer, 4 cores, cold path, 120 Hz
+confirmed, offline by interface (`ip -o -4 addr show` → `1: lo` only) before
+any bridge command. No taps, no screenshots, no Settings/Store/Cloud; the only
+writes to the game were the unlock arrays and in-run purchases paid from in-run
+cash. Levels and scalars are read from the observation, never from the screen.
+
+The whole trial ran under
+`./scripts/run_stage.sh --name unlock-trial --instances 1 -- <trial script>`,
+stage log `state/logs/unlock-trial-20260920-083122.log`. The trial script ran,
+in order:
+
+```text
+uv run python scripts/clone_session.py --index 0 up --read-only --renderer host --cores 4
+uv run python <probe> --phase 1 --port 47652      # round A, read, write, read, buy
+uv run python scripts/unlock_trial.py --serial emulator-5556 --port 47652
+uv run python scripts/run_episodes.py --episodes 1 --policy random \
+    --serial emulator-5556 --port 47652 --output <record>
+uv run python <probe> --phase 2 --port 47652      # round B, read, scalars, buy
+```
+
+The probe is a session-local script driving `InstrumentedRunAdapter` and
+`InstrumentedBridgeClient` directly; it adds no repository code.
+
+### Q1 — the write takes
+
+| read | attack | defense | utility |
+| --- | --- | --- | --- |
+| before, in round A | 4 / 20 | 2 / 20 | 0 / 20 |
+| `unlock_all_upgrades` read-back | 20 / 20 | 20 / 20 | 20 / 20 |
+| fresh `unlock_state` after it | 20 / 20 | 20 / 20 | 20 / 20 |
+| `scripts/unlock_trial.py`, before / after / read back | 20 / 20 / 20 | 20 / 20 / 20 | 20 / 20 / 20 |
+
+The pre-write counts 4 / 2 / 0 are exactly v1's purchasable rows, and the
+observation's own per-slot `unlocked` flags agree (attack 0–3, defense 0–1,
+utility none).
+
+### Q2 — it survives the round, not the round start
+
+On the terminal wave-4 run after the random episode the counts still read
+20 / 20 / 20. After `go_home` + `start_round` (the adapter's own
+`begin_episode`) the next round started at **7 / 4 / 7**.
+
+The per-slot flags say what those counts are: still true at round B start are
+attack 0,1,2,3,17,18,19; defense 0,1,18,19; utility 13–19. The trailing indices
+are exactly the empty-name slots — the name arrays are length 20 with 17 real
+attack rows, 18 defense, 13 utility (`#39`) — and they are priced 0 and
+unpurchasable whatever the flag says. **Every real upgrade row reverted to its
+v1 value** (4 attack, 2 defense, 0 utility); only the unused tail kept the
+write. The game recomputes availability for its real rows at round start.
+
+An unlock written this way is therefore a within-run capability: writing it once
+at process start would not produce an unlocked round, and it has to be rewritten
+after each round begins.
+
+### Q3 — the game honours it
+
+In round A, immediately after the write, with cash 80.0, utility slot 4 ("Free
+Attack Upgrade", cost 8.0) was bought: outcome `confirmed`, reason
+`confirmed_state_change`, level **0 → 1** in the observation. Utility has zero
+purchasable rows under v1, so that purchase cannot happen on the frozen
+baseline.
+
+The random episode then played the same round to its end: valid, final wave 4,
+24 decisions, 17 purchases, `advances_cut_short` 0, speedup 1.961. It finished
+holding attack 1,2,6; defense 0,1,2,3,4,11; utility 4,5,6 — seven of those rows
+(attack 6, defense 3,4,11, utility 4,5,6) are locked under v1. In round B the
+recompute had already reverted the real rows and the probe's utility attempt
+found nothing purchasable across 15 advances, which is Q2 again rather than a
+separate failure.
+
+### Q4 — no starting scalar moves
+
+| field | v1 (`M2-E006` / `#39`, wave 1) | round A start (pre-write) | round B start (post-write) |
+| --- | --- | --- | --- |
+| `towerHealth` / `towerMaxHealth` | 5 / 5 | 5 / 5 | 5 / 5 |
+| `cash` | 80 | 80 | 80 |
+| `damage` | 3 | 3 | 3 |
+| `attackSpeed` | 1 | 1 | 1 |
+| `criticalChance` / `criticalMult` | 1 / 1.2 | 1 / 1.2 | 1 / 1.2 |
+| `towerHealthRegen` | 0.0005 | 0.0005 | 0.0005 |
+| `wallHealth` | 1 | 1 | 1 |
+| `towerRangeDistance` | 2.700 | 2.699679 | 2.699679 |
+| `currentWaveBaseHealth` / `…Damage` / `…KillCash` | 2.35 / 1.176 / 1 | 2.35 / 1.17594 / 1 | 2.35 / 1.17594 / 1 |
+| `estimatedEnemiesToSpawnThisWave` | 21 | 21 | 21 |
+| `waveLengthSeconds` / `waveCooldownSeconds` | 26 / 9 | 26 / 9 | 26 / 9 |
+| `multishotTargets` / `rapidFireDuration` / `knockbackForce` / `orbSpeed` / `wallRebuild` | 2 / 0.6 / 0.4 / 0.04 / 1200 | identical | identical |
+
+Across the write itself — same round, seconds apart — the only live fields that
+moved were `waveTimer` and `gameplayTimeThisRound`, which are clocks. No
+workshop coupling is visible in any starting scalar.
+
+**What Q4 does not settle.** Round B is not a round started on a fully unlocked
+instance, because Q2 shows that state does not reach a round start. What was
+compared is a v1 round start, an unlocked mid-run state, and a post-write round
+start; none of them differ in any starting scalar.
+
+### Invalid and limits
+
+One session, one instance, two rounds and one random episode; nothing repeated.
+No persistence test: nothing was saved, backgrounded or relaunched, the clone
+was `-read-only` and was discarded, so whether a save would carry the write is
+still unanswered and was out of scope. `true_count` is a count — the per-slot
+picture that identified the tail slots comes from the observation's own
+`unlocked` flag. The random episode resumed round A rather than starting fresh,
+so its final wave is not comparable with `M2-E007`'s baselines and stands here
+only as evidence that purchases on v1-locked rows are honoured. Cost arrays were
+already populated for 17 / 18 / 13 rows at round A start, before any write.
+
+### Cleanup
+
+`game_frame_rate_override: reset`, `libunity_sha256:
+ffc1f3eff03cb3fe718d5659a6749c34abfbf9cab822cf386a8960cf82dd0040`,
+`versionName=29.0.3`, `versionCode=1199`,
+`installerPackageName=com.android.vending`, `libunity_mounts: 0`,
+`bridge_artifacts: removed`, `cleanup_checks: all passed`, `verified: no qemu
+process, no adb device`. Stage summary line: `stage unlock-trial: exit 0,
+cleanup ok, instances 1/1 cleaned, 0 exited during teardown, wall 00:03:20`.
+Checked again independently afterwards: zero qemu processes via `/proc/*/exe`,
+`adb devices` empty, and `state/bridge/current` still
+`662cba09…8902b`.
+
 ## M2-E007 — Milestone 2, run 2 under `M2-P002`: the baselines, and the kill threshold they set
 
 **Date:** 2026-09-19, updated 2026-09-20

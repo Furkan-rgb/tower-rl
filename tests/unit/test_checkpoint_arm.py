@@ -135,6 +135,37 @@ def test_a_rebuilt_checkpoint_chooses_what_the_backbone_that_wrote_it_chooses(
         assert actual == expected
 
 
+def test_a_checkpoint_of_an_annealed_run_rebuilds_its_schedule(tmp_path: Path) -> None:
+    """A checkpoint written since the n-step anneal records it; one before does not."""
+    path = tmp_path / "annealed.pt"
+    annealed = StackedDqnConfig(
+        history_length=4, n_step=10, n_step_final=3, n_step_anneal_steps=10_000, seed=7
+    )
+    backbone = StackedDqnBackbone(config=annealed, network_config=NETWORK)
+    write_checkpoint(
+        path,
+        identity=identity(),
+        progress=TrainingProgress(environment_decisions=1),
+        backbone_state=backbone.state_dict(),
+        resolved_config={
+            **resolved(),
+            "n_step": 10,
+            "n_step_final": 3,
+            "n_step_anneal_steps": 10_000,
+        },
+        replay_provenance={},
+    )
+
+    rebuilt, _ = checkpoint_policy(path, **PLAYED)
+    old, _ = checkpoint_policy(trained_checkpoint(tmp_path)[0], **PLAYED)
+
+    assert rebuilt.config.n_step_final == 3
+    assert rebuilt.config.n_step_anneal_steps == 10_000
+    # `resolved()` is the snapshot as it was before the anneal existed.
+    assert old.config.n_step_final is None
+    assert old.config.n_step_at(10**6) == LEARNER.n_step
+
+
 def test_a_rebuilt_checkpoint_acts_greedily(tmp_path: Path) -> None:
     """Greedy is the argmax of its own values, taken the same way every time."""
     path, _ = trained_checkpoint(tmp_path)

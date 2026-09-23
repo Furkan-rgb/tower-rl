@@ -169,6 +169,14 @@ def checkpoint_policy(
         config=StackedDqnConfig(
             history_length=int(settings["history_length"]),
             n_step=int(settings["n_step"]),
+            # Absent from a checkpoint written before the n-step anneal, which
+            # held n fixed - what these defaults rebuild.
+            n_step_final=(
+                None
+                if settings.get("n_step_final") is None
+                else int(settings["n_step_final"])
+            ),
+            n_step_anneal_steps=int(settings.get("n_step_anneal_steps", 0)),
             discount=float(settings["discount"]),
             learning_rate=float(settings["learning_rate"]),
             target_ema_decay=float(settings["target_ema_decay"]),

@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import chain, repeat
 from pathlib import Path
 from typing import Any, cast
@@ -50,6 +50,7 @@ from tower_rl.learning.stacked_dqn import (
     StackedDqnConfig,
 )
 from tower_rl.learning.training import (
+    KillBar,
     NearGreedyPlateau,
     TrainingConfig,
     TrainingProgressReport,
@@ -1091,3 +1092,119 @@ def test_early_stopping_needs_a_checkpoint_period_to_count_in() -> None:
     """Without a crossing there is no period, and the run would never stop."""
     with pytest.raises(ValueError, match="checkpoint_every_game_seconds"):
         fleet([environment()], early_stop_patience_periods=2)
+
+
+# --- Stopping below a pre-registered kill bar on the decision axis -----------
+#
+# Each scripted episode is four decisions, so a single actor's episodes end at
+# decisions 4, 8, 12, ... and a bar's window holds exactly the episodes the
+# test counts into it.
+
+
+def kill_bar_fleet(waves: Sequence[int], *bars: KillBar, **overrides: Any) -> TrainingRun:
+    """A fleet of one with only kill bars to stop it: the plateau rule is off."""
+    settings: dict[str, Any] = {"budget_game_seconds": 30, "kill_bars": bars}
+    settings.update(overrides)
+    training = fleet([environment()], **settings)
+    play(training, waves)
+    return training
+
+
+def test_a_run_below_its_kill_bar_stops_at_the_bar() -> None:
+    bar = KillBar(at_decisions=40, window_start_decisions=20, min_mean_final_wave=6.0)
+    training = kill_bar_fleet([5], bar)
+
+    report = training.run()
+
+    assert training.stopped_early and training.finished
+    assert training.killed_by == report.kill_bar_checks[0]
+    [check] = report.kill_bar_checks
+    # The episodes ending at 24, 28, 32, 36 and 40: the window is (20, 40].
+    assert (check.near_greedy_episodes, check.mean_final_wave) == (5, 5.0)
+    assert check.decisions == 40 and check.stopped
+    # Stopped at the boundary that reached the bar, not an episode later.
+    assert report.decisions == 40
+    assert report.plateau.stopped_at_period is None
+
+
+def test_a_run_that_clears_its_kill_bar_carries_on_and_records_the_check() -> None:
+    """Only the window counts: the poor episodes before its start do not."""
+    bar = KillBar(at_decisions=40, window_start_decisions=20, min_mean_final_wave=6.0)
+    # Five episodes (decisions 4..20) at wave 1, then wave 8 from decision 24 on.
+    training = kill_bar_fleet([1] * 5 + [8], bar)
+
+    report = training.run()
+
+    assert not training.stopped_early and training.killed_by is None
+    assert report.game_seconds >= training.config.budget_game_seconds
+    [check] = report.kill_bar_checks
+    assert (check.near_greedy_episodes, check.mean_final_wave, check.stopped) == (5, 8.0, False)
+
+
+def test_a_kill_bar_whose_window_measured_nothing_does_not_stop_the_run() -> None:
+    """No valid near-greedy episode in the window: recorded, and not a stop."""
+    bar = KillBar(at_decisions=40, window_start_decisions=20, min_mean_final_wave=6.0)
+    training = kill_bar_fleet([5], bar)
+    invalid = scripted_episode(5)
+    invalid = replace(
+        invalid,
+        summary=replace(invalid.summary, termination=TerminationOutcome.OBSERVATION_INVALID),
+    )
+    training.actors[0].run_episode = lambda: invalid  # type: ignore[method-assign]
+
+    report = training.run()
+
+    assert not training.stopped_early
+    [check] = report.kill_bar_checks
+    assert (check.near_greedy_episodes, check.mean_final_wave, check.stopped) == (0, None, False)
+
+
+def test_a_kill_bar_reads_the_near_greedy_actors_alone() -> None:
+    """The searching actor's high waves cannot hold a failing policy up."""
+    schedule = ExplorationSchedule.for_option(
+        "ladder",
+        actors=3,
+        epsilon_start=0.9,
+        epsilon_end=SCHEDULE.epsilon_end,
+        anneal_decisions=1,
+    )
+    bar = KillBar(at_decisions=60, window_start_decisions=0, min_mean_final_wave=6.0)
+    training = fleet(
+        [environment() for _ in range(3)],
+        exploration=schedule,
+        budget_game_seconds=100,
+        kill_bars=(bar,),
+    )
+    play(training, [40], actor=0)
+    play(training, [5], actor=1)
+    play(training, [5], actor=2)
+
+    report = training.run()
+
+    [check] = report.kill_bar_checks
+    assert check.stopped and check.mean_final_wave == 5.0
+    assert training.stopped_early
+
+
+def test_a_resumed_run_skips_the_bars_its_parent_already_passed() -> None:
+    passed = KillBar(at_decisions=20, window_start_decisions=0, min_mean_final_wave=99.0)
+    ahead = KillBar(at_decisions=60, window_start_decisions=40, min_mean_final_wave=6.0)
+    training = kill_bar_fleet(
+        [8],
+        passed,
+        ahead,
+        report=TrainingProgressReport(decisions=40, game_ms=10_000.0),
+    )
+
+    report = training.run()
+
+    # The parent answered the bar at 20 - it would have stopped there had it
+    # failed - and this segment's episodes are placed from 40 on, not from 0.
+    [check] = report.kill_bar_checks
+    assert check.bar == ahead
+    assert (check.near_greedy_episodes, check.mean_final_wave, check.stopped) == (5, 8.0, False)
+
+
+def test_a_kill_bar_window_must_end_after_it_starts() -> None:
+    with pytest.raises(ValueError, match="window"):
+        KillBar(at_decisions=8000, window_start_decisions=12000, min_mean_final_wave=8.6)

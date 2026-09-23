@@ -437,6 +437,11 @@ class TrainingReport:
             # saying so is what keeps a fresh baseline from reading as a
             # continued one.
             "tracker_restored_from_parent": plateau.restored,
+            # Every kill bar the run reached, and whether it stopped the run
+            # there; `early_stopped` above is true for either kind of stop.
+            "kill_bar_checks": [
+                asdict(check) for check in self.training.report.kill_bar_checks
+            ],
         }
 
     def summary(self) -> dict[str, object]:

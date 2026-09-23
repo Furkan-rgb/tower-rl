@@ -184,6 +184,10 @@ def resolved_config(
         "network_hidden": network.hidden,
         "network_core_hidden": network.core_hidden,
         "n_step": learner.n_step,
+        # The n-step anneal, if any: `n_step` is where it starts. None and 0
+        # hold `n_step` fixed, which is what every run before run 4 used.
+        "n_step_final": learner.n_step_final,
+        "n_step_anneal_steps": learner.n_step_anneal_steps,
         "discount": learner.discount,
         "learning_rate": learner.learning_rate,
         "target_ema_decay": (
@@ -215,6 +219,11 @@ def resolved_config(
         # whole budget under.
         "early_stop_patience_periods": config.early_stop_patience_periods,
         "early_stop_min_improvement": config.early_stop_min_improvement,
+        # The pre-registered kill bars, as (at, window start, minimum mean).
+        "kill_bars": [
+            [bar.at_decisions, bar.window_start_decisions, bar.min_mean_final_wave]
+            for bar in config.kill_bars
+        ],
         # The parameter lag the fleet acted under, which a later reading of the
         # collection curve needs as much as the replay ratio.
         "parameter_sync_episodes": config.parameter_sync_episodes,

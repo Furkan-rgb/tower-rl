@@ -1485,6 +1485,9 @@ struct EngineClock {
   void (*set_capture_delta)(float) = nullptr;
   void (*set_target_frame_rate)(int32_t) = nullptr;
   void (*set_vsync_count)(int32_t) = nullptr;
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+  int32_t (*get_rendered_frame_count)() = nullptr;
+#endif
   bool resolved = false;
 };
 
@@ -1521,6 +1524,12 @@ const EngineClock& Clock() {
                         reinterpret_cast<void*>(clock.set_capture_delta),
                         reinterpret_cast<void*>(clock.set_target_frame_rate),
                         reinterpret_cast<void*>(clock.set_vsync_count));
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+    clock.get_rendered_frame_count = reinterpret_cast<int32_t (*)()>(
+        ResolveEngineIcall("UnityEngine.Time::get_renderedFrameCount()"));
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "clock rendered=%p",
+                        reinterpret_cast<void*>(clock.get_rendered_frame_count));
+#endif
   }
   return clock;
 }
@@ -1539,6 +1548,53 @@ void UncapFramePacing() {
                       clock.set_vsync_count == nullptr ? "unavailable" : "0",
                       clock.set_target_frame_rate == nullptr ? -1 : kUncappedFrameRate);
 }
+
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+// Render-off experiment build (#27): the player loop still runs every frame, but
+// only one frame in TOWER_BRIDGE_RENDER_FRAME_INTERVAL is rendered and presented.
+// The engine polls the managed static `OnDemandRendering.m_RenderFrameInterval`
+// every frame; its public setter is managed code this thread must not run, so
+// the field is written directly. A build that cannot turn rendering off must not
+// run rendered under the render-off label, so every miss here fails loudly.
+FieldInfo* g_render_frame_interval = nullptr;
+
+bool ResolveRenderFrameInterval(const Il2CppApi& api, Il2CppDomain* domain) {
+  Il2CppClass* klass = FindClass(api, domain, "OnDemandRendering");
+  const char* name_space = klass == nullptr ? nullptr : api.class_get_namespace(klass);
+  if (name_space == nullptr || std::strcmp(name_space, "UnityEngine.Rendering") != 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "UnityEngine.Rendering.OnDemandRendering is unavailable");
+    return false;
+  }
+  FieldInfo* field = api.class_get_field_from_name(klass, "m_RenderFrameInterval");
+  const std::string type_name = DeclaredTypeName(api, field);
+  if (field == nullptr || type_name != "System.Int32") {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "OnDemandRendering.m_RenderFrameInterval is unavailable (type=%s)",
+                        type_name.c_str());
+    return false;
+  }
+  g_render_frame_interval = field;
+  return true;
+}
+
+// Per connection, like UncapFramePacing: idempotent, and the read-back is what
+// proves the write took. The effective rate is reported, never gated on.
+bool ApplyRenderFrameInterval(const Il2CppApi& api) {
+  int32_t interval = TOWER_BRIDGE_RENDER_FRAME_INTERVAL;
+  api.field_static_set_value(g_render_frame_interval, &interval);
+  int32_t readback = 0;
+  api.field_static_get_value(g_render_frame_interval, &readback);
+  const auto effective = reinterpret_cast<float (*)()>(
+      ResolveEngineIcall("UnityEngine.Rendering.OnDemandRendering::GetEffectiveRenderFrameRate()"));
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "render interval=%d readback=%d effective_render_fps=%.1f target=%d",
+                      interval, readback,
+                      effective == nullptr ? -1.0 : static_cast<double>(effective()),
+                      kUncappedFrameRate);
+  return readback == interval;
+}
+#endif
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
 Il2CppClass* g_diagnostic_main = nullptr;
@@ -1794,6 +1850,10 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   const double health_threshold = static_cast<double>(command.health_change_fraction);
   clock.set_capture_delta(command.frame_game_millis / 1000.0F);
   int32_t last_count = clock.get_frame_count();
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+  const int32_t rendered_before =
+      clock.get_rendered_frame_count == nullptr ? 0 : clock.get_rendered_frame_count();
+#endif
   send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Unpause", "");
 
   const uint64_t started = MonotonicMicros();
@@ -1965,6 +2025,17 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
                       static_cast<double>(command.frame_game_millis),
                       static_cast<unsigned long long>(detail->wall_micros), stopped_on);
 #endif
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+  // One line per advance: player-loop frames against rendered frames over the
+  // same advance, the direct evidence that frames are being skipped (~1/N).
+  // `rendered=-1` means the engine's rendered-frame counter did not resolve.
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "renderprobe frames=%d rendered=%d wall_us=%llu",
+                      detail->frames,
+                      clock.get_rendered_frame_count == nullptr
+                          ? -1
+                          : clock.get_rendered_frame_count() - rendered_before,
+                      static_cast<unsigned long long>(detail->wall_micros));
+#endif
   return connected;
 }
 
@@ -2088,6 +2159,12 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
     SendError(client, "compatibility_error", "UnitySendMessage is unavailable");
     return;
   }
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+  if (!ApplyRenderFrameInterval(api)) {
+    SendError(client, "compatibility_error", "render frame interval not applied");
+    return;
+  }
+#endif
   if (!SendFrame(client, Handshake(api, fields))) return;
   UncapFramePacing();
   uint64_t sequence = 0;
@@ -2327,6 +2404,9 @@ bool InitializeRuntime(Il2CppApi* api, MainFields* fields) {
                         int_select != nullptr);
     return false;
   }
+#ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
+  if (!ResolveRenderFrameInterval(*api, domain)) return false;
+#endif
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "IL2CPP runtime resolved");
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
   g_diagnostic_main = main;

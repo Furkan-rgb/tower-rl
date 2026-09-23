@@ -70,3 +70,21 @@ target_compile_definitions(tower_bridge PRIVATE
 if(TOWER_BRIDGE_DIAGNOSTICS)
   target_compile_definitions(tower_bridge PRIVATE TOWER_BRIDGE_DIAGNOSTICS=1)
 endif()
+
+# Render-off experiment (#27): render one player-loop frame in N. At 1 nothing is
+# defined and the production artifact is byte-for-byte unchanged; a build above 1
+# is an experiment variant selected only through TOWER_BRIDGE_BUILD_DIR, never
+# installed as state/bridge/current and never used for spectate or recording.
+set(TOWER_BRIDGE_RENDER_FRAME_INTERVAL "1" CACHE STRING
+    "Render one player-loop frame in N (1 = every frame, production)")
+# No leading zero: the value is pasted into C++ as a literal, where 016 is octal.
+if(NOT TOWER_BRIDGE_RENDER_FRAME_INTERVAL MATCHES "^[1-9][0-9]*$" OR
+   TOWER_BRIDGE_RENDER_FRAME_INTERVAL GREATER 60)
+  message(FATAL_ERROR
+          "TOWER_BRIDGE_RENDER_FRAME_INTERVAL must be an integer in 1..60, got "
+          "'${TOWER_BRIDGE_RENDER_FRAME_INTERVAL}'")
+endif()
+if(TOWER_BRIDGE_RENDER_FRAME_INTERVAL GREATER 1)
+  target_compile_definitions(tower_bridge PRIVATE
+      TOWER_BRIDGE_RENDER_FRAME_INTERVAL=${TOWER_BRIDGE_RENDER_FRAME_INTERVAL})
+endif()

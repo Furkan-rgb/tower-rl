@@ -53,6 +53,7 @@ Everything this project writes lives under `state/` at the repository root:
 ```text
 state/bridge/<sha256>/   one installed bridge build, named for its own digest
 state/bridge/current     symlink to the bridge that is deployed
+state/bridge/builds/     experiment bridge variants, selected only by TOWER_BRIDGE_BUILD_DIR
 state/bridge/config/     the private build configuration (never committed)
 state/runs/              training runs, checkpoints and reports
 state/mlflow.db          the MLflow store, with artifacts in state/mlartifacts/
@@ -156,10 +157,24 @@ source change moves it. The current ones, each built with the recipe above,
 host cross-compile only, nothing installed:
 
 ```text
-662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b   installed at state/bridge/current
+662cba0974d701c471fe0e7c6cbdeda08c14a668509e8da123a738bfa4f8902b   installed at state/bridge/current until 2026-09-20
 b9852e6494056fedaf1b142af2368dbaa4ac975c7dfea2ffbff44b16f1d76284   source before ADR 0011
-f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with ADR 0011, 2026-09-20
+f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with ADR 0011, 2026-09-20; installed at state/bridge/current
+7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228   render-off experiment, TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16 (#27), 2026-09-23
 ```
+
+`7b5e9701…` is an **experiment variant, not a production digest**. It is the
+same source built with `-DTOWER_BRIDGE_RENDER_FRAME_INTERVAL=16` added to the
+recipe above, which makes the game render and present one player-loop frame in
+16 (`native/tower_bridge/README.md`, "Render-off experiment build"). The default
+of that option is 1, which defines nothing, so the production build of the same
+source is still `f9d5f161…` byte for byte. The variant is kept out of the
+digest-named layout, at `state/bridge/builds/render-interval-16/` beside an
+unchanged copy of `state/bridge/current/libunity-bridge.so` and its own
+`CMakeCache.txt`, and is selected for one run only by
+`TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16`. It is never
+installed as `state/bridge/current`, and spectate and recording must never run
+on it: what it puts on screen is one frame in sixteen.
 
 `f9d5f161…` is the production build with `unlock_state` and
 `unlock_all_upgrades` in it, which is how `--upgrade-availability all` is
@@ -169,9 +184,9 @@ is byte-for-byte what it was (`1a8d2467b2a1f73a0e3e2ca7e6e8fb780a0b8cbec9d97e005
 the digest `M2-E008` ran on), because the code only left an `#ifdef` it was
 inside.
 
-**`state/bridge/current` must be reinstalled** before any run uses the new
+**`state/bridge/current` had to be reinstalled** before any run used the new
 commands — install and repoint per the recipe above, copy, verify, then move the
-pointer. That is a device-side step and is not done by this change.
+pointer. That was done on 2026-09-20: `current` points at `f9d5f161…`.
 
 `TOWER_BRIDGE_BUILD_DIR` overrides all of this and deploys straight out of a
 build tree, which is how a bridge under development is run; every ordinary run

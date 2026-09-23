@@ -26,6 +26,55 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
+
+**Finding that motivates this (scout, verified against manifests and docs).**
+Every M2 run (`M2-E001` onward, including run 3) trained and evaluated at
+`frame_game_ms=16.667` — `scripts/run_episodes.py::add_cadence_arguments`'s
+default (`1000.0 / 60.0`) — even though `M1B-E018` (commit `705836e`, on top
+of `611667d`'s move to one round trip per decision) adopted 100 as the
+standing decision and `M1B-E038` validated 100 on fidelity, powered, at
+round-clock resolution, and rejected 150/200. No M2 pre-registration ever
+pinned `--frame-game-ms`, so the argparse default rode through silently
+across every M2 run. 16.667 has no powered fidelity evidence behind it —
+`M1B-E018`'s own sweep was n=8 per arm, underpowered by its own account, and
+`M1B-E038` tested 100/150/200, not 16.667. The fleet is vsync-bound at
+~118 fps regardless of `frame_game_ms`, so game-seconds per wall-second scales
+with it: 100 could collect up to ~6× the game-seconds per wall-hour that
+16.667 does.
+
+**Design.** Setup identical to run 3's stage-3 eval (7 actors, `all`,
+choice-point cadence, 120 Hz guest frame rate, `-gpu host`, bridge digest
+`f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3` from
+`state/bridge/current`), except `--frame-game-ms 100`.
+
+- **Arm S** — scripted policy, 35 episodes (7 actors × 5). Reference: run 3's
+  scripted-`all` at 16.667, n=105, mean 6.105, sd 0.338.
+- **Arm R3** — run 3's arm checkpoint (`checkpoint-gs0240313.pt`, sha256
+  `7dd8ba3779e27848048a874e9f9c29001fdfc766b0afda9a2e0bb49c04216771`), greedy,
+  35 episodes (7 × 5). Reference: run 3's formal eval at 16.667, n=105, mean
+  15.98, sd 3.68.
+
+**PASS (equivalence) iff all hold:**
+1. Zero `GAME_TIME_DEFLATED` and ≤1 invalid episode per arm.
+2. Arm S: 90% bootstrap CI of (100 ms − reference) inside ±0.5 waves.
+3. Arm R3: 90% bootstrap CI of (100 ms − reference) inside ±2.0 waves.
+
+CIs via `src/tower_rl/experiment/comparison.py::bootstrap_difference`, seed 0,
+10,000 resamples, against each reference arm's own raw per-episode records.
+
+**Throughput.** Game-seconds per wall-second per actor and fleet game-s/hour
+at 100, compared against run 3's own eval records at 16.667 (same
+definitions both sides, `valid_episodes_per_hour`-style aggregate from the
+stage's final JSON summary). **GO for training at 100** only if PASS and the
+fleet speed-up is ≥2×. Anything else → no change: 16.667 stays, and this
+entry says why once the run's numbers are in.
+
+**Kill rule.** Stop arm S early if its first 7 episodes show
+`GAME_TIME_DEFLATED` on ≥3 of them — a signal the 100 ms cadence is not
+holding on this device, checked before committing the rest of the device
+budget to it.
+
 ## M2-P003 — Milestone 2, run 3: upgrade availability `all`, corrected ε schedule, one seed, exploratory (pre-registered, written before any run)
 
 **Date:** 2026-09-20

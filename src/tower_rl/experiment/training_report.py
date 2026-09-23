@@ -491,6 +491,11 @@ class TrainingReport:
             "final_evaluation": (
                 asdict(self.final_point) if self.final_point is not None else None
             ),
+            # Why there is no final evaluation, when it was skipped on purpose:
+            # a run stopped on a kill bar selects no arm and is not evaluated.
+            "final_evaluation_skipped": (
+                "kill_bar" if self.training.killed_by is not None else None
+            ),
             "learning_curve": [asdict(point) for point in self.learning_curve],
             "mean_recent_unweighted_absolute_td_error": (
                 report.mean_recent_unweighted_absolute_td_error

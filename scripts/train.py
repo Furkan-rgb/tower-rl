@@ -1025,13 +1025,20 @@ def train_session(
         # difference against the scripted floor. Taken after the budget is
         # spent, so it costs none of the budget and cannot be chosen after
         # the fact from a series of mid-run points.
-        try:
-            run_evaluation(True)
-        except (RunPortError, ValueError) as failure:
-            # Losing the headline measurement must not lose the run: the
-            # collection curve and the checkpoints are already on disk.
-            arm.training.report.evaluation_failures.append(str(failure))
-            print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
+        # Skipped for a run stopped on a kill bar: it selects no arm, so the
+        # evaluation would buy nothing, and it costs hours of device time (2.28 h
+        # in run 3). The summary records the skip. A plateau stop still
+        # evaluates: that run may yet be the arm.
+        if killed is not None:
+            print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
+        else:
+            try:
+                run_evaluation(True)
+            except (RunPortError, ValueError) as failure:
+                # Losing the headline measurement must not lose the run: the
+                # collection curve and the checkpoints are already on disk.
+                arm.training.report.evaluation_failures.append(str(failure))
+                print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
         summary = arm.summary()
         report: dict[str, object] = {

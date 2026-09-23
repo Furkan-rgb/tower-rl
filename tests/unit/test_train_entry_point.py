@@ -396,6 +396,9 @@ def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> No
     assert check["stopped"] and check["bar"]["at_decisions"] == 100
     assert check["mean_final_wave"] < 1000
     assert arm["game_seconds"] < int(TRAINING_BUDGET)
+    # A killed run selects no arm, so its final evaluation is skipped and says so.
+    assert arm["final_evaluation"] is None
+    assert arm["final_evaluation_skipped"] == "kill_bar"
     resolved = arm["resolved_config"]
     assert resolved["kill_bars"] == [[100, 0, 1000.0]]
     assert (resolved["n_step"], resolved["n_step_final"], resolved["n_step_anneal_steps"]) == (
@@ -403,6 +406,33 @@ def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> No
         3,
         5,
     )
+
+
+def test_a_run_not_stopped_on_a_kill_bar_still_takes_its_final_evaluation(
+    trained: dict[str, Any],
+) -> None:
+    arm = trained["arm"]
+
+    assert arm["final_evaluation"] is not None
+    assert arm["final_evaluation_skipped"] is None
+
+
+def test_a_plateau_stop_still_takes_its_final_evaluation(tmp_path: Path) -> None:
+    """Only a kill bar skips it: a plateaued run may still be the arm."""
+    report = session(
+        tmp_path,
+        budget="4000",
+        settings={
+            "--checkpoint-every-game-seconds": "200",
+            "--early-stop-patience-periods": "1",
+            "--early-stop-min-improvement": "1000",
+        },
+    )
+
+    arm = report["arm"]
+    assert arm["early_stopping"]["stopped_at_period"] is not None
+    assert arm["final_evaluation"] is not None
+    assert arm["final_evaluation_skipped"] is None
 
 
 def test_early_stopping_without_a_checkpoint_period_is_refused(tmp_path: Path) -> None:

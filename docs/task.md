@@ -11,6 +11,48 @@ The system must support two primary user experiences:
 
 The project is successful only when it operates end to end without routine human intervention. A proof of concept that can tap the game, an isolated RL notebook, or a model trained against a recreated simulator does not satisfy the task.
 
+### 1.1 Portfolio end goal (developer decision, 2026-09-24)
+
+The repository is a public portfolio piece. It demonstrates reinforcement
+learning applied end to end to a real, unmodified commercial game running on
+Android, not to a gym environment. It shows both the learning results and the
+engineering that made the game trainable.
+
+**Outcome A, model comparison.** At least four learners are trained and
+evaluated under one identical, pre-registered, budgeted protocol on the same
+fixed account state: the current stacked-dqn, BBF, DreamerV3, and
+EfficientZero V2. Before any game run, each learner must pass two separate
+checks: an implementation check, where the same code path reproduces a
+published result on a standard benchmark; and a configuration check, where
+every hyperparameter is compared with its paper and each deviation is
+justified. Official reference implementations may be used behind an adapter
+to the environment contract.
+
+**Outcome B, performance that demonstrates learning.** The best learner is
+compared with the random and scripted baselines and with a human reference
+recorded on the same fixed account state. The goal is to match or exceed the
+human reference with a 95% interval, not merely to beat weak baselines.
+Attainable waves are bounded by the fixed permanent account state; the §6
+non-goal on guaranteeing a maximum wave still stands. Much higher waves
+(e.g. 100) would require a stronger fixed baseline or the M8–M11 progression
+program, and that is a separate decision.
+
+**Outcome C, results reporting.** `README.md` presents a comparison table.
+Per learner it gives mean, median, and maximum final wave with 95%
+intervals; the training samples (decisions and game-seconds) and wall time
+needed to reach successive final-wave levels; and a learning curve built from
+evaluating saved checkpoints across training. Detailed per-learner documents
+are linked from it.
+
+**Outcome D, engineering narrative.** A document traces how the real game
+was made trainable. It covers the move from screen-coordinate interaction to
+the instrumented bridge, the bottlenecks measured, and each accepted
+speed-up (frame rate, game time per frame, rendering reduction, fleet
+scaling). Every claim carries its `docs/experiments.md` evidence pointer.
+
+This end goal does not relax any V1 gate, safety boundary, or non-goal in
+this document.
+
 ## 2. Authoritative project objective
 
 For a fixed permanent account state, train an agent to maximize its expected final wave in Tier 1 by choosing in-run upgrades and deciding when to wait.
@@ -591,12 +633,13 @@ Do not reinterpret a missing prerequisite as permission to replace the actual AP
 
 ## 14. Deferred roadmap
 
-These are potential later projects and must not delay V1:
+Comparing alternative RL families is now in scope via §1.1 and is no longer
+deferred. These remaining items are potential later projects and must not
+delay V1:
 
 - optimize coins per hour or multi-objective performance;
 - introduce image/playfield features when structured visible state is insufficient;
 - support additional tiers or account baselines;
-- compare alternative RL families after the V1 benchmark exists;
 - investigate authorized acceleration methods beyond normal in-game speed;
 - support additional hardware hosts or remote actor fleets.
 

@@ -299,6 +299,10 @@ and no script.
 - `tracking.py` — the `ExperimentTracker`/`TrackedRun` protocols and
   `NoExperimentTracker`. `mlflow_tracking.py` is the optional adapter; MLflow is
   an extra, imported lazily, so a checkout without it still runs.
+  `add_tracking_arguments`/`tracked_run` are the `--mlflow-run`/`--run-dir`/
+  `--experiment` options and the handle they open, shared by
+  `select_checkpoint.py` and `report_arms.py` rather than each defining its
+  own copy.
 - `metrics.py` — learning-curve points, health counters, collection-window and
   decision-time lines.
 - `training_report.py` — `TrainingReport`, which writes a run's artifacts.

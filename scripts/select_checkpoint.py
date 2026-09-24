@@ -47,7 +47,7 @@ from tower_rl.experiment.arm_evaluation import (  # noqa: E402
     statistic_line,
 )
 from tower_rl.experiment.comparison import stratified_bootstrap  # noqa: E402
-from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
+from tower_rl.experiment.tracking import add_tracking_arguments, tracked_run  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, load  # noqa: E402
 
 #: The statistic the selection is made on. `decisions` is reported beside it and
@@ -187,23 +187,6 @@ def score(
     return scored
 
 
-def tracked_run(arguments: argparse.Namespace) -> TrackedRun | None:
-    """The run these results are added to, or nothing if none was named."""
-    if not arguments.mlflow_run:
-        return None
-    try:
-        return open_tracked_run(
-            arguments.mlflow_run,
-            run_dir=arguments.run_dir,
-            experiment=arguments.experiment,
-        )
-    except ImportError as missing:
-        raise SystemExit(
-            f"--mlflow-run needs MLflow installed ({missing}). "
-            "Install it with `uv sync --extra tracking`, or drop the flag."
-        ) from missing
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -219,25 +202,7 @@ def main() -> int:
     )
     parser.add_argument("--resamples", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "--mlflow-run",
-        default=None,
-        help=(
-            "an existing tracked run id to add these results to, so the greedy "
-            "curve lands on the page of the training run it is about"
-        ),
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=Path,
-        default=state_directory() / "runs",
-        help="where the tracking store lives; only read with --mlflow-run",
-    )
-    parser.add_argument(
-        "--experiment",
-        default="tower-rl-training",
-        help="the MLflow experiment the run belongs to; only read with --mlflow-run",
-    )
+    add_tracking_arguments(parser)
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "selection.json"
     )

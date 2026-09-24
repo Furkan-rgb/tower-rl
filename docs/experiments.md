@@ -485,6 +485,63 @@ result to compare against run 4. Comment posted on `#67`; board item not
 moved (kill, not a completion, per this entry's stated protocol — the Lead
 decides whether to retry with a different seed or otherwise).
 
+**Diagnosis** (specialist review of runs 3-5b; scratchpad
+`run5b-k1-diagnosis.md`). Regression **falsified**: at matched
+checkpoint-counter ratios (gradient steps / decisions) run 4 is 0.774, run 5
+0.779, run 5b 0.781 — the training code did not change under `#68`/`#69`
+beyond the budget axis, checkpoint cadence, and kill-bar unit; `exploration.py`
+is byte-identical, and warm-up, n-step anneal, learning rate, and target EMA
+are all decision/gradient-step-indexed and unaffected. Schedule mismatch
+**falsified**: epsilon anneals on a fixed 8,000-decision horizon in every run
+(identical values at 4k/8k/12k); beta is the only budget-fraction schedule,
+but `priority_alpha = 0.0` collapses its importance-sampling weight to 1
+regardless of value, so its drift across runs is inert. Run-to-run variance
+**supported**: near-greedy mean final wave over (8000, 12000] was 9.87±0.23
+(run 4), 10.02±0.13 (run 5), 8.32±0.10 (run 5b) — all seed 0, learner health
+metrics (loss, |TD|, grad norm, value-fit correlation) all inside the normal
+range for run 5b, i.e. a healthy learner producing a worse policy outcome,
+not a broken one.
+
+**Lead-recorded defect.** The 8.6 K1 bar was not collapse-only: it sits 2.5
+waves above the scripted baseline (6.105, n=105), so it can reject a healthy
+run, and it was set from within-run episode SE, which does not measure
+run-to-run spread — the only two same-recipe, same-seed comparators
+available (runs 4 and 5) already diverge by more than that SE. `M2-P006b`
+below replaces it with a collapse definition anchored to the scripted floor.
+
+## M2-P006b — Milestone 2, run 5b retry: seed 1, scripted-floor kill bars (pre-registered, written before any run)
+
+**Date:** 2026-09-24. Board `#67`, still the developer-approved run 5b.
+Identical to `M2-P006` above (recipe, arm-selection rule, default-build
+n=105 evaluation, verdict bands, 5h cap / resume policy, power statement)
+except:
+
+(a) `--seed 1` (confirmed present, `scripts/train.py:534`, recorded in
+`manifest.json`'s `seed` field). `M2-P006`'s diagnosis found run 4 and run 5
+already diverge under the same seed 0, so seed is not pinning the
+trajectory; seed 1 here is only to avoid replaying the exact seed-0 draw
+that produced `M2-P006`'s collapse-window episodes, not a controlled
+variable.
+
+(b) Kill bars anchored to the scripted floor, not run 3's curve:
+`--kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1`. Collapse is defined
+as "worse than the scripted policy" (6.105, n=105, rounded down to 6.1) —
+`M2-P006`'s diagnosis showed the previous 8.6/10.2 bars, derived from
+within-run episode SE against run 3's curve, could reject a healthy run and
+cannot measure run-to-run spread.
+
+**This run's verdict, if reached, compares this run's arm against run 4's
+arm — two individual policies — not the recipe against itself; run-to-run
+spread is not measured by this design and is not resolved by this run.**
+
+`M2-P006`'s killed run retains: `checkpoint-d0005016.pt`,
+`checkpoint-d0010018.pt`, `latest.pt` (12,223 decisions), under
+`state/runs/session-20260924-115003/stacked-dqn-20260924-115003-a8c07a/checkpoints/`.
+
+### Results, as run
+
+(to be filled in after the run)
+
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,

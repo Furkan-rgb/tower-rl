@@ -84,8 +84,8 @@ from run_episodes import (  # noqa: E402
     POLICIES,
     add_cadence_arguments,
     add_upgrade_availability_argument,
-    cadence_from,
     decision_cadence_from,
+    open_environment,
     policy_from,
     upgrade_availability_from,
 )
@@ -96,10 +96,7 @@ from tower_rl.environment.episode import (  # noqa: E402
     PurchaseView,
 )
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
-from tower_rl.environment.run_state import (  # noqa: E402
-    NO_ENEMY_DISTANCE,
-    RunStateBuilder,
-)
+from tower_rl.environment.run_state import NO_ENEMY_DISTANCE  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.evaluator import episode_record  # noqa: E402
 from tower_rl.learning.policies import Policy  # noqa: E402
@@ -117,11 +114,7 @@ from tower_rl.simulation.bring_up import (  # noqa: E402
 from tower_rl.simulation.fleet import tear_down_instance  # noqa: E402
 from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
 from tower_rl.simulation.instance import CloneInstance, adb  # noqa: E402
-from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
-    InstrumentedBridgeClient,
-    UpgradeSlotLabel,
-)
-from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
+from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel  # noqa: E402
 
 #: The rate a spectated instance runs at. 60 Hz is the guest's stock rate, which
 #: is real time: one game second per wall second. The fleet's 120 exists to buy
@@ -1156,16 +1149,9 @@ def run(arguments: argparse.Namespace) -> int:
                 chunk_starts=recording.chunk_starts,
             )
 
-        client = InstrumentedBridgeClient(
-            "127.0.0.1",
-            instance.bridge_host_port,
-            expected_compatibility=expected,
-            connect_timeout=5.0,
-            read_timeout=120.0,
-            heartbeat_timeout=60.0,
+        client, adapter, environment = open_environment(
+            instance.bridge_host_port, expected, arguments
         )
-        client.connect()
-        adapter = InstrumentedRunAdapter(client=client)
         # Before the first round, which is the only time a command of the
         # adapter's own initiative may be issued: the labels are constant for
         # the build, so once is all this session needs.
@@ -1174,13 +1160,6 @@ def run(arguments: argparse.Namespace) -> int:
             # The rows are read after the recording starts, so the track is
             # told their names now rather than being built with them.
             track.labels = labels
-        environment = InstrumentedRunEnvironment(
-            port=adapter,
-            builder=RunStateBuilder(profile_id=expected.profile_id),
-            cadence=cadence_from(arguments),
-            decision_cadence=decision_cadence_from(arguments),
-            upgrade_availability=upgrade_availability_from(arguments),
-        )
         try:
             watch(
                 environment, policy, spectator, summaries, arguments, identity, labels, track

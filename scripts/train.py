@@ -84,8 +84,8 @@ import torch  # noqa: E402
 from run_episodes import (  # noqa: E402
     add_cadence_arguments,
     add_upgrade_availability_argument,
-    cadence_from,
     decision_cadence_from,
+    open_environment,
     upgrade_availability_from,
 )
 
@@ -93,7 +93,6 @@ from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
-from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.experiment.run_identity import (  # noqa: E402
     REFERENCE_FINAL_WAVES,
     RunIdentity,
@@ -1062,28 +1061,9 @@ def connect(
     releases and closes afterwards: a fleet that half connected must still put
     down every bridge it picked up.
     """
-    client = InstrumentedBridgeClient(
-        "127.0.0.1",
-        port,
-        expected_compatibility=expected,
-        connect_timeout=5.0,
-        read_timeout=120.0,
-        heartbeat_timeout=60.0,
-    )
-    client.connect()
-    adapter = InstrumentedRunAdapter(client=client)
+    client, adapter, environment = open_environment(port, expected, arguments)
     opened.append((adapter, client))
-    return ActorInstance(
-        serial=serial,
-        environment=InstrumentedRunEnvironment(
-            port=adapter,
-            builder=RunStateBuilder(profile_id=expected.profile_id),
-            cadence=cadence_from(arguments),
-            decision_cadence=decision_cadence_from(arguments),
-            upgrade_availability=upgrade_availability_from(arguments),
-        ),
-    )
-
+    return ActorInstance(serial=serial, environment=environment)
 
 
 def main() -> int:

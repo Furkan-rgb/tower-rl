@@ -24,10 +24,10 @@ from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.evaluator import EvaluationReport, episode_record
 from tower_rl.learning.training import (
     ActorProgress,
-    CheckpointPeriod,
     CollectedEpisode,
     CollectionWindow,
     EpisodeHealth,
+    SelectionPeriod,
     TrainingProgressReport,
     episode_health,
 )
@@ -182,9 +182,8 @@ def episode_metrics(
         # The game's own round clock, not frames times `frame_game_ms`: the
         # latter is what the advances asked for, which is not evidence.
         "episode_game_ms": float(summary.round_ms),
-        # Where this episode left the budget. The series is keyed by decisions,
-        # which is monotone and shared with every point already recorded; this
-        # is what lets the same curve be read in the unit the run is spent in.
+        # The game time spent by the end of this episode, a statistic beside
+        # the decisions the series is keyed by.
         "episode_game_seconds_cumulative": cumulative_game_ms / 1000.0,
         "episode_wait_fraction": episode.wait_fraction,
         "episode_purchases": float(summary.purchases),
@@ -211,8 +210,7 @@ def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
     # problem, and a zero correlation as a learner predicting nothing.
     measured: dict[str, float | None] = {
         "learner_optimisation_steps": float(report.optimisation_steps),
-        # The budget position at this point of the decision axis, so a learner
-        # curve can be read in game time without leaving the store.
+        # The game time spent at this point of the decision axis.
         "learner_game_seconds": report.game_seconds,
         "learner_importance_beta": report.importance_beta,
         "learner_weighted_loss": report.mean_recent_weighted_loss,
@@ -279,35 +277,30 @@ def window_metrics(
     return metrics
 
 
-def checkpoint_period_metrics(period: CheckpointPeriod) -> dict[str, float]:
-    """One closed checkpoint period, which is the series a run stops itself on.
+def selection_period_metrics(period: SelectionPeriod) -> dict[str, float]:
+    """One closed selection period: the series the arm is chosen on.
 
     The collection window beside it is cut in episodes and smooths the curve;
-    this is cut in game time, at exactly the crossings a numbered checkpoint is
-    written at, so a point here belongs to a checkpoint on disk and to the
-    decision the run made when it wrote it.
-
-    Keyed on the decisions spent at the crossing, like every other series in the
-    store, with `checkpoint_period_game_seconds` beside it so the same points
-    can be read in the unit the run was spent in. A period no near-greedy actor
+    this is cut in decisions, where a numbered checkpoint is written, so a point
+    here belongs to a checkpoint on disk. Keyed on the decisions at the close,
+    like every other series in the store. A period no near-greedy actor
     finished a valid episode in carries no mean at all rather than a zero,
     which would read as a policy that reached wave nothing.
     """
     metrics = {
-        "checkpoint_period": float(period.index),
-        "checkpoint_period_game_seconds": float(period.game_seconds_at_end),
-        "checkpoint_period_near_greedy_episodes": float(period.near_greedy_episodes),
+        "selection_period": float(period.index),
+        "selection_period_near_greedy_episodes": float(period.near_greedy_episodes),
     }
     if period.mean_final_wave is not None:
-        metrics["checkpoint_period_near_greedy_mean_final_wave"] = period.mean_final_wave
+        metrics["selection_period_near_greedy_mean_final_wave"] = period.mean_final_wave
     if period.best_mean_final_wave is not None:
-        metrics["checkpoint_period_best_near_greedy_mean_final_wave"] = (
+        metrics["selection_period_best_near_greedy_mean_final_wave"] = (
             period.best_mean_final_wave
         )
     return metrics
 
 
-def checkpoint_period_line(period: CheckpointPeriod) -> str:
+def selection_period_line(period: SelectionPeriod) -> str:
     mean = "n/a" if period.mean_final_wave is None else f"{period.mean_final_wave:.2f}"
     best = (
         "n/a"
@@ -315,7 +308,7 @@ def checkpoint_period_line(period: CheckpointPeriod) -> str:
         else f"{period.best_mean_final_wave:.2f}"
     )
     return (
-        f"period {period.index} at {period.game_seconds_at_end} game seconds: "
+        f"period {period.index} at {period.decisions_at_end} decisions: "
         f"near-greedy mean final wave {mean} over {period.near_greedy_episodes} "
         f"episodes, best {best}"
     )
@@ -469,8 +462,7 @@ def actor_summary(
         "actor_id": progress.actor_id,
         "episodes": progress.episodes,
         "decisions": progress.decisions,
-        # What this actor put on the fleet's budget, which is the share of it
-        # the instance actually bought.
+        # The game time this actor's instance played, a statistic.
         "game_seconds": round(progress.game_ms / 1000.0, 3),
         "failed_episodes": progress.failed_episodes,
         # Set only for an actor whose instance failed every episode the limit
@@ -494,8 +486,6 @@ __all__ = [
     "DECISION_TIME_INTERVAL_SECONDS",
     "LearningCurvePoint",
     "actor_summary",
-    "checkpoint_period_line",
-    "checkpoint_period_metrics",
     "collected_episode_records",
     "curve_metrics",
     "decision_time_line",
@@ -505,6 +495,8 @@ __all__ = [
     "health_metrics",
     "per_hour",
     "pooled",
+    "selection_period_line",
+    "selection_period_metrics",
     "window_line",
     "window_metrics",
 ]

@@ -323,7 +323,7 @@ def test_the_record_names_the_pre_registered_point_rather_than_its_caller(
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         arm, run_evaluation = train.build_arm(
             train.BACKBONE,
-            arguments(tmp_path, **{"--budget-game-seconds": "20"}),
+            arguments(tmp_path, **{"--budget-decisions": "20"}),
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
             profile_id=PROFILE,
@@ -455,28 +455,26 @@ def test_a_fleet_attributes_collected_episodes_to_their_actor(
         assert len(attributed) == actor["episodes"] - actor["failed_episodes"]
 
 
-def test_the_summary_reports_the_budget_in_game_time(trained: dict[str, Any]) -> None:
-    """What the run spent, in the unit it was budgeted in, and what it overshot by.
+def test_the_summary_reports_the_budget_in_decisions(trained: dict[str, Any]) -> None:
+    """What the run spent, in the unit it was budgeted in, with game time beside it.
 
     The budget is accounted at episode granularity, so the run stops after the
-    episode that crossed it. The overshoot is reported rather than rounded
-    away: it is how far apart two arms equalised on one budget can be.
+    episode that crossed it: past the budget by at most that one episode.
     """
     arm = trained["arm"]
-    budget = int(arm["resolved_config"]["budget_game_seconds"])
+    budget = int(arm["resolved_config"]["budget_decisions"])
+    last = int(arm["collected_episodes"][-1]["decisions"])
 
-    assert arm["game_seconds"] >= budget, "the budget is spent, never stopped short of"
+    assert budget <= arm["decisions"] < budget + last, "spent, never stopped short of"
+    assert arm["decisions"] == sum(
+        int(episode["decisions"]) for episode in arm["collected_episodes"]
+    )
+    assert "budget_game_seconds" not in arm["resolved_config"]
+    # Game time is still measured and reported, as a statistic.
     assert arm["game_seconds"] == pytest.approx(
         sum(float(episode["round_ms"]) for episode in arm["collected_episodes"]) / 1000
     )
-    overshoot = arm["budget_overshoot_game_ms"]
-    assert overshoot == pytest.approx(arm["game_seconds"] * 1000 - budget * 1000, abs=1)
-    # At most the last episode of the one actor this fixture collects with.
-    assert 0 <= overshoot <= float(arm["collected_episodes"][-1]["round_ms"])
-    # Decisions are still counted beside it - the replay ratio and the
-    # exploration anneal are in decisions by design - but they are no longer
-    # what the run is spent against.
-    assert arm["decisions"] > 0 and arm["decisions_per_hour"] > 0
+    assert arm["decisions_per_hour"] > 0
 
 
 def test_a_run_that_spent_its_budget_says_it_did_not_stop_early(
@@ -495,19 +493,20 @@ def test_a_run_that_spent_its_budget_says_it_did_not_stop_early(
 def test_the_summary_carries_the_periods_the_run_judged_itself_on(
     tmp_path: Path,
 ) -> None:
-    """One record per numbered-checkpoint crossing, on the run's own axis."""
+    """One record per selection-period crossing, on the decision axis."""
     report = session(
         tmp_path,
-        budget="1200",
-        settings={"--checkpoint-every-game-seconds": "400"},
+        budget="300",
+        settings={"--selection-period-decisions": "100"},
     )
     arm = report["arm"]
-    periods = arm["checkpoint_periods"]
+    periods = arm["selection_periods"]
 
-    assert periods, "a 1,200-second budget crosses a 400-second period"
+    assert periods, "a 300-decision budget crosses a 100-decision period"
     assert [period["index"] for period in periods] == list(range(1, len(periods) + 1))
-    assert [period["game_seconds_at_end"] for period in periods] == [
-        400 * (index + 1) for index in range(len(periods))
+    # Each closes on the episode that crossed its multiple, so a little past it.
+    assert [period["decisions_at_end"] // 100 for period in periods] == [
+        index + 1 for index in range(len(periods))
     ]
     # Every period of this fixture is collected by the one near-greedy actor of
     # a uniform schedule, so each carries a mean and it is a real wave.
@@ -522,3 +521,18 @@ def test_the_summary_carries_the_periods_the_run_judged_itself_on(
     assert arm["early_stopping"]["closing_period_near_greedy_mean_final_wave"] == (
         periods[-1]["mean_final_wave"]
     )
+    # The arm: the best period from period 2 on, ties to the earlier, and the
+    # checkpoint written where it closed is on disk.
+    eligible = [period for period in periods[1:] if period["mean_final_wave"] is not None]
+    best_period = max(eligible, key=lambda period: (period["mean_final_wave"], -period["index"]))
+    selected = arm["arm"]
+    assert selected["period"] == best_period["index"]
+    assert selected["decisions"] == best_period["decisions_at_end"]
+    assert Path(selected["checkpoint"]).name == f"checkpoint-d{selected['decisions']:07d}.pt"
+    assert Path(selected["checkpoint"]).exists()
+
+
+def test_a_run_shorter_than_two_periods_selects_no_arm(trained: dict[str, Any]) -> None:
+    """Period 1 is never the arm, so a run with fewer periods has none."""
+    assert trained["arm"]["selection_periods"] == []
+    assert trained["arm"]["arm"] is None

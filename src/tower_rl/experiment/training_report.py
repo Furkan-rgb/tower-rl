@@ -23,8 +23,6 @@ from tower_rl.experiment.metrics import (
     DECISION_TIME_INTERVAL_SECONDS,
     LearningCurvePoint,
     actor_summary,
-    checkpoint_period_line,
-    checkpoint_period_metrics,
     collected_episode_records,
     curve_metrics,
     decision_time_line,
@@ -35,6 +33,8 @@ from tower_rl.experiment.metrics import (
     learner_metrics,
     per_hour,
     pooled,
+    selection_period_line,
+    selection_period_metrics,
     window_line,
     window_metrics,
 )
@@ -55,7 +55,17 @@ from tower_rl.learning.training import (
     action_distribution,
     collection_windows,
     episode_health,
+    select_arm,
 )
+
+
+def numbered_checkpoint_name(decisions: int) -> str:
+    """A numbered checkpoint's file name, from the decisions behind it.
+
+    The name only says which checkpoint of a run it is; nothing reads the number
+    back out of it - a checkpoint's progress is in the file.
+    """
+    return f"checkpoint-d{decisions:07d}.pt"
 
 
 @dataclass
@@ -103,8 +113,6 @@ class TrainingReport:
     #: segment's clock.
     resumed_decisions: int = 0
     resumed_episodes: int = 0
-    #: What the parent segment had already spent of the budget, which is the
-    #: same offset in the unit the budget is counted in.
     resumed_game_ms: float = 0.0
     #: How far the episode series has been reported: collected episodes already
     #: sent to the tracker, and the decisions spent by the end of the last of
@@ -119,10 +127,10 @@ class TrainingReport:
     #: multi-hour run collects.
     episodes_logged: int = field(init=False, default=0)
     decisions_logged: int = field(init=False, default=0)
-    #: The same running sum in game time, so each episode's point carries the
-    #: budget position it ended at as well as the decisions axis it is keyed on.
+    #: The same running sum in game time, reported beside the decisions axis
+    #: each episode's point is keyed on.
     game_ms_logged: float = field(init=False, default=0.0)
-    #: How many closed checkpoint periods have been reported. The periods
+    #: How many closed selection periods have been reported. The periods
     #: themselves belong to the run - it is the run that decides whether it is
     #: still improving - and this is only how far the record has followed it.
     periods_logged: int = field(init=False, default=0)
@@ -154,23 +162,16 @@ class TrainingReport:
         self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
 
     def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
-        """One candidate model of the run, named by the game time behind it.
+        """One candidate model of the run, named by the decisions behind it.
 
         Beside `latest.pt` rather than instead of it: the resume point is
         overwritten as the run proceeds and therefore names no particular model,
         while these are the arms a later evaluation chooses among. The name
-        carries the game seconds actually spent when it was written - the
-        counter lands past its period, not on it, because an episode is played
-        to its classified end - so a file says what it cost rather than what it
-        was aimed at. The `gs` prefix on the number is what tells a file of this
-        run from a `checkpoint-<decisions>.pt` of run 1, whose number counts
-        something else entirely.
+        carries the decisions actually spent when it was written - the counter
+        lands past its period, not on it, because an episode is played to its
+        classified end.
         """
-        path = (
-            self.run_dir
-            / "checkpoints"
-            / f"checkpoint-gs{int(report.game_seconds):07d}.pt"
-        )
+        path = self.run_dir / "checkpoints" / numbered_checkpoint_name(report.decisions)
         digest = self._write(report, path)
         # Under the same tracked run as every metric this report logs, and under
         # the weight digest a later reading names it by: a candidate the run's
@@ -299,10 +300,8 @@ class TrainingReport:
                     **episode_metrics(
                         episode,
                         actor_index=index,
-                        # Where this episode left the budget, on the axis the
-                        # run is actually spent against. The step below stays
-                        # decisions, which is monotone and comparable with
-                        # every series already recorded.
+                        # Game time spent by this episode's end, a statistic;
+                        # the step below is decisions, the progress axis.
                         cumulative_game_ms=self.game_ms_logged,
                         # The rate the actor that played this episode was
                         # exploring at, where its episode ended - not the run's
@@ -343,26 +342,23 @@ class TrainingReport:
             )
             print(f"[{self.name}] collection: {window_line(window)}", flush=True)
 
-    def record_checkpoint_periods(self) -> None:
-        """Report every checkpoint period that has closed since the last call.
+    def record_selection_periods(self) -> None:
+        """Report every selection period that has closed since the last call.
 
-        The period is the interval a numbered checkpoint is written at the end
-        of, and its near-greedy mean final wave is what the run judges itself
-        on: the same number, on the same key, that decided whether the run went
-        on collecting. Keyed by the decisions spent at the crossing, with the
-        budget position beside it as a metric, exactly as every other series
-        here is.
+        A numbered checkpoint is written where a period closes, and the period's
+        near-greedy mean final wave is what the arm is chosen on and what the
+        run judges itself on. Keyed by the decisions spent at the close.
 
         Called per episode, on the collecting thread, under the run's progress
         lock. It reads what the run already closed and measures nothing.
         """
-        periods = self.training.report.checkpoint_periods
+        periods = self.training.report.selection_periods
         for period in periods[self.periods_logged :]:
             self.periods_logged += 1
             self.run.log_metrics(
-                checkpoint_period_metrics(period), decisions=period.decisions_at_end
+                selection_period_metrics(period), decisions=period.decisions_at_end
             )
-            print(f"[{self.name}] {checkpoint_period_line(period)}", flush=True)
+            print(f"[{self.name}] {selection_period_line(period)}", flush=True)
 
     def record_decision_time(self, *, final: bool = False) -> None:
         """Emit where the fleet's decision time went since the last emission.
@@ -417,7 +413,7 @@ class TrainingReport:
         """
         config = self.training.config
         plateau = self.training.report.plateau
-        periods = self.training.report.checkpoint_periods
+        periods = self.training.report.selection_periods
         return {
             "patience_periods": config.early_stop_patience_periods,
             "min_improvement": config.early_stop_min_improvement,
@@ -444,6 +440,26 @@ class TrainingReport:
             ],
         }
 
+    def _arm(self) -> dict[str, object] | None:
+        """The checkpoint `select_arm` chooses, or None.
+
+        None for a run stopped on a kill bar, which selects no arm, and for a
+        run with no eligible period.
+        """
+        if self.training.killed_by is not None:
+            return None
+        period = select_arm(self.training.report.selection_periods)
+        if period is None:
+            return None
+        return {
+            "period": period.index,
+            "decisions": period.decisions_at_end,
+            "near_greedy_mean_final_wave": period.mean_final_wave,
+            "checkpoint": str(
+                self.run_dir / "checkpoints" / numbered_checkpoint_name(period.decisions_at_end)
+            ),
+        }
+
     def summary(self) -> dict[str, object]:
         report = self.training.report
         # Flush the interval the run ended in, so a short measurement is not
@@ -460,15 +476,9 @@ class TrainingReport:
             "backbone": self.name,
             "run_id": self.identity.run_id,
             "resolved_config": self.resolved,
+            # The budget position; the game time beside it is a statistic.
             "decisions": report.decisions,
-            # The budget position, and how far past the budget the last episode
-            # of each actor carried it: the budget is accounted at episode
-            # granularity, so two arms equalised on it were equalised to within
-            # this much.
             "game_seconds": round(report.game_seconds, 3),
-            "budget_overshoot_game_ms": round(
-                self.training.budget_overshoot_game_ms, 3
-            ),
             "episodes": report.episodes,
             "valid_episodes": report.valid_episodes,
             "optimisation_steps": report.optimisation_steps,
@@ -481,12 +491,15 @@ class TrainingReport:
             # the final checkpoint, which is the headline against the floors.
             "collection_curve": [asdict(window) for window in self.collection_curve],
             "collection_window_episodes": self.training.config.collection_window_episodes,
-            # The periods the run judged itself on, and what it decided. A run
-            # that stopped early spent less than its budget, so a reading of
-            # the curve has to be able to see that it stopped and why.
-            "checkpoint_periods": [
-                asdict(period) for period in report.checkpoint_periods
+            # The periods the arm is chosen on and the run judged itself on,
+            # and what it decided. A run that stopped early spent less than its
+            # budget, so a reading of the curve has to see that it stopped and
+            # why. The periods are this segment's: a resume does not restore
+            # the parent's.
+            "selection_periods": [
+                asdict(period) for period in report.selection_periods
             ],
+            "arm": self._arm(),
             "early_stopping": self._early_stopping(),
             "final_evaluation": (
                 asdict(self.final_point) if self.final_point is not None else None
@@ -538,9 +551,7 @@ class TrainingReport:
             "decisions_per_hour": per_hour(
                 report.decisions - self.resumed_decisions, report.wall_seconds
             ),
-            # The comparable throughput: game seconds bought per wall hour is
-            # what the device sells, and it does not move with how often the
-            # environment happened to ask for a decision.
+            # Game seconds per wall hour: what the device sells, a statistic.
             "game_seconds_per_hour": per_hour(
                 report.game_seconds - self.resumed_game_ms / 1000.0,
                 report.wall_seconds,
@@ -561,4 +572,4 @@ class TrainingReport:
         }
 
 
-__all__ = ["TrainingReport"]
+__all__ = ["TrainingReport", "numbered_checkpoint_name"]

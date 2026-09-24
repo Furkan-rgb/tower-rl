@@ -44,7 +44,7 @@ def tracked_session(
     tracker: RecordingTracker,
     **overrides: str,
 ) -> dict[str, Any]:
-    settings = {"--budget-game-seconds": "600", **overrides}
+    settings = {"--budget-decisions": "200", **overrides}
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         return train.train_session(
@@ -88,15 +88,14 @@ def test_training_needs_no_tracker_at_all(tmp_path: Path) -> None:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         report = train.train_session(
-            arguments(tmp_path, **{"--budget-game-seconds": "600"}),
+            arguments(tmp_path, **{"--budget-decisions": "200"}),
             fleet(),
             profile_id=PROFILE,
             revision="test",
             device=torch.device("cpu"),
         )
 
-    assert report["arm"]["game_seconds"] >= 600
-    assert report["arm"]["decisions"] > 0
+    assert report["arm"]["decisions"] >= 200
     assert report["arm"]["learning_curve"]
 
 
@@ -158,12 +157,11 @@ def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -
 
 
 def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
-    """The step stays decisions: one monotone axis every series shares.
+    """The step is decisions: the budget's unit, and one axis every series shares.
 
-    The budget is game time, and the game time each point sits at travels as a
-    metric beside it (`learner_game_seconds`, `episode_game_seconds_cumulative`)
-    - so the same curves can be read in the unit the run was spent in without
-    the store holding two step axes.
+    The game time each point sits at travels as a metric beside it
+    (`learner_game_seconds`, `episode_game_seconds_cumulative`), a statistic
+    rather than a second step axis.
     """
     steps = [point.decisions for point in recorded.points]
 
@@ -171,8 +169,8 @@ def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
     learner = [
         point for point in recorded.points if "learner_game_seconds" in point.metrics
     ]
-    assert learner, "the budget position is readable beside the decision axis"
-    assert learner[-1].metrics["learner_game_seconds"] >= 600
+    assert learner, "game time is readable beside the decision axis"
+    assert learner[-1].metrics["learner_game_seconds"] > 0
     evaluations = [
         point for point in recorded.points if "eval_mean_final_wave" in point.metrics
     ]
@@ -215,7 +213,9 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
     assert params["backbone"] == "stacked-dqn"
     for key in (
         "seed",
-        "budget_game_seconds",
+        "budget_decisions",
+        "checkpoint_every_decisions",
+        "selection_period_decisions",
         "gradient_steps_per_decision",
         "sequence_length",
         "burn_in",
@@ -420,7 +420,7 @@ LEARNER_KEYS = {
 }
 
 #: Long enough for the arm to play about ten episodes against the fake port.
-EPISODE_BUDGET = "1200"
+EPISODE_BUDGET = "300"
 
 
 @pytest.fixture(scope="module")
@@ -431,10 +431,10 @@ def per_episode(tmp_path_factory: pytest.TempPathFactory) -> tuple[RecordedRun, 
         tmp_path_factory.mktemp("episodes"),
         tracker,
         **{
-            "--budget-game-seconds": EPISODE_BUDGET,
+            "--budget-decisions": EPISODE_BUDGET,
             # Numbered checkpoints on, so the artifacts and the metrics can be
             # checked to land on the one run.
-            "--checkpoint-every-game-seconds": "400",
+            "--checkpoint-every-decisions": "100",
             # The episode series is the point here; mid-run evaluation only adds
             # episodes that are not collection.
             "--evaluate-every-episodes": "0",
@@ -594,38 +594,37 @@ def test_a_uniform_fleet_s_near_greedy_window_is_its_pooled_window(
         )
 
 
-def test_every_checkpoint_period_reaches_the_store_on_the_run_s_own_axis(
+def test_every_selection_period_reaches_the_store_on_the_run_s_own_axis(
     tmp_path: Path,
 ) -> None:
     """The series a run stops itself on has to be readable beside the curve.
 
-    One point per numbered-checkpoint crossing, keyed by the decisions spent at
-    it like every other series, with the budget position beside it as a metric
-    so the same points can be read in game seconds.
+    One point per selection-period crossing, keyed by the decisions spent at
+    it like every other series.
     """
     tracker = RecordingTracker()
     session(
         tmp_path,
-        budget="1200",
-        settings={"--checkpoint-every-game-seconds": "400"},
+        budget="300",
+        settings={"--selection-period-decisions": "100"},
         tracker=tracker,
     )
 
     points = [
         point
         for point in tracker.runs[0].points
-        if "checkpoint_period_near_greedy_mean_final_wave" in point.metrics
+        if "selection_period_near_greedy_mean_final_wave" in point.metrics
     ]
-    assert points, "a 1,200-second budget crosses a 400-second period"
-    periods = [point.metrics["checkpoint_period"] for point in points]
+    assert points, "a 300-decision budget crosses a 100-decision period"
+    periods = [point.metrics["selection_period"] for point in points]
     assert periods == sorted(periods) and periods[0] == 1
     for point in points:
         metrics = point.metrics
-        assert metrics["checkpoint_period_game_seconds"] % 400 == 0
-        assert metrics["checkpoint_period_near_greedy_episodes"] > 0
+        assert point.decisions // 100 == metrics["selection_period"]
+        assert metrics["selection_period_near_greedy_episodes"] > 0
         assert (
-            metrics["checkpoint_period_best_near_greedy_mean_final_wave"]
-            >= metrics["checkpoint_period_near_greedy_mean_final_wave"]
+            metrics["selection_period_best_near_greedy_mean_final_wave"]
+            >= metrics["selection_period_near_greedy_mean_final_wave"]
         )
     assert [point.decisions for point in points] == sorted(
         point.decisions for point in points

@@ -21,9 +21,12 @@ Five things define what a run is, and all five are in force together:
   row features with raw `level`/`max_level` and unclipped affordability ([ADR
   0010](adr/0010-observation-v2-everything-the-player-sees.md), confirmed on
   device in `M2-E006`).
-- **A run's budget is game time, not decisions** — `--budget-game-seconds`,
-  `--block-game-seconds`, `--checkpoint-every-game-seconds` (`#42`), because a
-  choice-point decision's game-time cost varies by an order of magnitude.
+- **A run's budget is decisions, independent of game speed** —
+  `--budget-decisions`, `--checkpoint-every-decisions` and
+  `--selection-period-decisions` (`#68`, replacing `#42`'s game-time budget),
+  because learning is per decision and game time per decision moves with the
+  policy (`M2-P005` diagnostic (c)). The arm is the checkpoint of the best
+  near-greedy selection period from period 2 on (`docs/solution.md` §9.2b).
 - **Exploration can be an Ape-X ladder**: `--exploration ladder` anneals actor
   `i` of `N` to `0.4 ** (1 + 7 i / (N - 1))` instead of to one floor, and the
   collection curve is then read from the near-greedy actors alone (`#37`). The
@@ -91,8 +94,8 @@ nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
   uv run --extra tracking python scripts/train.py \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
-      --budget-game-seconds 360000 --block-game-seconds 4000 \
-      --checkpoint-every-game-seconds 60000 \
+      --budget-decisions 120000 --checkpoint-every-decisions 5000 \
+      --selection-period-decisions 15000 \
       --epsilon-anneal-decisions 2500 \
       --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
       --seed 1 > /dev/null 2>&1 &

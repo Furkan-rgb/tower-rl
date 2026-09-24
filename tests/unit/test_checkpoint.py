@@ -186,10 +186,11 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
 
     state = resume_state(path)
 
-    assert state.decisions == 900 and state.episodes == 12
     # The budget position, which is what the resumed run's budget check reads.
+    assert state.decisions == 900 and state.episodes == 12
+    # Game time travels beside it as a statistic.
     assert state.game_ms == 1_800_000.0
-    assert state.format_version == CHECKPOINT_FORMAT_VERSION
+    assert load(path).format_version == CHECKPOINT_FORMAT_VERSION
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
     assert "optimizer" in state.backbone_state, "the moments travel with the weights"
@@ -206,9 +207,8 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
 
     Version 1 carried no tracking run id, so a resume from one opens a new
     tracked run instead of continuing the parent's series. Version 2 added it;
-    neither records game time, which is why both read back as zero and why the
-    entry point refuses them under a game-time budget rather than reading a
-    spent budget of nothing.
+    neither records game time, which reads back as zero. Both record the
+    decisions the budget is counted in, so both resume.
     """
     path = tmp_path / "legacy.pt"
     save(
@@ -225,10 +225,9 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
 
     assert state.decisions == 200_174
     assert state.tracking_run_id is None
-    # The budget the file was spent against was decisions; it says nothing
-    # about game time, and says so as zero rather than as a guess.
+    # It says nothing about game time, and says so as zero rather than as a
+    # guess.
     assert state.game_ms == 0.0
-    assert state.format_version == 1
     assert load(path).format_version == 1
 
     # A version this code does not know is still refused rather than guessed at.

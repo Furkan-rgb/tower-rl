@@ -32,7 +32,6 @@ from tower_rl.learning.training import (
     TrainingRun,
     action_distribution,
     collection_windows,
-    episode_budget,
     episode_health,
 )
 
@@ -64,7 +63,7 @@ def _run(*, device: torch.device | None = None, **overrides: object) -> Training
         replay=replay,
     )
     settings: dict[str, object] = {
-        "budget_game_seconds": 190,
+        "budget_decisions": 190,
         "warmup_sequences": 2,
         "batch_size": 2,
         "gradient_steps_per_decision": 0.2,
@@ -79,12 +78,12 @@ def _run(*, device: torch.device | None = None, **overrides: object) -> Training
     )
 
 
-def test_a_run_spends_its_game_time_budget_and_learns() -> None:
+def test_a_run_spends_its_decision_budget_and_learns() -> None:
     training = _run()
 
     report = training.run()
 
-    assert report.game_seconds >= 190
+    assert report.decisions >= 190
     assert report.decisions > 0
     assert report.episodes > 0
     assert report.optimisation_steps > 0
@@ -94,16 +93,25 @@ def test_a_run_spends_its_game_time_budget_and_learns() -> None:
     )
 
 
-def test_the_budget_is_counted_in_game_time_not_episodes_or_decisions() -> None:
-    """Game time is what the device sells; a decision buys a variable slice of it."""
-    short = _run(budget_game_seconds=75).run()
-    long = _run(budget_game_seconds=300).run()
+def test_the_decision_budget_stops_the_run_at_the_episode_that_crosses_it() -> None:
+    """Decisions, not game time: learning is per decision, whatever the speed.
 
-    assert long.game_seconds > short.game_seconds
-    assert long.game_seconds >= 300 and short.game_seconds >= 75
-    # Episodes are a consequence of the budget, never the budget itself.
-    budget = TrainingConfig(budget_game_seconds=240, exploration=SCHEDULE)
-    assert episode_budget(budget, 40.0) == 6
+    The budget is accounted at episode granularity, so the run stops after the
+    episode it crossed the budget in - never short of it, and past it by at
+    most that one episode.
+    """
+    for budget in (75, 300):
+        training = _run(budget_decisions=budget)
+
+        report = training.run()
+
+        assert training.finished
+        last = report.collected[-1].summary.decisions
+        assert budget <= report.decisions < budget + last
+        # Game time is measured beside it, but it is not what stopped the run.
+        assert report.game_ms == pytest.approx(
+            sum(item.summary.round_ms for item in report.collected)
+        )
 
 
 def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
@@ -113,7 +121,7 @@ def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
     mean epsilon of 0.525: more than half of it was near-random data, and the
     collection episodes could not be read as a policy's performance at all.
     """
-    config = TrainingConfig(budget_game_seconds=20_000, exploration=SCHEDULE)
+    config = TrainingConfig(budget_decisions=20_000, exploration=SCHEDULE)
     epsilon = functools.partial(config.exploration.epsilon_for, 0)
 
     assert epsilon(0) == pytest.approx(1.0)
@@ -127,8 +135,8 @@ def test_exploration_anneals_over_its_horizon_and_then_holds() -> None:
 def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
     """The same horizon means the same exploration whatever the budget is."""
     schedule = SCHEDULE
-    short = TrainingConfig(budget_game_seconds=12_000, exploration=schedule)
-    long = TrainingConfig(budget_game_seconds=200_000, exploration=schedule)
+    short = TrainingConfig(budget_decisions=12_000, exploration=schedule)
+    long = TrainingConfig(budget_decisions=200_000, exploration=schedule)
 
     assert short.exploration.epsilon_for(0, 5_000) == pytest.approx(
         long.exploration.epsilon_for(0, 5_000)
@@ -141,7 +149,7 @@ def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
 def test_a_horizon_of_no_decisions_is_refused() -> None:
     with pytest.raises(ValueError, match="anneal horizon"):
         TrainingConfig(
-            budget_game_seconds=100,
+            budget_decisions=100,
             exploration=ExplorationSchedule(
                 epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=0
             ),
@@ -149,14 +157,15 @@ def test_a_horizon_of_no_decisions_is_refused() -> None:
 
 
 def test_importance_sampling_correction_anneals_the_other_way() -> None:
-    """Over the budget, whatever the budget is counted in: now game time."""
+    """Over the decision budget: beta_end where the budget is spent."""
     config = TrainingConfig(
-        budget_game_seconds=100, exploration=SCHEDULE, beta_start=0.4, beta_end=1.0
+        budget_decisions=100, exploration=SCHEDULE, beta_start=0.4, beta_end=1.0
     )
 
     assert config.beta(0) == pytest.approx(0.4)
-    assert config.beta(50_000) == pytest.approx(0.7)
-    assert config.beta(100_000) == pytest.approx(1.0)
+    assert config.beta(50) == pytest.approx(0.7)
+    assert config.beta(100) == pytest.approx(1.0)
+    assert config.beta(150) == pytest.approx(1.0)
 
 
 def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> None:
@@ -168,7 +177,7 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
     its own and arrive at a value the run never used.
     """
     training = _run(
-        budget_game_seconds=190,
+        budget_decisions=190,
         exploration=ExplorationSchedule(
             epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=150
         ),
@@ -193,7 +202,7 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
 
 
 def test_no_optimisation_happens_before_the_buffer_is_warm() -> None:
-    training = _run(warmup_sequences=10_000, budget_game_seconds=100)
+    training = _run(warmup_sequences=10_000, budget_decisions=100)
 
     report = training.run()
 
@@ -204,7 +213,7 @@ def test_no_optimisation_happens_before_the_buffer_is_warm() -> None:
 def test_a_gradient_debt_is_not_banked_while_the_buffer_fills() -> None:
     """Otherwise the first warm episode triggers a burst on almost no data."""
     training = _run(
-        warmup_sequences=3, gradient_steps_per_decision=1.0, budget_game_seconds=150
+        warmup_sequences=3, gradient_steps_per_decision=1.0, budget_decisions=150
     )
 
     report = training.run()
@@ -215,26 +224,30 @@ def test_a_gradient_debt_is_not_banked_while_the_buffer_fills() -> None:
 
 def test_configuration_refuses_impossible_budgets() -> None:
     with pytest.raises(ValueError, match="budget must be positive"):
-        TrainingConfig(budget_game_seconds=0, exploration=SCHEDULE)
+        TrainingConfig(budget_decisions=0, exploration=SCHEDULE)
     with pytest.raises(ValueError, match="gradient steps"):
         TrainingConfig(
-            budget_game_seconds=10,
+            budget_decisions=10,
             exploration=SCHEDULE,
             gradient_steps_per_decision=0.0,
         )
-    with pytest.raises(ValueError, match="game seconds per episode"):
-        episode_budget(TrainingConfig(budget_game_seconds=10, exploration=SCHEDULE), 0)
-    with pytest.raises(ValueError, match="checkpoint period in game seconds"):
+    with pytest.raises(ValueError, match="checkpoint cadence"):
         TrainingConfig(
-            budget_game_seconds=10,
+            budget_decisions=10,
             exploration=SCHEDULE,
-            checkpoint_every_game_seconds=-1,
+            checkpoint_every_decisions=-1,
+        )
+    with pytest.raises(ValueError, match="selection period"):
+        TrainingConfig(
+            budget_decisions=10,
+            exploration=SCHEDULE,
+            selection_period_decisions=0,
         )
 
 
 def test_each_episode_is_reported_as_it_completes() -> None:
     seen: list[int] = []
-    training = _run(budget_game_seconds=125)
+    training = _run(budget_decisions=125)
     training.on_episode = lambda report: seen.append(report.episodes)
 
     report = training.run()
@@ -260,9 +273,9 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
             distribution=WaveDistribution.of([4, 5]),
         )
 
-    training = _run(budget_game_seconds=250)
+    training = _run(budget_decisions=250)
     training.config = TrainingConfig(
-        budget_game_seconds=250,
+        budget_decisions=250,
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
@@ -284,7 +297,7 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
 
 def test_periodic_hooks_are_off_when_their_period_is_zero() -> None:
     calls: list[str] = []
-    training = _run(budget_game_seconds=100)
+    training = _run(budget_decisions=100)
     training.evaluate = lambda: calls.append("evaluate")  # type: ignore[assignment,return-value]
     training.checkpoint = lambda report: calls.append("checkpoint")
 
@@ -293,13 +306,13 @@ def test_periodic_hooks_are_off_when_their_period_is_zero() -> None:
     assert calls == [], "a zero period must disable the hook entirely"
 
 
-def test_evaluation_does_not_consume_the_game_time_budget() -> None:
+def test_evaluation_does_not_consume_the_budget() -> None:
     """Evaluation is measurement, not experience."""
     from tower_rl.learning.evaluator import EvaluationReport, WaveDistribution
 
-    training = _run(budget_game_seconds=150)
+    training = _run(budget_decisions=150)
     training.config = TrainingConfig(
-        budget_game_seconds=150,
+        budget_decisions=150,
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
@@ -313,8 +326,8 @@ def test_evaluation_does_not_consume_the_game_time_budget() -> None:
 
     report = training.run()
 
-    # The budget counts the game time of collected episodes only; the
-    # evaluation's episodes are not in it.
+    # The budget counts the decisions of collected episodes only; the
+    # evaluation's episodes are not in them, nor in the game time.
     assert report.game_ms == pytest.approx(
         sum(s.round_ms for s in report.episode_summaries)
     )
@@ -336,11 +349,11 @@ def test_a_run_on_an_accelerator_builds_its_batches_there() -> None:
 
 
 def test_a_run_advances_in_blocks_and_carries_its_progress() -> None:
-    """Arms sharing one device take turns, so a run must be resumable mid-budget."""
-    training = _run(budget_game_seconds=2500)
+    """A run advanced in two blocks carries its progress between them."""
+    training = _run(budget_decisions=2500)
 
     first = training.advance(50)
-    after_first = (first.game_seconds, first.episodes, first.optimisation_steps)
+    after_first = (first.decisions, first.episodes, first.optimisation_steps)
 
     assert 0 < after_first[0] < 2500
     assert not training.finished
@@ -348,64 +361,30 @@ def test_a_run_advances_in_blocks_and_carries_its_progress() -> None:
     second = training.advance(50)
 
     assert second is training.report, "progress is carried, not restarted"
-    assert second.game_seconds > after_first[0]
+    assert second.decisions > after_first[0]
     assert second.episodes > after_first[1]
     # Gradient steps earned in one block but not yet taken carry into the next.
     assert second.optimisation_steps > after_first[2]
 
 
 def test_advancing_never_overruns_the_budget() -> None:
-    training = _run(budget_game_seconds=75)
+    training = _run(budget_decisions=75)
 
     training.advance(10_000)
 
     assert training.finished
     # The limit lands on an episode boundary, so the last episode may carry the
     # count past the budget; it may never stop short of it.
-    assert training.report.game_seconds >= 75
+    assert training.report.decisions >= 75
 
 
-def test_the_budget_is_crossed_at_episode_granularity_and_the_overshoot_recorded() -> None:
-    """An episode's game time exists only when it ends, so the budget overshoots.
-
-    The run stops after the episode it crossed the budget in - at most one
-    episode per collecting actor - and says by how much rather than rounding it
-    away: two arms equalised on a budget were equalised to within this.
-    """
-    training = _run(budget_game_seconds=75)
-
-    report = training.run()
-
-    assert training.finished
-    assert report.game_seconds >= 75
-    last = report.collected[-1].summary
-    overshoot = training.budget_overshoot_game_ms
-
-    assert overshoot == pytest.approx(report.game_ms - 75_000)
-    assert 0 < overshoot <= last.round_ms, "at most the episode that crossed it"
-    # Stopped after that episode, not part way through one: every collected
-    # episode's game time is in the total.
-    assert report.game_ms == pytest.approx(
-        sum(item.summary.round_ms for item in report.collected)
-    )
-
-
-def test_an_unspent_budget_has_no_overshoot() -> None:
-    training = _run(budget_game_seconds=2500)
-
-    training.advance(50)
-
-    assert not training.finished
-    assert training.budget_overshoot_game_ms == 0.0
-
-
-def test_a_block_must_buy_at_least_one_game_second() -> None:
-    with pytest.raises(ValueError, match="at least one game second"):
+def test_a_block_must_buy_at_least_one_decision() -> None:
+    with pytest.raises(ValueError, match="at least one decision"):
         _run().advance(0)
 
 
 def test_the_loss_window_is_reported_and_empty_before_any_step() -> None:
-    training = _run(budget_game_seconds=2500)
+    training = _run(budget_decisions=2500)
 
     assert training.report.mean_recent_weighted_loss is None
 
@@ -432,13 +411,13 @@ def _failing_run(**overrides: object) -> TrainingRun:
 
 def test_an_episode_the_port_refuses_is_counted_and_the_run_continues() -> None:
     """A failed episode is an outcome, not the end of hours of collection."""
-    training = _failing_run(budget_game_seconds=190)
+    training = _failing_run(budget_decisions=190)
 
     report = training.run()
 
     assert report.failed_episodes == 2
     assert len(report.episode_failures) == 2
-    assert report.game_seconds >= 190, "the budget is still spent"
+    assert report.decisions >= 190, "the budget is still spent"
     # Attempts are counted in `episodes`; only the ones that produced a record
     # leave a summary behind.
     assert report.episodes == len(report.episode_summaries) + report.failed_episodes
@@ -452,7 +431,7 @@ def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:
     counted and left behind while collection carries on. It is never retried:
     a retry would hide a stranded sequence rather than report it.
     """
-    training = _run(budget_game_seconds=190)
+    training = _run(budget_decisions=190)
     training.actors[0].environment = InstrumentedRunEnvironment(
         port=FakeRunPort(damage_per_second=2.0, stale_advance_episodes=frozenset({2, 3})),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
@@ -463,13 +442,13 @@ def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:
 
     assert report.failed_episodes == 2
     assert all("stale" in failure for failure in report.episode_failures)
-    assert report.game_seconds >= 190, "the run was not abandoned"
+    assert report.decisions >= 190, "the run was not abandoned"
     assert report.valid_episodes > 0, "collection did not continue"
 
 
 def test_an_instance_that_fails_every_episode_stops_the_run() -> None:
     """Continuing against a broken instance would spin without collecting."""
-    training = _run(budget_game_seconds=190, max_consecutive_episode_failures=3)
+    training = _run(budget_decisions=190, max_consecutive_episode_failures=3)
     training.actors[0].environment = InstrumentedRunEnvironment(
         port=FakeRunPort(refuse_to_start=True),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
@@ -488,12 +467,12 @@ def test_an_evaluation_that_cannot_be_scored_does_not_lose_the_run() -> None:
     def refuse() -> EvaluationReport:
         raise ValueError("no valid episode was produced; the arm cannot be scored")
 
-    training = _run(budget_game_seconds=125, evaluate_every_episodes=1)
+    training = _run(budget_decisions=125, evaluate_every_episodes=1)
     training.evaluate = refuse
 
     report = training.run()
 
-    assert report.game_seconds >= 125
+    assert report.decisions >= 125
     assert report.evaluations == []
     assert report.evaluation_failures and "cannot be scored" in report.evaluation_failures[0]
 
@@ -755,7 +734,7 @@ def test_the_action_distribution_is_none_before_any_episode() -> None:
 
 
 def test_a_run_records_the_action_distribution_of_what_it_collected() -> None:
-    report = _run(budget_game_seconds=125).run()
+    report = _run(budget_decisions=125).run()
 
     distribution = action_distribution(report.collected)
 
@@ -767,7 +746,7 @@ def test_a_run_records_the_action_distribution_of_what_it_collected() -> None:
 
 def test_the_weighted_loss_and_the_unweighted_td_error_are_reported_apart() -> None:
     """Two signals, two names: the weighted one moves with the beta schedule."""
-    report = _run(budget_game_seconds=190).run()
+    report = _run(budget_decisions=190).run()
 
     assert report.optimisation_steps > 0
     assert len(report.recent_weighted_losses) == len(report.recent_unweighted_td_errors)
@@ -811,7 +790,7 @@ def test_a_zero_decision_episode_is_collected_as_an_episode_not_a_failure() -> N
     first = report.collected[0]
     assert first.summary.decisions == 0 and first.summary.valid
     assert report.episodes == len(report.collected)
-    assert report.game_seconds >= 190, "the budget is still spent in game time"
+    assert report.decisions >= 190, "the budget is still spent"
 
 
 def test_an_actor_whose_runs_never_reach_a_choice_point_is_withdrawn() -> None:
@@ -853,12 +832,10 @@ def test_an_actor_whose_runs_never_reach_a_choice_point_is_withdrawn() -> None:
 
 
 def test_an_actor_whose_episodes_advance_no_game_time_is_withdrawn() -> None:
-    """The budget is game time, so an episode that spends none can stall the run.
+    """A delivered episode whose round clock never moved is a broken instance.
 
-    A delivered episode whose round clock never moved is the case a decision
-    counter used to hide: the actor keeps handing back episodes, the budget
-    never advances, and an unattended run would collect forever. It counts
-    toward the same streak a failing port does, under a name of its own.
+    It counts toward the same streak a failing port does, under a name of its
+    own, rather than feeding the run decisions from a game that is not running.
     """
     training = _run(max_consecutive_episode_failures=3)
     withdrawn: list[str] = []

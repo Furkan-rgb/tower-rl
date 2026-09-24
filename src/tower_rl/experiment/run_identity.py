@@ -155,7 +155,7 @@ def resolved_config(
     """
     return {
         "backbone": name,
-        "budget_game_seconds": arguments.budget_game_seconds,
+        "budget_decisions": config.budget_decisions,
         # The checkpoint this run continues, as `learning.checkpoint.ResumeState`
         # cites it: the file and the identity hash of the run that wrote it.
         # None for a run that started from scratch. The budget beside it is the
@@ -211,7 +211,8 @@ def resolved_config(
         "evaluate_every_episodes": arguments.evaluate_every_episodes,
         "evaluation_episodes": arguments.evaluation_episodes,
         "checkpoint_every_episodes": arguments.checkpoint_every_episodes,
-        "checkpoint_every_game_seconds": config.checkpoint_every_game_seconds,
+        "checkpoint_every_decisions": config.checkpoint_every_decisions,
+        "selection_period_decisions": config.selection_period_decisions,
         # What the run was allowed to stop itself on. A run that ended before
         # its budget has to be readable as a decision rather than as an
         # interruption, and these are the thresholds that decision was made
@@ -234,15 +235,13 @@ def resolved_config(
         "health_change_fraction": cadence.health_change_fraction,
         # Which of those cadence stops the policy was actually asked about.
         # What a decision means depends on it: run 1 counted slices, a
-        # choice-point run counts choices (ADR 0009) - which is why the budget
-        # beside it is game time, a unit the cadence cannot move.
+        # choice-point run counts choices (ADR 0009).
         "decision_cadence": str(decision_cadence),
         # Which upgrade rows the policy could actually buy. `image` is the
         # profile image's own six; `all` reopens every real row at each round
         # start, which is a different decision problem and a different set of
         # baselines (ADR 0011).
         "upgrade_availability": str(upgrade_availability),
-        "block_game_seconds": arguments.block_game_seconds,
         "device": str(device),
         # The guest rate this arm actually collected at: a fleet run raises
         # every instance to it, and a single actor's is whatever the operator

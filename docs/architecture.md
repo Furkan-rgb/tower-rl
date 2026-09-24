@@ -196,7 +196,8 @@ environment and nothing that observes or drives it.
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
   `TrainingProgressReport`, `episode_health`, `collection_windows`,
-  `CheckpointPeriod`, `NearGreedyPlateau`, and `KillBar`/`KillBarCheck`.
+  `SelectionPeriod`, `select_arm`, `NearGreedyPlateau`, and
+  `KillBar`/`KillBarCheck`.
 - `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
   explores at, at each point of the budget.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
@@ -221,16 +222,24 @@ still produce a collection curve that reads as the policy's own performance.
 final wave, and a mean pooled over the near-greedy actors alone, which under a
 uniform schedule is every actor and therefore the pooled series itself. In the
 tracking store those are `collection_window_near_greedy_mean_final_wave` for the
-episode-cut window, and `checkpoint_period_near_greedy_mean_final_wave` with
-`checkpoint_period_best_near_greedy_mean_final_wave` for the game-time-cut
-periods early stopping is judged on.
+episode-cut window, and `selection_period_near_greedy_mean_final_wave` with
+`selection_period_best_near_greedy_mean_final_wave` for the decision-cut
+selection periods the arm is chosen on and early stopping is judged on.
 
-**Stopping early.** A run may end before its budget is spent. The interval
-between two numbered-checkpoint crossings
-(`--checkpoint-every-game-seconds`) is a *period*, and at each crossing
+**Selection periods and the arm.** The decision axis is cut into selection
+periods of `--selection-period-decisions` (default 15,000), independent of the
+checkpoint cadence. At the episode that crosses a period's multiple
 `TrainingRun` closes the period just ended: it takes the mean final wave of the
 near-greedy actors' valid episodes that ended inside it — under a uniform
-schedule that is every actor — and hands it to `NearGreedyPlateau`, which keeps
+schedule that is every actor — records it as a `SelectionPeriod`, and writes a
+numbered checkpoint there, so every period close is a file on disk.
+`select_arm` picks the arm: the closed period with the highest near-greedy
+mean, period 1 excluded, a period with no mean ineligible, ties to the earlier
+period; a run stopped on a kill bar has no arm. The summary records it as
+`arm`, naming the checkpoint written at that period's close.
+
+**Stopping early.** A run may end before its budget is spent. At each period
+close the mean goes to `NearGreedyPlateau`, which keeps
 the level the curve last really moved to and how many periods in a row have
 failed to reach it plus `--early-stop-min-improvement` waves. That level moves
 only on a period that clears the threshold, never on a mere new maximum: a
@@ -238,7 +247,7 @@ curve creeping up by less than the threshold would otherwise raise the bar it
 is judged against by exactly what it gained, so a run gaining a tenth of a wave
 a period would stop while one gaining nothing carried on. The first period sets the
 baseline and cannot trigger a stop. When `--early-stop-patience-periods`
-periods in a row have failed to improve, the run stops after that crossing's
+periods in a row have failed to improve, the run stops after that period's
 checkpoint is written: the actors finish the episodes they are in and start no
 more, `finished` is true, and the summary's `early_stopping` block records the
 stop, the period it happened at, the best period mean and the closing period's.
@@ -367,19 +376,21 @@ neither is part of a run:
 3. `build_arm` constructs the `PrioritizedSequenceReplay`, the
    `StackedDqnBackbone`, one `Actor` per instance and the `TrainingRun`, with
    the `RunIdentity` resolved and stamped.
-4. `train_session` advances the run in blocks of `--block-game-seconds` until
-   `--budget-game-seconds` is spent. The budget is **cumulative game time
-   across the fleet**, measured from the game's own round clock: game time is
-   what the device sells, and a decision buys a variable slice of it, very
-   variable under choice points (ADR 0009). It is accounted at episode
-   granularity — an episode's game time exists when it ends — so the run stops
-   after the episode each actor crossed the budget in and reports what it
-   overshot by as `budget_overshoot_game_ms`, at most one episode per actor.
-   The learning-side schedules stay in decisions by design: the replay ratio
-   (`--gradient-steps-per-decision`) and the exploration anneal
-   (`--epsilon-anneal-decisions`). Actors collect concurrently into the one
-   buffer; the `Learner` takes gradient steps against the configured replay
-   ratio; each actor refreshes its acting copy between its own episodes.
+4. `train_session` runs the arm until `--budget-decisions` is spent. The
+   budget is **cumulative decisions across the fleet**, the one unit of
+   training progress: learning happens per decision whatever the game's speed,
+   and game time per decision moves with the policy (`M2-P005` diagnostic
+   (c): 6.98 against 4.42 game-seconds per decision over matched decisions).
+   It is accounted at episode granularity, so the run stops after the episode
+   each actor crossed the budget in — past it by at most one episode per
+   actor. Every decision-counted schedule reads the same counter: the replay
+   ratio (`--gradient-steps-per-decision`), the exploration anneal
+   (`--epsilon-anneal-decisions`), the importance exponent (annealed over the
+   budget), the kill bars and the selection periods. The n-step anneal alone
+   counts gradient steps, as BBF defines it. Game time is still measured and
+   reported, as a statistic. Actors collect concurrently into the one buffer;
+   the `Learner` takes gradient steps against the configured replay ratio;
+   each actor refreshes its acting copy between its own episodes.
 5. `arm.checkpoint` writes the checkpoint, then one pre-registered
    exploration-free evaluation runs on the final weights — after the budget, so
    it costs none of it and cannot be chosen after the fact.
@@ -390,22 +401,21 @@ neither is part of a run:
 Every collected episode is reported to the tracked run as its own point, keyed
 by the decisions spent when it ended — one monotone step axis every series in
 the store shares — beside the learner's trailing summaries and the collection
-windows that smooth them. The budget position travels as a metric rather than
-as a second axis: `episode_game_seconds_cumulative` per episode and
-`learner_game_seconds` beside the learner's summaries, so the same curves can
-be read in the unit the run was spent in.
+windows that smooth them. Game time travels as a metric rather than as a
+second axis: `episode_game_seconds_cumulative` per episode and
+`learner_game_seconds` beside the learner's summaries.
 
 `--resume <checkpoint>` makes the run a second segment of an earlier one:
 `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
 device is touched — refusing one whose `CheckpointIdentity` names another arm,
-profile or schema, and one that has already spent `--budget-game-seconds`, which
+profile or schema, and one that has already spent `--budget-decisions`, which
 stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the
-`TrainingProgressReport` at the parent's counters — game time and decisions
-both — so epsilon, beta and the numbered-checkpoint cadence are derived where a
-run that never stopped would have them. A checkpoint written before the budget
-was game time (format 1 or 2) records none, so continuing it would read its
-spent budget as zero; that resume is refused by name. `build_arm` continues
+`TrainingProgressReport` at the parent's counters — decisions and game time
+both — so epsilon, beta, the selection periods and the numbered-checkpoint
+cadence are derived where a run that never stopped would have them. Every
+checkpoint format records decisions, so every format resumes; a format 1 or 2
+file records no game time and resumes with it at zero. `build_arm` continues
 the parent's tracked run through `open_run` when it had one, and names the
 parent in `resolved_config.parent_checkpoint`; replay is not
 persisted, so the buffer re-warms under the loaded policy before learning
@@ -415,11 +425,14 @@ restarts.
 
 Choosing the strongest checkpoint of a run and reporting it are separate from
 training and from each other, because selecting on the episodes a model is then
-reported on turns selection noise into a result. `--checkpoint-every-game-seconds`
-makes `train.py` leave `checkpoint-gs<game seconds, 7 digits>.pt` beside
-`latest.pt` on every crossing of that period — one checkpoint per crossing, and
-no multiple answered twice, even when one long episode carries the run past
-several — each one a candidate that survives the next write.
+reported on turns selection noise into a result. `train.py` leaves
+`checkpoint-d<decisions, 7 digits>.pt` beside `latest.pt` at every selection
+period close and, with `--checkpoint-every-decisions`, on every crossing of
+that cadence too — one checkpoint per crossing episode, and no multiple
+answered twice, even when one long episode carries the run past several — each
+one a candidate that survives the next write. Runs from when the budget was
+game time left `checkpoint-gs<game seconds>.pt`; readers take both, and none
+parses the name: the decisions are read out of the file.
 `run_actors.py --policy checkpoint:<path>` then plays a candidate as an ordinary
 arm: `learning.policies.checkpoint_policy` rebuilds the backbone from the
 checkpoint's own resolved config on the CPU, and the episodes go through the

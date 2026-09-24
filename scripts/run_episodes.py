@@ -14,7 +14,7 @@ for a checkpoint a training run left behind, which is rebuilt into the backbone
 that wrote it and played greedily. Every record says which it was.
 
     ./scripts/run_episodes.py --episodes 50 \\
-        --policy checkpoint:state/runs/.../checkpoint-gs0100000.pt
+        --policy checkpoint:state/runs/.../checkpoint-d0015000.pt
 """
 
 from __future__ import annotations

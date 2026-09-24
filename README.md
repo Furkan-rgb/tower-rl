@@ -72,7 +72,7 @@ uv run python scripts/run_actors.py \
 
 # a training run on that fleet
 uv run --extra tracking python scripts/train.py \
-  --actors 4 --renderer host --budget-game-seconds 100000
+  --actors 4 --renderer host --budget-decisions 60000
 ```
 
 For a new workstation, start with the preflight and AVD helpers in

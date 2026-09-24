@@ -6,13 +6,16 @@
 # offline, malformed output) results in no output and a clean exit.
 set -u
 
-OWNER="Furkan-rgb"
-PROJECT=3
+# The board comes from the shared 60-second cache, not a fresh API call: `commit-msg` wants the
+# same answer, and calling `gh` from both on every turn earns a secondary rate-limit.
+CACHE_SH="$(cd "$(dirname "$0")" && pwd)/board-cache.sh"
 
-command -v gh >/dev/null 2>&1 || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
+[ -x "$CACHE_SH" ] || exit 0
 
-json="$(timeout 4 gh project item-list "$PROJECT" --owner "$OWNER" --format json --limit 100 2>/dev/null)" || exit 0
+# 0 is fresh and 3 is a stale-but-usable copy; both are worth showing. Anything else has no JSON.
+json="$("$CACHE_SH" 2>/dev/null)"; rc=$?
+[ "$rc" = "0" ] || [ "$rc" = "3" ] || exit 0
 [ -n "$json" ] || exit 0
 
 printf '%s' "$json" | python3 -c '

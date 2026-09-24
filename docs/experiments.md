@@ -258,7 +258,70 @@ pacing figure `M2-P006` inferred for the 1-step recipe.
 
 ### Results, as run
 
-(to be filled in after the run)
+**Training.** Budget completed cleanly: both kill bars passed by a wide
+margin (K1 mean 8.326 vs 6.1 floor at 12,026 decisions, 92 near-greedy
+episodes; K2 mean 8.899 vs 6.1 at 26,290 decisions, 368 episodes) — no cap
+hit. Final decisions: 121,679. `optimisation_steps`: 238,750. Training wall
+8,361.66s (≈2.32h); stage wall 02:47:29, well inside the 5h cap.
+
+Arm by §9.2b: best period among 2+ is period 7, `checkpoint-d0105070.pt`
+(closing at 105,070 decisions), near-greedy mean final wave 12.893 — period
+8 closed lower (11.978), one period without improvement. Checkpoint sha256
+`bf45ae08edaebaa7bf70ea0b9a392709e82132e921b7d91d8b0c054ea4193db0`,
+reconfirmed against its sidecar before evaluation.
+
+**(i) Resets.** 4, exactly at the expected horizon: the checkpoint's
+`resets=4`, `optimisation_steps=238,750`, `cycle_steps=78,750` (=
+238,750−160,000, consistent with the last reset at 160,000 gradient steps
+and none since). Matches the pre-registered expectation exactly.
+
+**(iii) Production learner step time.** 28.23 ms/step fleet-wide
+(`decision_time.fleet.buckets.learner_step`: 6,740.66s / 238,750 steps),
+about 1.6× the 17.3–17.6 ms measured idle-host (`#72`/`#74`) — plausible
+contention under the 7-actor fleet, still well inside the 25 ms budget the
+recipe's 2-steps-per-decision choice was conditioned on.
+
+**Evaluation.** First attempt (`m3-p001-eval-arm`) collected only 90/105
+valid episodes: 6 actors delivered 15 each cleanly, but `emulator-5560`
+failed at bring-up (`RunPortError: the instance did not reach an active
+run`) and wrote no record. Recorded as **partial and excluded**: 90/105,
+`emulator-5560` `RunPortError` at bring-up — not used in any statistic
+below. Per the pre-registration's one-retry rule, host cleanup was
+reconfirmed (no qemu, empty `adb devices`) and the full stage was retried
+once (`m3-p001-eval-arm-retry`), writing into the same output directory;
+every per-actor file's timestamp (21:24:05–21:29:31) is after the retry's
+launch (21:07:40) and after the first attempt's window (20:45–21:07)
+closed, confirming the retry's files fully overwrote the first attempt's —
+no partial-attempt file survives to mix into the statistics below.
+
+Retry: default build, n=104 valid of 105 attempted (one ordinary invalid
+episode, `emulator-5558` episode 13, `action_pipeline_failed:
+stale_or_duplicate`, excluded by the same honesty classification every
+other eval in this document uses — not an instance drop, so it did not
+invoke a second retry). Mean **12.712**, sd 2.206.
+
+`bootstrap_difference`, seed 0, 10,000 resamples:
+
+- vs run 4's arm (18.143, n=105): **−5.431 [−6.243, −4.600]** — upper bound
+  < 0, **WORSE**.
+- vs scripted-`all` (6.105, n=105): **+6.607 [+6.165, +7.020]** — beats
+  scripted.
+- vs random-`all` (3.556, n=90): **+9.156 [+8.622, +9.658]** — beats
+  random.
+
+**(ii) The `#75` wall.** Max final wave across training (1,221 episodes,
+max 17) and this evaluation (104 episodes, max 16) is 17 — no episode
+reached wave 20, let alone 21 or 22. **Not falsified, and not meaningfully
+tested**: the arm never played anywhere near the wall in either training or
+evaluation, so this run gives no evidence either way on whether wave 21 is
+a fixed ceiling.
+
+This BBF-recipe arm is clearly worse than run 4's stacked-dqn arm at this
+budget, while still clearly beating both baselines. One run, as
+pre-registered: no rerun, no best-of. Host cleanup verified after each
+stage (training and both eval attempts): no qemu process, empty `adb
+devices`, clean git tree throughout. Comment posted on `#74`; board item
+not moved.
 
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 

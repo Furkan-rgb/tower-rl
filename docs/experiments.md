@@ -26,7 +26,38 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
-## Learner profile (2026-09-24)
+## DreamerV3 learner step time, idle 4090 (2026-09-24, #77)
+
+**Purpose:** Measure the cost of one `DreamerBackbone.learn` step at production
+shapes before any device run, to show whether the learner will bind a
+120,712-decision budget.
+
+- **Setup.** Idle RTX 4090, with no other compute process on the GPU. The
+  published `DreamerConfig()` is `size12m` (deter 2048, hidden 256, classes
+  16, units 256), 10,082,239 trainable parameters, float32. One synthetic
+  16×64 batch, with half the windows ending an episode and one left-padded.
+  25 steps, of which the first 5 are discarded. The benchmark script is kept
+  out of the repository (session scratchpad `dreamer_steptime.py`,
+  `collate_time.py`).
+- **Result.**
+  - One `learn` step, including 15-step imagination from all 1,024 starts,
+    takes a median of **141 ms** (min 139, max 163). Peak allocated GPU
+    memory is 1.10 GiB.
+  - `collate` of a 16×64 batch onto CUDA adds a median of 16.7 ms.
+  - One `act` call takes a median of 1.15 ms.
+- **Projection.**
+  - At the fixed 0.25 gradient steps per decision, the learner costs about
+    0.25 × 158 ms ≈ **40 ms per decision**. That is below stacked-dqn's
+    production 61–76 ms per decision (Learner profile, below), which did not
+    bind collection.
+  - Over 120,712 decisions (≈30,200 steps), the learner totals ≈1.3 h.
+  - Collection at run 5's 29,274 decisions/h takes ≈4.1 h. If collection and
+    learning overlap, as they do today, the run takes ≈4.1 h. If they ran
+    fully serially, it would take ≈5.4 h.
+  - Production will be slower than this idle measurement because of GIL
+    contention with the actor threads. The Learner profile below saw that
+    gap for stacked-dqn.
+- **What this is not.** It is not a learning result, and it advances no gate.
 
 **Status:** Corrects prior claims below (see the "Correction (2026-09-24)"
 notes inline in `M2-P006`'s timebox reasoning and its diagnosis subsection).

@@ -97,16 +97,16 @@ def test_the_lambda_return_matches_hand_computed_values() -> None:
     reward = torch.tensor([[0.0, 1.0, 2.0, 3.0]])
     value = torch.tensor([[10.0, 20.0, 30.0, 40.0]])
     zeros = torch.zeros(1, 4)
-    plain = lambda_return(zeros, zeros, reward, value, value, 0.5, 0.5)
+    plain = lambda_return(zeros, zeros, reward, value, 0.5, 0.5)
     assert plain.tolist() == [[9.8125, 15.25, 23.0]]
     # A terminal at step 2 ends the return of step 1 with its reward.
     term = torch.tensor([[0.0, 0.0, 1.0, 0.0]])
-    assert lambda_return(zeros, term, reward, value, value, 0.5, 0.5).tolist() == [
+    assert lambda_return(zeros, term, reward, value, 0.5, 0.5).tolist() == [
         [6.5, 2.0, 23.0]
     ]
     # A last flag at step 2 makes step 1 bootstrap from step 2's value alone.
     last = torch.tensor([[0.0, 0.0, 1.0, 0.0]])
-    assert lambda_return(last, zeros, reward, value, value, 0.5, 0.5).tolist() == [
+    assert lambda_return(last, zeros, reward, value, 0.5, 0.5).tolist() == [
         [10.25, 17.0, 23.0]
     ]
 
@@ -115,7 +115,6 @@ def test_the_lambda_return_matches_the_recursive_definition() -> None:
     generator = numpy.random.default_rng(0)
     batch, time, discount, lam = 3, 9, 0.9, 0.8
     reward = generator.normal(size=(batch, time))
-    value = generator.normal(size=(batch, time))
     boot = generator.normal(size=(batch, time))
     term = generator.random((batch, time)) < 0.2
     last = generator.random((batch, time)) < 0.2
@@ -133,7 +132,6 @@ def test_the_lambda_return_matches_the_recursive_definition() -> None:
         torch.tensor(last),
         torch.tensor(term),
         torch.tensor(reward),
-        torch.tensor(value),
         torch.tensor(boot),
         discount,
         lam,

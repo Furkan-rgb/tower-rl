@@ -138,7 +138,6 @@ def lambda_return(
     last: Tensor,
     term: Tensor,
     reward: Tensor,
-    value: Tensor,
     boot: Tensor,
     discount: float,
     lam: float,
@@ -148,6 +147,8 @@ def lambda_return(
     `agent.py` `lambda_return`, step for step. `last` cuts the recursion (the
     return at the step before it bootstraps entirely from `boot`); `term` zeroes
     the bootstrap. Reward and flags at step t belong to the transition into t.
+    The official signature also takes a `val` it only checks the shape of; it
+    is left out here.
     """
     live = (1.0 - term.to(reward.dtype))[:, 1:] * discount
     cont = (1.0 - last.to(reward.dtype))[:, 1:] * lam

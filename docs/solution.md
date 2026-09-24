@@ -545,6 +545,20 @@ that actor's own episodes and defaulting to 1: refreshing every episode is
 exactly what a single actor acting from the learner's own network always did, so
 `--actors 1` is unchanged against the runs already measured.
 
+**Learner step profile.** At production shapes (batch 8 × 80 steps, burn-in 7,
+n = 10, 197,379 parameters) on the RTX 4090, one gradient step — `collate` plus
+`StackedDqnBackbone.learn` — takes a median 10 ms on an idle host (collate
+4.7 ms, learn 5.0 ms), down from 35 ms (collate 10.3 ms, learn 22 ms, of which
+17.6 ms was the n-step target alone). The step was bound by Python and kernel
+launches, not by the device. Two changes, both bit-for-bit equal to what they
+replaced (`tests/unit/test_vectorised_learner_equivalence.py` holds the old
+implementations as oracles): `n_step_targets` builds every step's window at
+once and loops over the n offsets only, and `collate` writes the batch into one
+float32 buffer that crosses to the device in a single transfer. What is left in
+`collate` is reading the per-step feature tuples, about 4.7 ms; the largest
+remaining piece of `learn` is `value_fit_correlation`, about 2 ms. Measured with
+a median of 60 steps after 10 warm-up; board item #72.
+
 ### 6.11 Evaluator and promoter
 
 The evaluator owns a dedicated device and receives immutable candidate checkpoints. It runs complete episodes with `epsilon=0`, learning disabled, and replay disabled.

@@ -56,7 +56,7 @@ from tower_rl.experiment.comparison import (  # noqa: E402
     stratified_bootstrap,
     stratified_bootstrap_difference,
 )
-from tower_rl.experiment.tracking import TrackedRun, open_tracked_run  # noqa: E402
+from tower_rl.experiment.tracking import add_tracking_arguments, tracked_run  # noqa: E402
 from tower_rl.experiment.wave_statistics import analyse_reports  # noqa: E402
 
 #: What an arm may be called. The name becomes a file name under
@@ -139,23 +139,6 @@ def read(arms: dict[str, Path]) -> list[ArmEvaluation]:
     return evaluations
 
 
-def tracked_run(arguments: argparse.Namespace) -> TrackedRun | None:
-    """The run these results are added to, or nothing if none was named."""
-    if not arguments.mlflow_run:
-        return None
-    try:
-        return open_tracked_run(
-            arguments.mlflow_run,
-            run_dir=arguments.run_dir,
-            experiment=arguments.experiment,
-        )
-    except ImportError as missing:
-        raise SystemExit(
-            f"--mlflow-run needs MLflow installed ({missing}). "
-            "Install it with `uv sync --extra tracking`, or drop the flag."
-        ) from missing
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -180,25 +163,7 @@ def main() -> int:
         default=state_directory() / "records" / "arms",
         help="where each arm's pooled episodes are written for the per-wave comparison",
     )
-    parser.add_argument(
-        "--mlflow-run",
-        default=None,
-        help=(
-            "an existing tracked run id to add these results to, so the greedy "
-            "curve lands on the page of the training run it is about"
-        ),
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=Path,
-        default=state_directory() / "runs",
-        help="where the tracking store lives; only read with --mlflow-run",
-    )
-    parser.add_argument(
-        "--experiment",
-        default="tower-rl-training",
-        help="the MLflow experiment the run belongs to; only read with --mlflow-run",
-    )
+    add_tracking_arguments(parser)
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "arms.json"
     )

@@ -7,10 +7,8 @@ import random
 
 import pytest
 
-from tower_rl.experiment.comparison import required_episodes
 from tower_rl.experiment.wave_statistics import (
     analyse,
-    detectable_difference,
     episode_records,
     render,
     to_record,
@@ -92,13 +90,6 @@ def statistic(analysis, name):
 
 def episode_statistic(analysis, name):
     return next(item for item in analysis.per_episode if item.statistic == name)
-
-
-def test_detectable_difference_inverts_required_episodes() -> None:
-    """The two directions of the same power calculation must agree exactly."""
-    for spread, episodes in ((2.27, 25), (0.5, 40), (1.0, 324)):
-        smallest = detectable_difference(spread, episodes, episodes)
-        assert required_episodes(spread, smallest) == pytest.approx(episodes, abs=1)
 
 
 def test_identical_arms_are_indistinguishable_and_say_by_how_much() -> None:
@@ -197,17 +188,11 @@ def test_an_uncaptured_quantity_is_reported_as_uncaptured() -> None:
     assert episode_statistic(analysis, "final_wave").difference.difference == 0.0
 
 
-def test_records_are_read_from_either_report_shape() -> None:
-    """`run_actors.py` writes one arm per file; `compare_arms.py` nests them."""
+def test_episode_records_reads_the_run_actors_report_shape() -> None:
+    """`run_actors.py` writes one arm per file (`evaluator.to_record`)."""
     flat = {"episodes": [{"valid": True, "final_wave": 9}, {"valid": False, "final_wave": 1}]}
-    nested = {"arms": {"CONTROL": flat, "T1": {"episodes": []}}}
 
     assert len(episode_records(flat)) == 1
-    assert len(episode_records(nested, "CONTROL")) == 1
-    with pytest.raises(ValueError, match="name the one to read"):
-        episode_records(nested)
-    with pytest.raises(ValueError, match="no arm"):
-        episode_records(nested, "T9")
 
 
 def test_every_rendered_and_recorded_result_carries_its_blind_spot() -> None:

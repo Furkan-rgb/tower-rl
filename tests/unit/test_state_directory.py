@@ -30,6 +30,10 @@ from tower_rl.simulation import bridge, instance
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCRIPTS = REPOSITORY / "scripts"
 
+#: `select_checkpoint.py` and `report_arms.py` add `--run-dir` through this
+#: shared function rather than each defining its own copy of the argument.
+TRACKING_SOURCE = REPOSITORY / "src" / "tower_rl" / "experiment" / "tracking.py"
+
 #: The home-directory location project state used to live in. It may appear in
 #: `docs/experiments.md`, where it is part of the record of where a past run's
 #: evidence was read from, and nowhere in the code.
@@ -42,9 +46,8 @@ WRITING_ARGUMENTS = {
     "train.py": {"--run-dir"},
     "run_actors.py": {"--output", "--output-directory"},
     "run_episodes.py": {"--output"},
-    "compare_arms.py": {"--output"},
     "report_arms.py": {"--output", "--output-directory"},
-    "select_checkpoint.py": {"--output", "--run-dir"},
+    "select_checkpoint.py": {"--output"},
     "spectate.py": {"--output-directory"},
 }
 
@@ -128,6 +131,14 @@ def test_every_entry_point_defaults_to_writing_inside_the_state_directory(
         assert "/tmp" not in expression and "home()" not in expression
 
 
+def test_the_shared_tracking_options_default_to_writing_inside_the_state_directory() -> None:
+    """`--run-dir` is added once, by `add_tracking_arguments`, not per script."""
+    defaults = default_expressions(TRACKING_SOURCE)
+    expression = defaults["--run-dir"]
+    assert "state_directory()" in expression
+    assert "/tmp" not in expression and "home()" not in expression
+
+
 def test_a_main_checkout_with_a_dot_git_directory_resolves_to_itself(
     tmp_path: Path,
 ) -> None:
@@ -164,18 +175,12 @@ def test_a_malformed_worktree_dot_git_file_raises(tmp_path: Path) -> None:
 
 
 def test_nothing_in_the_code_still_points_at_the_former_home_directory_location() -> None:
-    """The move is complete only if no source or entry point names the old tree.
-
-    `scripts/migrate_state.py` is the exception and is excluded by name: moving
-    the old location is precisely what it is for, and it is the one file that may
-    still say where that location was.
-    """
+    """The move is complete: no source or entry point names the old tree."""
     trees = sorted((REPOSITORY / "src").rglob("*.py")) + sorted(SCRIPTS.glob("*"))
     offenders = [
         str(path.relative_to(REPOSITORY))
         for path in trees
         if path.is_file()
-        if path.name != "migrate_state.py"
         if FORMER_LOCATION in path.read_text()
     ]
     assert offenders == []

@@ -69,7 +69,7 @@ Owns the decision problem, and nothing about how a device is reached.
   `ACTION_SCHEMA_VERSION`.
 - `run_state.py` — `RunState` and `RunStateBuilder`, which turn one bridge
   reading into a validated observation; `OBSERVATION_SCHEMA_VERSION`,
-  `validate_transition`, `action_is_allowed`. It also holds `LIVE_FIELDS`, the
+  `validate_transition`. It also holds `LIVE_FIELDS`, the
   single declaration of what `observation-v2` shows the policy beyond the
   upgrade grid — one `Main` field per row, its observed unit, and the transform
   that rescales it — together with `scale_live_reading`, which enforces each
@@ -299,12 +299,15 @@ and no script.
 - `tracking.py` — the `ExperimentTracker`/`TrackedRun` protocols and
   `NoExperimentTracker`. `mlflow_tracking.py` is the optional adapter; MLflow is
   an extra, imported lazily, so a checkout without it still runs.
+  `add_tracking_arguments`/`tracked_run` are the `--mlflow-run`/`--run-dir`/
+  `--experiment` options and the handle they open, shared by
+  `select_checkpoint.py` and `report_arms.py` rather than each defining its
+  own copy.
 - `metrics.py` — learning-curve points, health counters, collection-window and
   decision-time lines.
 - `training_report.py` — `TrainingReport`, which writes a run's artifacts.
-- `comparison.py` — `interleave_schedule`, `iqm`, `stratified_bootstrap`,
-  `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`,
-  `required_episodes`.
+- `comparison.py` — `iqm`, `stratified_bootstrap`,
+  `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`.
 - `wave_statistics.py` — per-wave equivalence analysis between two arms.
 
 **State.** Run identity is immutable and is stamped into every checkpoint and
@@ -317,17 +320,17 @@ Two modules sit at the top level of `tower_rl` rather than in a package, because
 neither is part of a run:
 
 - `doctor.py` — read-only host, package and Android-device diagnostics, returning
-  `CheckResult` rows with a `pass`/`warn`/`fail` status. It reads the SDK through
-  `simulation.android_sdk` and the archive through `xapk`, so it sits *above*
-  `simulation`; that is why `experiment` is forbidden to import it. Its callers
-  are the operator and `tests/unit/test_doctor.py` — nothing in a run imports it.
+  `CheckResult` rows with a `pass`/`warn`/`fail` status: host and SDK inventory,
+  Android tools, the XAPK when one is given, and the device when a serial is
+  given. It reads the SDK through `simulation.android_sdk` and the archive
+  through `xapk`, so it sits *above* `simulation`; that is why `experiment` is
+  forbidden to import it. `scripts/doctor.py` is its one entry point — both the
+  XAPK and the serial are optional there — and `tests/unit/test_doctor.py` is
+  its other caller; nothing in a run imports it.
 - `xapk.py` — metadata-only inspection of a locally supplied XAPK archive
   (manifest, splits, checksums), used by `doctor` and by `tests/unit/test_xapk.py`.
   It never extracts or copies proprietary bytes. The XAPK is reference material;
   the validated runtime is Play-installed.
-
-`scripts/workstation_preflight.py` is the host-only check and uses
-`simulation.android_sdk` directly.
 
 ## 6. Flow: a fleet collection run
 

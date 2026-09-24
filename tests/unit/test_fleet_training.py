@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import pytest
 import torch
+from fakes.backbone_equality import parameters_are_equal
 from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
@@ -34,7 +35,6 @@ from tower_rl.learning.backbone import (
     LearnMetrics,
     SequenceBatch,
     acting_copy,
-    parameters_are_equal,
 )
 from tower_rl.learning.checkpoint import (
     CheckpointIdentity,

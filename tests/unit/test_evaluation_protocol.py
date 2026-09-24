@@ -34,6 +34,7 @@ from tower_rl.environment.run_environment import (
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment import tracking
 from tower_rl.experiment.training_report import numbered_checkpoint_name
 from tower_rl.learning.checkpoint import (
     Checkpoint,
@@ -833,11 +834,16 @@ def test_train_then_select_then_report(
 # ---------------------------------------------------------------------------
 
 
-def attached(module: Any, monkeypatch: pytest.MonkeyPatch) -> RecordedRun:
-    """A handle on an existing tracked run, recorded instead of sent anywhere."""
+def attached(monkeypatch: pytest.MonkeyPatch) -> RecordedRun:
+    """A handle on an existing tracked run, recorded instead of sent anywhere.
+
+    Both scripts call the shared `tracking.tracked_run`, which resolves
+    `open_tracked_run` in its own module regardless of which script invoked
+    it, so the patch target is `tracking` itself rather than either script.
+    """
     recorded = RecordedRun(name="stacked-dqn-under-test", params={}, tags={})
     monkeypatch.setattr(
-        module,
+        tracking,
         "open_tracked_run",
         lambda run_id, *, run_dir, experiment: recorded,
     )
@@ -864,7 +870,7 @@ def test_the_greedy_curve_is_logged_onto_the_training_run(
             checkpoint_identity(best),
         ),
     ]
-    recorded = attached(select_checkpoint, monkeypatch)
+    recorded = attached(monkeypatch)
 
     invoke(
         select_checkpoint,
@@ -899,7 +905,7 @@ def test_the_set_b_results_are_logged_onto_the_training_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     arms = arm_directories(tmp_path)
-    recorded = attached(report_arms, monkeypatch)
+    recorded = attached(monkeypatch)
 
     invoke(
         report_arms,
@@ -944,7 +950,7 @@ def test_nothing_is_tracked_unless_a_run_is_named(
     def refuse(run_id: str, *, run_dir: Path, experiment: str) -> None:
         raise AssertionError("no run was named; nothing may be opened")
 
-    monkeypatch.setattr(report_arms, "open_tracked_run", refuse)
+    monkeypatch.setattr(tracking, "open_tracked_run", refuse)
 
     assert (
         invoke(

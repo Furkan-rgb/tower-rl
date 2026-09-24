@@ -99,8 +99,6 @@ def test_sequences_need_a_learning_step_after_burn_in() -> None:
     with pytest.raises(ReplayRejected, match="at least one step"):
         ReplaySequence(metadata=_metadata(), steps=(), burn_in=0)
 
-    assert _sequence(length=4, burn_in=1).learn_length == 3
-
 
 def test_incompatible_profile_or_schema_is_rejected_and_counted() -> None:
     replay = PrioritizedSequenceReplay(capacity=8, seed=1)

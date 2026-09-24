@@ -246,8 +246,7 @@ is additive.
 Nothing here writes unless it is asked to: `unlock_state` reads and reports, and
 `unlock_all_upgrades` is issued only by an environment configured
 `--upgrade-availability all`. The write is in-memory only — nothing here calls a
-save, and `scripts/unlock_trial.py` leaves starting a round and re-reading to a
-human.
+save.
 
 ## Known live behavior
 

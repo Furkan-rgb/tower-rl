@@ -4,10 +4,11 @@ from typing import Any
 
 import pytest
 import torch
+from fakes.backbone_equality import parameters_are_equal
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.backbone import collate, parameters_are_equal
+from tower_rl.learning.backbone import collate
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork
 from tower_rl.learning.replay import ReplaySequence, ReplayStep, SequenceMetadata
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig

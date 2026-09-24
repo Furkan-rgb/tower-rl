@@ -184,11 +184,3 @@ def collate(
         weights=torch.tensor(weights, dtype=torch.float32, device=device),
         burn_in=burn_in,
     )
-
-
-def parameters_are_equal(left: nn.Module, right: nn.Module) -> bool:
-    """Whether two modules hold identical weights, used by resume verification."""
-    left_state, right_state = left.state_dict(), right.state_dict()
-    if left_state.keys() != right_state.keys():
-        return False
-    return all(torch.equal(left_state[key], right_state[key]) for key in left_state)

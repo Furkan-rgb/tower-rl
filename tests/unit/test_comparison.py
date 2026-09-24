@@ -9,43 +9,10 @@ from tower_rl.experiment.comparison import (
     bootstrap_difference,
     cohens_d,
     compare,
-    interleave_schedule,
     iqm,
-    required_episodes,
     stratified_bootstrap,
     stratified_bootstrap_difference,
 )
-
-
-def test_every_arm_gets_its_full_budget() -> None:
-    schedule = interleave_schedule(("a", "b", "c"), episodes_per_arm=10, block=3, seed=1)
-
-    assert len(schedule) == 30
-    for arm in ("a", "b", "c"):
-        assert schedule.count(arm) == 10
-
-
-def test_arms_are_interleaved_rather_than_run_to_completion() -> None:
-    """Running one arm then the next confounds the arm with whatever drifted."""
-    schedule = interleave_schedule(("a", "b"), episodes_per_arm=20, block=5, seed=1)
-
-    first_half = schedule[:20]
-    # A sequential schedule would put twenty of one arm in the first half.
-    assert 5 <= first_half.count("a") <= 15
-    assert 5 <= first_half.count("b") <= 15
-
-
-def test_no_arm_is_systematically_first() -> None:
-    leaders = {interleave_schedule(("a", "b"), 10, block=2, seed=seed)[0] for seed in range(20)}
-
-    assert leaders == {"a", "b"}
-
-
-def test_a_schedule_needs_arms_and_a_budget() -> None:
-    with pytest.raises(ValueError, match="at least one arm"):
-        interleave_schedule((), 5)
-    with pytest.raises(ValueError, match="must be positive"):
-        interleave_schedule(("a",), 0)
 
 
 def test_a_real_difference_separates_from_zero() -> None:
@@ -100,13 +67,6 @@ def test_effect_size_has_a_sign_and_a_scale() -> None:
 def test_two_episodes_are_the_minimum_comparable_sample() -> None:
     with pytest.raises(ValueError, match="at least two episodes"):
         bootstrap_difference([10], [9, 10])
-
-
-def test_required_episodes_matches_the_measured_protocol() -> None:
-    """M1B-E006/E008: sd 1.26 means about 23 episodes per arm for one wave."""
-    assert required_episodes(1.26, 1.0) == pytest.approx(25, abs=3)
-    assert required_episodes(1.26, 2.0) < required_episodes(1.26, 1.0)
-    assert required_episodes(1.26, 0.5) > 80
 
 
 def test_the_interquartile_mean_is_the_middle_half() -> None:

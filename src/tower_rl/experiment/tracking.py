@@ -17,10 +17,13 @@ state, never inside the repository - rather than anything MLflow decides.
 
 from __future__ import annotations
 
+import argparse
 import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from tower_rl.environment.project_state import state_directory
 
 
 @runtime_checkable
@@ -157,11 +160,58 @@ def artifact_root(run_dir: Path) -> str:
     return str(run_dir.parent / "mlartifacts")
 
 
+def add_tracking_arguments(parser: argparse.ArgumentParser) -> None:
+    """The `--mlflow-run`/`--run-dir`/`--experiment` options a tracked command shares.
+
+    `select_checkpoint.py` and `report_arms.py` both add a set B's or a
+    selection's results onto an existing training run's page, so they take
+    this by the same three flags rather than each defining its own copy.
+    """
+    parser.add_argument(
+        "--mlflow-run",
+        default=None,
+        help=(
+            "an existing tracked run id to add these results to, so the greedy "
+            "curve lands on the page of the training run it is about"
+        ),
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=state_directory() / "runs",
+        help="where the tracking store lives; only read with --mlflow-run",
+    )
+    parser.add_argument(
+        "--experiment",
+        default="tower-rl-training",
+        help="the MLflow experiment the run belongs to; only read with --mlflow-run",
+    )
+
+
+def tracked_run(arguments: argparse.Namespace) -> TrackedRun | None:
+    """The run these results are added to, or nothing if none was named."""
+    if not arguments.mlflow_run:
+        return None
+    try:
+        return open_tracked_run(
+            arguments.mlflow_run,
+            run_dir=arguments.run_dir,
+            experiment=arguments.experiment,
+        )
+    except ImportError as missing:
+        raise SystemExit(
+            f"--mlflow-run needs MLflow installed ({missing}). "
+            "Install it with `uv sync --extra tracking`, or drop the flag."
+        ) from missing
+
+
 __all__ = [
     "ExperimentTracker",
     "NoExperimentTracker",
     "TrackedRun",
+    "add_tracking_arguments",
     "artifact_root",
     "open_tracked_run",
+    "tracked_run",
     "tracking_uri",
 ]

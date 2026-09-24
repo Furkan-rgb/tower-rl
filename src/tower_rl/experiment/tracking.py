@@ -203,15 +203,3 @@ def tracked_run(arguments: argparse.Namespace) -> TrackedRun | None:
             f"--mlflow-run needs MLflow installed ({missing}). "
             "Install it with `uv sync --extra tracking`, or drop the flag."
         ) from missing
-
-
-__all__ = [
-    "ExperimentTracker",
-    "NoExperimentTracker",
-    "TrackedRun",
-    "add_tracking_arguments",
-    "artifact_root",
-    "open_tracked_run",
-    "tracked_run",
-    "tracking_uri",
-]

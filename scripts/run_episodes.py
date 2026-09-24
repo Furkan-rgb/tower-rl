@@ -63,6 +63,7 @@ from tower_rl.learning.policies import (  # noqa: E402
 )
 from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    BridgeCompatibility,
     InstrumentedBridgeClient,
     UpgradeSlotLabel,
 )
@@ -247,6 +248,38 @@ def decision_cadence_from(arguments: argparse.Namespace) -> DecisionCadence:
     return DecisionCadence(arguments.decision_cadence)
 
 
+def open_environment(
+    port: int, expected: BridgeCompatibility, arguments: argparse.Namespace
+) -> tuple[InstrumentedBridgeClient, InstrumentedRunAdapter, InstrumentedRunEnvironment]:
+    """Connect the bridge and build the adapter and environment on top of it.
+
+    The wiring every collection entry point (`run_episodes.py`, `train.py`,
+    `spectate.py`) needs identically: the same client timeouts, then the
+    adapter, then the environment built from this invocation's cadence and
+    upgrade-availability arguments. The caller keeps its own connect-time
+    side effects (printing the handshake, reading slot labels, wrapping the
+    result) and its own `release()`/`close()` in `finally`.
+    """
+    client = InstrumentedBridgeClient(
+        "127.0.0.1",
+        port,
+        expected_compatibility=expected,
+        connect_timeout=5.0,
+        read_timeout=120.0,
+        heartbeat_timeout=60.0,
+    )
+    client.connect()
+    adapter = InstrumentedRunAdapter(client=client)
+    environment = InstrumentedRunEnvironment(
+        port=adapter,
+        builder=RunStateBuilder(profile_id=expected.profile_id),
+        cadence=cadence_from(arguments),
+        decision_cadence=decision_cadence_from(arguments),
+        upgrade_availability=upgrade_availability_from(arguments),
+    )
+    return client, adapter, environment
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episodes", type=int, default=5)
@@ -279,32 +312,16 @@ def main() -> int:
     )
     expected = compatibility(bridge_build_directory())
 
-    client = InstrumentedBridgeClient(
-        "127.0.0.1",
-        arguments.port,
-        expected_compatibility=expected,
-        connect_timeout=5.0,
-        read_timeout=120.0,
-        heartbeat_timeout=60.0,
-    )
-    handshake = client.connect()
+    client, adapter, environment = open_environment(arguments.port, expected, arguments)
+    handshake = client.handshake
     print(
         f"bridge {handshake.bridge_version} profile {handshake.compatibility.profile_id} "
         f"speed {handshake.game_speed}",
         flush=True,
     )
-
-    adapter = InstrumentedRunAdapter(client=client)
     # Before the first round: a command of the adapter's own initiative belongs
     # to the episode boundary, and these are constant for the build.
     labels = adapter.slot_labels()
-    environment = InstrumentedRunEnvironment(
-        port=adapter,
-        builder=RunStateBuilder(profile_id=expected.profile_id),
-        cadence=cadence_from(arguments),
-        decision_cadence=decision_cadence_from(arguments),
-        upgrade_availability=upgrade_availability_from(arguments),
-    )
 
     started = time.monotonic()
     try:

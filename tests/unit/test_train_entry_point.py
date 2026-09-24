@@ -253,6 +253,132 @@ def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -
         arguments(tmp_path, **{"--stacked-burn-in": "2"})
 
 
+# -- --backbone dreamerv3 ------------------------------------------------------
+#
+# Its fixed loop settings, and one session at a size that trains in seconds, as
+# this suite shrinks stacked-dqn's network; the published sizes are what
+# `DreamerConfig()` holds and what the parse tests read without the patch.
+
+#: Batch 2 x 6 at a train ratio of 3: the published 0.25 gradient steps per decision.
+SMALL_DREAMER: dict[str, Any] = dict(
+    deter=16, hidden=8, classes=4, units=8, stoch=4, blocks=2,
+    batch_size=2, batch_length=6, train_ratio=3.0,
+)
+
+
+def dreamer_arguments(run_dir: Path, *flags: str) -> argparse.Namespace:
+    return train.parse_arguments(
+        ["--budget-decisions", "1000", "--run-dir", str(run_dir), "--backbone", "dreamerv3", *flags]
+    )
+
+
+def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
+    parsed = dreamer_arguments(tmp_path)
+    assert parsed.backbone == "dreamerv3"
+    assert (parsed.sequence_length, parsed.stacked_burn_in) == (64, 0)
+    assert parsed.batch_size == 16
+    assert parsed.gradient_steps_per_decision == 0.25
+    assert parsed.warmup_sequences == 25
+    assert parsed.exploration == "uniform"
+    assert (parsed.epsilon_start, parsed.epsilon_end) == (0.0, 0.0)
+    assert parsed.priority_alpha == 0.0
+
+
+def test_the_default_backbone_is_stacked_dqn(tmp_path: Path) -> None:
+    parsed = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    assert parsed.backbone == "stacked-dqn"
+
+
+def test_a_flag_that_repeats_a_dreamerv3_value_is_accepted(tmp_path: Path) -> None:
+    parsed = dreamer_arguments(tmp_path, "--batch-size", "16", "--sequence-length", "64")
+    assert parsed.batch_size == 16
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--batch-size", "8"),
+        ("--sequence-length", "80"),
+        ("--stacked-burn-in", "7"),
+        ("--gradient-steps-per-decision", "1.0"),
+        ("--warmup-sequences", "100"),
+        ("--epsilon-start", "1.0"),
+        ("--epsilon-end", "0.05"),
+        ("--exploration", "ladder"),
+        ("--priority-alpha", "0.6"),
+    ],
+)
+def test_a_flag_that_contradicts_a_dreamerv3_value_is_refused(
+    tmp_path: Path, flag: str, value: str
+) -> None:
+    with pytest.raises(SystemExit, match="contradicts DreamerV3|ladder"):
+        dreamer_arguments(tmp_path, flag, value)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--history-length", "8"),
+        ("--n-step", "3"),
+        ("--discount", "0.99"),
+        ("--learning-rate", "1e-4"),
+        ("--target-ema-decay", "0.995"),
+        ("--n-step-final", "3", "--n-step-anneal-steps", "100"),
+    ],
+)
+def test_a_stacked_dqn_flag_is_refused_under_dreamerv3(
+    tmp_path: Path, flags: tuple[str, ...]
+) -> None:
+    with pytest.raises(SystemExit, match="stacked-dqn setting"):
+        dreamer_arguments(tmp_path, *flags)
+
+
+def test_a_dreamerv3_session_trains_and_its_checkpoint_plays(tmp_path: Path) -> None:
+    from tower_rl.learning.dreamer import DreamerBackbone, DreamerConfig
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
+        )
+        patch.setattr(train, "DREAMER_WARMUP_SEQUENCES", 2)
+        parsed = dreamer_arguments(
+            tmp_path,
+            "--budget-decisions", "200",
+            "--replay-capacity", "64",
+            "--evaluate-every-episodes", "1",
+            "--evaluation-episodes", "2",
+            "--collection-window-episodes", "2",
+            "--checkpoint-every-episodes", "2",
+            "--serial", "fake-0",
+            "--max-quiet-game-ms", "4000",
+        )
+        report = train.train_session(
+            parsed, fleet(1), profile_id=PROFILE, revision="test", device=torch.device("cpu")
+        )
+
+    arm = report["arm"]
+    assert arm["backbone"] == "dreamerv3"
+    assert arm["decisions"] >= 200 and arm["optimisation_steps"] > 0
+    assert arm["failed_episodes"] == 0
+    resolved = arm["resolved_config"]
+    assert (resolved["sequence_length"], resolved["burn_in"], resolved["stride"]) == (6, 0, 3)
+    assert resolved["dreamer_deter"] == 16 and resolved["dreamer_train_ratio"] == 3.0
+    for stacked in ("history_length", "n_step", "discount", "learning_rate", "network_hidden"):
+        assert resolved[stacked] is None, stacked
+
+    latest = Path(report["session"]) / arm["run_id"] / "checkpoints" / "latest.pt"
+    policy, identity = checkpoint_policy(
+        latest,
+        decision_cadence=resolved["decision_cadence"],
+        upgrade_availability=resolved["upgrade_availability"],
+    )
+    assert identity.backbone == "dreamerv3"
+    assert isinstance(policy, DreamerBackbone)
+    assert policy.config == DreamerConfig(**SMALL_DREAMER, seed=0)
+    assert policy.model_version == arm["optimisation_steps"]
+    assert not any(parameter.requires_grad for parameter in policy.actor.parameters())
+
+
 #: A checkpoint cadence and a selection period short enough that a test budget
 #: crosses each several times, and deliberately not multiples of each other:
 #: the two are independent, as run 5b's 5,000 and 15,000 are.

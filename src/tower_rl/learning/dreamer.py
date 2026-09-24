@@ -55,6 +55,8 @@ from tower_rl.learning.dreamer_math import (
 )
 from tower_rl.learning.value_learning import real_step_td_errors, value_fit_correlation
 
+#: The name a run, its checkpoints and `--backbone` file this backbone under.
+DREAMERV3 = "dreamerv3"
 ACTIONS = len(RUN_ACTIONS)
 #: The one action every active run allows, so a decoded mask always keeps it.
 WAIT_INDEX = action_index(WAIT)

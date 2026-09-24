@@ -26,6 +26,56 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
+
+**Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,
+`--upgrade-availability all`, ε anneal 8,000 decisions, `--budget-game-seconds 240000`,
+`--block-game-seconds 4000`, `--checkpoint-every-game-seconds 60000`,
+`--early-stop-patience-periods 2`, `--early-stop-min-improvement 0.2`, seed 0,
+7 actors, 120 Hz, `-gpu host`.
+
+- `--gradient-steps-per-decision 1.0` (was 0.25, the DER rate — run 3's default).
+- n-step return annealed 10 → 3 exponentially over the first 10,000 gradient
+  steps (`--n-step 10 --n-step-final 3 --n-step-anneal-steps 10000`), the BBF
+  recipe (Schwarzer et al. 2023, arXiv:2305.19452). Run 3 held n fixed at 10.
+- `--frame-game-ms 100`, explicit. Run 3 ran at 16.667 (the pre-`2d38bc9`
+  default); 100 and 16.667 were shown equivalent under the M2 setup in
+  `M2-S001`, and `2d38bc9` since made 100 the standing default.
+
+**Kill bars, pre-registered from run 3's own curve** (`checkpoint_period_line`
+near-greedy means, at matched cumulative fleet decisions, over near-greedy
+actors' valid episodes — ladder indices 3–6, epsilon floor ≤0.02, emulators
+`emulator-5562`..`emulator-5568` for this actor count):
+
+- K1 `--kill-bar 12000:8000:8.6` — window (8000, 12000] decisions, mean < 8.6
+  stops the run (run 3's own value over the comparable window: 9.28).
+- K2 `--kill-bar 26262:8000:10.2` — window (8000, 26262] decisions, mean <
+  10.2 stops the run (run 3: 11.18).
+
+A kill-bar stop skips the final evaluation (stage 3) entirely; the entry
+records which bar fired and the window mean it fired on, and nothing further.
+
+**Arm selection and formal evaluation**, if not killed, exactly as run 3:
+arm = best near-greedy period ≥2 (ties to the lower period number); stage 3 =
+15 episodes × 7 actors = 105, greedy policy, at `--frame-game-ms 100`.
+
+**Primary comparison**: run-4 arm vs run-3 arm (15.98, n=105 — equivalent to
+run 3's own near-greedy in-training figures at 100 ms per `M2-S001`: 16.17,
+n=35). Bootstrap 95% CI of the difference
+(`src/tower_rl/experiment/comparison.py::bootstrap_difference`, seed 0, 10,000
+resamples). **"Better"** means the CI's lower bound is > 0. Secondary
+comparisons: vs scripted-`all` (6.105) and random-`all` (3.556), same method.
+
+**Throughput.** Fleet game-s/hour and decisions/hour, reported beside run 3's
+36,855.7 game-s/h (same definitions — see `M2-P003`'s "Results, as run").
+Learner lock share = learner-step wall time / collection wall time, to
+separate a DER-rate slowdown (more gradient steps per decision) from any
+cadence effect.
+
+**Timebox.** Training stage ≤7h wall hard limit (via `run_stage.sh`'s own
+option if it has one for this; otherwise this figure is enforced by the
+operator and reported at expiry rather than by the tool). Eval stage ≤1.5h.
+
 ## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
 
 **Finding that motivates this (scout, verified against manifests and docs).**

@@ -75,6 +75,81 @@ entry says why once the run's numbers are in.
 holding on this device, checked before committing the rest of the device
 budget to it.
 
+### Results, as run (2026-09-23)
+
+Both stages ran clean: `stage m2-s001-eval-scripted-100: exit 0, cleanup ok,
+instances 0/7 cleaned, 1 exited during teardown, wall 00:10:01` and `stage
+m2-s001-eval-arm-100: exit 0, cleanup ok, instances 0/7 cleaned, 1 exited
+during teardown, wall 00:18:54`. Zero `GAME_TIME_DEFLATED` in either (kill
+rule never triggered), zero invalid episodes in either, zero
+`bridge_event_divergence`, zero `UNLOCK_*`. `checkpoint-gs0240313.pt`'s
+sha256 was reconfirmed unchanged (`7dd8ba3779e27848048a874e9f9c29001fdfc766b0afda9a2e0bb49c04216771`)
+before arm R3 ran. Arm R3 logged one `pin_restarts` (the boundary-recovery
+retry from `762c54b`, capped at 3, recovered) — a normal, already-accounted
+health event, not a failure. `frame_game_ms=100.0` was confirmed applied from
+every per-actor record's own field (`state/records/m2-s001/eval-*-100/*.json`),
+not just the command line.
+
+| arm | n | mean final wave @100 | sd | reference @16.667 (n, mean, sd) |
+| --- | --- | --- | --- | --- |
+| S (scripted) | 35 | 6.029 | 0.296 | 105, 6.105, 0.338 |
+| R3 (arm, greedy) | 35 | 16.171 | 4.127 | 105, 15.981, 3.680 |
+
+Bootstrap 90% CI of (100 ms − reference), `bootstrap_difference`, seed 0,
+10,000 resamples, against each reference arm's own raw episodes:
+
+- Arm S: **−0.076 [−0.171, +0.019]** — inside the ±0.5 bound.
+- Arm R3: **+0.190 [−1.086, +1.457]** — inside the ±2.0 bound.
+
+Both equivalence conditions hold, so the run **PASSes** on equivalence.
+
+**Throughput, two ways.** Per-actor collection rate (sum of each actor's own
+`total_budgeted_game_seconds` / `wall_seconds`, which excludes the fleet's
+shared bring-up/teardown, since that field is collection-phase only):
+
+| arm | game-s/wall-s per actor @100 | @16.667 (run 3) | ratio |
+| --- | --- | --- | --- |
+| S | 5.097 | 1.680 | 3.03× |
+| R3 | 4.609 | 1.794 | 2.57× |
+
+Fleet game-s/hour (summed per-actor game-seconds over the stage's own
+top-level wall-clock, which *does* include bring-up/teardown):
+
+| arm | fleet game-s/h @100 | @16.667 (run 3) | ratio |
+| --- | --- | --- | --- |
+| S | 40457 | 34057 | 1.19× |
+| R3 | 61316 | 41153 | 1.49× |
+
+**These two ratios disagree, and the reason is a confound this design did not
+anticipate.** Both new stages ran only 5 episodes/actor (35 total), so a
+mostly-fixed per-stage bring-up/teardown cost (bridge deploy, snapshot
+restore, radio settle — roughly constant regardless of cadence) is a much
+larger share of the stage's wall-clock at 100 ms, where collection itself
+finishes in minutes, than it was in run 3's 15-episode/actor eval stages. The
+per-actor collection-rate ratio (2.6–3.0×) isolates the cadence effect and is
+the correct measure of what `frame_game_ms` itself buys; the fleet-wall-clock
+ratio (1.19–1.49×) is what these particular short stages actually cost
+end-to-end, dragged down by overhead that would amortize away over a
+training-length run. **Neither ratio reaches the pre-registered ≥2× fleet
+speed-up bar as that bar was written** (a bare fleet-wall-clock number), so
+the literal GO condition is not met by this evidence; whether the intent was
+the fleet-wall-clock number at this stage length, or the steady-state
+collection rate that would apply once run length amortizes bring-up, is a
+call for the Lead, not resolved here. Host load during arm R3 reached a
+15-minute load average of 27.84 (`code` at 53% CPU, no cmake/ninja/cc1/ld
+process observed — not a native-bridge build); no other agent's qemu process
+was seen on the host at any point.
+
+**Verdict: EQUIVALENT, throughput inconclusive against the pre-registered
+bar as written — no automatic GO.** `frame_game_ms` 100 reproduces both the
+scripted and the arm-checkpoint's final-wave distribution within the
+pre-registered bounds under the M2 setup. It does *not* clearly clear the
+±0.5/±2.0-adjacent throughput bar at this stage's episode count; the
+per-actor collection-rate evidence (2.6–3.0×) is suggestive of a real
+speed-up worth reproducing at a longer episode count where fixed overhead
+amortizes, but this run does not by itself authorize switching M2 training to
+100. 16.667 stays the standing default pending that follow-up.
+
 ## M2-P003 — Milestone 2, run 3: upgrade availability `all`, corrected ε schedule, one seed, exploratory (pre-registered, written before any run)
 
 **Date:** 2026-09-20

@@ -955,8 +955,8 @@ granularity — an episode in progress is played to its classified end — so a 
 stops past its budget by at most one episode per actor. Every schedule counted
 in decisions reads the same counter: epsilon, the replay ratio, the
 importance-sampling beta (annealed over the decision budget), the kill bars
-and the selection periods. The n-step and discount anneals and the BBF
-recipe's resets alone count gradient steps, as BBF defines them (9.4c). Game time and wall time are still measured and reported, as
+and the selection periods. The n-step anneal alone counts gradient steps.
+Game time and wall time are still measured and reported, as
 statistics. `TrainingRun.advance(decisions)` can spend the budget in blocks
 and carries every schedule across them, so a run advanced in ten blocks is the
 same run as one advanced in one.
@@ -1383,12 +1383,11 @@ Use configurable defaults close to established R2D2 practice:
   wave back to the decisions that earned it. `stacked-dqn` may instead anneal
   it (`--n-step-final`, `--n-step-anneal-steps`): n falls exponentially from
   `--n-step` to the final value over the first gradient steps and then holds,
-  n(t) = round(n0 · (n1/n0)^(min(t,T)/T)), as in BBF (Schwarzer et al. 2023,
-  arXiv:2305.19452) - long early for fast credit propagation, short once the
-  value estimate is worth bootstrapping from. t counts gradient steps since
-  the last reset (9.4c; without resets, since the start). The counter is the
-  learner's own and travels in the checkpoint, so a resume continues the
-  schedule; unset, n is fixed, as for every run before run 4;
+  n(t) = round(n0 · (n1/n0)^(min(t,T)/T)) - long early for fast credit
+  propagation, short once the value estimate is worth bootstrapping from. t
+  counts gradient steps since the start. The counter is the learner's own and
+  travels in the checkpoint, so a resume continues the schedule; unset, n is
+  fixed, as for every run before run 4;
 - discount 0.99. Its horizon of 100 decisions is comparable to the ~121 decision
   episode; 0.997 is a horizon of 333 and is effectively undiscounted here;
 - Double Q-learning;
@@ -1420,8 +1419,8 @@ What matters about the replay ratio is transitions replayed per transition
 generated, not gradient steps per decision: a gradient step here replays a whole
 batch of unrolled sequences. At 80-step sequences, burn-in 7, n-step 10 and
 batch 8 one step replays about 504 transitions, so 0.25 gradient steps per
-decision is about 126:1 - between SPR (64) and BBF (256), where the first
-training run's 2.0 was 1087:1 against 8 for DQN and about 1 for R2D2.
+decision is about 126:1 - above SPR's 64:1 - where the first training run's
+2.0 was 1087:1 against 8 for DQN and about 1 for R2D2.
 
 Exploration anneals over a horizon counted in decisions and is then held at the
 floor, rather than being derived from progress through the whole budget.
@@ -1521,85 +1520,6 @@ whether TorchRL itself is ever adopted.
 
 Revisit trigger: re-open this decision once the backbone benchmark exists and
 device time is no longer the scarce resource.
-
-### 9.4c BBF recipe
-
-BBF (Schwarzer et al. 2023, arXiv:2305.19452) is the §1.1 comparison's second
-learner. It is not a separate backbone. It is `stacked-dqn` trained under one
-named recipe, `scripts/train.py --recipe bbf`. The recipe is a set of defaults
-(`RECIPES` in `scripts/train.py`), and the manifest's `resolved_config` records
-every value it resolved to, including `"recipe": "bbf"`. Without `--recipe`,
-every default is the one run 4 trained with. A flag given beside the recipe
-still overrides it, except two that `parse_arguments` refuses: a ladder, and a
-nonzero plateau patience.
-
-What the recipe adds to the learner (`learning/stacked_dqn.py`):
-
-- **Resets.** Every `reset_every_steps` gradient steps, the learner
-  shrinks-and-perturbs its trunk to 0.5 old + 0.5 fresh initialisation. The
-  core and heads are replaced by a fresh initialisation. The target network
-  gets the same treatment from its own fresh initialisation. The whole AdamW
-  state is cleared, as BBF's is. A reset at step s happens only if more than
-  one interval is left: s + interval < the run's expected gradient steps
-  (`no_resets_after_steps`). That horizon is (decision budget − 3,450
-  warm-up decisions) × replay ratio (`reset_horizon` in `scripts/train.py`),
-  so none falls in the final interval. The horizon is an estimate, because
-  the warm-up is counted in sequences. 3,450 is the low end of run 2's
-  measured 3,450–3,600 (`M2-P003`). At the planned budget of 120,712
-  decisions, the resets are 40k, 80k, 120k and 160k for any warm-up between
-  712 and 20,711 decisions, which covers a resume's uncounted re-warm. The
-  final cycle is about 74.5k steps. The evidence to check afterwards is the
-  run's final reset count (the checkpoint's `resets`) and its total gradient
-  steps (`optimisation_steps` in the checkpoint and `summary.json`). The fresh networks are drawn from a
-  seed derived from the run's seed and the reset's number, without touching
-  the global generator, so a resumed run resets exactly as the uninterrupted
-  one would.
-- **Schedules per reset cycle.** The n-step anneal (9.4) and a discount anneal
-  (`discount_initial` to `discount`, exponential in 1 − γ) count gradient steps
-  since the last reset, not since the start.
-- **Optimizer.** AdamW with BBF's learning rate, epsilon and weight decay. The
-  decay is masked off 1-D parameters (biases, LayerNorm), as BBF's is. There
-  is no gradient clipping.
-- **Acting with the target.** `act` chooses with the EMA target network
-  instead of the online one, for actors and for checkpoint evaluation alike.
-
-The checkpoint format is unchanged. The backbone state gains the reset count,
-the steps into the current cycle and the reset seed. A checkpoint written
-before them reads as one cycle that started at step 0, which is what it was.
-The tests are `tests/unit/test_bbf_recipe.py` (components against the official
-code) and the BBF tests in `tests/unit/test_train_entry_point.py` (the recipe
-and a reset-and-resume session on the fakes).
-
-For this arm the known-answer implementation check is dropped by developer
-decision (§1.1, 2026-09-24). The component tests and this configuration check
-stand in its place.
-
-**Configuration check.** Sources: the paper, and the official code
-(google-research/bigger_better_faster): `bbf/configs/BBF.gin` and
-`bbf/agents/spr_agent.py`. Line numbers refer to the `spr_agent.py` revision
-read on 2026-09-24.
-
-| component | BBF value | source | ours | justification for any deviation |
-| --- | --- | --- | --- | --- |
-| network width | Impala ResNet at 4x width | paper §3 "Larger network"; gin `width_scale=4` | `network_width` 4: trunk and core hidden 128 → 512 (2.55M parameters) | Same factor. There is no CNN; the input is feature vectors. **Deviation:** the identity embedding is a lookup table, not a width, and stays at 16. |
-| replay ratio | 8 in the headline; 2 in the reduced-compute results and the released gin (`replay_ratio=64` / `batch_size=32`) | paper §3 "Base agent", Fig. 6; gin; `spr_agent.py:1369` | 2 gradient steps per decision | The packet's rule was 2 if a 4x step is at most 25 ms, else 1. The measured step is 17.3–17.6 ms (`docs/experiments.md`, "BBF recipe: learner step at four times the width"). BBF's Fig. 6 shows its components paying off at RR 1–2, at about 0.15 IQM below RR 8. |
-| batch | 32 transitions | gin `batch_size=32` | 8 sequences × 80 steps, burn-in 7 (about 504 learnable transitions) | Shared with every arm (9.4). Each update already replays more transitions than BBF's. |
-| reset interval | every 40k gradient steps; none within one interval of the end | paper §3; gin `reset_every`, `no_resets_after`; `reset_weights`, `spr_agent.py:1444–1471` | `reset_every_steps` 40,000; `no_resets_after_steps` = (budget − 3,450 warm-up decisions, an estimate) × ratio; a reset only if s + 40,000 < that | Same outcome. The official code counts environment steps and skips on `next_reset > no_resets_after + reset_offset`, with `reset_offset=1`. At 2 updates per step its resets fall near 36k, 76k and 116k gradient steps, and its 100k run skips the fourth. The strict bound against the expected steps gives the same result: no reset in the final 40k. At the planned budget that is resets at 40k–160k, and the list holds for warm-ups of 712–20,711 decisions. **Deviation:** the horizon rests on a warm-up estimate, not a count. The final reset count and `optimisation_steps` are what confirm it. |
-| which layers | encoder shrink-and-perturbed; head and projections fresh; target reset from its own init | gin `shrink_perturb_keys`, `reset_target`; `jit_reset`, `spr_agent.py:203–300`; defaults at 1016–1020 | trunk shrink-and-perturbed; core and heads fresh; target likewise from its own init | Trunk is to encoder as core plus heads is to head. There is no projection or transition model, since there is no SPR. |
-| interpolation | 0.5 old + 0.5 fresh | gin `shrink_factor=0.5`, `perturb_factor=0.5`; paper §3 "Harder resets" | `SHRINK_FACTOR` 0.5, `PERTURB_FACTOR` 0.5 | Same. |
-| optimizer state at reset | the whole Adam state is replaced by a fresh one, encoder included | `copy_params`, `spr_agent.py:118`; `jit_reset`, `spr_agent.py:203–300` | `optimizer.state.clear()`: every moment and step count restarts | Same. The optimizer state is an optax chain of `MaskedState`s, so `copy_params`' `keys_to_copy` (encoder) never matches inside it and the fresh state replaces all of it. The tier C review reproduced this with the verbatim code: encoder count 5 → 0, mu 0.1229 → 0.0. |
-| n-step anneal | 10 → 3, exponential, over 10k gradient steps after each reset | paper §3 "Receding update horizon"; gin `max_update_horizon`, `update_horizon`, `cycle_steps`; `exponential_decay_scheduler`, `spr_agent.py:311` | 10 → 3 over 10,000, per cycle | Same. The test runs the official scheduler verbatim as its oracle. |
-| discount anneal | 0.97 → 0.997, the same schedule on 1 − γ | paper §3 "Increasing discount factor"; gin `min_gamma`, `gamma`; `spr_agent.py:1254–1260` | 0.97 → 0.997 over 10,000, per cycle | Same. |
-| target network | EMA τ 0.005 every step | gin `target_update_tau=0.005`, `target_update_period=1` | `target_ema_decay` 0.995 | Same. |
-| target action selection | acts with the target network | gin `target_action_selection=True` | `act_with_target` true: `act` chooses with the EMA target | Same. The target reaches the actors through the one existing publication (`Learner.publish_to` copies the whole backbone state). A checkpoint's evaluation, and so the arm, acts with the target too, because `checkpoint_policy` rebuilds the flag from the manifest. The network evaluated is the one that acted: the target. |
-| optimizer | AdamW, lr 1e-4, eps 1.5e-4, weight decay 0.1 masked off `ndim == 1` | gin `learning_rate`, `create_scaling_optimizer.eps`, `weight_decay`; `create_scaling_optimizer`, `spr_agent.py:903–963` | same values, same mask (two parameter groups) | Same. |
-| gradient clipping | none | `spr_agent.py` has no clipping transform | `gradient_clip` None: none; the norm is still reported | Same. The default recipe keeps norm 10. |
-| self-prediction (SPR) | weight 5, 5 steps | gin `spr_weight=5`, `jumps=5` | none | Excluded. It is the smallest measured component (Fig. 5: about 6% IQM at RR 8), and here it needs an action-conditioned transition model over masked semantic actions. It is several hundred lines on the one path. |
-| value head / loss | C51 (51 atoms), dueling, double | gin `distributional=True`, `dueling`, `double_dqn` | scalar dueling double Q, Huber loss | C51 is not implemented. Dueling and double are the same. |
-| exploration | ε 1 → 0 linearly after a 2,000-step warm-up; evaluation ε 0.001 | gin `epsilon_train=0`, `epsilon_decay_period`, `min_replay_history`, `epsilon_eval` | uniform ε 1 → 0 over 8,000 decisions; evaluation ε 0 | Annealed to 0, as BBF does. The 8,000 horizon is run 4's, which runs through the replay warm-up of about 3,450 decisions, as BBF's anneal follows its warm-up. Every actor ends near-greedy, so the arm rule reads the whole fleet. The ladder is refused. |
-| replay | prioritized per transition: priority sqrt(loss + 1e-10), sampled proportionally; new items at the highest priority ever recorded; IS weight (P + 1e-10)^-0.5 normalised by the batch maximum | gin `replay_scheme='prioritized'`; `spr_agent.py:1555–1563`, `1646–1649`, `1728–1733` | uniform sequence replay (`--priority-alpha` 0), as run 4 | **Deviation:** uniform sequence replay instead of per-transition PER (`spr_agent.py:1646–1649`); it is not expressible on sequence replay. (a) We sample 80-step sequences with one priority each, the R2D2 max/mean mix, not transitions. (b) sqrt(Huber) is not \|δ\|^α for any α. (c) Our IS weights are normalised by the buffer's smallest probability, not the batch's. (d) We insert at the live maximum, not the highest ever recorded. A partial match would be a hybrid that is neither BBF's scheme nor the baseline's. Uniform keeps the replay identical to run 4, so the comparison isolates the BBF components. |
-| data augmentation | random shift and intensity | gin `data_augmentation=True` | none | Does not apply to feature vectors. |
-| plateau early stop | none; a fixed 100k-step budget | the Atari 100k protocol | off (`early_stop_patience_periods` 0; a nonzero value is refused) | A reset dips the curve by design, and the plateau rule cannot tell that from a stall. The fixed budget and the kill bars bound the run. |
 
 ### 9.5 Distributed exploration
 

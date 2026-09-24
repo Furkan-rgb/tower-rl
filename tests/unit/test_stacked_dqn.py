@@ -161,7 +161,7 @@ def test_state_round_trips_exactly() -> None:
     assert parameters_are_equal(restored.target, backbone.target)
 
 
-# --- The n-step anneal (BBF): n from 10 down to 3 over the first gradient steps
+# --- The n-step anneal: n from 10 down to 3 over the first gradient steps
 
 
 def _annealed(**overrides: object) -> StackedDqnBackbone:

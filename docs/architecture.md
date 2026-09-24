@@ -392,8 +392,8 @@ neither is part of a run:
    ratio (`--gradient-steps-per-decision`), the exploration anneal
    (`--epsilon-anneal-decisions`), the importance exponent (annealed over the
    budget), the kill bars and the selection periods. The n-step anneal alone
-   counts gradient steps, as BBF defines it. Game time is still measured and
-   reported, as a statistic. Actors collect concurrently into the one buffer;
+   counts gradient steps. Game time is still measured and reported, as a
+   statistic. Actors collect concurrently into the one buffer;
    the `Learner` takes gradient steps against the configured replay ratio;
    each actor refreshes its acting copy between its own episodes.
 5. `arm.checkpoint` writes the checkpoint, then one pre-registered

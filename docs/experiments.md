@@ -153,176 +153,6 @@ lists Workshop, Lab, Card, Module, Perk, event, and tournament permanent- or
 meta-progression optimisation as a non-goal, so raising the account ceiling
 itself is out of scope for this diagnosis.
 
-## BBF recipe: learner step at four times the width (2026-09-24, #74)
-
-Measured to choose the BBF recipe's replay ratio: the packet set 2 gradient
-steps per decision if one step at 4x width takes at most 25 ms, and 1
-otherwise. The shapes match the #72 entry: batch 8 × 80 steps, burn-in 7,
-n = 10, RTX 4090, idle host. One step is `collate` plus
-`StackedDqnBackbone.learn`, with a sync around every call. Each figure is the
-median of 60 steps after 10 warm-up, from two runs. The 1x row is the #72
-learner (f71a752). The 4x row was measured twice. The first run used the #72
-learner. The second used the full BBF learner configuration: no gradient
-clipping, the two weight-decay groups, the discount anneal, acting with the
-target, and uniform replay. It measured 17.29–17.34 ms, within the first range.
-
-| width | parameters | collate | learn | step |
-| --- | --- | --- | --- | --- |
-| 1x (hidden 128, core 128) | 197,379 | 4.7 ms | 5.1 ms | 9.9–10.0 ms |
-| 4x (hidden 512, core 512) | 2,554,371 | 4.7 ms | 12.4 ms | 17.3–17.6 ms |
-
-The 4x step is inside 25 ms, so the recipe takes 2 gradient steps per
-decision, about 35 ms of learning per decision on an idle host. The production figure under 7 actor
-threads has not been measured. It will be read from the first BBF run, like
-the #72 figure.
-
-## M3-P001: BBF recipe on stacked-dqn, 120,712 decisions (pre-registered, written before the run)
-
-**Date:** 2026-09-24. Board `#74`. `main` = `4d7fbee` (`--recipe bbf` landed).
-
-**Hypothesis.** The BBF recipe (`docs/solution.md` §9.4c: 4× width,
-shrink-and-perturb resets, n-step/discount annealing restarted by each reset,
-EMA-target acting, AdamW with BBF's weight decay and epsilon, no gradient
-clipping, exploration annealed to zero; no SPR, no C51, uniform sequence
-replay) gives an arm that beats run 4's arm (18.143, n=105) on the default
-build.
-
-**Command**, run 5b's (`run5b-command.txt`) with `--recipe bbf`, every flag
-the recipe sets or refuses removed so no flag can override a recipe value:
-dropped `--exploration ladder` (recipe refuses it under `--recipe bbf`),
-`--early-stop-patience-periods 2 --early-stop-min-improvement 0.2` (recipe
-refuses nonzero patience), `--gradient-steps-per-decision 1.0`, `--n-step 10
---n-step-final 3 --n-step-anneal-steps 10000`, `--epsilon-anneal-decisions
-8000` (the recipe sets all of these itself). Verified by dry-parsing the
-exact command through `scripts/train.py::parse_arguments` before launch — no
-`SystemExit`, and every recipe-controlled value resolved to the recipe's own:
-
-    uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
-        --frame-rate-hz 120 --decision-cadence choice-points \
-        --upgrade-availability all --recipe bbf \
-        --budget-decisions 120712 --checkpoint-every-decisions 5000 \
-        --selection-period-decisions 15000 --seed 0 \
-        --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100
-
-Resolved config (dry-parse, matches recipe): `network_width=4`,
-`exploration='uniform'`, `epsilon_start=1.0`, `epsilon_end=0.0`,
-`epsilon_anneal_decisions=8000`, `gradient_steps_per_decision=2.0`,
-`n_step=10`, `n_step_final=3`, `n_step_anneal_steps=10000`,
-`discount_initial=0.97`, `discount=0.997`, `learning_rate=0.0001`,
-`weight_decay=0.1`, `weight_decay_on_vectors=False`, `adam_eps=0.00015`,
-`target_ema_decay=0.995`, `act_with_target=True`, `gradient_clip=None`,
-`reset_every_steps=40000`, `early_stop_patience_periods=0`,
-`kill_bars=[12000:8000:6.1, 26262:8000:6.1]`. Training uses
-`render-interval-16` (`TOWER_BRIDGE_BUILD_DIR`, sha256
-`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`);
-evaluation uses the default build.
-
-**One run, fixed by this pre-registration** (`docs/task.md` §1.1's
-one-protocol comparison): no reruns, no best-of.
-
-**Kill.** A fired bar is recorded as a collapse (which bar, the window
-mean); the arm is not evaluated.
-
-**Cap.** 5h wall per stage. If hit, resume from `latest.pt` in a follow-up
-stage — neither a kill nor a verdict.
-
-**Arm**, `docs/solution.md` §9.2b, unchanged. The acting network is the EMA
-target, rebuilt from the manifest.
-
-**Evaluation, if not killed and the budget completes.** Run 4's eval
-command shape, default build, n=105 (7×15), `--upgrade-availability all
---frame-game-ms 100`, output under `state/records/m3-p001/eval-arm`.
-`bootstrap_difference` against run 4's arm (18.143, n=105; seed 0, 10,000
-resamples). BETTER/WORSE/NOT DISTINGUISHABLE as defined in `M2-P006`.
-Secondary: vs scripted-`all` (6.105, n=105) and random-`all` (3.556, n=90),
-same method. **Power**, as `M2-P006`: minimum detectable difference at 80%
-power ≈1.45 waves; `NOT DISTINGUISHABLE` means "not resolved at this n."
-
-**Secondary pre-registered checks.**
-
-(i) Resets. Expected 4 (at 40k, 80k, 120k, 160k gradient steps, per
-`reset_horizon`'s estimate at this budget and warm-up range). Check against
-the final checkpoint's `resets` and `optimisation_steps`.
-
-(ii) The `#75` wall. Any training or eval episode reaching wave 22 falsifies
-"wave 21 is a fixed ceiling." Otherwise report the number of episodes
-reaching wave 20+ and the number of wave-21 crossings.
-
-(iii) The production learner step time (`#72` follow-up), from whatever the
-run itself records.
-
-**Timebox.** ≤5h wall. Projected from run 5's 29,274 decisions/h on
-`render-interval-16`: 120,712 decisions ≈4.12h. The learner (2 steps × ~17ms
-idle, ≈35ms/decision) is not expected to bind — well under the ~120ms/decision
-pacing figure `M2-P006` inferred for the 1-step recipe.
-
-### Results, as run
-
-**Training.** Budget completed cleanly: both kill bars passed by a wide
-margin (K1 mean 8.326 vs 6.1 floor at 12,026 decisions, 92 near-greedy
-episodes; K2 mean 8.899 vs 6.1 at 26,290 decisions, 368 episodes) — no cap
-hit. Final decisions: 121,679. `optimisation_steps`: 238,750. Training wall
-8,361.66s (≈2.32h); stage wall 02:47:29, well inside the 5h cap.
-
-Arm by §9.2b: best period among 2+ is period 7, `checkpoint-d0105070.pt`
-(closing at 105,070 decisions), near-greedy mean final wave 12.893 — period
-8 closed lower (11.978), one period without improvement. Checkpoint sha256
-`bf45ae08edaebaa7bf70ea0b9a392709e82132e921b7d91d8b0c054ea4193db0`,
-reconfirmed against its sidecar before evaluation.
-
-**(i) Resets.** 4, exactly at the expected horizon: the checkpoint's
-`resets=4`, `optimisation_steps=238,750`, `cycle_steps=78,750` (=
-238,750−160,000, consistent with the last reset at 160,000 gradient steps
-and none since). Matches the pre-registered expectation exactly.
-
-**(iii) Production learner step time.** 28.23 ms/step fleet-wide
-(`decision_time.fleet.buckets.learner_step`: 6,740.66s / 238,750 steps),
-about 1.6× the 17.3–17.6 ms measured idle-host (`#72`/`#74`) — plausible
-contention under the 7-actor fleet, still well inside the 25 ms budget the
-recipe's 2-steps-per-decision choice was conditioned on.
-
-**Evaluation.** First attempt (`m3-p001-eval-arm`) collected only 90/105
-valid episodes: 6 actors delivered 15 each cleanly, but `emulator-5560`
-failed at bring-up (`RunPortError: the instance did not reach an active
-run`) and wrote no record. Recorded as **partial and excluded**: 90/105,
-`emulator-5560` `RunPortError` at bring-up — not used in any statistic
-below. Per the pre-registration's one-retry rule, host cleanup was
-reconfirmed (no qemu, empty `adb devices`) and the full stage was retried
-once (`m3-p001-eval-arm-retry`), writing into the same output directory;
-every per-actor file's timestamp (21:24:05–21:29:31) is after the retry's
-launch (21:07:40) and after the first attempt's window (20:45–21:07)
-closed, confirming the retry's files fully overwrote the first attempt's —
-no partial-attempt file survives to mix into the statistics below.
-
-Retry: default build, n=104 valid of 105 attempted (one ordinary invalid
-episode, `emulator-5558` episode 13, `action_pipeline_failed:
-stale_or_duplicate`, excluded by the same honesty classification every
-other eval in this document uses — not an instance drop, so it did not
-invoke a second retry). Mean **12.712**, sd 2.206.
-
-`bootstrap_difference`, seed 0, 10,000 resamples:
-
-- vs run 4's arm (18.143, n=105): **−5.431 [−6.243, −4.600]** — upper bound
-  < 0, **WORSE**.
-- vs scripted-`all` (6.105, n=105): **+6.607 [+6.165, +7.020]** — beats
-  scripted.
-- vs random-`all` (3.556, n=90): **+9.156 [+8.622, +9.658]** — beats
-  random.
-
-**(ii) The `#75` wall.** Max final wave across training (1,221 episodes,
-max 17) and this evaluation (104 episodes, max 16) is 17 — no episode
-reached wave 20, let alone 21 or 22. **Not falsified, and not meaningfully
-tested**: the arm never played anywhere near the wall in either training or
-evaluation, so this run gives no evidence either way on whether wave 21 is
-a fixed ceiling.
-
-This BBF-recipe arm is clearly worse than run 4's stacked-dqn arm at this
-budget, while still clearly beating both baselines. One run, as
-pre-registered: no rerun, no best-of. Host cleanup verified after each
-stage (training and both eval attempts): no qemu process, empty `adb
-devices`, clean git tree throughout. Comment posted on `#74`; board item
-not moved.
-
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 
 Design: `render-interval-16` private bridge build (specialist design notes,
@@ -905,9 +735,9 @@ are identical to 45k, and M2-P005 found render-interval-16 FAITHFUL for
 evaluating the trained run-4 arm at high waves. With one run per arm this
 cannot be proven, so render-interval-16 stays the training build. (d) Run
 4's recipe was still rising at 60k decisions, while run 5b plateaued. A
-plateau is the symptom that BBF-style resets target (#58).
+plateau is the symptom periodic network resets would target (#58).
 
-## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
+## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,
 `--upgrade-availability all`, ε anneal 8,000 decisions, `--budget-game-seconds 240000`,
@@ -917,8 +747,8 @@ plateau is the symptom that BBF-style resets target (#58).
 
 - `--gradient-steps-per-decision 1.0` (was 0.25, the DER rate — run 3's default).
 - n-step return annealed 10 → 3 exponentially over the first 10,000 gradient
-  steps (`--n-step 10 --n-step-final 3 --n-step-anneal-steps 10000`), the BBF
-  recipe (Schwarzer et al. 2023, arXiv:2305.19452). Run 3 held n fixed at 10.
+  steps (`--n-step 10 --n-step-final 3 --n-step-anneal-steps 10000`).
+  Run 3 held n fixed at 10.
 - `--frame-game-ms 100`, explicit. Run 3 ran at 16.667 (the pre-`2d38bc9`
   default); 100 and 16.667 were shown equivalent under the M2 setup in
   `M2-S001`, and `2d38bc9` since made 100 the standing default.
@@ -1025,7 +855,7 @@ resamples), against each reference's own raw episodes:
 - vs scripted-`all` (6.105, n=105): **+12.038 [+11.305, +12.743]**.
 - vs random-`all` (3.556, n=90): **+14.587 [+13.789, +15.354]**.
 
-**Verdict.** The DER-rate gradient step, BBF n-step anneal, and
+**Verdict.** The DER-rate gradient step, n-step anneal, and
 `frame_game_ms` 100 change together produce an arm that beats run 3's arm by
 both available comparisons, CI lower bound clearly above zero either way.
 
@@ -1038,7 +868,7 @@ every hyperparameter and flag — `stacked-dqn`, `--upgrade-availability all`,
 `--block-game-seconds 4000`, `--checkpoint-every-game-seconds 60000`,
 `--early-stop-patience-periods 2`, `--early-stop-min-improvement 0.2`,
 `--gradient-steps-per-decision 1.0` (DER rate), `--n-step 10 --n-step-final 3
---n-step-anneal-steps 10000` (BBF anneal), `--frame-game-ms 100`, 7 actors,
+--n-step-anneal-steps 10000` (n-step anneal), `--frame-game-ms 100`, 7 actors,
 seed 0. **The only changes:**
 
 (a) **Decision budget doubled.** `--budget-game-seconds` 240000 → **480000**
@@ -2090,9 +1920,9 @@ everything else identical, isolates the ε correction at ~11 h of device time.
   arXiv:1710.02298) Table 1 at **80K frames**. Run 3's 100 sequences ≈ **3,500 fleet decisions**
   sit far later in their own run than either, which is why the ordering is a live question here.
 - **Replay ratio, n-step, optimiser.** DQN and Rainbow both take one gradient step per 4 agent
-  steps = **0.25** a decision, exactly run 3's; BBF (arXiv:2305.19452) runs **8**, §3.1 asks 2–8.
-  n: Rainbow **3** (tuned over {1,3,5}), Ape-X **3**, R2D2 **5**, BBF *"10 to 3 over the first
-  10K gradient steps"*, run 3 **10** at 5.00 decisions a wave. Rainbow's optimiser: lr
+  steps = **0.25** a decision, exactly run 3's; §3.1 asks 2–8.
+  n: Rainbow **3** (tuned over {1,3,5}), Ape-X **3**, R2D2 **5**, run 3 **10** at 5.00 decisions
+  a wave, annealed 10 to 3 over the first 10K gradient steps. Rainbow's optimiser: lr
   **6.25e-5**, Adam ε **1.5e-4**, ω **0.5**, β **0.4→1.0**, against run 3's 1e-4 / 1e-8 /
   uniform. Known deviations (`#53` D2–D5), unchanged so this run carries two variables, not six.
 - **Evaluation and selection.** Agarwal et al. 2021 (NeurIPS, arXiv:2108.13264): IQM *"discards

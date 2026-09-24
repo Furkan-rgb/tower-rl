@@ -263,7 +263,7 @@ class TrainingConfig:
     #: is the transitions replayed per transition generated, which is this times
     #: the learnable steps in a batch - at 80-step sequences, burn-in 7, n-step
     #: 10 and batch 8 that is about 504 per step, so 0.25 puts the run at 126:1,
-    #: between SPR (64) and BBF (256). The 2.0 of the first run was 1087:1.
+    #: above SPR's 64:1. The 2.0 of the first run was 1087:1.
     gradient_steps_per_decision: float = 0.25
     #: Episodes per point of the collection curve. The curve is read from the
     #: collection episodes themselves rather than from exploration-free

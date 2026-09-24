@@ -18,10 +18,10 @@ learning applied end to end to a real, unmodified commercial game running on
 Android, not to a gym environment. It shows both the learning results and the
 engineering that made the game trainable.
 
-**Outcome A, model comparison.** At least four learners are trained and
+**Outcome A, model comparison.** At least three learners are trained and
 evaluated under one identical, pre-registered, budgeted protocol on the same
-fixed account state: the current stacked-dqn, BBF, DreamerV3, and
-EfficientZero V2. Before any game run, each learner must pass two separate
+fixed account state: the current stacked-dqn, DreamerV3, and EfficientZero V2.
+Before any game run, each learner must pass two separate
 checks: an implementation check, where the same code path reproduces a
 published result on a standard benchmark; and a configuration check, where
 every hyperparameter is compared with its paper and each deviation is
@@ -31,7 +31,7 @@ to the environment contract.
 **Outcome B, performance that demonstrates learning.** The best learner is
 compared with the random and scripted baselines using 95% intervals, and
 learning is shown by the checkpoint learning curve. This must not rest on
-beating weak baselines alone; the four-learner comparison and the curve
+beating weak baselines alone; the three-learner comparison and the curve
 carry the evidence. A human reference recorded on the same fixed account
 state may be added later as a separate decision. Attainable waves are
 bounded by the fixed permanent account state; the §6 non-goal on
@@ -64,11 +64,6 @@ as a limitation that run-to-run spread is unmeasured, citing `M2-P006` and
 `M2-P006b`: runs 4, 5 and 5b gave (8k,12k] near-greedy means of 9.87, 10.02
 and 8.32 with the same recipe and seed. A 3-runs-per-learner design was
 offered and declined.
-
-**Developer decision, 2026-09-24, BBF implementation check:** for the BBF arm
-the known-answer implementation check is dropped by developer decision
-(2026-09-24); component tests against the official code and the configuration
-check stand in its place. The configuration check is `docs/solution.md` 9.4c.
 
 ## 2. Authoritative project objective
 

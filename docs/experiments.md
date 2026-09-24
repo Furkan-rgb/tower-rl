@@ -148,7 +148,10 @@ pre-registered bounds under the M2 setup. It does *not* clearly clear the
 per-actor collection-rate evidence (2.6–3.0×) is suggestive of a real
 speed-up worth reproducing at a longer episode count where fixed overhead
 amortizes, but this run does not by itself authorize switching M2 training to
-100. 16.667 stays the standing default pending that follow-up.
+100. 16.667 stays the standing default pending that follow-up (superseded by
+the Lead decision below).
+
+Lead decision (2026-09-24): frame_game_ms = 100 is adopted as the default (merge 55e5e0c). Equivalence passed on both arms. The pre-registered ≥2× fleet bar measured stage wall-clock over 5 episodes per actor, where bring-up and teardown dominate; that was the wrong quantity for a multi-hour run — a design error in this pre-registration, recorded here rather than hidden by a re-run. The quantity that governs a long run is the per-actor collection rate, 2.57–3.03× faster at 100 ms. Run 4 (M2-P004) is the fleet-level measurement at 100 ms; its throughput will be reported beside run 3's 36,855.7 game-s/h. Reversible: `--frame-game-ms 16.667` restores the old value.
 
 ## M2-P003 — Milestone 2, run 3: upgrade availability `all`, corrected ε schedule, one seed, exploratory (pre-registered, written before any run)
 

@@ -23,13 +23,18 @@ from tower_rl.environment.run_state import (
     NO_ENEMY_DISTANCE,
     OUT_OF_RANGE_REASON,
     LiveTransform,
+    RunState,
     RunStateBuilder,
-    action_is_allowed,
     validate_transition,
 )
 from tower_rl.simulation.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
 
 BUILDER = RunStateBuilder(profile_id="tower-play-29.0.3-rooted-v1")
+
+
+def action_is_allowed(state: RunState, action: RunActionId) -> bool:
+    """Whether the mask admits this action for this state."""
+    return state.action_mask[action_index(action)]
 
 
 def _entry(
@@ -238,7 +243,7 @@ def test_a_terminal_run_offers_no_action_at_all() -> None:
     state = BUILDER.build(_reading(lifecycle="terminal", health=0.0), captured_at_monotonic=1.0)
 
     assert state.terminal
-    assert state.available_actions() == ()
+    assert not any(state.action_mask)
     assert not action_is_allowed(state, WAIT)
 
 

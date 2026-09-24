@@ -2037,7 +2037,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
-    { name = "pillow" },
     { name = "torch" },
 ]
 
@@ -2058,7 +2057,6 @@ dev = [
 requires-dist = [
     { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=3,<4" },
     { name = "numpy", specifier = ">=2.5.3" },
-    { name = "pillow", specifier = ">=11,<13" },
     { name = "torch", specifier = ">=2.14.0" },
 ]
 provides-extras = ["tracking"]

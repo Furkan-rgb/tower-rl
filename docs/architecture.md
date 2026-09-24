@@ -69,7 +69,7 @@ Owns the decision problem, and nothing about how a device is reached.
   `ACTION_SCHEMA_VERSION`.
 - `run_state.py` — `RunState` and `RunStateBuilder`, which turn one bridge
   reading into a validated observation; `OBSERVATION_SCHEMA_VERSION`,
-  `validate_transition`, `action_is_allowed`. It also holds `LIVE_FIELDS`, the
+  `validate_transition`. It also holds `LIVE_FIELDS`, the
   single declaration of what `observation-v2` shows the policy beyond the
   upgrade grid — one `Main` field per row, its observed unit, and the transform
   that rescales it — together with `scale_live_reading`, which enforces each

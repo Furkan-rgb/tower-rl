@@ -25,7 +25,6 @@ from tower_rl.environment.run_actions import (
     SLOTS_PER_FAMILY,
     RunActionId,
     UpgradeFamily,
-    action_index,
     upgrade_action,
 )
 
@@ -319,11 +318,6 @@ class RunState:
         """
         return any(self.action_mask[1:])
 
-    def available_actions(self) -> tuple[RunActionId, ...]:
-        return tuple(
-            action for action, allowed in zip(RUN_ACTIONS, self.action_mask, strict=True) if allowed
-        )
-
 
 @dataclass(frozen=True)
 class RunStateBuilder:
@@ -512,8 +506,3 @@ def hud_readings(state: RunState) -> dict[str, float]:
             case _:
                 readings[live.wire] = scaled
     return readings
-
-
-def action_is_allowed(state: RunState, action: RunActionId) -> bool:
-    """Whether the mask admits this action for this state."""
-    return state.action_mask[action_index(action)]

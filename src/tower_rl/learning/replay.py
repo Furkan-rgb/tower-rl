@@ -84,10 +84,6 @@ class ReplaySequence:
         if all(step.padding for step in self.steps[self.burn_in :]):
             raise ReplayRejected("padding alone is not a learning window")
 
-    @property
-    def learn_length(self) -> int:
-        return len(self.steps) - self.burn_in
-
 
 @dataclass
 class ReplayStats:

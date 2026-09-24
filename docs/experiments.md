@@ -101,6 +101,58 @@ Not yet measured: the production figure under 7 actor threads, where lock and
 CPU contention previously turned 35 ms idle into 61 ms. It is to be read from
 the next real run.
 
+## Plateau diagnosis: training dynamics vs the fixed account (2026-09-24, #75)
+
+Method: existing episode and eval records only, no device run. Read training
+and eval episode rows (final_wave, purchases, per-wave `game_ms`/`decisions`/
+`health_fraction`/`cash_log` at wave entry) plus one per-decision spectate log,
+`state/recordings/m2-run4-arm.decisions.jsonl` (1 episode, run-4 arm, died
+wave 11). Records hold cash and health at wave entry only, never at death, and
+carry no upgrade levels — so "state at death" below is inference from the
+nearest wave-entry row plus the one spectate log, not a direct reading.
+
+Premise correction (fact): the "~10" figure is the (8k, 12k]-decision window
+only, not a plateau — run 4 9.87, run 5 10.02, run 5b-s0 8.32, run 5b-s1 10.73.
+Late-third near-greedy means are higher: run 4 14.78, run 5b-s1 15.61, run 3
+14.59. Only the two runs stopped by a kill bar stayed near 10: run 5 (killed
+24k decisions) 10.4, run 5b-s0 (killed 12k) 8.38.
+
+Two walls (fact): wave 11-12, which continued training broke through — run 5
+(killed at 24k decisions) 0/626 training episodes above wave 11; run 1 1/1,388.
+Runs trained past ~30k decisions all crossed it. Wave 20-21: 0 of 5,398 training
+and 0 of 1,657 eval episodes reached wave 22; 255 episodes (74+181 training/eval
+at >=20) reached wave 20 or higher, and 0/255 of those passed 21. Wave 10 is a
+boss wave (fact, `bossWaveBool=1` in the spectate log); that wave 20 is also a
+boss wave is inference, not logged.
+
+Run-to-run (fact): the run 4 arm (mean 18.14) vs run 5b-s1 arm (15.59) gap of
+2.55 waves is entirely in P(reach wave 20) — 65% vs 24% — the wall itself is
+identical between arms. Same-recipe spread at the 12k-decision window is
+8.32-10.73 across 4 runs, against a within-run standard error of 0.10-0.23.
+
+Greedy vs near-greedy (fact): run 4's last training period 16.46 -> arm eval
+18.14 (+1.7, curve still rising); run 5b-s1 15.68 -> 15.59 (no change).
+
+State-at-death evidence, and its limits (fact, with inference noted): run-4-arm
+median cash at wave entry rises with wave (18 at w10, 76 at w20). The one
+spectate log shows the episode WAITing on cash (17-37) while health fell from
+0.98 to 0.02 before dying at wave 11, with affordable upgrades (Defense
+Absolute at cost 26, Damage 29-35) unspent. Levels at death were 1-8 against
+maxima 149-6000 — nothing near its cap. These are wave-entry and single-episode
+readings, not death-moment state, since records store cash and health only at
+wave entry.
+
+Verdict: the ~10 plateau is training time plus kill bars stopping runs early
+(H1), not a hard wall. About 2.4 waves of H1 headroom remain below the wall for
+run 4's arm (18.14 mean vs the wave-20/21 wall). Whether wave 21 is a game
+ceiling or an account ceiling is UNDECIDED. Falsifier: any episode reaching
+wave 22.
+
+Scope fact: `docs/task.md` section 6 ("Explicit non-goals and boundaries")
+lists Workshop, Lab, Card, Module, Perk, event, and tournament permanent- or
+meta-progression optimisation as a non-goal, so raising the account ceiling
+itself is out of scope for this diagnosis.
+
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 
 Design: `render-interval-16` private bridge build (specialist design notes,

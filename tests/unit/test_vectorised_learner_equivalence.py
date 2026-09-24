@@ -161,23 +161,27 @@ def _random_target_inputs(
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("seed", range(300))
-def test_vectorised_n_step_targets_equal_the_step_by_step_loop(seed: int, device: str) -> None:
-    rewards, dones, online_q, target_q, mask, discount, n_step = _random_target_inputs(
-        seed, device
-    )
+def test_vectorised_n_step_targets_equal_the_step_by_step_loop(device: str) -> None:
+    for seed in range(300):
+        rewards, dones, online_q, target_q, mask, discount, n_step = _random_target_inputs(
+            seed, device
+        )
 
-    targets, learnable = n_step_targets(
-        rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
-    )
-    expected_targets, expected_learnable = _loop_n_step_targets(
-        rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
-    )
+        targets, learnable = n_step_targets(
+            rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
+        )
+        expected_targets, expected_learnable = _loop_n_step_targets(
+            rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
+        )
 
-    assert targets.shape == expected_targets.shape
-    assert targets.dtype == expected_targets.dtype
-    torch.testing.assert_close(targets, expected_targets, rtol=0.0, atol=0.0)
-    torch.testing.assert_close(learnable, expected_learnable, rtol=0.0, atol=0.0)
+        assert targets.shape == expected_targets.shape, f"seed {seed}"
+        assert targets.dtype == expected_targets.dtype, f"seed {seed}"
+        torch.testing.assert_close(
+            targets, expected_targets, rtol=0.0, atol=0.0, msg=f"seed {seed}"
+        )
+        torch.testing.assert_close(
+            learnable, expected_learnable, rtol=0.0, atol=0.0, msg=f"seed {seed}"
+        )
 
 
 _METADATA = SequenceMetadata(
@@ -223,6 +227,16 @@ def _seeded_replay(seed: int) -> PrioritizedSequenceReplay:
         indices, tuple((draw.uniform(0.0, 5.0),) for _ in indices)
     )
     return replay
+
+
+def test_a_weight_count_that_differs_from_the_sequence_count_is_refused() -> None:
+    """Packing would otherwise drop surplus weights without a word."""
+    replay = _seeded_replay(0)
+    _, sequences, weights = replay.sample(4)
+
+    for wrong in (weights + (1.0,), weights[:-1]):
+        with pytest.raises(ValueError, match="exactly one weight"):
+            collate(sequences, wrong)
 
 
 def _assert_same_batch(batch: SequenceBatch, expected: SequenceBatch) -> None:

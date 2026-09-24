@@ -26,6 +26,33 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Learner step speed-up (2026-09-24, #72)
+
+A pure speed change to the learner: `n_step_targets` vectorised over batch and
+time, and `collate` packed into one buffer with a single host-to-device
+transfer. Both are bit-for-bit equal to what they replaced;
+`tests/unit/test_vectorised_learner_equivalence.py` keeps the old versions as
+oracles and asserts exact equality on CPU and CUDA.
+
+Shapes: batch 8 × 80 steps, burn-in 7, n = 10, 197,379 parameters, RTX 4090.
+One step is `collate` plus `StackedDqnBackbone.learn`, synchronised around every
+call; each figure is the median of 60 steps after 10 warm-up, before and after
+runs interleaved, two of each.
+
+| idle host | collate | learn | of which n-step targets | step |
+| --- | --- | --- | --- | --- |
+| before (9b703d6) | 10.3 ms | 21.7–22.3 ms | 17.0–17.7 ms | 34.5–35.0 ms |
+| after | 4.7 ms | 4.9–5.1 ms | 0.32 ms | 9.8–10.2 ms |
+
+The reviewer's independent re-run of the after build on a loaded host (load
+average about 4.7) measured 12.8–13.4 ms per step. What remains of `learn` is
+led by `value_fit_correlation` (about 2 ms); what remains of `collate` is
+reading the stored per-step feature tuples.
+
+Not yet measured: the production figure under 7 actor threads, where lock and
+CPU contention previously turned 35 ms idle into 61 ms. It is to be read from
+the next real run.
+
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 
 Design: `render-interval-16` private bridge build (specialist design notes,

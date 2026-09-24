@@ -557,7 +557,8 @@ once and loops over the n offsets only, and `collate` writes the batch into one
 float32 buffer that crosses to the device in a single transfer. What is left in
 `collate` is reading the per-step feature tuples, about 4.7 ms; the largest
 remaining piece of `learn` is `value_fit_correlation`, about 2 ms. Measured with
-a median of 60 steps after 10 warm-up; board item #72.
+a median of 60 steps after 10 warm-up; evidence in `docs/experiments.md`,
+"Learner step speed-up (2026-09-24, #72)".
 
 ### 6.11 Evaluator and promoter
 

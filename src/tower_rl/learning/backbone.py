@@ -160,6 +160,8 @@ def collate(
         raise ValueError("all sequences in a batch must have the same length")
     if any(sequence.burn_in != burn_in for sequence in sequences):
         raise ValueError("all sequences in a batch must share one burn-in length")
+    if len(weights) != len(sequences):
+        raise ValueError("every sequence in a batch needs exactly one weight")
 
     # Every value of the batch is written once into one float32 buffer, step by
     # step, and the buffer crosses to the device in one transfer; the typed

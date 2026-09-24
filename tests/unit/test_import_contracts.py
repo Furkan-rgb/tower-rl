@@ -75,7 +75,6 @@ SCRIPT_MODULES = (
     "render_recording",
     "diagnose_plasticity",
     "migrate_state",
-    "unlock_trial",
 )
 
 #: The test files allowed to import each entry point: the ones that test that
@@ -149,11 +148,6 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     "diagnose_plasticity": frozenset({"test_diagnose_plasticity"}),
     # The one-shot move of this host's former state tree into the project.
     "migrate_state": frozenset({"test_migrate_state"}),
-    # Which instance the board #54 write instrument may reach. The derivation
-    # lives in the entry point because it is composition - a serial the operator
-    # typed resolved against the fleet's own port scheme - and this is the one
-    # file that reads it.
-    "unlock_trial": frozenset({"test_unlock_trial"}),
 }
 
 def imported_modules(path: Path, root: Path = SOURCE) -> set[str]:

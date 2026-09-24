@@ -29,13 +29,15 @@ justified. Official reference implementations may be used behind an adapter
 to the environment contract.
 
 **Outcome B, performance that demonstrates learning.** The best learner is
-compared with the random and scripted baselines and with a human reference
-recorded on the same fixed account state. The goal is to match or exceed the
-human reference with a 95% interval, not merely to beat weak baselines.
-Attainable waves are bounded by the fixed permanent account state; the §6
-non-goal on guaranteeing a maximum wave still stands. Much higher waves
-(e.g. 100) would require a stronger fixed baseline or the M8–M11 progression
-program, and that is a separate decision.
+compared with the random and scripted baselines using 95% intervals, and
+learning is shown by the checkpoint learning curve. This must not rest on
+beating weak baselines alone; the four-learner comparison and the curve
+carry the evidence. A human reference recorded on the same fixed account
+state may be added later as a separate decision. Attainable waves are
+bounded by the fixed permanent account state; the §6 non-goal on
+guaranteeing a maximum wave still stands. Much higher waves (e.g. 100) would
+require a stronger fixed baseline or the M8–M11 progression program, and
+that is a separate decision.
 
 **Outcome C, results reporting.** `README.md` presents a comparison table.
 Per learner it gives mean, median, and maximum final wave with 95%

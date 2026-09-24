@@ -716,6 +716,138 @@ it is not a like-for-like test of "does more budget / does
 `render-interval-16` help", which a kill-bar stop this early cannot speak to
 either way.
 
+## M2-P005 diagnostic — why run 5 fell behind run 4 per decision (pre-registered, written before the device stage)
+
+**Date:** 2026-09-24. Board `#64`, follow-up to `M2-P005`'s NOT BETTER verdict.
+Three candidate causes for why run 5's near-greedy window mean at matched
+decisions (10.344) sat below run 4's own reading at the same window, and why
+the greedy default-build eval of a **more-trained** run-5-recipe arm would be
+expected to beat, not undercut, a near-greedy in-training figure of similar
+magnitude:
+
+- **H1 — `render-interval-16` changes the game for a *learned* policy.**
+  `#27` stage 3 validated fidelity only for the **scripted** policy, which
+  reads almost none of the observation. Warning sign: near-greedy on the
+  `render-interval-16` build was 10.34 (run 5, in-training), but greedy
+  evaluation of a *more*-trained arm on the default build (run 4's own arm)
+  was 18.14 — not a contradiction by itself (different policies, different
+  builds, different training extent), but the gap this diagnostic exists to
+  bound.
+- **H2 — a schedule defined as a fraction of the budget** (epsilon, beta,
+  warm-up) leaves the 2× run less annealed at matched decisions.
+- **H3 — seed variance.** The kill-bar SE is within-run episode noise, not
+  between-seed variance, so a single-seed kill-bar reading cannot rule out
+  ordinary run-to-run spread.
+
+### Desk analysis (before any device time)
+
+**(a) Which schedules scale with the budget.** `TrainingConfig.beta` (the PER
+importance-sampling exponent, `src/tower_rl/learning/training.py:357`) is
+defined as `beta_start + (beta_end − beta_start) · progress(game_ms)` where
+`progress = min(1, game_ms / budget_game_ms)` — **a fraction of the budget**,
+not of decisions. This was missed in `M2-P005`'s own pre-registration, which
+checked epsilon, n-step and warm-up (all absolute) but not beta explicitly.
+`epsilon_anneal_decisions` (8000) and `n_step_anneal_steps` (10000 gradient
+steps) are both absolute and reach the same point at the same decision/
+gradient-step count regardless of budget — confirmed by the near-greedy
+ladder floors being identical between the two runs at decision ≈24k (both
+past the epsilon floor). `warmup_sequences` (100) is absolute. **Beta is the
+one schedule that differs**: at decision 24,328 (run 4) / 24,355 (run 5),
+actual cumulative game time is 119,124.3 s (run 4) and 160,108.1 s (run 5);
+against each run's own budget (240,000 s / 480,000 s) that is progress 0.496
+and 0.334, giving **beta 0.698 (run 4) vs 0.600 (run 5)** at matched
+decisions — run 5 is less annealed on this one schedule, as H2 predicts.
+However **`priority_alpha` is 0.0 in both runs** (`resolved_config`,
+confirmed by direct read), so priorities are uniform and the IS weight
+`(1/(N·P(i)))^beta` collapses to 1 regardless of beta's value — **beta's
+practical effect on the gradient should be negligible in both runs**, so H2's
+mechanism is present but is not expected to explain the shortfall given
+`priority_alpha=0`. This is reported as a real schedule asymmetry, not
+retuned.
+
+**(b) Run 4's own near-greedy window mean over the same (8000, 24328]
+decisions.** Recomputed from `state/runs/session-20260924-030851/.../summary.json`
+`collected_episodes` with the identical filter `M2-P005` used to derive the
+kill bars: **mean 11.158, sd 1.627, SE 0.152, n=114** — against run 5's
+10.344 (n=195) at the same nominal window. Difference 0.814 waves, about
+5.4× run 4's own SE — a real, not noise-level, gap between the two runs at
+matched decisions on the metric the kill bar actually used.
+
+**(c) Game-seconds per decision, matched decision range (8000 to ≈24,330],
+not whole-run.** Whole-run throughput figures (192,444.6 vs 110,758.8
+game-s/hour) are not comparable because run 5 stopped early and includes
+proportionally more bring-up. Over the identical decision span:
+
+| run | decisions in span | game-s in span | game-s/decision |
+| --- | --- | --- | --- |
+| run 4 | 16,302 | 72,095.7 | **4.423** |
+| run 5 | 16,324 | 113,856.5 | **6.975** |
+
+Run 5 spends **1.577×** as much game-time per decision as run 4 over the
+identical decision range. This is the sharpest finding of this diagnostic:
+`#27` stage 3's own fidelity gate (2) found `render-interval-16` did **not**
+move decisions/wave for the **scripted** policy (4.05–4.18 across all three
+arms). A 1.58× game-time-per-decision inflation for the near-greedy
+**learned** policy that does not appear for the scripted policy is direct,
+matched-range evidence **for H1**: the build behaves differently for a
+policy that reads the observation than for one that mostly ignores it —
+consistent with, though not proof of, an observation- or timing-sensitive
+effect `render-interval-16`'s validation never covered.
+
+**(d) `advances_cut_short` per episode, matched decision range.** Run 4:
+44/219 valid episodes = **0.201** (20.1%). Run 5: 81/351 valid episodes =
+**0.231** (23.1%). This is a materially smaller gap than the whole-run
+figures in `M2-P005`'s first write-up implied (155/626 = 24.8% for run 5
+against a loosely-stated "run 4's ≈0.3–0.5 per episode at the period
+level", which was not a matched comparison and is corrected here): at the
+same decision range the two runs differ by only 3 points (20.1% vs 23.1%,
+ratio 1.15×), not the several-fold gap the uncorrected comparison suggested.
+`advances_cut_short` is not read as a material contributor to the shortfall.
+
+**Reading.** (a)+(d) do not support H2 or a fidelity-health explanation as
+primary. (c) is the strongest, matched-range signal and points at H1: the
+policy-dependent game-time-per-decision inflation is a real, build-specific
+effect not present for the scripted policy `#27` stage 3 validated, and it is
+large enough (1.58×) to plausibly explain a fleet collecting materially less
+*policy-relevant* experience per decision, which would depress the
+near-greedy curve at matched decision counts independent of anything about
+annealing or health. H3 (seed variance) cannot be excluded by desk analysis
+alone — one seed each side of the comparison cannot separate it from H1 — but
+(c)'s policy-specific signal is not what seed variance alone would predict
+(seed variance would not systematically differ between the scripted-policy
+equivalence check and this learned-policy reading).
+
+### Device stage — does `render-interval-16` stay faithful for a *trained* policy?
+
+**Design.** Evaluate the **run-4 arm** (`checkpoint-gs0240594.pt`, sha256
+`bc94b628c2e2a028857d6a9238fe2445f1911818eda34d6c55089b969350fdde`, the same
+checkpoint `M2-P004` evaluated at 18.143/n=105 on the default build) on the
+`render-interval-16` build
+(`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`,
+`TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16` exported to
+both `run_stage.sh` and the runner), run 4's eval settings (`--upgrade-
+availability all --frame-game-ms 100`, greedy), **7 actors × 5 episodes = 35
+attempted** (n target 35, smaller than the usual 105 because this is a
+fidelity check on an existing, already-measured arm, not a fresh claim):
+
+    scripts/run_stage.sh --name m2-run5-diag-eval --instances 7 -- \
+        uv run python scripts/run_actors.py --actors 7 --episodes 5 \
+        --policy checkpoint:state/runs/session-20260924-030851/stacked-dqn-20260924-030851-6014a1/checkpoints/checkpoint-gs0240594.pt \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m2-run5/diag-eval
+
+**Rule.** Bootstrap 95% CI of the difference against run 4's own default-build
+reading (18.143, n=105) via `bootstrap_difference` (seed 0, 10,000
+resamples). **FAITHFUL** if the whole CI lies inside ±2.0 waves. **NOT
+FAITHFUL** if the CI's upper bound is < −2.0 or its lower bound is > +2.0.
+Otherwise **INCONCLUSIVE**. Safety, crash/retry rules unchanged from
+`M2-P005` (one retry after full cleanup if instances drop mid-eval, no
+pooling of partial attempts).
+
+### Results, as run
+
+(to be filled in after the device stage)
+
 ## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
 
 **Finding that motivates this (scout, verified against manifests and docs).**

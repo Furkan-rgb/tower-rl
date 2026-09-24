@@ -26,6 +26,54 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Learner profile (2026-09-24)
+
+**Status:** Corrects prior claims below (see the "Correction (2026-09-24)"
+notes inline in `M2-P006`'s timebox reasoning and its diagnosis subsection).
+**Purpose:** Record a specialist profile of the learner step so two earlier
+readings — a synchronous ~120 ms gradient step pacing the fleet, and a 0.78
+gradient-steps-per-decision ratio — are not carried forward uncorrected.
+
+- **Training already runs on the RTX 4090, not the CPU.** `scripts/train.py`
+  selects `cuda` when available (around line 1178); both run 4's and run 5b's
+  `manifest.json` record `"device": "cuda"` (verified directly:
+  `state/runs/session-20260924-030851/stacked-dqn-20260924-030851-6014a1/manifest.json:22`
+  and
+  `state/runs/session-20260924-123112/stacked-dqn-20260924-123112-3e048b/manifest.json:22`).
+  Actors' acting copies are on the same GPU; checkpoints load with
+  `map_location="cpu"`.
+- **The production learner step is 61-77 ms, not ~120 ms, and is
+  Python/CPU-bound, not device-bound.** `summary.json`'s `learner_step`
+  bucket reads 75-76 ms wall (69-70 ms CPU) per decision in run 4
+  (`state/runs/session-20260924-030851/summary.json`) and ~61 ms in run 5b
+  retry (`state/runs/session-20260924-123112/summary.json`). An idle-4090
+  microbenchmark at the real batch geometry (8×80, 197k params; scratchpad
+  `prof.py`) measures 35 ms/step on CUDA (collate 12 ms, learn 22.5 ms, of
+  which the `n_step_targets` Python double loop is 17.6 ms) versus 90 ms/step
+  on CPU — i.e. the GPU step is kernel-launch/Python-overhead bound, not
+  device- or model-size-bound; production is slower than idle-CUDA because of
+  GIL contention with the actor threads and host load.
+- **The replay ratio is enforced exactly at episode boundaries, not
+  loosely.** `TrainingRun._learn` pays each actor's earned gradient-step debt
+  under `_lock` when its episode ends; other actors continue playing and only
+  queue at that lock. Verified directly from `summary.json`
+  (`optimisation_steps / decisions`): run 4
+  (`state/runs/session-20260924-030851/summary.json`) is 58,046 / 60,356 =
+  **0.962**; run 5b retry
+  (`state/runs/session-20260924-123112/summary.json`) is 119,589 / 121,781 =
+  **0.982** — both close to the configured 1.0. The earlier **0.78** figure
+  (`M2-P006b`'s diagnosis) was read at ~12k-decision checkpoints, where
+  warm-up (debt held at zero until 100 sequences) still weighs heavily; it is
+  not the steady-state ratio. Actors spend roughly 12% of wall time blocked
+  at episode ends waiting for this debt to be paid, which is real-time-safe
+  because it happens between runs, not mid-episode.
+
+This entry does not change any milestone gate; it corrects two specific
+figures used in earlier timebox and diagnostic reasoning in `M2-P006` (its
+~120 ms timebox citation and its 0.78 diagnosis citation, both marked inline
+with "Correction (2026-09-24)" notes) and records that the learner already
+runs on the host's CUDA device.
+
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 
 Design: `render-interval-16` private bridge build (specialist design notes,
@@ -432,7 +480,10 @@ verdict means "not resolved at this n", not "no effect".
 only 1.06×, despite the build's own 1.74–1.92× game-time speedup (`#27`
 stage 3). This is consistent with a synchronous gradient step (~120 ms) per
 decision pacing the fleet, not render/collection time — the build changes
-game-time throughput, not decision throughput. At 29,273.9 decisions/hour,
+game-time throughput, not decision throughput.
+Correction (2026-09-24): see Learner profile — the learner already runs on
+the 4090; the measured step is 61-77 ms (not ~120 ms) and is Python/CPU
+overhead, not device- or synchrony-bound in the sense implied here. At 29,273.9 decisions/hour,
 120,712 decisions projects to **≈4.12h**, inside the cap but not by a wide
 margin; see the cap policy above if it is not.
 
@@ -489,6 +540,10 @@ decides whether to retry with a different seed or otherwise).
 `run5b-k1-diagnosis.md`). Regression **falsified**: at matched
 checkpoint-counter ratios (gradient steps / decisions) run 4 is 0.774, run 5
 0.779, run 5b 0.781 — the training code did not change under `#68`/`#69`
+(Correction (2026-09-24): see Learner profile — these ~0.78 figures were read
+at ~12k-decision checkpoints, where warm-up still weighs heavily; the
+end-of-run ratios are 0.962 (run 4) and 0.982 (run 5b), close to the
+configured 1.0.)
 beyond the budget axis, checkpoint cadence, and kill-bar unit; `exploration.py`
 is byte-identical, and warm-up, n-step anneal, learning rate, and target EMA
 are all decision/gradient-step-indexed and unaffected. Schedule mismatch

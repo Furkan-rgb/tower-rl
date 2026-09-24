@@ -1217,6 +1217,17 @@ def test_a_kill_bar_reads_the_near_greedy_actors_alone() -> None:
     play(training, [5], actor=1)
     play(training, [5], actor=2)
 
+    near_greedy = [training.report.actors[a.config.actor_id] for a in training.actors[1:]]
+    searching = training.actors[0].run_episode
+
+    def after_near_greedy() -> EpisodeResult:
+        deadline = time.monotonic() + 10
+        while any(p.episodes == 0 for p in near_greedy) and time.monotonic() < deadline:
+            time.sleep(0.001)
+        return searching()
+
+    training.actors[0].run_episode = after_near_greedy  # type: ignore[method-assign]
+
     report = training.run()
 
     [check] = report.kill_bar_checks

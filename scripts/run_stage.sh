@@ -253,6 +253,26 @@ log_host_load() {
   } >> "$log_path"
 }
 
+#: On a failed stage, a full guest logcat dump from every still-attached
+#: serial, taken between `stop_stage` and `clean_instances` so the instance is
+#: still there to pull from. A bring-up failure leaves no emulator log line at
+#: all — `instrumented_bridge.sh deploy` runs `logcat -c` on deploy, so this
+#: dump covers exactly the post-deploy history — and `log_emulator_crash_lines`
+#: below only ever reads the host-side emulator log, never the guest's own.
+#: `main,system,crash,events` is what a game death or an ANR shows up in;
+#: `-v threadtime` keeps the timestamps a failure is read against host load by.
+#: `|| true` throughout, like every other teardown step: this must never
+#: change the stage's exit status or skip cleanup.
+log_stage_failure_logcat() {
+  local serial log_file
+  for serial in $(attached_serials); do
+    log_file="$log_directory/$name-$serial-logcat.txt"
+    timeout 20 "$adb" -s "$serial" logcat -d -b main,system,crash,events -v threadtime \
+      > "$log_file" 2>/dev/null || true
+    echo "logcat: $serial ($log_file)"
+  done
+}
+
 #: On a failed stage, the last handful of crash-shaped lines from each
 #: instance's own emulator log, so a host renderer crash is visible beside the
 #: summary rather than requiring a second pass through per-instance log files
@@ -532,6 +552,9 @@ finish() {
   [ -n "${stage_status:-}" ] || stage_status="$status"
   log_host_load
   stop_stage
+  if [ "$stage_status" -ne 0 ]; then
+    log_stage_failure_logcat
+  fi
   clean_instances
   verify_host_clean || cleanup_ok=no
   if [ "$stage_status" -ne 0 ]; then

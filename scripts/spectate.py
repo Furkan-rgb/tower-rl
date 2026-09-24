@@ -13,11 +13,24 @@ The default session is one episode: the agent plays a single run from wave 1
 until the tower dies, the panel holds the final state, and a keypress tears the
 instance down. `--episodes N` plays N, and `--episodes 0` plays until `q`.
 
-Two rules this path does not share with any other. It runs at 60 Hz, which is
+Three rules this path does not share with any other. It runs at 60 Hz, which is
 real time — the fleet's 120 Hz exists to make an advance cheap, and a human
-watching wants the game's own speed. And it refuses to start at all while any
-emulator is running: a session here must never share the host with a
-measurement or a training run, whose throughput is what the host is for.
+watching wants the game's own speed. Its `frame_game_ms` is pinned the same
+way, to `1000 / 60`, regardless of `run_episodes.py`'s own default: the fleet's
+100 ms is a throughput choice for a policy that never watches itself, and
+M2-S001 found 100 ms and 16.667 ms equivalent, so the real-time value is the
+right one for a human watching rather than a measurement. And it refuses to
+start at all while any emulator is running: a session here must never share the
+host with a measurement or a training run, whose throughput is what the host is
+for.
+
+An unattended `--record` session — nobody at the desk to watch a window — should
+run with `--no-window`: a hidden or covered emulator window starves for host
+compositor frames and the guest itself slows to roughly 1 fps, which is enough
+to hit the environment's per-advance wall-clock ceiling. `screenrecord` captures
+the guest display directly, so a recording needs no host window at all. The
+live terminal panel still works either way; it is a terminal UI, not the
+emulator's own window.
 
 The guest renders through `-gpu lavapipe` by default, not the host renderer the
 fleet uses: the host renderer glitches the picture, which makes a recording of
@@ -903,6 +916,7 @@ def session_record(
     identity: dict[str, object],
     *,
     frame_rate_hz: int,
+    frame_game_ms: float,
     decision_cadence: str,
     upgrade_availability: str,
     wall_seconds: float,
@@ -923,6 +937,11 @@ def session_record(
     return {
         "policy_identity": dict(identity),
         "frame_rate_hz": frame_rate_hz,
+        # Game time one rendered frame was worth this session; recorded rather
+        # than assumed, the same reason `frame_rate_hz` is recorded rather than
+        # named as a constant: this path pins its own default, and the record
+        # has to say the rate it actually ran at.
+        "frame_game_ms": frame_game_ms,
         # The protocol these episodes were played under (ADR 0009).
         "decision_cadence": decision_cadence,
         # Which upgrade rows this session could buy from (ADR 0011).
@@ -1023,8 +1042,23 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=RECORDINGS_DIRECTORY / "records",
         help="where the episode records are written",
     )
+    parser.add_argument(
+        "--no-window",
+        action="store_true",
+        help="bring the instance up without a host window; `screenrecord` "
+        "captures the guest display regardless, and a hidden or covered "
+        "window starves for compositor frames and drops to roughly 1 fps, "
+        "which hits the per-advance wall-clock ceiling — use this for an "
+        "unattended `--record` session",
+    )
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    # Real time at 60 Hz, pinned after `add_cadence_arguments` sets its own
+    # 100 ms default: the fleet's 100 ms is a throughput choice for a policy
+    # that never watches itself, and M2-S001 found 100 ms and 16.667 ms
+    # equivalent, so pinning the real-time value here does not change what a
+    # spectated episode plays through, only how it is paced for a watcher.
+    parser.set_defaults(frame_game_ms=1000.0 / SPECTATE_FRAME_RATE_HZ)
     arguments = parser.parse_args(argv)
     if arguments.episodes < 0:
         raise SystemExit("--episodes cannot be negative; 0 means until you press q")
@@ -1059,7 +1093,7 @@ def run(arguments: argparse.Namespace) -> int:
         read_only=True,
         cores=arguments.cores,
         frame_rate_hz=arguments.frame_rate_hz,
-        windowed=True,
+        windowed=not arguments.no_window,
     )
     recording: GuestRecording | None = None
     track: DecisionTrack | None = None
@@ -1081,6 +1115,7 @@ def run(arguments: argparse.Namespace) -> int:
             summaries,
             identity,
             frame_rate_hz=arguments.frame_rate_hz,
+            frame_game_ms=arguments.frame_game_ms,
             decision_cadence=str(decision_cadence_from(arguments)),
             upgrade_availability=str(upgrade_availability_from(arguments)),
             wall_seconds=time.monotonic() - started,

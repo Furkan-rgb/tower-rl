@@ -258,6 +258,7 @@ def test_a_session_record_names_the_rows_the_actions_addressed() -> None:
         (),
         {"name": "random"},
         frame_rate_hz=60,
+        frame_game_ms=100.0,
         decision_cadence="choice-points",
         upgrade_availability="image",
         wall_seconds=12.0,
@@ -539,6 +540,7 @@ def test_a_session_plays_the_episodes_it_was_asked_for_and_draws_every_decision(
 
     record = spectate.session_record(
         summaries, {"name": "random"}, frame_rate_hz=60,
+        frame_game_ms=100.0,
         decision_cadence="choice-points", upgrade_availability="image", wall_seconds=12.0,
     )
     assert [row["episode_index"] for row in record["episodes"]] == [0, 1, 2]
@@ -553,6 +555,7 @@ def test_a_record_names_the_rate_the_session_actually_ran_at() -> None:
     """A session watched at 120 Hz must not be recorded as the 60 Hz default."""
     record = spectate.session_record(
         (), {"name": "random"}, frame_rate_hz=120,
+        frame_game_ms=100.0,
         decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
     )
 
@@ -619,6 +622,7 @@ def test_ctrl_c_keeps_every_episode_that_had_already_finished() -> None:
 
     record = spectate.session_record(
         summaries, {"name": "random"}, frame_rate_hz=60,
+        frame_game_ms=100.0,
         decision_cadence="choice-points", upgrade_availability="image", wall_seconds=9.0,
     )
     assert [row["episode_index"] for row in record["episodes"]] == [0, 1]
@@ -684,6 +688,37 @@ def test_a_recording_and_its_records_land_in_the_projects_state_directory() -> N
 
     assert arguments.record == state_directory() / "recordings" / "session.mp4"
     assert arguments.output_directory == state_directory() / "recordings" / "records"
+
+
+def test_frame_game_ms_defaults_to_real_time_at_the_spectate_rate() -> None:
+    """The fleet's 100 ms default must not leak into a session played for a human.
+
+    `add_cadence_arguments` sets `--frame-game-ms` to 100.0, the fleet's
+    throughput choice; spectate pins its own default afterwards, to real time
+    at `SPECTATE_FRAME_RATE_HZ`. M2-S001 found the two equivalent, so this is a
+    pacing choice, not a behaviour change.
+    """
+    arguments = spectate.parse_arguments([])
+
+    assert arguments.frame_game_ms == pytest.approx(1000.0 / spectate.SPECTATE_FRAME_RATE_HZ)
+
+
+def test_frame_game_ms_can_still_be_overridden_explicitly() -> None:
+    arguments = spectate.parse_arguments(["--frame-game-ms", "50.0"])
+
+    assert arguments.frame_game_ms == 50.0
+
+
+def test_no_window_defaults_to_false_so_bring_up_still_gets_a_window() -> None:
+    arguments = spectate.parse_arguments([])
+
+    assert arguments.no_window is False
+
+
+def test_no_window_flag_is_parsed() -> None:
+    arguments = spectate.parse_arguments(["--no-window"])
+
+    assert arguments.no_window is True
 
 
 # -- the recording's lifecycle ---------------------------------------------
@@ -1017,6 +1052,7 @@ def test_a_record_says_where_the_recording_and_its_track_are() -> None:
     """A record read afterwards is where the two files are lined up from."""
     record = spectate.session_record(
         (), {"name": "random"}, frame_rate_hz=60,
+        frame_game_ms=100.0,
         decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
         recording={"video": "/tmp/session.mp4", "anchor_monotonic": 50.0},
     )
@@ -1024,5 +1060,6 @@ def test_a_record_says_where_the_recording_and_its_track_are() -> None:
     assert record["recording"] == {"video": "/tmp/session.mp4", "anchor_monotonic": 50.0}
     assert "recording" not in spectate.session_record(
         (), {"name": "random"}, frame_rate_hz=60,
+        frame_game_ms=100.0,
         decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
     ), "a session that recorded nothing says nothing about a recording"

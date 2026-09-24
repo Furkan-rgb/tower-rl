@@ -53,12 +53,17 @@ def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> State
 
 
 def _sequence(*, padding: int = 0, filler: float = 0.0, done: bool = True) -> ReplaySequence:
-    """One window; padded steps carry `filler` everywhere a value can go."""
+    """One window; padded steps carry `filler` in their features and action.
+
+    Their reward is 0 and they never end an episode, as the actor pads: that is
+    the reward and termination the episode's first real step is trained on,
+    matching the official `is_first` target.
+    """
     steps = tuple(
         ReplayStep(
             features=_features(seed=filler if index < padding else 0.1 * index),
             action_index=int(filler * 7) % 3 if index < padding else index % 3,
-            reward=filler if index < padding else 1.0 + index,
+            reward=0.0 if index < padding else 1.0 + index,
             done=done and index == LENGTH - 1,
             admissible=True,
             padding=index < padding,
@@ -227,7 +232,7 @@ def test_each_acting_copy_samples_from_a_stream_of_its_own() -> None:
     assert torch.equal(torch.random.get_rng_state(), torch_stream)
 
 
-def test_a_short_training_run_on_the_fake_port_learns() -> None:
+def test_a_short_training_run_on_the_fake_port_takes_finite_optimisation_steps() -> None:
     environment = InstrumentedRunEnvironment(
         port=FakeRunPort(damage_per_second=2.0),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),

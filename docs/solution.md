@@ -1633,9 +1633,11 @@ termination of the transition out of it. Dreamer's step carries those of the
 transition into it. `learn` shifts them by one, and three rules follow from
 that shift:
 
-- The reward and continue losses are masked at a window's first step and at
-  an episode's first step after padding, because their transition in lies
-  outside the data.
+- The reward and continue losses are masked at a window's first step,
+  because the reward and termination the shift puts there belong to a step
+  outside the window. An episode's first step after front padding is trained
+  on the padding's reward 0 and no termination, which is the official
+  `is_first` target.
 - A window that ends an episode has no stored terminal observation. A
   phantom step, predicted from the last state and action by the prior alone,
   carries the terminal reward and termination. It trains only the reward and
@@ -1651,19 +1653,26 @@ every loss is a mean over the steps its weight keeps.
 | model size | `size12m`: deter 2048, hidden 256, classes 16, units 256 (configs.yaml `size12m`) | same; 10.1M parameters | The paper's size for vector-observation control. |
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`) | same; stride 32, burn-in 0 | none |
 | train ratio | 256 in the `atari100k` preset (configs.yaml:172), counted per agent step | 256, which is 0.25 gradient steps per decision. No flag overrides it. | The published preset for the matching low-data, one-environment regime. The paper's Table 2 counts 128 per frame at action repeat 4. The code is followed. |
-| warm-up | trains once replay holds B·T = 1,024 steps (`embodied/run/train.py`) | 25 windows | About 1,024 decisions at stride 32. |
+| warm-up | trains once replay holds B·T steps (`embodied/run/train.py:71`), about 1,088 agent steps once the official replay's chunking is counted | 25 windows, about 1,008 decisions at stride 32 | A window count is what `TrainingConfig` expresses. 25 windows is the nearest to the official figure. |
 | replay | uniform, 5e6 steps, plus an online queue | uniform (`--priority-alpha` 0), 4,096 windows, **no online queue** | The capacity holds the whole run. An online queue would need a replay change. |
 | replay context | 1, with stored latents | **0**, the official code's own zero-context path | Replay stores no latents, and writing them back into replay would change replay. |
 | action mask | none | **the mask is an observation key.** It is encoded and decoded (binary cross-entropy). Acting samples under the true mask. Imagination samples under the decoded mask (logit > 0, WAIT always valid). | Invalid actions must never be chosen. In imagination the true mask is unknown, so the model's own belief of it is used. |
 | terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
-| reward/continue loss at the window's first step | trained, since `is_first` carries reward 0 | **masked** | The transition into that step is outside the window. |
+| reward/continue loss at the window's first step | trained. `_annotate_batch` forces `is_first` on a sampled window's first step but keeps its stored reward and `is_terminal` (`embodied/core/replay.py:283-286`) | **masked** | Under the shift, the reward and termination at that step are the previous stored step's, which lies outside the window. Masking is simpler than carrying one extra step. |
 | actor unimix | the paper's 1%; the code lists 0.01, but its categorical head never applies it | **1% uniform over the valid actions** | The paper is followed here. |
 | optimizer | LaProp, lr 4e-5, β1 0.9, **β2 0.999**, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from a rate of 0 | same | The paper's text says β2 0.99. The code is followed. |
 | precision | bfloat16 compute | **float32** | Simplest faithful port. The step time is measured below. |
 | RSSM, KL, heads, twohot, return normaliser, imagination horizon 15, λ 0.95, horizon 333, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | none |
 | prioritised replay signal | not used | `td_errors` are \|replay-value return − value\| over the replay-value steps, and are unused at α 0 | The protocol requires one. |
 
-The deviations, the rows in bold, are the whole list. Measured step time at
+Recorded minor differences, not in the table:
+
+- The mask enters the encoder as 0/1 floats, not as the one-hot the official
+  code gives a discrete observation key.
+- Every loss is a mean over the steps its weight keeps, not over all B·T steps.
+- The actor's entropy is taken over the valid actions only.
+
+The deviations, the rows in bold, and these differences are the whole list. Measured step time at
 production shapes on an idle 4090: 141 ms per update, plus 16.7 ms to collate.
 At 0.25 per decision that is ≈40 ms per decision, ≈1.3 h over 120,712
 decisions (`docs/experiments.md`, "DreamerV3 learner step time").

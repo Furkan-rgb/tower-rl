@@ -130,8 +130,10 @@ class DreamerConfig:
     seed: int | None = None
 
     def __post_init__(self) -> None:
-        if self.deter % self.blocks or self.hidden < 1 or self.units < 1:
+        if self.deter % self.blocks:
             raise ValueError("the deterministic state must split evenly into blocks")
+        if self.hidden < 1 or self.units < 1:
+            raise ValueError("hidden and units must be positive")
         if self.bins % 2 == 0:
             raise ValueError("the twohot bins are symmetric about a centre bin")
 
@@ -463,12 +465,14 @@ class DreamerBackbone:
             world.cont(feature).squeeze(-1), continue_target, reduction="none"
         )
         observed = real.to(torch.float32)
-        # Reward and continue: only for a transition between two real steps -
-        # not into the window's first step, whose transition in is outside the
-        # window, nor into an episode's first step out of padding - and at the
-        # phantom only where it is a terminal.
-        inside = (real[:, 1:] & real[:, :-1]).to(torch.float32)
-        transition = torch.cat((zero, inside, ends.to(torch.float32)[:, None]), 1)
+        # Reward and continue: not at the window's first step, whose stored
+        # reward and termination belong to a step outside the window; at the
+        # phantom only where it is a terminal. An episode's first step after
+        # padding is trained on the filler's reward 0 and no termination, which
+        # is the official `is_first` target.
+        transition = torch.cat(
+            (zero, observed[:, 1:], ends.to(torch.float32)[:, None]), 1
+        )
 
         # -- imagination, from every real posterior state --
         starts = size * length

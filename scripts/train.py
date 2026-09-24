@@ -652,6 +652,8 @@ STACKED_ONLY_FLAGS = (
     "discount",
     "learning_rate",
     "target_ema_decay",
+    # An epsilon anneal: DreamerV3 adds no exploration noise to anneal.
+    "epsilon_anneal_decisions",
 )
 
 
@@ -684,8 +686,6 @@ def settle_dreamer_settings(
     """
     if arguments.backbone != DREAMERV3:
         return
-    if arguments.recipe is not None:
-        raise SystemExit("--recipe configures stacked-dqn; --backbone dreamerv3 takes none")
     fixed = dreamer_loop_settings()
     # Parsed again with nothing defaulted, so a flag that was given can be told
     # from one that was left alone.

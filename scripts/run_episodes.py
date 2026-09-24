@@ -87,6 +87,7 @@ def policy_from(
     *,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    sampling_seed: str | None = None,
 ) -> tuple[Policy, dict[str, object]]:
     """The arm this run plays, and the identity every record of it carries.
 
@@ -118,6 +119,9 @@ def policy_from(
             path,
             decision_cadence=str(decision_cadence),
             upgrade_availability=str(upgrade_availability),
+            # A checkpoint that samples its policy draws from a stream of this
+            # instance's own, not one every instance of a fleet shares.
+            sampling_seed=sampling_seed,
         )
     except (CheckpointError, ValueError) as failure:
         raise SystemExit(f"cannot play {path} as an arm: {failure}") from failure
@@ -309,6 +313,7 @@ def main() -> int:
         arguments.policy,
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        sampling_seed=arguments.serial,
     )
     expected = compatibility(bridge_build_directory())
 

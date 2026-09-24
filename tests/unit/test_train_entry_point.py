@@ -324,6 +324,7 @@ def test_a_flag_that_contradicts_a_dreamerv3_value_is_refused(
         ("--learning-rate", "1e-4"),
         ("--target-ema-decay", "0.995"),
         ("--n-step-final", "3", "--n-step-anneal-steps", "100"),
+        ("--epsilon-anneal-decisions", "8000"),
     ],
 )
 def test_a_stacked_dqn_flag_is_refused_under_dreamerv3(
@@ -333,7 +334,11 @@ def test_a_stacked_dqn_flag_is_refused_under_dreamerv3(
         dreamer_arguments(tmp_path, *flags)
 
 
-def test_a_dreamerv3_session_trains_and_its_checkpoint_plays(tmp_path: Path) -> None:
+def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_streams(
+    tmp_path: Path,
+) -> None:
+    from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
+    from tower_rl.environment.run_actions import RUN_ACTIONS
     from tower_rl.learning.dreamer import DreamerBackbone, DreamerConfig
 
     with pytest.MonkeyPatch.context() as patch:
@@ -377,6 +382,32 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays(tmp_path: Path) -> 
     assert policy.config == DreamerConfig(**SMALL_DREAMER, seed=0)
     assert policy.model_version == arm["optimisation_steps"]
     assert not any(parameter.requires_grad for parameter in policy.actor.parameters())
+
+    # Each evaluating instance samples the checkpoint's policy from a stream of
+    # its own, seeded by its serial as `run_episodes.py` does; the same serial
+    # draws the same stream.
+    def sampled(serial: str) -> list[int]:
+        instance, _ = checkpoint_policy(
+            latest,
+            decision_cadence=resolved["decision_cadence"],
+            upgrade_availability=resolved["upgrade_availability"],
+            sampling_seed=serial,
+        )
+        every = tuple(True for _ in range(len(RUN_ACTIONS)))
+        state = instance.initial_state()
+        chosen = []
+        for index in range(40):
+            features = StateFeatures(
+                scalars=tuple([0.01 * index] * SCALAR_COUNT),
+                rows=tuple([0.01 * index] * (ROW_COUNT * ROW_WIDTH)),
+                mask=every,
+            )
+            action, state = instance.act(features, state, epsilon=0.0)
+            chosen.append(action)
+        return chosen
+
+    assert sampled("emulator-5556") == sampled("emulator-5556")
+    assert sampled("emulator-5556") != sampled("emulator-5558")
 
 
 #: A checkpoint cadence and a selection period short enough that a test budget

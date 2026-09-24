@@ -1539,9 +1539,17 @@ What the recipe adds to the learner (`learning/stacked_dqn.py`):
   core and heads are replaced by a fresh initialisation. The target network
   gets the same treatment from its own fresh initialisation. The whole AdamW
   state is cleared, as BBF's is. A reset at step s happens only if more than
-  one interval is left, s + interval < the run's budget in gradient steps
-  (`no_resets_after_steps`, the decision budget times the replay ratio), so
-  none falls in the final interval. The fresh networks are drawn from a
+  one interval is left: s + interval < the run's expected gradient steps
+  (`no_resets_after_steps`). That horizon is (decision budget − 3,450
+  warm-up decisions) × replay ratio (`reset_horizon` in `scripts/train.py`),
+  so none falls in the final interval. The horizon is an estimate, because
+  the warm-up is counted in sequences. 3,450 is the low end of run 2's
+  measured 3,450–3,600 (`M2-P003`). At the planned budget of 120,712
+  decisions, the resets are 40k, 80k, 120k and 160k for any warm-up between
+  712 and 20,711 decisions, which covers a resume's uncounted re-warm. The
+  final cycle is about 74.5k steps. The evidence to check afterwards is the
+  run's final reset count (the checkpoint's `resets`) and its total gradient
+  steps (`optimisation_steps` in the checkpoint and `summary.json`). The fresh networks are drawn from a
   seed derived from the run's seed and the reset's number, without touching
   the global generator, so a resumed run resets exactly as the uninterrupted
   one would.
@@ -1575,7 +1583,7 @@ read on 2026-09-24.
 | network width | Impala ResNet at 4x width | paper §3 "Larger network"; gin `width_scale=4` | `network_width` 4: trunk and core hidden 128 → 512 (2.55M parameters) | Same factor. There is no CNN; the input is feature vectors. **Deviation:** the identity embedding is a lookup table, not a width, and stays at 16. |
 | replay ratio | 8 in the headline; 2 in the reduced-compute results and the released gin (`replay_ratio=64` / `batch_size=32`) | paper §3 "Base agent", Fig. 6; gin; `spr_agent.py:1369` | 2 gradient steps per decision | The packet's rule was 2 if a 4x step is at most 25 ms, else 1. The measured step is 17.3–17.6 ms (`docs/experiments.md`, "BBF recipe: learner step at four times the width"). BBF's Fig. 6 shows its components paying off at RR 1–2, at about 0.15 IQM below RR 8. |
 | batch | 32 transitions | gin `batch_size=32` | 8 sequences × 80 steps, burn-in 7 (about 504 learnable transitions) | Shared with every arm (9.4). Each update already replays more transitions than BBF's. |
-| reset interval | every 40k gradient steps; none within one interval of the end | paper §3; gin `reset_every`, `no_resets_after`; `reset_weights`, `spr_agent.py:1444–1471` | `reset_every_steps` 40,000; `no_resets_after_steps` = budget × ratio; a reset only if s + 40,000 < budget | Same outcome. The official code counts environment steps and skips on `next_reset > no_resets_after + reset_offset`, with `reset_offset=1`. At 2 updates per step its resets fall near 36k, 76k and 116k gradient steps, and its 100k run skips the fourth. The strict bound here gives the same result in gradient steps: no reset in the final 40k. **Deviation:** the warm-up takes no steps, so the final cycle is shorter by a warm-up's worth. |
+| reset interval | every 40k gradient steps; none within one interval of the end | paper §3; gin `reset_every`, `no_resets_after`; `reset_weights`, `spr_agent.py:1444–1471` | `reset_every_steps` 40,000; `no_resets_after_steps` = (budget − 3,450 warm-up decisions, an estimate) × ratio; a reset only if s + 40,000 < that | Same outcome. The official code counts environment steps and skips on `next_reset > no_resets_after + reset_offset`, with `reset_offset=1`. At 2 updates per step its resets fall near 36k, 76k and 116k gradient steps, and its 100k run skips the fourth. The strict bound against the expected steps gives the same result: no reset in the final 40k. At the planned budget that is resets at 40k–160k, and the list holds for warm-ups of 712–20,711 decisions. **Deviation:** the horizon rests on a warm-up estimate, not a count. The final reset count and `optimisation_steps` are what confirm it. |
 | which layers | encoder shrink-and-perturbed; head and projections fresh; target reset from its own init | gin `shrink_perturb_keys`, `reset_target`; `jit_reset`, `spr_agent.py:203–300`; defaults at 1016–1020 | trunk shrink-and-perturbed; core and heads fresh; target likewise from its own init | Trunk is to encoder as core plus heads is to head. There is no projection or transition model, since there is no SPR. |
 | interpolation | 0.5 old + 0.5 fresh | gin `shrink_factor=0.5`, `perturb_factor=0.5`; paper §3 "Harder resets" | `SHRINK_FACTOR` 0.5, `PERTURB_FACTOR` 0.5 | Same. |
 | optimizer state at reset | the whole Adam state is replaced by a fresh one, encoder included | `copy_params`, `spr_agent.py:118`; `jit_reset`, `spr_agent.py:203–300` | `optimizer.state.clear()`: every moment and step count restarts | Same. The optimizer state is an optax chain of `MaskedState`s, so `copy_params`' `keys_to_copy` (encoder) never matches inside it and the fresh state replaces all of it. The tier C review reproduced this with the verbatim code: encoder count 5 → 0, mu 0.1229 → 0.0. |

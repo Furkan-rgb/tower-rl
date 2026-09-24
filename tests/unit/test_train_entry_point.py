@@ -39,6 +39,7 @@ from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import checkpoint_policy
+from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -1312,6 +1313,32 @@ def test_without_a_recipe_the_learner_is_the_one_run_4_trained(tmp_path: Path) -
     assert defaults.reset_every_steps == 0
 
 
+def _resets_at(horizon: int) -> list[int]:
+    config = StackedDqnConfig(reset_every_steps=40_000, no_resets_after_steps=horizon)
+    return [step for step in range(40_000, horizon + 1, 40_000) if config.resets_after(step)]
+
+
+@pytest.mark.parametrize(
+    ("warmup", "resets"),
+    [
+        (train.WARMUP_DECISIONS_ESTIMATE, [40_000, 80_000, 120_000, 160_000]),
+        (712, [40_000, 80_000, 120_000, 160_000]),
+        (20_711, [40_000, 80_000, 120_000, 160_000]),
+        # Just outside the range the planned budget is robust over.
+        (711, [40_000, 80_000, 120_000, 160_000, 200_000]),
+        (20_712, [40_000, 80_000, 120_000]),
+    ],
+)
+def test_the_planned_bbf_budget_resets_four_times_over_a_range_of_warm_ups(
+    tmp_path: Path, warmup: int, resets: list[int]
+) -> None:
+    parsed = train.parse_arguments(
+        ["--budget-decisions", "120712", "--run-dir", str(tmp_path), "--recipe", "bbf"]
+    )
+
+    assert _resets_at(train.reset_horizon(parsed, warmup)) == resets
+
+
 def test_the_bbf_recipe_refuses_a_ladder_and_the_plateau_rule(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="epsilon 0"):
         arguments(tmp_path, **{"--recipe": "bbf", "--exploration": "ladder"})
@@ -1325,6 +1352,8 @@ def test_a_bbf_session_resets_records_its_recipe_and_resumes(
     """Through the entry point with the fake port, with resets short enough to happen."""
     monkeypatch.setitem(train.RECIPES["bbf"], "reset_every_steps", 5)
     monkeypatch.setitem(train.RECIPES["bbf"], "n_step_anneal_steps", 4)
+    # The test budget is shorter than the real warm-up estimate.
+    monkeypatch.setattr(train, "WARMUP_DECISIONS_ESTIMATE", 0)
 
     report = session(tmp_path / "first", budget=TRAINING_BUDGET, settings={"--recipe": "bbf"})
 
@@ -1339,7 +1368,8 @@ def test_a_bbf_session_resets_records_its_recipe_and_resumes(
     assert resolved["adam_eps"] == 1.5e-4
     assert (resolved["act_with_target"], resolved["gradient_clip"]) == (True, None)
     assert resolved["reset_every_steps"] == 5
-    # The decision budget at the replay ratio the test harness runs at.
+    # No warm-up estimate here (the test patches it to 0): the decision budget
+    # at the replay ratio the test harness runs at.
     assert resolved["no_resets_after_steps"] == int(int(TRAINING_BUDGET) * 0.2)
     assert (resolved["exploration"], resolved["epsilon_end"]) == ("uniform", 0.0)
 

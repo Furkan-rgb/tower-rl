@@ -239,6 +239,37 @@ RECIPES: dict[str, dict[str, object]] = {
     },
 }
 
+#: Decisions the replay warm-up takes before the first gradient step: an
+#: estimate, because the warm-up is counted in sequences and the decisions
+#: those take depend on episode lengths. Run 2 measured 3,450-3,600
+#: (`docs/experiments.md`, `M2-P003`, row "corrected ε schedule").
+WARMUP_DECISIONS_ESTIMATE = 3_450
+
+
+def reset_horizon(
+    arguments: argparse.Namespace, warmup_decisions: int | None = None
+) -> int:
+    """BBF's `no_resets_after`: the gradient steps the run is expected to take.
+
+    Under the bbf recipe that is the decision budget less the warm-up, which
+    takes no gradient steps, at the replay ratio. The horizon is an estimate,
+    since the warm-up is. At the planned budget of 120,712 decisions and a
+    ratio of 2, the resets it allows (40k, 80k, 120k and 160k) are the same
+    for any warm-up between 712 and 20,711 decisions. A resume's re-warm is
+    not counted; it stays inside that range. The evidence to check afterwards
+    is the run's final reset count (the checkpoint's `resets`) and its total
+    gradient steps (`optimisation_steps` in the checkpoint and `summary.json`).
+    Without the recipe it is the decision budget at the replay ratio, as
+    recorded before; it is unused there, since nothing resets.
+    """
+    if warmup_decisions is None:
+        warmup_decisions = WARMUP_DECISIONS_ESTIMATE
+    decisions = arguments.budget_decisions
+    if arguments.recipe == BBF:
+        decisions -= warmup_decisions
+    # At least 1: a budget shorter than the warm-up takes no step, so no reset.
+    return max(1, int(decisions * arguments.gradient_steps_per_decision))
+
 
 @dataclass(frozen=True)
 class ActorInstance:
@@ -294,13 +325,7 @@ def build_backbone(
         gradient_clip=arguments.gradient_clip,
         act_with_target=arguments.act_with_target,
         reset_every_steps=arguments.reset_every_steps,
-        # The budget in gradient steps, BBF's `no_resets_after`: the decision
-        # budget at the replay ratio. The warm-up takes no steps, so the run
-        # ends a warm-up's worth short of it and its last cycle is that much
-        # shorter than an interval.
-        no_resets_after_steps=int(
-            arguments.budget_decisions * arguments.gradient_steps_per_decision
-        ),
+        no_resets_after_steps=reset_horizon(arguments),
     )
     network = NetworkConfig()
     network = replace(

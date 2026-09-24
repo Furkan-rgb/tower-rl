@@ -548,6 +548,3 @@ class TrainingReport:
             "evaluations": [to_record(item) for item in report.evaluations],
             "replay": self.replay.snapshot(),
         }
-
-
-__all__ = ["TrainingReport", "numbered_checkpoint_name"]

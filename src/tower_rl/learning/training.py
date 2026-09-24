@@ -64,7 +64,7 @@ from tower_rl.environment.decision_time import (
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
+from tower_rl.learning.actor import Actor, EpisodeResult
 from tower_rl.learning.backbone import (
     Backbone,
     LearnMetrics,
@@ -1381,24 +1381,3 @@ class TrainingRun:
             )
             self.replay.update_priorities(indices, metrics.td_errors)
         return metrics
-
-
-__all__ = [
-    "ActionDistribution",
-    "ActorConfig",
-    "ActorProgress",
-    "CollectedEpisode",
-    "CollectionWindow",
-    "EpisodeHealth",
-    "KillBar",
-    "KillBarCheck",
-    "NearGreedyPlateau",
-    "SelectionPeriod",
-    "action_distribution",
-    "collection_windows",
-    "episode_health",
-    "Learner",
-    "TrainingConfig",
-    "TrainingProgressReport",
-    "TrainingRun",
-]

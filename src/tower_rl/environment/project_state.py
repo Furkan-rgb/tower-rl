@@ -70,6 +70,3 @@ def state_directory() -> Path:
     `recordings/` to a spectated session — and each of those makes its own.
     """
     return repository_root() / "state"
-
-
-__all__ = ["repository_root", "state_directory"]

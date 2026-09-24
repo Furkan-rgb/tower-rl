@@ -20,8 +20,6 @@ import builtins
 from datetime import datetime
 from typing import Any
 
-__all__ = ["timestamped_print"]
-
 
 def timestamped_print(*args: Any, **kwargs: Any) -> None:
     """Print like the builtin, prefixed with a local-time timestamp."""

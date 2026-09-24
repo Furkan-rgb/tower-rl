@@ -260,15 +260,3 @@ def tracked_params(resolved: dict[str, object]) -> dict[str, object]:
     params: dict[str, object] = dict(resolved)
     params.update({f"reference_{key}": value for key, value in REFERENCE_FINAL_WAVES.items()})
     return params
-
-
-__all__ = [
-    "REFERENCE_FINAL_WAVES",
-    "SCRIPTED_REFERENCE",
-    "RunIdentity",
-    "checkpoint_identity",
-    "new_run_id",
-    "resolved_config",
-    "source_revision",
-    "tracked_params",
-]

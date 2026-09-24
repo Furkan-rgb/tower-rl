@@ -145,15 +145,3 @@ class ExplorationSchedule:
         near-greedy series and the pooled series are the same episodes.
         """
         return not self.floors or self.floors[actor_index] <= NEAR_GREEDY_EPSILON
-
-
-__all__ = [
-    "APE_X_ALPHA",
-    "APE_X_EPSILON",
-    "EXPLORATION_OPTIONS",
-    "LADDER",
-    "NEAR_GREEDY_EPSILON",
-    "UNIFORM",
-    "ExplorationSchedule",
-    "ape_x_floors",
-]

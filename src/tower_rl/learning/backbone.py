@@ -8,14 +8,17 @@ algorithm cannot quietly change what it is measured against.
 from __future__ import annotations
 
 import copy as copying
+import itertools
 import random
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import numpy
 import torch
 from torch import Tensor, nn
 
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, StateFeatures
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.replay import ReplaySequence
 
 
@@ -157,30 +160,45 @@ def collate(
         raise ValueError("all sequences in a batch must have the same length")
     if any(sequence.burn_in != burn_in for sequence in sequences):
         raise ValueError("all sequences in a batch must share one burn-in length")
+    if len(weights) != len(sequences):
+        raise ValueError("every sequence in a batch needs exactly one weight")
 
-    def _features(step_features: StateFeatures) -> tuple[list[float], list[float], list[bool]]:
-        return list(step_features.scalars), list(step_features.rows), list(step_features.mask)
+    # Every value of the batch is written once into one float32 buffer, step by
+    # step, and the buffer crosses to the device in one transfer; the typed
+    # tensors are cut from it there. Action indices and flags are small
+    # integers, which float32 holds exactly. Building nested Python lists and a
+    # tensor per field instead was most of a gradient step's time.
+    step_width = SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + len(RUN_ACTIONS) + 4
+    values = itertools.chain.from_iterable(
+        part
+        for sequence in sequences
+        for step in sequence.steps
+        for part in (
+            step.features.scalars,
+            step.features.rows,
+            step.features.mask,
+            (step.action_index, step.reward, step.done, step.padding),
+        )
+    )
+    batch = len(sequences)
+    stepped = batch * length * step_width
+    packed = numpy.fromiter(
+        itertools.chain(values, weights), dtype=numpy.float32, count=stepped + batch
+    )
+    flat = torch.as_tensor(packed, device=device)
+    steps = flat[:stepped].view(batch, length, step_width)
 
-    scalars, rows, masks, actions, rewards, dones, padding = [], [], [], [], [], [], []
-    for sequence in sequences:
-        collected = [_features(step.features) for step in sequence.steps]
-        scalars.append([item[0] for item in collected])
-        rows.append([item[1] for item in collected])
-        masks.append([item[2] for item in collected])
-        actions.append([step.action_index for step in sequence.steps])
-        rewards.append([step.reward for step in sequence.steps])
-        dones.append([step.done for step in sequence.steps])
-        padding.append([step.padding for step in sequence.steps])
-
-    row_tensor = torch.tensor(rows, dtype=torch.float32, device=device)
+    rows_at = SCALAR_COUNT
+    mask_at = rows_at + ROW_COUNT * ROW_WIDTH
+    tail_at = mask_at + len(RUN_ACTIONS)
     return SequenceBatch(
-        scalars=torch.tensor(scalars, dtype=torch.float32, device=device),
-        rows=row_tensor.view(len(sequences), length, ROW_COUNT, ROW_WIDTH),
-        mask=torch.tensor(masks, dtype=torch.bool, device=device),
-        actions=torch.tensor(actions, dtype=torch.int64, device=device),
-        rewards=torch.tensor(rewards, dtype=torch.float32, device=device),
-        dones=torch.tensor(dones, dtype=torch.bool, device=device),
-        padding=torch.tensor(padding, dtype=torch.bool, device=device),
-        weights=torch.tensor(weights, dtype=torch.float32, device=device),
+        scalars=steps[..., :rows_at].contiguous(),
+        rows=steps[..., rows_at:mask_at].reshape(batch, length, ROW_COUNT, ROW_WIDTH),
+        mask=steps[..., mask_at:tail_at] != 0,
+        actions=steps[..., tail_at].to(torch.int64),
+        rewards=steps[..., tail_at + 1].contiguous(),
+        dones=steps[..., tail_at + 2] != 0,
+        padding=steps[..., tail_at + 3] != 0,
+        weights=flat[stepped:],
         burn_in=burn_in,
     )

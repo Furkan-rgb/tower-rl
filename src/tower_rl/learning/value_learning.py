@@ -40,35 +40,46 @@ def n_step_targets(
     The bootstrap comes from the state `n` steps ahead inside the same sequence,
     so a step whose window runs past the end is not learnable here. Termination is
     per sequence element, never collapsed across the batch.
+
+    Every step's window is built at once: offset k of the window of step t is
+    element t + k of the sequence, read from copies padded with n zero-reward,
+    non-terminal steps so a window that runs past the end adds exactly nothing.
+    The loop is over the n offsets only, and each step's return is summed in
+    offset order, so the arithmetic per step is the same as summing its window
+    one step at a time. That keeps this a learner-speed change (a per-step loop
+    was thousands of tiny kernel launches) rather than a change of target.
     """
     batch, time = rewards.shape
     evaluated = evaluated_next_values(online_q, target_q, mask)
 
-    targets = torch.zeros_like(rewards)
-    learnable = torch.zeros_like(rewards)
     terminal = dones.to(rewards.dtype)
-    for step in range(time):
-        accumulated = torch.zeros(batch, device=rewards.device)
-        alive = torch.ones(batch, device=rewards.device)
-        factor = 1.0
-        ended_inside_window = torch.zeros(batch, device=rewards.device)
-        for offset in range(n_step):
-            index = step + offset
-            if index >= time:
-                break
-            accumulated = accumulated + alive * factor * rewards[:, index]
-            factor *= discount
-            alive = alive * (1.0 - terminal[:, index])
-            ended_inside_window = torch.maximum(ended_inside_window, terminal[:, index])
-        bootstrap = step + n_step
-        if bootstrap < time:
-            accumulated = accumulated + alive * factor * evaluated[:, bootstrap]
-            learnable[:, step] = 1.0
-        else:
-            # Without a bootstrap state the return is only complete if the
-            # episode actually ended inside the window.
-            learnable[:, step] = ended_inside_window
-        targets[:, step] = accumulated
+    beyond = rewards.new_zeros(batch, n_step)
+    padded_rewards = torch.cat((rewards, beyond), dim=1)
+    padded_terminal = torch.cat((terminal, beyond), dim=1)
+
+    accumulated = torch.zeros_like(rewards)
+    alive = torch.ones_like(rewards)
+    ended_inside_window = torch.zeros_like(rewards)
+    factor = 1.0
+    for offset in range(n_step):
+        window_rewards = padded_rewards[:, offset : offset + time]
+        window_terminal = padded_terminal[:, offset : offset + time]
+        accumulated = accumulated + alive * factor * window_rewards
+        factor *= discount
+        alive = alive * (1.0 - window_terminal)
+        ended_inside_window = torch.maximum(ended_inside_window, window_terminal)
+
+    # Only the first time - n steps have their bootstrap state inside the
+    # sequence. Without one the return is only complete if the episode actually
+    # ended inside the window.
+    bootstrapped = max(time - n_step, 0)
+    head = accumulated[:, :bootstrapped] + (
+        alive[:, :bootstrapped] * factor * evaluated[:, n_step:]
+    )
+    targets = torch.cat((head, accumulated[:, bootstrapped:]), dim=1)
+    learnable = torch.cat(
+        (torch.ones_like(head), ended_inside_window[:, bootstrapped:]), dim=1
+    )
     return targets, learnable
 
 

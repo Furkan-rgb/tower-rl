@@ -540,7 +540,40 @@ spread is not measured by this design and is not resolved by this run.**
 
 ### Results, as run
 
-(to be filled in after the run)
+**Verdict: WORSE.** Both scripted-floor kill bars passed (K1 at 12,019
+decisions, mean 10.732 over 41 episodes; K2 at 26,297 decisions, mean 11.24
+over 150 episodes — both far above the 6.1 floor). The budget completed:
+121,781 decisions, 8 selection periods closed. Training wall 9,562.25s
+(≈2.66h); stage wall 03:11:41, inside the 5h cap. Throughput: 45,848.2
+decisions/h, 179,385.9 game-s/h.
+
+Arm by §9.2b: best period among 2+ is period 7 (`checkpoint-d0105078.pt`,
+closing at 105,078 decisions), near-greedy mean final wave 15.679 — period 8
+closed slightly lower (15.614), one period without improvement, not enough
+to trigger the 2-period patience stop. Checkpoint sha256 reconfirmed
+(`be988b00...218b4d`) before evaluation.
+
+Evaluation, default build, n=105 (`state/records/m2-run5b-retry/eval-arm/`):
+mean **15.590**, sd 3.830. `bootstrap_difference`, seed 0, 10,000 resamples:
+
+- vs run 4's arm (18.143, n=105): **−2.552 [−3.552, −1.514]** — upper bound
+  < 0, **WORSE**.
+- vs scripted-`all` (6.105, n=105): **+9.486 [+8.762, +10.200]** — beats
+  scripted.
+- vs random-`all` (3.556, n=90): **+12.035 [+11.251, +12.814]** — beats
+  random.
+
+This compares this run's arm with run 4's arm — two individual trained
+policies — not the recipe against itself; run-to-run spread is not measured
+by this design, so this result alone does not settle whether 2×-decisions
+`render-interval-16` training is better or worse than run 4's recipe in
+general. It is consistent with `M2-P006`'s diagnosis (run-to-run variance
+supported, seed does not pin the trajectory): this seed-1 run's near-greedy
+policy converged to a materially lower final wave than run 4's seed-0 run,
+with a healthy, non-collapsed learner throughout (both kill bars passed by
+a wide margin). Host cleanup verified twice (`run_stage.sh` teardown and an
+independent recheck): no qemu process, empty `adb devices`. Comment posted
+on `#67`; board item not moved.
 
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 

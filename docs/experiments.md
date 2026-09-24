@@ -176,6 +176,90 @@ decision, about 35 ms of learning per decision on an idle host. The production f
 threads has not been measured. It will be read from the first BBF run, like
 the #72 figure.
 
+## M3-P001: BBF recipe on stacked-dqn, 120,712 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-24. Board `#74`. `main` = `4d7fbee` (`--recipe bbf` landed).
+
+**Hypothesis.** The BBF recipe (`docs/solution.md` §9.4c: 4× width,
+shrink-and-perturb resets, n-step/discount annealing restarted by each reset,
+EMA-target acting, AdamW with BBF's weight decay and epsilon, no gradient
+clipping, exploration annealed to zero; no SPR, no C51, uniform sequence
+replay) gives an arm that beats run 4's arm (18.143, n=105) on the default
+build.
+
+**Command**, run 5b's (`run5b-command.txt`) with `--recipe bbf`, every flag
+the recipe sets or refuses removed so no flag can override a recipe value:
+dropped `--exploration ladder` (recipe refuses it under `--recipe bbf`),
+`--early-stop-patience-periods 2 --early-stop-min-improvement 0.2` (recipe
+refuses nonzero patience), `--gradient-steps-per-decision 1.0`, `--n-step 10
+--n-step-final 3 --n-step-anneal-steps 10000`, `--epsilon-anneal-decisions
+8000` (the recipe sets all of these itself). Verified by dry-parsing the
+exact command through `scripts/train.py::parse_arguments` before launch — no
+`SystemExit`, and every recipe-controlled value resolved to the recipe's own:
+
+    uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+        --frame-rate-hz 120 --decision-cadence choice-points \
+        --upgrade-availability all --recipe bbf \
+        --budget-decisions 120712 --checkpoint-every-decisions 5000 \
+        --selection-period-decisions 15000 --seed 0 \
+        --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100
+
+Resolved config (dry-parse, matches recipe): `network_width=4`,
+`exploration='uniform'`, `epsilon_start=1.0`, `epsilon_end=0.0`,
+`epsilon_anneal_decisions=8000`, `gradient_steps_per_decision=2.0`,
+`n_step=10`, `n_step_final=3`, `n_step_anneal_steps=10000`,
+`discount_initial=0.97`, `discount=0.997`, `learning_rate=0.0001`,
+`weight_decay=0.1`, `weight_decay_on_vectors=False`, `adam_eps=0.00015`,
+`target_ema_decay=0.995`, `act_with_target=True`, `gradient_clip=None`,
+`reset_every_steps=40000`, `early_stop_patience_periods=0`,
+`kill_bars=[12000:8000:6.1, 26262:8000:6.1]`. Training uses
+`render-interval-16` (`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`);
+evaluation uses the default build.
+
+**One run, fixed by this pre-registration** (`docs/task.md` §1.1's
+one-protocol comparison): no reruns, no best-of.
+
+**Kill.** A fired bar is recorded as a collapse (which bar, the window
+mean); the arm is not evaluated.
+
+**Cap.** 5h wall per stage. If hit, resume from `latest.pt` in a follow-up
+stage — neither a kill nor a verdict.
+
+**Arm**, `docs/solution.md` §9.2b, unchanged. The acting network is the EMA
+target, rebuilt from the manifest.
+
+**Evaluation, if not killed and the budget completes.** Run 4's eval
+command shape, default build, n=105 (7×15), `--upgrade-availability all
+--frame-game-ms 100`, output under `state/records/m3-p001/eval-arm`.
+`bootstrap_difference` against run 4's arm (18.143, n=105; seed 0, 10,000
+resamples). BETTER/WORSE/NOT DISTINGUISHABLE as defined in `M2-P006`.
+Secondary: vs scripted-`all` (6.105, n=105) and random-`all` (3.556, n=90),
+same method. **Power**, as `M2-P006`: minimum detectable difference at 80%
+power ≈1.45 waves; `NOT DISTINGUISHABLE` means "not resolved at this n."
+
+**Secondary pre-registered checks.**
+
+(i) Resets. Expected 4 (at 40k, 80k, 120k, 160k gradient steps, per
+`reset_horizon`'s estimate at this budget and warm-up range). Check against
+the final checkpoint's `resets` and `optimisation_steps`.
+
+(ii) The `#75` wall. Any training or eval episode reaching wave 22 falsifies
+"wave 21 is a fixed ceiling." Otherwise report the number of episodes
+reaching wave 20+ and the number of wave-21 crossings.
+
+(iii) The production learner step time (`#72` follow-up), from whatever the
+run itself records.
+
+**Timebox.** ≤5h wall. Projected from run 5's 29,274 decisions/h on
+`render-interval-16`: 120,712 decisions ≈4.12h. The learner (2 steps × ~17ms
+idle, ≈35ms/decision) is not expected to bind — well under the ~120ms/decision
+pacing figure `M2-P006` inferred for the 1-step recipe.
+
+### Results, as run
+
+(to be filled in after the run)
+
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 
 Design: `render-interval-16` private bridge build (specialist design notes,

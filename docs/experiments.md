@@ -448,7 +448,42 @@ attempt); after that, stop and report with crash lines and logcat.
 
 ### Results, as run
 
-(to be filled in after the run)
+**Verdict: KILLED — no evaluation.** Kill bar K1 (`12000:8000:8.6`) fired at
+12,022 decisions: the near-greedy mean final wave over the (8000, 12000]
+window was **8.409** (66 near-greedy episodes), below the 8.6 threshold. K2
+was never reached. Per this entry's arm-selection rule, a killed run's arm
+is not evaluated; no stage 3.
+
+Run: `state/runs/session-20260924-115003/stacked-dqn-20260924-115003-a8c07a/`.
+Decisions at stop: 12,223 (session summary, slightly past the 12,022
+kill-check reading as the fleet finished in-flight episodes).
+`game_seconds`: 78,781.505. `optimisation_steps`: 10,032. Training wall:
+1,465.16s (≈24.4 min); stage wall including bring-up/teardown: 00:33:15,
+well inside the 5h cap. Throughput: 30,032.8 decisions/h, 193,571.6
+game-s/h — consistent with run 5's rate on the same build (29,273.9
+decisions/h, `M2-P005`). Checkpoints written: `checkpoint-d0005016.pt`,
+`checkpoint-d0010018.pt`, `latest.pt` (12,223 decisions). No selection
+period closed (`periods_closed: 0`) — the run collapsed before the first
+15,000-decision period boundary, so no per-period means exist to report.
+
+Host cleanup verified after stage exit: zero qemu processes (`/proc/*/exe`),
+empty `adb devices`, `run_stage.sh`'s own teardown reported `cleanup ok`
+(6/7 instances already not live, 1 exited during teardown while offline;
+0/7 required active cleanup — consistent with a fleet that had already torn
+itself down, not a stuck instance).
+
+This is a second `render-interval-16`-collection run stopping on the same
+K1 bar inherited from run 3's curve, at a materially lower window mean
+(8.409) than run 5's own tighter K1 pass point — but run 5 passed K1 (10.102
+vs a 9.2 bar) and was only killed later, at K2. This run failed the looser,
+run-3-derived K1 bar outright, at a wall time (~24 min) far too short to
+distinguish collapse from ordinary early-training variance under a fresh
+seed-0 initialization. The 2× decision budget was not reached; the
+hypothesis is untested by this run — the kill-bar mechanism did its job
+(stopping a run whose near-greedy policy was not learning), but leaves no
+result to compare against run 4. Comment posted on `#67`; board item not
+moved (kill, not a completion, per this entry's stated protocol — the Lead
+decides whether to retry with a different seed or otherwise).
 
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 

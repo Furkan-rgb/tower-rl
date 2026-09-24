@@ -1643,12 +1643,10 @@ actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
 `train.py` (a training run on a fleet), `workstation_preflight.py` (host checks),
 `spectate.py` (one windowed instance a human watches, optionally recorded),
 `render_recording.py` (a recording and its decision log composed into one
-video), `select_checkpoint.py` (ranks a run's numbered checkpoints by
-greedy-evaluation IQM; a checkpoint-evaluation tool, not the M2 arm rule),
-`report_arms.py` (IQM and per-wave comparison of evaluation
-sets), `diagnose_plasticity.py` (the plasticity diagnostic over a recorded
-observation batch), and `migrate_state.py` (the one-time move of
-`~/.local/state/tower-rl` into `state/`). The shell helpers beside them —
+video), `select_checkpoint.py` (the post-hoc choice among a run's numbered
+checkpoints), `report_arms.py` (IQM and per-wave comparison of evaluation
+sets), and `migrate_state.py` (the one-time move of `~/.local/state/tower-rl`
+into `state/`). The shell helpers beside them —
 `create_avd.sh`, `launch_avd.sh` and `instrumented_bridge.sh` — are not
 argparse entry points.
 `tower_rl.doctor` is a library module with the host/APK/device checks below and

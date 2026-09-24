@@ -388,11 +388,6 @@ def collect_episodes(
             "--decision-cadence", str(arguments.decision_cadence),
             "--upgrade-availability", str(arguments.upgrade_availability),
             "--output", str(output),
-            *(
-                ["--record-observations", str(arguments.record_observations)]
-                if arguments.record_observations is not None
-                else []
-            ),
         ],
         capture_output=True,
         text=True,
@@ -452,16 +447,10 @@ def main() -> int:
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "actors.json"
     )
-    # Passed straight through to the one runner that records. A fleet of more
-    # than one actor would have them overwrite each other's batch, which is why
-    # this is refused below rather than silently keeping the last writer's.
-    parser.add_argument("--record-observations", type=Path, default=None)
     arguments = parser.parse_args()
 
     if arguments.actors < 1:
         raise SystemExit("a fleet needs at least one actor")
-    if arguments.record_observations is not None and arguments.actors != 1:
-        raise SystemExit("recording observations writes one batch; run a single actor")
     checkpoint_arm(arguments.policy)
     arguments.frame_rates = frame_rates(arguments.frame_rate_hz, arguments.actors)
     arguments.output_directory.mkdir(parents=True, exist_ok=True)

@@ -72,7 +72,6 @@ SCRIPT_MODULES = (
     "report_arms",
     "spectate",
     "render_recording",
-    "diagnose_plasticity",
     "migrate_state",
 )
 
@@ -124,9 +123,6 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             # Plays each arm of the protocol through the same selector.
             "test_evaluation_protocol",
             "test_script_bridge_directory",
-            # The observation-batch recorder, which lives beside this entry
-            # point and is read back by the diagnostic that test also holds.
-            "test_diagnose_plasticity",
         }
     ),
     "select_checkpoint": frozenset({"test_evaluation_protocol"}),
@@ -139,11 +135,6 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     # Composition of a recording and the decision track beside it: it reads two
     # files and calls ffmpeg, owns no domain concept, and has one test reader.
     "render_recording": frozenset({"test_render_recording"}),
-    # The capture seam and the diagnostic that reads what it writes are one
-    # pipeline joined by a file format, and that format is the thing worth
-    # holding; `run_episodes` picks up this reader for the wrapper that lives
-    # beside its entry point and nothing else.
-    "diagnose_plasticity": frozenset({"test_diagnose_plasticity"}),
     # The one-shot move of this host's former state tree into the project.
     "migrate_state": frozenset({"test_migrate_state"}),
 }

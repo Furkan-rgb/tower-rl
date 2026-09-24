@@ -95,14 +95,137 @@ deciding which of `effective_render_fps` or `renderedFrameCount` is the
 trustworthy skip-proof is a mechanism question for stage-1 design review, not
 an implementer call.
 
-**Verdict: NO-GO on the literal pre-registered rule.** fps ratio and
-speedup ratio both clear 1.5, but the fidelity leg fails as specified
-(renderprobe ratio ≈ 1/1, not ≈ 1/16), so the conjunction is not satisfied.
-Per the pre-registered handling, a solo fail is a safe drop — stage 3 is not
-started from this result. The `renderedFrameCount`-vs-`effective_render_fps`
-contradiction is worth a specialist look before any future retry of this
-design, since it bears on whether the design's stage-1 mechanism actually
-does what its stage-3 equivalence argument assumes.
+**Verdict: NO-GO on the literal pre-registered rule (stands), but the cause
+was the instrument, not the mechanism (correction, specialist, 2026-09-24).**
+fps ratio and speedup ratio both cleared 1.5; the fidelity leg failed as
+specified (renderprobe ratio ≈ 1/1, not ≈ 1/16), so the recorded NO-GO on the
+literal pre-registered rule is unchanged. What is corrected is *why* the
+fidelity leg failed:
+
+- `Time.renderedFrameCount` (the icall the design used for `renderprobe`'s
+  `rendered=` field) is undocumented in Unity's own scripting reference (no
+  `Time-renderedFrameCount.html` page exists) and, per community
+  measurement, increments at least once per player-loop iteration whatever
+  renders — so `rendered ≈ frames` is what it reports **whether or not**
+  frames are actually being skipped. The probe is uninformative, not
+  evidence of a miss.
+- `effective_render_fps` is arithmetic from the configured settings
+  (`OnDemandRendering.effectiveRenderFrameRate`'s own documented formula:
+  `refreshRate/vSyncCount/interval`, or `targetFrameRate/interval` when
+  `vSyncCount` is 0), not a measurement of anything the guest actually
+  presented. Citing it as corroboration in the original write-up was wrong;
+  it corroborates only that the *setting* was read back correctly, which the
+  readback line already established.
+- The frame counts **do** show skipping once measured correctly: A's fps
+  (122.3) sits on this project's measured 120 Hz vsync-present ladder (guest
+  vsync +0.5–2%, `FRAME-RATE-KNEE-DETAIL.md`); B and B2's fps (252.8, 254.7)
+  are 2.1× that ceiling — a rate the same fleet hardware cannot sustain while
+  presenting every frame, reproduced independently across two separate runs
+  of the B build (not a single-run confound; run order A 07:14, B 07:17, B2
+  07:20).
+- The 557 `"permitted lifetime of 4 frames"` lines in B2 all fall in a
+  07:20:50–07:20:52 window between connections, before the first
+  `renderprobe` line at 07:21:01 — zero during the 53 s of advances actually
+  measured. Unity logs this warning only at `renderFrameInterval ≥ 4`; no
+  capture of the default (interval-1) build anywhere in this project's
+  history contains a `Unity`-tagged logcat line at all, so there is no A
+  baseline to compare against, and the warning's timing is itself indirect
+  evidence that frame-temp allocations are reclaimed only on rendered
+  frames — i.e. that frames are being skipped.
+
+Net effect: **the render-interval-16 mechanism does skip frames and does
+raise the achievable fps** past the 120 Hz vsync ceiling this project has
+measured elsewhere; stage 2's NO-GO reflected a broken skip-proof, not a
+broken mechanism. `docs/experiments.md` did not previously state this
+distinction, which is why it is corrected here rather than left to a
+scratchpad file that is not part of the repository. See `#27` stage 3 below
+for the fleet-level equivalence test this correction motivates.
+
+## #27 stage 3 — render-interval-16, fleet equivalence and speed-up (pre-registered, written before any run)
+
+**Design, mirroring `M2-S001`'s (`#61`) fleet equivalence protocol.** Same
+actor count (7, `tower_rl_instrumented_api36`, `-read-only`, cold `-gpu
+host`, 120 Hz confirmed per instance, offline by interface), scripted
+policy, choice-point cadence, `--upgrade-availability all`,
+`frame_game_ms` at its production default (100). Three arms, run in
+sequence, all scripted:
+
+- **A1** — installed bridge, `state/bridge/current`
+  (`f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3`),
+  `TOWER_BRIDGE_BUILD_DIR` unset.
+- **B** — `render-interval-16`
+  (`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`),
+  `TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16` exported to
+  both `run_stage.sh` and `run_actors.py`.
+- **A2** — installed bridge again, same digest as A1, to bound drift between
+  the two A measurements the B comparison is read against.
+
+`scripts/run_actors.py --actors 7 --episodes 4 --policy scripted
+--decision-cadence choice-points --upgrade-availability all --renderer host
+--frame-rate-hz 120 --output-directory <records>/eval-<arm>` per arm — 7 × 4
+= 28 attempted per arm, for **n ≥ 23 valid** (the coordinator's declared
+floor), which clears 23 down to 82.1% validity, well under every validity
+this project has measured on a clean scripted stage (M2-S001's arm S: 100%
+at n=35; run 3's scripted-`all`: 100% at n=105).
+
+**Gate (a) — fidelity, all must hold:**
+1. **Mean final wave.** 95% bootstrap CI of (B − pooled(A1, A2)) via
+   `comparison.bootstrap_difference`, seed 0, 10,000 resamples, lies inside
+   **±0.5 waves** — `M2-S001`'s own scripted-arm (arm S) margin, reused
+   unchanged because this is the same population (scripted policy, choice-point
+   cadence, `all`) the margin was set for.
+2. **decisions/wave.** |mean(B) − mean(pooled A1, A2)| ≤ **0.5** — proportionate
+   to the wave margin; stage 2's solo A/B/B2 decisions-per-wave spread was
+   4.05–4.11 (≤0.06), so 0.5 is a wide margin at fleet n.
+3. **Per-wave game_ms.** |mean(B) − mean(pooled A1, A2)| ≤ **100 ms** — one
+   frame at the current `frame_game_ms` (100), restating `M1B-E053`'s
+   one-frame timing tolerance (there stated at 100 ms because `frame_game_ms`
+   was 100 in that run too) at today's cadence.
+4. **advances_cut_short.** B's rate per valid episode ≤ pooled(A1, A2)'s rate
+   per valid episode **+ 0.2** — an absolute margin, not a ratio, because the
+   observed rates are low (stage 2 solo: A 1/3, B2 1/3, B(1) 0/3) and a ratio
+   blows up near zero.
+5. **Validity.** Every arm ≥ **99%** valid, and B's `invalid_by_reason` keys
+   must be a subset of A1∪A2's observed keys with no higher a per-episode
+   rate for any shared key — B must not introduce a new invalid class or make
+   an existing one worse.
+6. If A1 vs A2 alone (both installed-bridge arms) fall outside the ±0.5-wave
+   margin from each other, that is same-build drift, not a B effect — the
+   verdict is **INCONCLUSIVE**, not a pass, whatever B's own numbers show.
+
+**Gate (b) — skip probe (diagnostic, not a pass/fail gate on its own):**
+mid-episode, on one instance per arm, read-only:
+`adb shell dumpsys SurfaceFlinger --list` to name the game's SurfaceView
+BLAST layer, then `adb shell dumpsys SurfaceFlinger --latency '<that
+layer>'` once per arm (no taps, no screenshots). Cited evidence file:
+`K240-sf-mid.txt` (specialist scratchpad, not in the repo — the presented
+median gap is recorded in this entry's results, not just referenced). Passes
+if B's median present gap is **≥ 8× A's** (expected ≈63 ms vs ≈8.3 ms, i.e.
+close to the interval-16 divisor).
+
+**Gate (c) — speed:** per-actor steady-state collection rate — game-seconds
+of `total_budgeted_game_seconds` per `total_advance_wall_seconds` (advances
+only, bring-up/teardown excluded — `M2-S001`'s lesson that fleet-wall-clock
+throughput is dominated by fixed overhead at short stage lengths) — **B /
+mean(A1, A2) ≥ 1.3**.
+
+**Verdict rule.** **ADOPT** iff gate (a) holds in full, gate (c) holds, and
+gate (b) is consistent with skipping (B's gap ≥ 8× A's) — gate (b) is
+diagnostic corroboration of the mechanism, not an independent veto, per the
+coordinator's framing ("renderprobe is NOT a gate" applies equally to any
+single skip-probe reading standing alone against otherwise-clean fidelity
+and speed numbers, but a gate-(b) reading that contradicts gates (a)/(c) is
+grounds to hold at INCONCLUSIVE and say so, not to average it away). **DROP**
+if gate (a) or gate (c) fails outright. **INCONCLUSIVE** if A1/A2 drift
+(condition 6), if validity or an actor-failure pattern makes any arm's own
+numbers unreliable, or if gate (b)'s reading is ambiguous.
+
+**Safety and stop rule, unchanged from the coordinator's dispatch.** Clone
+AVD only, `-read-only`, offline by interface, no taps, full cleanup and
+verify (libunity SHA, zero qemu via `/proc/*/exe`, empty `adb devices`) after
+every stage. The device is at two consecutive unexplained failures (`#59`):
+if any arm here fails unexplained, **stop all device work and report; do not
+retry.**
 
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 

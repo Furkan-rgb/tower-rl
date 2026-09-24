@@ -461,7 +461,152 @@ resamples), against each reference's own raw episodes:
 `frame_game_ms` 100 change together produce an arm that beats run 3's arm by
 both available comparisons, CI lower bound clearly above zero either way.
 
-## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
+## M2-P005 — Milestone 2, run 5: 2× run-4 budget, `render-interval-16` training collection, kill bars re-derived from run 4's curve (pre-registered, written before any run)
+
+**Date:** 2026-09-24. Board `#64`. Recipe identical to run 4 (`M2-P004`) in
+every hyperparameter and flag — `stacked-dqn`, `--upgrade-availability all`,
+`--frame-rate-hz 120`, `--decision-cadence choice-points`,
+`--exploration ladder`, `--epsilon-anneal-decisions 8000`,
+`--block-game-seconds 4000`, `--checkpoint-every-game-seconds 60000`,
+`--early-stop-patience-periods 2`, `--early-stop-min-improvement 0.2`,
+`--gradient-steps-per-decision 1.0` (DER rate), `--n-step 10 --n-step-final 3
+--n-step-anneal-steps 10000` (BBF anneal), `--frame-game-ms 100`, 7 actors,
+seed 0. **The only changes:**
+
+(a) **Decision budget doubled.** `--budget-game-seconds` 240000 → **480000**
+(run 4's own mechanism for spending decision budget; run 4 produced 60,356
+fleet decisions over its 240,000 game-second budget). With
+`--checkpoint-every-game-seconds` unchanged at 60000, this run has **8**
+60,000-game-second periods instead of run 4's 4.
+
+(b) **`render-interval-16` for the training stage only.**
+`TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16`
+(`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`), exported
+in the shell before `scripts/run_stage.sh` so both the stage's own
+`instrumented_bridge.sh deploy/cleanup` calls and `scripts/train.py`'s
+subprocess inherit it — the same mechanism `#27` stage 3 used, per the Lead's
+adopt decision (commit `6683750`): training collection only, evaluation stays
+on the default build (`state/bridge/current`, unset
+`TOWER_BRIDGE_BUILD_DIR`), spectate is not part of this run.
+
+(c) **Kill bars re-derived from run 4's own near-greedy curve**, by the same
+method `M2-P004` used on run 3's curve (verified by exact reproduction: run
+3's stated window means 9.283 (n=60) and 11.177 (n=124) for windows
+(8000,12000] and (8000,26262] both reconstruct exactly from
+`collected_episodes` in `state/runs/session-20260920-144627/.../summary.json`,
+cumulative fleet decisions in list order, near-greedy actor IDs
+`emulator-5562/5564/5566/5568:stacked-dqn`; run 3's stated thresholds 8.6 and
+10.2 both equal `round(window_mean − 3.5 × standard_error, 1)` applied to
+those two window statistics, to the exact tenth, for both bars — this is
+therefore the method, not a guess).
+
+Window definition: `(START, AT]` cumulative fleet decisions over near-greedy
+actors' valid episodes (ladder indices 3–6, epsilon floor ≤0.02; same actor
+count 7 so the same emulator serials). `START = 8000` is unchanged (the
+epsilon-anneal horizon, itself unchanged — see the schedule note below). K1's
+`AT = 12000` is reused unchanged from run 4: it is a fixed round offset from
+warm-up (not tied to any run-3-specific period boundary), and decision
+density near warm-up is close between the two runs (run 3 period-1 close
+10,235 decisions; run 4 period-1 close 10,205), so the same early check
+window applies. K2's `AT` mirrors how run 4's K2 was set: `M2-P004`'s
+`AT = 26262` was exactly run 3's period-2 `decisions_at_end`
+(`checkpoint_periods[1].decisions_at_end` in run 3's summary), i.e. the
+close of the period `M2-P002` amendment 3 originally named as the kill
+check's scope. Run 5's K2 therefore uses run 4's own period-2
+`decisions_at_end`, **24328**
+(`state/runs/session-20260924-030851/stacked-dqn-20260924-030851-6014a1/summary.json`,
+`checkpoint_periods[1]`).
+
+Recomputing the same window/actor/validity filter over run 4's
+`collected_episodes`:
+
+| bar | window (decisions) | n | mean | sd | SE | threshold = round(mean − 3.5·SE, 1) |
+| --- | --- | --- | --- | --- | --- | --- |
+| K1 | (8000, 12000] | 38 | 10.026 | 1.498 | 0.243 | **9.2** |
+| K2 | (8000, 24328] | 114 | 11.158 | 1.627 | 0.152 | **10.6** |
+
+Flags: `--kill-bar 12000:8000:9.2 --kill-bar 24328:8000:10.6`. A kill-bar stop
+skips the final evaluation entirely, exactly as `M2-P004` specified; the entry
+then records only which bar fired and the window mean it fired on.
+
+**Schedules checked against the 2× budget, none retuned.** `train.py`'s
+epsilon anneal (`--epsilon-anneal-decisions`), the n-step anneal
+(`--n-step-anneal-steps`, counted in gradient steps), the replay warm-up
+(`--warmup-sequences`, unset/default) and the kill-bar windows above are all
+defined in **absolute decisions or gradient steps**, not as a fraction of the
+budget — `ExplorationSchedule.epsilon_for` computes
+`fraction = min(1, decisions / anneal_decisions)` from total fleet decisions
+with no reference to the run's budget (confirmed in `M2-P003`'s own audit of
+this code path), and the n-step anneal is likewise `n(t) =
+round(n0·(n1/n0)^(min(t,T)/T))` in gradient-step count `t`, not in budget
+fraction. Under a 2× budget every one of these schedules **completes at the
+same absolute point it did in run 4** (≈8,000 decisions for epsilon, ≈10,000
+gradient steps for n-step — run 4 reports this lands near 10,000 decisions at
+DER rate 1.0), but that point now falls at roughly **half the fraction of the
+run** it did before (run 4: warm-up/anneal span ≈13% of its ≈60,356 total
+decisions; run 5, if density holds, ≈6–7% of an expected ≈120,000). No
+schedule is a fraction of the budget, so none needs retuning to stay
+comparable; the only consequence is that a larger share of run 5's total
+decisions are collected after every schedule has reached its floor/final
+value, which is what "more budget" is supposed to buy. `--checkpoint-every-
+game-seconds` is also absolute (unchanged 60000), giving 8 periods instead of
+4; early-stop patience/min-improvement are unchanged period-counts/margins
+and apply exactly as before, so the run can still stop earlier than 8 periods
+if it plateaus.
+
+**Arm selection, unchanged from run 4/`M2-P003`.** The checkpoint written at
+the close of the best near-greedy period among periods ≥2 (ties to the lower
+period number, a period with no valid near-greedy episode is ineligible).
+
+**Evaluation.** The run-5 arm, greedy, on the **default bridge build**
+(`state/bridge/current`, `TOWER_BRIDGE_BUILD_DIR` unset), `n = 105` (15
+episodes × 7 actors), `--upgrade-availability all --frame-game-ms 100`,
+run 4's eval procedure and settings exactly:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<run-5 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m2-run5/eval-arm
+
+**Primary comparison**: run-5 arm vs run 4's existing arm result (18.143,
+n=105, same default build, same `frame_game_ms`). Bootstrap 95% CI of the
+difference (`src/tower_rl/experiment/comparison.py::bootstrap_difference`,
+seed 0, 10,000 resamples). **BETTER** iff the CI's lower bound is > 0;
+otherwise **NOT BETTER**. Secondary comparisons, same method: vs scripted-`all`
+(6.105, n=105) and vs random-`all` (3.556, n=90).
+
+**Throughput.** Fleet game-s/hour and decisions/hour reported beside run 4's
+110,758.8 game-s/h (default build) and `#27` stage 3's 1.92× per-actor
+collection-rate ratio for `render-interval-16` — run 5's training throughput
+is measured on the accelerated build, so it is not directly comparable to run
+4's number without noting that difference.
+
+**Hard timebox.** Training stage ≤ **7h** wall (`run_stage.sh`'s own
+`--shutdown-grace`/operator-enforced cap, as run 4). Budget-arithmetic check
+before launch: run 4 (default build) produced 60,356 decisions over
+240,000 game-seconds in 03:04:49 wall (110,758.8 game-s/h). At that same rate,
+480,000 game-seconds would take ≈4.33h; on `render-interval-16` at `#27`
+stage 3's measured 1.92× per-actor collection-rate ratio, ≈2.26h — both well
+inside the 7h cap, so no contradiction is expected between the budget and the
+box. The kill bars and the 7h cap end the run early if triggered; a kill-bar
+stop still gets the default-build arm evaluation of its best checkpoint (the
+last checkpoint written before the stop, since a kill-bar stop selects no arm
+by the training-time rule but a checkpoint still exists to evaluate per the
+task packet's explicit instruction).
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases fine).
+Every device stage under `scripts/run_stage.sh` with full cleanup and host
+verification (no qemu via `/proc/*/exe`, empty `adb devices`) after. Stop
+after three consecutive unexplained failures. `state/bridge/current` is never
+repointed. One eval retry is allowed after full cleanup if instances drop
+mid-eval (a gfxstream renderer crash was seen in run 4's first eval attempt);
+after that, stop and report with crash lines and logcat.
+
+### Results, as run
+
+(to be filled in after the run)
 
 **Finding that motivates this (scout, verified against manifests and docs).**
 Every M2 run (`M2-E001` onward, including run 3) trained and evaluated at

@@ -26,6 +26,84 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
+
+Design: `render-interval-16` private bridge build (specialist design notes,
+2026-09-23; not committed to the repo — build-dir digests below are the record).
+Solo, 1 instance, scripted policy, 3 episodes per arm, `frame_game_ms` left at
+its production default (100, per the M2-S001 Lead decision — the design doc's
+own recipe predates that decision and says 16.667; this run uses 100, the
+current default, per the coordinator's explicit override for this stage).
+Arm A: installed bridge, `state/bridge/current` (never repointed). Arm B:
+`TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16`.
+
+Digests: `libtower_bridge.so` A `f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3`,
+B `7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`; both
+`libunity-bridge.so` `0c2e515e796d5b5b6b04a4e2b9f17a6be4373b3fa5b663abdd8b566c636c71c4`
+(unchanged from `state/bridge/current`, confirmed with `sha256sum`).
+
+GO/NO-GO rule (pre-registered by the coordinator before this run): GO to
+stage 3 iff fps ratio B/A ≥ 1.5 AND game-s/wall-s ratio B/A ≥ 1.5 AND
+fidelity clean (readback line + renderprobe rendered/frames ≈ 1/16) AND
+frames verifiably skipped. A solo fail is a safe drop.
+
+### Results, as run (2026-09-24)
+
+Arm A (`state/records/render-off-20260924/A/emulator-5556.json`): 3/3 valid,
+`total_frames` 6765, `total_advance_wall_seconds` 55.302 → fps 122.3;
+`speedup` 7.761; `total_round_seconds`/`total_budgeted_game_seconds` =
+613.11/607.5 = 1.009; `advances_cut_short` 1; `decisions_per_wave` 4.053.
+
+Arm B, first attempt (`.../B/emulator-5556.json`): 3/3 valid, same shape, but
+no logcat was captured alongside it (`run_stage.sh` does not capture logcat by
+default and none was attached before launch) — no fidelity evidence exists for
+this attempt, so it is **not used** for the verdict below; only its bridge
+build digest and clean exit are noted.
+
+Arm B, second attempt "B2" (`.../B2/emulator-5556.json`), run with
+`adb -s emulator-5556 logcat` attached from device-up to teardown (this is
+the arm used for the verdict): 3/3 valid, `total_frames` 6628,
+`total_advance_wall_seconds` 26.027 → fps 254.7; `speedup` 12.084;
+`total_round_seconds`/`total_budgeted_game_seconds` = 584.97/578.7 = 1.011;
+`advances_cut_short` 1; `decisions_per_wave` 4.111.
+
+fps ratio B2/A = 254.7/122.3 = **2.08** (≥ 1.5, passes). Speedup ratio
+B2/A = 12.084/7.761 = **1.56** (≥ 1.5, passes).
+
+Fidelity, from the B2 logcat capture (`tower_bridge` tag, 54,713 lines):
+- `render interval=16 readback=16` present, 9 occurrences, one per connection/
+  reconnect; `effective_render_fps` alternates 15.0 (7 lines) / 3.8 (2 lines)
+  — 240/16 = 15, consistent with the interval taking effect on the actual
+  present rate.
+- `renderprobe frames=F rendered=R` (326 lines, one per advance): **R ≈ F in
+  all but 9 lines, and those 9 differ by exactly 1** (rounding at an advance
+  boundary). The ratio is ≈ 1/1 throughout, not ≈ 1/16. `Time.renderedFrameCount`
+  (the icall the design chose for this probe) does not reflect the interval's
+  throttling of actual render/present calls — it increments every player-loop
+  frame regardless of whether that frame renders.
+- `"permitted lifetime of 4 frames"` (Unity allocation-lifetime spam) — 557
+  lines in the B2 capture.
+
+This is a direct contradiction inside the fidelity evidence itself: the
+write+readback and `effective_render_fps` both corroborate the interval
+engaging (present rate throttled to 240/16 = 15 fps), but the specific
+per-advance proof-of-skipping probe the design nominated
+(`renderedFrameCount`) shows no skipping at all. The pre-registered rule
+requires renderprobe to show rendered/frames ≈ 1/16 for fidelity to count as
+clean; it does not. This finding is reported as observed, not resolved here —
+deciding which of `effective_render_fps` or `renderedFrameCount` is the
+trustworthy skip-proof is a mechanism question for stage-1 design review, not
+an implementer call.
+
+**Verdict: NO-GO on the literal pre-registered rule.** fps ratio and
+speedup ratio both clear 1.5, but the fidelity leg fails as specified
+(renderprobe ratio ≈ 1/1, not ≈ 1/16), so the conjunction is not satisfied.
+Per the pre-registered handling, a solo fail is a safe drop — stage 3 is not
+started from this result. The `renderedFrameCount`-vs-`effective_render_fps`
+contradiction is worth a specialist look before any future retry of this
+design, since it bears on whether the design's stage-1 mechanism actually
+does what its stage-3 equivalence argument assumes.
+
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,

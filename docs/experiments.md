@@ -153,6 +153,29 @@ lists Workshop, Lab, Card, Module, Perk, event, and tournament permanent- or
 meta-progression optimisation as a non-goal, so raising the account ceiling
 itself is out of scope for this diagnosis.
 
+## BBF recipe: learner step at four times the width (2026-09-24, #74)
+
+Measured to choose the BBF recipe's replay ratio: the packet set 2 gradient
+steps per decision if one step at 4x width takes at most 25 ms, and 1
+otherwise. The shapes match the #72 entry: batch 8 × 80 steps, burn-in 7,
+n = 10, RTX 4090, idle host. One step is `collate` plus
+`StackedDqnBackbone.learn`, with a sync around every call. Each figure is the
+median of 60 steps after 10 warm-up, from two runs. The 1x row is the #72
+learner (f71a752). The 4x row was measured twice. The first run used the #72
+learner. The second used the full BBF learner configuration: no gradient
+clipping, the two weight-decay groups, the discount anneal, acting with the
+target, and uniform replay. It measured 17.29–17.34 ms, within the first range.
+
+| width | parameters | collate | learn | step |
+| --- | --- | --- | --- | --- |
+| 1x (hidden 128, core 128) | 197,379 | 4.7 ms | 5.1 ms | 9.9–10.0 ms |
+| 4x (hidden 512, core 512) | 2,554,371 | 4.7 ms | 12.4 ms | 17.3–17.6 ms |
+
+The 4x step is inside 25 ms, so the recipe takes 2 gradient steps per
+decision, about 35 ms of learning per decision on an idle host. The production figure under 7 actor
+threads has not been measured. It will be read from the first BBF run, like
+the #72 figure.
+
 ## #27 stage 2 — render-off solo measurement: fps/speedup gate passes, renderprobe fidelity gate does not
 
 Design: `render-interval-16` private bridge build (specialist design notes,

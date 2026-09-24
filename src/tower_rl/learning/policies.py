@@ -165,6 +165,7 @@ def checkpoint_policy(
             "only stacked-dqn can be rebuilt as a policy"
         )
     defaults = NetworkConfig()
+    learner_defaults = StackedDqnConfig()
     backbone = StackedDqnBackbone(
         config=StackedDqnConfig(
             history_length=int(settings["history_length"]),
@@ -180,6 +181,21 @@ def checkpoint_policy(
             discount=float(settings["discount"]),
             learning_rate=float(settings["learning_rate"]),
             target_ema_decay=float(settings["target_ema_decay"]),
+            # Absent from a checkpoint written before the BBF recipe, whose
+            # optimizer was built from these defaults. They decide how the
+            # optimizer is split into groups, which its state must match.
+            weight_decay=float(settings.get("weight_decay", learner_defaults.weight_decay)),
+            weight_decay_on_vectors=bool(
+                settings.get(
+                    "weight_decay_on_vectors", learner_defaults.weight_decay_on_vectors
+                )
+            ),
+            adam_eps=float(settings.get("adam_eps", learner_defaults.adam_eps)),
+            # The network the run acted with is the one its checkpoints are
+            # evaluated with: the target under BBF's recipe, else the online.
+            act_with_target=bool(
+                settings.get("act_with_target", learner_defaults.act_with_target)
+            ),
         ),
         network_config=NetworkConfig(
             identity_capacity=int(
@@ -195,8 +211,9 @@ def checkpoint_policy(
     # Nothing here is ever trained again. `act` already builds no graph; this
     # says so at the object as well, so a policy that leaked into a learner
     # would fail rather than quietly accumulate gradients.
-    backbone.online.eval()
-    backbone.online.requires_grad_(False)
+    for network in (backbone.online, backbone.target):
+        network.eval()
+        network.requires_grad_(False)
     return backbone, checkpoint.identity
 
 

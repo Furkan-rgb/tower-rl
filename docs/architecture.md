@@ -302,9 +302,8 @@ and no script.
 - `metrics.py` — learning-curve points, health counters, collection-window and
   decision-time lines.
 - `training_report.py` — `TrainingReport`, which writes a run's artifacts.
-- `comparison.py` — `interleave_schedule`, `iqm`, `stratified_bootstrap`,
-  `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`,
-  `required_episodes`.
+- `comparison.py` — `iqm`, `stratified_bootstrap`,
+  `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`.
 - `wave_statistics.py` — per-wave equivalence analysis between two arms.
 
 **State.** Run identity is immutable and is stamped into every checkpoint and

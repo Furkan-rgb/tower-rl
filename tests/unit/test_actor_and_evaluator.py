@@ -425,9 +425,9 @@ def test_a_fresh_run_is_not_counted_as_contaminated() -> None:
 def test_per_episode_records_feed_the_comparison_protocol_directly() -> None:
     """No throwaway observer wrapper: the report's own episodes are enough.
 
-    `bootstrap_difference`, `cohens_d` and `required_episodes` all consume
-    per-episode samples; this proves `report.episodes` is that sample without
-    any adapter between the evaluator and `comparison.py`.
+    `bootstrap_difference` and `cohens_d` both consume per-episode samples;
+    this proves `report.episodes` is that sample without any adapter between
+    the evaluator and `comparison.py`.
     """
     scripted = evaluate(
         _environment(damage_per_second=2.0),

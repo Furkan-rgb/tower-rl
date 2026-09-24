@@ -331,10 +331,10 @@ def window_line(window: CollectionWindow) -> str:
 def collected_episode_records(report: TrainingProgressReport) -> list[dict[str, object]]:
     """Every collected episode's record, reusing the evaluator's shape.
 
-    `episode_record` is what `run_episodes.py` and `compare_arms.py` already
-    serialise per-episode records with; this is that same shape, plus the actor
-    id, since a fleet's episodes are one series and a health problem must be
-    traceable back to the instance that produced it.
+    `episode_record` is what `run_episodes.py` already serialises per-episode
+    records with; this is that same shape, plus the actor id, since a fleet's
+    episodes are one series and a health problem must be traceable back to the
+    instance that produced it.
     """
     return [
         {**episode_record(index, episode.summary), "actor_id": episode.actor_id}

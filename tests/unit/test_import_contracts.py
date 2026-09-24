@@ -68,7 +68,6 @@ SCRIPT_MODULES = (
     "run_episodes",
     "run_actors",
     "clone_session",
-    "compare_arms",
     "select_checkpoint",
     "report_arms",
     "spectate",
@@ -84,9 +83,9 @@ SCRIPT_MODULES = (
 #: should be a deliberate line here rather than a rename nobody noticed.
 #:
 #: A script absent from this mapping is forbidden to every test, which is the
-#: direction the default has to point: `run_episodes` and `compare_arms` have no
-#: tests today, and listing a name for the file that would test them would be
-#: writing down permission for a file nobody has read.
+#: direction the default has to point: `run_episodes` has no tests today, and
+#: listing a name for the file that would test it would be writing down
+#: permission for a file nobody has read.
 #:
 #: `train` has four because the entry point is where a run is composed, and each
 #: tests one thing that composition owns: its argument parsing and resolved run
@@ -96,7 +95,7 @@ SCRIPT_MODULES = (
 #: behaviour they hold is itself spread across entry points and lives nowhere
 #: else: the evaluation protocol runs a training session, plays its checkpoints
 #: through the episode runner and reads them back with the two post-hoc
-#: scripts, and the bridge-directory rule is one rule three runners obey.
+#: scripts, and the bridge-directory rule is one rule two runners obey.
 SCRIPT_TESTS: dict[str, frozenset[str]] = {
     "train": frozenset(
         {
@@ -130,7 +129,6 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             "test_diagnose_plasticity",
         }
     ),
-    "compare_arms": frozenset({"test_script_bridge_directory"}),
     "select_checkpoint": frozenset({"test_evaluation_protocol"}),
     "report_arms": frozenset({"test_evaluation_protocol"}),
     # The panel's model, the exclusive-device refusal and the episode loop live
@@ -275,8 +273,8 @@ def test_a_script_nobody_wrote_a_rule_for_is_refused_rather_than_admitted(
 ) -> None:
     """The default for an unlisted entry point is refusal, not permission.
 
-    `run_episodes` and `compare_arms` are in `SCRIPT_MODULES` and absent from
-    `SCRIPT_TESTS`, which is the case that decides which way the default points.
+    `run_episodes` is in `SCRIPT_MODULES` and absent from `SCRIPT_TESTS`, which
+    is the case that decides which way the default points.
     Read from a probe rather than from the real suite, because the property has
     to hold for the entry point somebody adds next, which no file imports yet.
     """

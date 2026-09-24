@@ -42,7 +42,6 @@ WRITING_ARGUMENTS = {
     "train.py": {"--run-dir"},
     "run_actors.py": {"--output", "--output-directory"},
     "run_episodes.py": {"--output"},
-    "compare_arms.py": {"--output"},
     "report_arms.py": {"--output", "--output-directory"},
     "select_checkpoint.py": {"--output", "--run-dir"},
     "spectate.py": {"--output-directory"},

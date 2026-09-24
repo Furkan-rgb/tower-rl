@@ -168,8 +168,7 @@ measured, not what to do next.
   candidate from `docs/rl-candidates.md`. `recurrent-q` was the second arm the
   `M1B-E011` run above used; it was removed with the multi-backbone goal (`#7`),
   so `learning/` holds `stacked_dqn.py` alone and `BACKBONE` names it.
-- **The comparison machinery**: interleaved scheduling, bootstrap intervals,
-  Cohen's d, and `required_episodes` for power.
+- **The comparison machinery**: bootstrap intervals and Cohen's d.
 - **Frame-exact stepping** (`M1B-E016`) and **the advance loop inside the
   bridge** (`M1B-E017`), described below.
 - **The episode boundary and bring-up are screen-free.** The round-start

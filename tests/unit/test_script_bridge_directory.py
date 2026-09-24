@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import compare_arms
 import pytest
 import run_episodes
 import train
@@ -31,10 +30,9 @@ POINTER = "/tmp/tower-bridge-live.latest"
     ("module", "argv"),
     [
         (run_episodes, ["run_episodes.py"]),
-        (compare_arms, ["compare_arms.py", "--arm", "scripted", "--arm", "random"]),
         (train, ["train.py", "--budget-decisions", "1000", "--no-track"]),
     ],
-    ids=["run_episodes", "compare_arms", "train"],
+    ids=["run_episodes", "train"],
 )
 def test_the_build_directory_comes_from_the_simulation_function(
     module: Any, argv: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path

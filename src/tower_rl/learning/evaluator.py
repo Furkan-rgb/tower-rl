@@ -253,11 +253,8 @@ def evaluate(
 def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
     """One episode's shape for the durable log; valid and invalid alike.
 
-    This is what `comparison.py`'s bootstrap intervals, Cohen's d, and
-    `required_episodes` consume — per-episode samples, not the aggregates
-    above. Shared between `evaluator.py` and any caller that collects
-    `EpisodeSummary` itself (`compare_arms.py`), so the shape is not
-    duplicated per call site.
+    This is what `comparison.py`'s bootstrap intervals and Cohen's d consume —
+    per-episode samples, not the aggregates above.
     """
     return {
         "episode_index": index,

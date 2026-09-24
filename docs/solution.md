@@ -1640,8 +1640,7 @@ are the scripts under `scripts/`, run as `uv run python scripts/<name>.py`, each
 parsing its own `argparse` arguments and returning nonzero on failure:
 `clone_session.py` (one instance up, down, or inspected), `run_episodes.py` (one
 actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
-`train.py` (a training run on a fleet), `compare_arms.py` (two policies
-interleaved on one instance), `workstation_preflight.py` (host checks),
+`train.py` (a training run on a fleet), `workstation_preflight.py` (host checks),
 `spectate.py` (one windowed instance a human watches, optionally recorded),
 `render_recording.py` (a recording and its decision log composed into one
 video), `select_checkpoint.py` (ranks a run's numbered checkpoints by

@@ -59,34 +59,6 @@ class Difference:
         )
 
 
-def interleave_schedule(
-    arms: tuple[str, ...], episodes_per_arm: int, *, block: int = 5, seed: int | None = None
-) -> tuple[str, ...]:
-    """Order episodes so drift lands on every arm equally.
-
-    Arms take turns in small blocks rather than running to completion one after
-    another, and the order within each round is shuffled so no arm is
-    systematically first. A block larger than one amortises the cost of switching
-    configuration, which on this environment means restarting at a new speed.
-    """
-    if not arms:
-        raise ValueError("a comparison needs at least one arm")
-    if episodes_per_arm < 1 or block < 1:
-        raise ValueError("episodes per arm and block size must be positive")
-
-    generator = random.Random(seed)
-    schedule: list[str] = []
-    remaining = dict.fromkeys(arms, episodes_per_arm)
-    while any(count > 0 for count in remaining.values()):
-        order = [arm for arm in arms if remaining[arm] > 0]
-        generator.shuffle(order)
-        for arm in order:
-            take = min(block, remaining[arm])
-            schedule.extend([arm] * take)
-            remaining[arm] -= take
-    return tuple(schedule)
-
-
 def bootstrap_difference(
     left: Sequence[float],
     right: Sequence[float],
@@ -298,19 +270,3 @@ def compare(
                 )
             )
     return tuple(results)
-
-
-def required_episodes(
-    standard_deviation: float, difference: float, *, power: float = 0.8
-) -> int:
-    """Episodes per arm to detect a difference, at five percent significance.
-
-    Used to decide a budget before running, and to state afterwards what the
-    sample could and could not have detected.
-    """
-    if standard_deviation <= 0 or difference <= 0:
-        raise ValueError("standard deviation and difference must be positive")
-    z_power = {0.8: 0.8416, 0.9: 1.2816}.get(power)
-    if z_power is None:
-        raise ValueError("only 80 and 90 percent power are tabulated")
-    return math.ceil(2 * (1.96 + z_power) ** 2 * standard_deviation**2 / difference**2)

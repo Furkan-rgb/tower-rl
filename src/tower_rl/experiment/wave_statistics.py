@@ -44,9 +44,8 @@ from tower_rl.experiment.comparison import (
     cohens_d,
 )
 
-#: The same two normal deviates `comparison.required_episodes` uses: a two-sided
-#: five percent test, and the tabulated powers. `detectable_difference` below is
-#: the exact algebraic inverse of that function, and a test pins the two together.
+#: The two normal deviates `detectable_difference` below uses: a two-sided five
+#: percent test, and the tabulated powers.
 Z_SIGNIFICANCE = 1.96
 Z_BY_POWER: dict[float, float] = {0.8: 0.8416, 0.9: 1.2816}
 
@@ -161,10 +160,8 @@ def detectable_difference(
 ) -> float:
     """The smallest difference this sample could have found, in the statistic's units.
 
-    The exact inverse of `comparison.required_episodes`: that answers "how many
-    episodes for this difference", this answers "what difference at these
-    episodes". Every result in this module carries it, so a non-significant
-    interval always arrives with the size of the effect it could have missed.
+    Every result in this module carries it, so a non-significant interval
+    always arrives with the size of the effect it could have missed.
     """
     if standard_deviation < 0:
         raise ValueError("standard deviation cannot be negative")
@@ -252,24 +249,9 @@ def _optional_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
-def episode_records(report: Mapping[str, Any], arm: str | None = None) -> list[dict[str, Any]]:
-    """The valid episode records of a report JSON, from either report shape.
-
-    `run_actors.py` writes one arm per file (`evaluator.to_record`); a
-    `compare_arms.py` report nests arms under `arms`. Both carry the same
-    per-episode records, so a caller should not have to know which it holds.
-    """
-    if "arms" in report:
-        arms = report["arms"]
-        if arm is None:
-            if len(arms) != 1:
-                raise ValueError(f"report holds arms {sorted(arms)}; name the one to read")
-            arm = next(iter(arms))
-        if arm not in arms:
-            raise ValueError(f"report has no arm {arm!r}; it holds {sorted(arms)}")
-        records = arms[arm].get("episodes", [])
-    else:
-        records = report.get("episodes", [])
+def episode_records(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The valid episode records of a report JSON written by `evaluator.to_record`."""
+    records = report.get("episodes", [])
     return [dict(record) for record in records if record.get("valid", True)]
 
 
@@ -473,7 +455,7 @@ def analyse(
 
 
 def render(analysis: EquivalenceAnalysis) -> str:
-    """The textual report, in `compare_arms.py`'s style: intervals, never verdicts."""
+    """The textual report: intervals, never verdicts."""
     lines = [
         f"{analysis.left} vs {analysis.right}: "
         f"{analysis.left_episodes}/{analysis.right_episodes} valid episodes, "
@@ -583,8 +565,8 @@ def analyse_reports(
     return render(
         analyse(
             left_arm or Path(left_path).stem,
-            episode_records(left, left_arm),
+            episode_records(left),
             right_arm or Path(right_path).stem,
-            episode_records(right, right_arm),
+            episode_records(right),
         )
     )

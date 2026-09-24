@@ -55,7 +55,8 @@ window with no such episode measures nothing and does not stop the run.
 `--recipe bbf` trains the same backbone under BBF's recipe (Schwarzer et al.
 2023): four times the width, shrink-and-perturb resets every 40,000 gradient
 steps, n-step and discount anneals restarted by each reset, AdamW with BBF's
-weight decay mask and epsilon, and exploration annealed to zero. The recipe is
+weight decay mask and epsilon and no gradient clipping, actions chosen by the
+EMA target network, and exploration annealed to zero. The recipe is
 a set of defaults (`RECIPES`), so the manifest records every value it resolved
 to; `docs/solution.md` "BBF recipe" compares each with the official code.
 
@@ -189,6 +190,8 @@ UNFLAGGED_DEFAULTS: dict[str, object] = {
     "weight_decay_on_vectors": StackedDqnConfig().weight_decay_on_vectors,
     "adam_eps": StackedDqnConfig().adam_eps,
     "reset_every_steps": StackedDqnConfig().reset_every_steps,
+    "gradient_clip": StackedDqnConfig().gradient_clip,
+    "act_with_target": StackedDqnConfig().act_with_target,
     "network_width": 1,
 }
 
@@ -219,6 +222,10 @@ RECIPES: dict[str, dict[str, object]] = {
         "adam_eps": 1.5e-4,
         # tau 0.005.
         "target_ema_decay": 0.995,
+        # BBF acts with the target (`target_action_selection=True`) and does
+        # not clip gradients.
+        "act_with_target": True,
+        "gradient_clip": None,
         "reset_every_steps": 40_000,
         # BBF anneals epsilon to zero. Uniform keeps every actor near-greedy,
         # so the arm rule reads the whole fleet.
@@ -284,6 +291,8 @@ def build_backbone(
         weight_decay_on_vectors=arguments.weight_decay_on_vectors,
         adam_eps=arguments.adam_eps,
         target_ema_decay=arguments.target_ema_decay,
+        gradient_clip=arguments.gradient_clip,
+        act_with_target=arguments.act_with_target,
         reset_every_steps=arguments.reset_every_steps,
         # The budget in gradient steps, BBF's `no_resets_after`: the decision
         # budget at the replay ratio. The warm-up takes no steps, so the run

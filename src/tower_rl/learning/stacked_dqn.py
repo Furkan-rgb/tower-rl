@@ -11,9 +11,9 @@ training loop supplies.
 
 The rest of BBF (Schwarzer et al. 2023, arXiv:2305.19452) is configuration of
 this same backbone rather than a second one: the discount anneal, the weight
-decay mask and Adam epsilon, and shrink-and-perturb resets. Every one of them
-defaults to off, which is run 4's recipe; `docs/solution.md` "BBF recipe"
-compares each value with the official code.
+decay mask and Adam epsilon, no gradient clipping, acting with the target, and
+shrink-and-perturb resets. Every one of them defaults to run 4's recipe;
+`docs/solution.md` "BBF recipe" compares each value with the official code.
 """
 
 from __future__ import annotations
@@ -87,7 +87,14 @@ class StackedDqnConfig:
     #: periodic hard copy moves the target in large infrequent jumps, which is
     #: what the data-efficient recipe replaces.
     target_ema_decay: float = 0.995
-    gradient_clip: float = 10.0
+    #: The global gradient norm a step is clipped to, or None for no clipping,
+    #: as BBF's optimizer has none. The norm is measured and reported either way.
+    gradient_clip: float | None = 10.0
+    #: Act with the EMA target network rather than the online one: BBF's
+    #: `target_action_selection=True`. It is the network whose weights reach
+    #: the actors, a checkpoint's evaluation and the arm, since `act` is the one
+    #: path all three choose actions through.
+    act_with_target: bool = False
     huber_delta: float = 1.0
     seed: int | None = None
 
@@ -111,6 +118,8 @@ class StackedDqnConfig:
                 raise ValueError("the initial discount must be within (0, 1)")
             if self.n_step_anneal_steps == 0:
                 raise ValueError("a discount anneal runs over the n-step anneal's steps")
+        if self.gradient_clip is not None and self.gradient_clip <= 0.0:
+            raise ValueError("a gradient clip must be positive; None is no clipping")
         if self.adam_eps <= 0.0:
             raise ValueError("Adam's epsilon must be positive")
         if self.reset_every_steps < 0:
@@ -223,8 +232,9 @@ class StackedDqnBackbone:
         ).view(1, 1, ROW_COUNT, ROW_WIDTH)
         mask = torch.tensor([[list(features.mask)]], dtype=torch.bool, device=self.device)
 
+        acting = self.target if self.config.act_with_target else self.online
         with torch.no_grad():
-            q, next_state = self.online(scalars, rows, mask, state)
+            q, next_state = acting(scalars, rows, mask, state)
         # Exploration still respects the mask: an epsilon action is drawn from the
         # valid set, never from the whole space, so exploration cannot waste a
         # step on something the game would refuse anyway.
@@ -286,9 +296,14 @@ class StackedDqnBackbone:
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()  # type: ignore[no-untyped-call]
-        gradient_norm = torch.nn.utils.clip_grad_norm_(
-            self.online.parameters(), self.config.gradient_clip
-        )
+        if self.config.gradient_clip is None:
+            gradient_norm = torch.nn.utils.get_total_norm(
+                [p.grad for p in self.online.parameters() if p.grad is not None]
+            )
+        else:
+            gradient_norm = torch.nn.utils.clip_grad_norm_(
+                self.online.parameters(), self.config.gradient_clip
+            )
         self.optimizer.step()
         self._steps += 1
         self._cycle_steps += 1

@@ -201,6 +201,11 @@ def resolved_config(
         "weight_decay": learner.weight_decay,
         "weight_decay_on_vectors": learner.weight_decay_on_vectors,
         "adam_eps": learner.adam_eps,
+        # None is no clipping.
+        "gradient_clip": learner.gradient_clip,
+        # Which network chooses the actions: the target when true. A checkpoint
+        # is evaluated with the same one.
+        "act_with_target": learner.act_with_target,
         # Shrink-and-perturb resets; 0 is none.
         "reset_every_steps": learner.reset_every_steps,
         "no_resets_after_steps": learner.no_resets_after_steps,

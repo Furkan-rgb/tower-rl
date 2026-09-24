@@ -8,7 +8,9 @@ that code produces; `docs/solution.md` "BBF recipe" lists each component.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
+import random
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ from fakes.backbone_equality import parameters_are_equal
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.backbone import SequenceBatch, collate
+from tower_rl.learning.backbone import SequenceBatch, acting_copy, collate
 from tower_rl.learning.checkpoint import (
     Checkpoint,
     CheckpointIdentity,
@@ -36,6 +38,7 @@ from tower_rl.learning.stacked_dqn import (
     StackedDqnConfig,
     reset_seed,
 )
+from tower_rl.learning.training import Learner
 
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
@@ -377,6 +380,90 @@ def test_the_target_moves_a_two_hundredth_of_the_way_every_step() -> None:
         target, backbone.online.parameters(), backbone.target.parameters(), strict=True
     ):
         assert torch.equal(now, old.mul(0.995).add(online.detach(), alpha=1.0 - 0.995))
+
+
+def _states(count: int) -> list[StateFeatures]:
+    draw = random.Random(0)
+    return [
+        StateFeatures(
+            scalars=tuple(draw.uniform(-1.0, 1.0) for _ in range(SCALAR_COUNT)),
+            rows=tuple(draw.uniform(-1.0, 1.0) for _ in range(ROW_COUNT * ROW_WIDTH)),
+            mask=tuple(True for _ in RUN_ACTIONS),
+        )
+        for _ in range(count)
+    ]
+
+
+def _greedy(network: StackedPolicyNetwork, features: StateFeatures) -> int:
+    scalars = torch.tensor([[list(features.scalars)]], dtype=torch.float32)
+    rows = torch.tensor([[list(features.rows)]], dtype=torch.float32).view(
+        1, 1, ROW_COUNT, ROW_WIDTH
+    )
+    mask = torch.tensor([[list(features.mask)]], dtype=torch.bool)
+    with torch.no_grad():
+        q, _ = network(scalars, rows, mask, None)
+    return int(q[0, 0].argmax().item())
+
+
+def test_actors_act_with_the_target_after_an_update() -> None:
+    """BBF's `target_action_selection=True`, through the path actors are fed by."""
+    # A large learning rate pulls the online network well away from the target,
+    # so there are states where the two choose differently.
+    backbone = _bbf(act_with_target=True, reset_every_steps=0, learning_rate=0.5)
+    learner = Learner(backbone)
+    actor = acting_copy(backbone)
+    for batch in _batches(3):
+        learner.learn(batch)
+    learner.publish_to(actor)
+
+    states = _states(32)
+    differing = [
+        state
+        for state in states
+        if _greedy(backbone.target, state) != _greedy(backbone.online, state)
+    ]
+    assert differing, "the online and target networks never disagreed"
+    for state in states:
+        action, _ = actor.act(state, None, epsilon=0.0)
+        assert action == _greedy(backbone.target, state)
+
+    # The control: the same copy, acting with the online network as run 4 does.
+    assert isinstance(actor, StackedDqnBackbone)
+    online_actor = StackedDqnBackbone(
+        config=dataclasses.replace(actor.config, act_with_target=False), network_config=SMALL
+    )
+    online_actor.load_state_dict(actor.state_dict())
+    action, _ = online_actor.act(differing[0], None, epsilon=0.0)
+    assert action == _greedy(backbone.online, differing[0])
+    assert action != _greedy(backbone.target, differing[0])
+
+
+# --- Gradient clipping --------------------------------------------------------
+
+
+def test_bbf_does_not_clip_the_gradient() -> None:
+    clipped = _bbf(reset_every_steps=0, gradient_clip=1e-3)
+    unclipped = _bbf(reset_every_steps=0, gradient_clip=None)
+    batch = _batches(1)[0]
+
+    clipped_norm = clipped.learn(batch).gradient_norm
+    unclipped_norm = unclipped.learn(batch).gradient_norm
+
+    def norm(backbone: StackedDqnBackbone) -> float:
+        grads = [p.grad for p in backbone.online.parameters() if p.grad is not None]
+        return float(torch.nn.utils.get_total_norm(grads))
+
+    # Both report the norm before clipping, and it is the same gradient.
+    assert unclipped_norm == pytest.approx(clipped_norm)
+    assert unclipped_norm > 1e-3
+    # Only the clipped learner stepped with a gradient scaled down to its limit.
+    assert norm(unclipped) == pytest.approx(unclipped_norm)
+    assert norm(clipped) == pytest.approx(1e-3, rel=1e-3)
+
+
+def test_a_clip_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="clip"):
+        StackedDqnConfig(gradient_clip=0.0)
 
 
 # --- Persistence --------------------------------------------------------------

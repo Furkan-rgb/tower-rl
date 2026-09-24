@@ -191,6 +191,11 @@ def checkpoint_policy(
                 )
             ),
             adam_eps=float(settings.get("adam_eps", learner_defaults.adam_eps)),
+            # The network the run acted with is the one its checkpoints are
+            # evaluated with: the target under BBF's recipe, else the online.
+            act_with_target=bool(
+                settings.get("act_with_target", learner_defaults.act_with_target)
+            ),
         ),
         network_config=NetworkConfig(
             identity_capacity=int(
@@ -206,8 +211,9 @@ def checkpoint_policy(
     # Nothing here is ever trained again. `act` already builds no graph; this
     # says so at the object as well, so a policy that leaked into a learner
     # would fail rather than quietly accumulate gradients.
-    backbone.online.eval()
-    backbone.online.requires_grad_(False)
+    for network in (backbone.online, backbone.target):
+        network.eval()
+        network.requires_grad_(False)
     return backbone, checkpoint.identity
 
 

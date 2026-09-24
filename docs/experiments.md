@@ -33,8 +33,11 @@ steps per decision if one step at 4x width takes at most 25 ms, and 1
 otherwise. The shapes match the #72 entry: batch 8 × 80 steps, burn-in 7,
 n = 10, RTX 4090, idle host. One step is `collate` plus
 `StackedDqnBackbone.learn`, with a sync around every call. Each figure is the
-median of 60 steps after 10 warm-up, from two runs. The build was the #72
-learner (f71a752).
+median of 60 steps after 10 warm-up, from two runs. The 1x row is the #72
+learner (f71a752). The 4x row was measured twice. The first run used the #72
+learner. The second used the full BBF learner configuration: no gradient
+clipping, the two weight-decay groups, the discount anneal, acting with the
+target, and uniform replay. It measured 17.29–17.34 ms, within the first range.
 
 | width | parameters | collate | learn | step |
 | --- | --- | --- | --- | --- |

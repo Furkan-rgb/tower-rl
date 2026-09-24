@@ -1294,6 +1294,7 @@ def test_the_bbf_recipe_resolves_to_bbfs_values(tmp_path: Path) -> None:
     assert (parsed.learning_rate, parsed.weight_decay, parsed.adam_eps) == (1e-4, 0.1, 1.5e-4)
     assert parsed.weight_decay_on_vectors is False
     assert parsed.target_ema_decay == 0.995
+    assert (parsed.act_with_target, parsed.gradient_clip) == (True, None)
     assert parsed.reset_every_steps == 40_000
     assert (parsed.exploration, parsed.epsilon_end) == ("uniform", 0.0)
     assert parsed.early_stop_patience_periods == 0
@@ -1307,6 +1308,7 @@ def test_without_a_recipe_the_learner_is_the_one_run_4_trained(tmp_path: Path) -
     assert defaults.discount_initial is None
     assert (defaults.weight_decay, defaults.weight_decay_on_vectors) == (1e-5, True)
     assert defaults.adam_eps == 1e-8
+    assert (defaults.act_with_target, defaults.gradient_clip) == (False, 10.0)
     assert defaults.reset_every_steps == 0
 
 
@@ -1335,6 +1337,7 @@ def test_a_bbf_session_resets_records_its_recipe_and_resumes(
     assert (resolved["discount_initial"], resolved["discount"]) == (0.97, 0.997)
     assert (resolved["weight_decay"], resolved["weight_decay_on_vectors"]) == (0.1, False)
     assert resolved["adam_eps"] == 1.5e-4
+    assert (resolved["act_with_target"], resolved["gradient_clip"]) == (True, None)
     assert resolved["reset_every_steps"] == 5
     # The decision budget at the replay ratio the test harness runs at.
     assert resolved["no_resets_after_steps"] == int(int(TRAINING_BUDGET) * 0.2)
@@ -1352,6 +1355,8 @@ def test_a_bbf_session_resets_records_its_recipe_and_resumes(
         upgrade_availability=str(written.identity.upgrade_availability),
     )
     assert policy.network_config.hidden == SMALL_NETWORK.hidden * 4
+    # The arm is evaluated with the network the run acted with: the target.
+    assert policy.config.act_with_target is True
 
     arm, _ = resumed_arm(tmp_path / "second", checkpoint, budget=600, **{"--recipe": "bbf"})
 

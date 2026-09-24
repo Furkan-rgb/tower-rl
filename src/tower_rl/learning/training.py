@@ -1,24 +1,28 @@
 """The training loop that ties actor, replay, learner and checkpointing together.
 
-Budget is counted in game time rather than in episodes or decisions.  That
-choice matters for fairness: a better policy survives longer, so an episode
-budget would quietly hand the stronger arm more real experience and flatter it -
-and a decision is no longer a fixed cost either, because the environment asks
-only at choice points and a decision therefore spans a variable slice of game
-time (ADR 0009).  Game time is what the device actually sells, so it is what the
-arms are equalised on.  It is accounted at episode granularity - an episode's
-game time exists when it ends - so a run stops after the episode that crossed
-its budget and reports the overshoot.  Decisions are still counted beside it:
-the replay ratio and the exploration anneal are schedules in decisions by
-design.
+Progress has one unit: decisions, cumulative across the fleet.  The budget, the
+checkpoint cadence, the selection periods, the exploration anneal, the
+importance-sampling beta and the kill bars are all positions on that one axis.
+Learning happens per decision - the replay ratio is gradient steps per
+decision - so a budget in decisions fixes the amount of learning, where a
+budget in game time did not: the game time a policy spends per decision moves
+with its strength (run 5 spent 6.98 game-seconds per decision against run 4's
+4.42 over matched decisions, `M2-P005` diagnostic (c)) and with the game's
+speed.  Game time and wall time are still measured and reported beside it, as
+statistics.  The budget
+is accounted at episode granularity - an episode is played to its classified
+end - so a run stops after the episode that crossed it.
 
-A run may also stop before its budget is spent.  The interval between two
-numbered-checkpoint crossings is a period, and at each crossing the run reads
-the mean final wave of the near-greedy actors' valid episodes that ended inside
-the period just closed.  A curve that has not improved on the level it last
-really moved to for `early_stop_patience_periods` periods in a row has stopped
-learning, and the rest of the budget buys nothing, so the run ends after
-writing that crossing's checkpoint.
+The decision axis is cut into selection periods (`selection_period_decisions`,
+15,000 by default).  When a period closes the run writes a numbered checkpoint
+and reads the mean final wave of the near-greedy actors' valid episodes that
+ended inside it; the arm is chosen from those periods by the rule in
+`docs/solution.md` 9.2b, applied by hand.  A curve that has not improved on
+the level it last really moved to for `early_stop_patience_periods` periods in a row has
+stopped learning, and the rest of the budget buys nothing, so the run ends
+there.  Numbered checkpoints may also be written more often than periods close
+(`checkpoint_every_decisions`), for a learning curve; that cadence selects
+nothing.
 
 A run may also be given kill bars: pre-registered floors at points on the
 decision axis, matched against an earlier run.  When the fleet first reaches a
@@ -241,14 +245,10 @@ class Learner:
 class TrainingConfig:
     """One arm's budget and schedules, recorded with its result."""
 
-    #: The equalised budget: cumulative game seconds across the whole fleet.
-    #: Game time is what the device actually sells - a decision buys a variable
-    #: slice of it, and under choice points (ADR 0009) a very variable one - so
-    #: two arms equalised on decisions are not equalised on anything the game
-    #: charges for. Counted at episode granularity, because an episode's game
-    #: time is known when it ends: the run stops after the episode that crosses
-    #: the budget, and what it overshot by is reported rather than hidden.
-    budget_game_seconds: int
+    #: The budget: cumulative decisions across the whole fleet. Counted at
+    #: episode granularity, because an episode is played to its end: the run
+    #: stops after the episode that crosses it.
+    budget_decisions: int
     #: What each actor explores at, at each point of the budget: the anneal and,
     #: under a ladder, the rung each actor anneals to. Required, like the budget:
     #: the rates a run explores at are resolved from the command line, and a
@@ -278,19 +278,18 @@ class TrainingConfig:
     #: episodes. Evaluation is exploration-free and never writes to replay.
     evaluate_every_episodes: int = 0
     checkpoint_every_episodes: int = 0
-    #: Game seconds between the numbered checkpoints a later evaluation chooses
-    #: among. Zero leaves only the resume point, which is overwritten as the run
-    #: proceeds and therefore names no particular model. A period in game
-    #: seconds rather than in episodes because game time is the budget unit the
-    #: arms are equalised on: two runs whose episodes differ in length still
-    #: produce checkpoints at the same points of their budgets.
-    checkpoint_every_game_seconds: int = 0
-    #: How many checkpoint periods in a row may close without the near-greedy
+    #: Decisions between extra numbered checkpoints, for a learning curve. Zero
+    #: writes numbered checkpoints only where a selection period closes. This
+    #: cadence chooses nothing: the arm is always a period's checkpoint.
+    checkpoint_every_decisions: int = 0
+    #: Decisions per selection period. A period's near-greedy mean is what the
+    #: arm is chosen on and what early stopping counts; a numbered checkpoint
+    #: is written wherever one closes. 15,000 is run 4's average period
+    #: (60,356 decisions / 4 periods), not a measured length.
+    selection_period_decisions: int = 15_000
+    #: How many selection periods in a row may close without the near-greedy
     #: curve improving before the run stops itself, after the checkpoint of the
-    #: crossing that closed the last of them. Zero is off, which is what every
-    #: run measured so far spent its whole budget under. The unit is the period
-    #: between numbered-checkpoint crossings, so early stopping needs
-    #: `checkpoint_every_game_seconds` to have a period at all.
+    #: period that closed the last of them. Zero is off.
     early_stop_patience_periods: int = 0
     #: What counts as an improvement, in waves. A period whose near-greedy mean
     #: does not reach the best period mean so far plus this much has not
@@ -321,7 +320,7 @@ class TrainingConfig:
     kill_bars: tuple[KillBar, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.budget_game_seconds < 1:
+        if self.budget_decisions < 1:
             raise ValueError("budget must be positive")
         if self.batch_size < 1 or self.warmup_sequences < 1:
             raise ValueError("batch size and warm-up must be positive")
@@ -333,35 +332,16 @@ class TrainingConfig:
             raise ValueError("at least one episode failure must be survivable")
         if self.parameter_sync_episodes < 1:
             raise ValueError("actors must be synchronised at least every episode")
-        if self.checkpoint_every_game_seconds < 0:
-            raise ValueError("a checkpoint period in game seconds cannot be negative")
+        if self.checkpoint_every_decisions < 0:
+            raise ValueError("a checkpoint cadence cannot be negative")
+        if self.selection_period_decisions < 1:
+            raise ValueError("a selection period must be positive")
         if self.early_stop_patience_periods < 0:
             raise ValueError("early-stopping patience cannot be negative")
-        if self.early_stop_patience_periods and not self.checkpoint_every_game_seconds:
-            # The period early stopping counts in is the interval between
-            # numbered-checkpoint crossings. Without one there is no period, and
-            # a run configured to stop on a plateau would simply never stop.
-            raise ValueError(
-                "early stopping counts checkpoint periods and needs "
-                "checkpoint_every_game_seconds to have one"
-            )
 
-    @property
-    def budget_game_ms(self) -> float:
-        """The budget in the unit the episodes are measured in."""
-        return self.budget_game_seconds * 1000.0
-
-    def progress(self, game_ms: float) -> float:
-        return min(1.0, game_ms / self.budget_game_ms)
-
-    def beta(self, game_ms: float) -> float:
-        """The importance exponent at this point of the budget.
-
-        A position on the budget rather than a horizon in decisions, as it has
-        always been: beta reaches `beta_end` when the run ends, so it follows
-        whatever the budget is counted in.
-        """
-        fraction = self.progress(game_ms)
+    def beta(self, decisions: int) -> float:
+        """The importance exponent at this point of the budget: `beta_end` at its end."""
+        fraction = min(1.0, decisions / self.budget_decisions)
         return self.beta_start + (self.beta_end - self.beta_start) * fraction
 
 
@@ -443,21 +423,19 @@ class CollectionWindow:
 
 
 @dataclass(frozen=True)
-class CheckpointPeriod:
-    """One interval between numbered-checkpoint crossings, as it closed.
+class SelectionPeriod:
+    """One selection period, as it closed.
 
     The collection window beside this is cut in episodes and is the curve the
-    run is read from; a period is cut in game time - exactly the interval a
-    numbered checkpoint is written at the end of - so its mean belongs to the
-    checkpoint that was just written, which is what a run deciding whether it
-    is still improving has to compare.
+    run is read from; a period is cut in decisions, and a numbered checkpoint is
+    written where it closes, so its mean belongs to that checkpoint - which is
+    what choosing the arm and deciding whether the run still improves compare.
     """
 
     #: The period's ordinal over the whole run, counting from one.
     index: int
-    #: The multiple of the period this crossing reached, and where the run
-    #: stood on the decision axis when it did.
-    game_seconds_at_end: int
+    #: Where the run stood on the decision axis when the period closed, which
+    #: is also the number the period's checkpoint is named by.
     decisions_at_end: int
     #: Valid episodes the near-greedy actors ended inside the period, and their
     #: mean final wave. None when no near-greedy actor finished a valid episode
@@ -651,8 +629,8 @@ class ActorProgress:
     #: Episodes attempted, including the ones the port could not deliver.
     episodes: int = 0
     decisions: int = 0
-    #: Game time this actor put on the fleet's budget, measured: the game's own
-    #: round clock summed over the episodes it delivered.
+    #: Game time this actor collected, measured: the game's own round clock
+    #: summed over the episodes it delivered. A statistic, not the budget.
     game_ms: float = 0.0
     valid_episodes: int = 0
     invalid_episodes: int = 0
@@ -676,11 +654,10 @@ class ActorProgress:
 class TrainingProgressReport:
     """What a run produced, enough to compare arms and to resume."""
 
+    #: The budget position: decisions across every actor.
     decisions: int = 0
-    #: The budget position: measured game time across every actor, summed over
-    #: the episodes they delivered. `decisions` beside it is still counted -
-    #: the replay ratio and the exploration anneal are both in decisions - but
-    #: it is no longer what the run is spent against.
+    #: Measured game time across every actor, summed over the episodes they
+    #: delivered. Reported beside the decisions; the run is not spent in it.
     game_ms: float = 0.0
     episodes: int = 0
     optimisation_steps: int = 0
@@ -723,10 +700,10 @@ class TrainingProgressReport:
     #: The fleet, keyed by actor id in the order the actors were started. A run
     #: with one actor holds exactly one entry.
     actors: dict[str, ActorProgress] = field(default_factory=dict)
-    #: Every checkpoint period this segment closed, in order. The episodes
+    #: Every selection period this segment closed, in order. The episodes
     #: behind them are this segment's - the collected list is not restored on a
     #: resume - while the plateau below is counted over the whole run.
-    checkpoint_periods: list[CheckpointPeriod] = field(default_factory=list)
+    selection_periods: list[SelectionPeriod] = field(default_factory=list)
     #: The run's read of its own near-greedy curve, and the state a resume
     #: restores so a run trained in two sittings is judged on one curve.
     plateau: NearGreedyPlateau = field(default_factory=NearGreedyPlateau)
@@ -735,7 +712,6 @@ class TrainingProgressReport:
 
     @property
     def game_seconds(self) -> float:
-        """The budget position in the unit the budget is expressed in."""
         return self.game_ms / 1000.0
 
     @property
@@ -831,21 +807,19 @@ class TrainingRun:
     #: run has to be told about it when it happens, not only in the summary.
     on_withdrawal: Callable[[ActorProgress], None] | None = None
     #: Runs exploration-free episodes on the same device. Its cost comes out of
-    #: wall-clock time, never out of the game-time budget, because evaluation is
+    #: wall-clock time, never out of the budget, because evaluation is
     #: measurement rather than experience. It borrows an instance, so it may only
     #: run while the fleet is not collecting.
     evaluate: Callable[[], EvaluationReport] | None = None
     checkpoint: Callable[[TrainingProgressReport], None] | None = None
-    #: Called when the fleet crosses a multiple of
-    #: `checkpoint_every_game_seconds`, to write a checkpoint under its own
-    #: name. Separate from `checkpoint`
-    #: above, which keeps the one resume point: a numbered checkpoint is a
-    #: candidate a later evaluation may choose, so it must survive the next one
+    #: Called when a selection period closes or the fleet crosses a multiple of
+    #: `checkpoint_every_decisions`, to write a checkpoint under its own name.
+    #: Separate from `checkpoint` above, which keeps the one resume point: a
+    #: numbered checkpoint is a candidate arm, so it must survive the next one
     #: being written.
     numbered_checkpoint: Callable[[TrainingProgressReport], None] | None = None
-    #: Progress so far. It is instance state rather than a local because a run
-    #: can be advanced in blocks: several arms sharing one device take turns, so
-    #: whatever drifts on the device lands on all of them equally.
+    #: Progress so far. Instance state rather than a local because a run can be
+    #: advanced in blocks, and a resumed run is constructed with its parent's.
     report: TrainingProgressReport = field(default_factory=TrainingProgressReport)
     #: The training copy of the network, and the only thing that updates it.
     learner: Learner = field(init=False)
@@ -861,12 +835,11 @@ class TrainingRun:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     #: Gradient steps earned but not yet taken, carried across blocks.
     _owed: float = field(default=0.0, init=False)
-    #: The last multiple of `checkpoint_every_game_seconds`, in game seconds, a
-    #: numbered checkpoint was written for. Episodes end whole, so the counter
-    #: jumps past a multiple rather than landing on it, and several multiples
-    #: can fall inside one long episode; this records which of them have
-    #: already been answered so a crossing produces exactly one checkpoint.
-    _numbered_at: int = field(default=0, init=False)
+    #: The decisions the periodic hook last looked at. Episodes end whole, so
+    #: the counter jumps past a multiple of a period rather than landing on it;
+    #: a multiple lying between this and the current count is a crossing, and
+    #: each crossing is answered exactly once.
+    _periodic_at: int = field(default=0, init=False)
     #: Where in `report.collected` the period now open began. A period's mean is
     #: over the episodes that ended inside it, and this is the cursor that
     #: separates them from the ones the previous period was already judged on.
@@ -918,18 +891,14 @@ class TrainingRun:
                 f"{len(self.actors)} actors"
             )
         self.learner = Learner(self.backbone)
-        # The cadence is continued rather than restarted: a run resumed at
-        # 50,123 game seconds of a 100,000-second period has already answered
-        # the multiple at 50,000, and the next checkpoint it owes is the one at
-        # 100,000. Derived from the report it was constructed with, so a fresh
-        # run - whose counter is zero - is unaffected.
-        if self.config.checkpoint_every_game_seconds:
-            period = self.config.checkpoint_every_game_seconds
-            self._numbered_at = int(self.report.game_seconds) // period * period
+        # The cadences are continued rather than restarted: a run resumed at
+        # 50,123 decisions has already answered the multiple of 15,000 at
+        # 45,000, and the next period it owes closes at 60,000.
+        self._periodic_at = self.report.decisions
         self.report.epsilon = self.config.exploration.reported_epsilon(
             self.report.decisions
         )
-        self.report.importance_beta = self.config.beta(self.report.game_ms)
+        self.report.importance_beta = self.config.beta(self.report.decisions)
         self.acting = {}
         for index, actor in enumerate(self.actors):
             actor_id = actor.config.actor_id
@@ -980,32 +949,19 @@ class TrainingRun:
     @property
     def finished(self) -> bool:
         """Whether nothing is left to collect: the budget is spent, or it stopped itself."""
-        return self.report.game_ms >= self.config.budget_game_ms or self.stopped_early
-
-    @property
-    def budget_overshoot_game_ms(self) -> float:
-        """Game time spent past the budget, which is never negative.
-
-        The budget is accounted at episode granularity - an episode's game time
-        is known when it ends, not while it runs - so the fleet stops after the
-        episode each actor was in when the budget was crossed. The overshoot is
-        therefore at most one episode per collecting actor, and it is reported
-        rather than rounded away: two arms equalised on a budget were equalised
-        to within this much.
-        """
-        return max(0.0, self.report.game_ms - self.config.budget_game_ms)
+        return self.report.decisions >= self.config.budget_decisions or self.stopped_early
 
     def run(self) -> TrainingProgressReport:
-        """Collect and learn until the game-time budget is spent."""
-        return self.advance(self.config.budget_game_seconds)
+        """Collect and learn until the decision budget is spent."""
+        return self.advance(self.config.budget_decisions)
 
-    def advance(self, game_seconds: int) -> TrainingProgressReport:
-        """Collect with every live actor until `game_seconds` more are spent.
+    def advance(self, decisions: int) -> TrainingProgressReport:
+        """Collect with every live actor until `decisions` more are spent.
 
         The limit is the fleet's and lands on an episode boundary for each actor:
         an episode in progress is played to its classified end, because a half
-        episode is not experience - and because the game time it spent is only
-        counted when the episode is summarised.
+        episode is not experience - so the fleet overshoots the limit by at most
+        one episode per collecting actor.
 
         One actor per thread. An actor is waiting on its emulator's socket for
         almost all of its life and torch releases the interpreter lock around the
@@ -1013,10 +969,10 @@ class TrainingRun:
         while sharing the buffer and the network directly - which is the whole
         reason this needs no parameter server and no queues of tensors.
         """
-        if game_seconds < 1:
-            raise ValueError("a block must be at least one game second")
+        if decisions < 1:
+            raise ValueError("a block must be at least one decision")
         report = self.report
-        target = min(report.game_ms + game_seconds * 1000.0, self.config.budget_game_ms)
+        target = min(report.decisions + decisions, self.config.budget_decisions)
         collecting = [
             actor
             for actor in self.actors
@@ -1072,7 +1028,7 @@ class TrainingRun:
             "at 0 for a fleet, or evaluate after the budget is spent"
         )
 
-    def _collect(self, actor: Actor, target: float) -> None:
+    def _collect(self, actor: Actor, target: int) -> None:
         """One actor's thread: collect episodes, and learn from what it collected.
 
         The learning an episode earns is taken here, on the collecting thread,
@@ -1095,7 +1051,7 @@ class TrainingRun:
         progress: ActorProgress,
         acting: Backbone,
         profile: DecisionTimeProfile,
-        target: float,
+        target: int,
     ) -> None:
         """The collection loop itself, with its time charged to `profile`.
 
@@ -1106,7 +1062,7 @@ class TrainingRun:
         actor_id = actor.config.actor_id
         while True:
             with profile.acquiring(self._lock):
-                if self.report.game_ms >= target or self.stopped_early:
+                if self.report.decisions >= target or self.stopped_early:
                     # The budget, or the run's own decision to stop: a plateau
                     # is answered at the episode boundary after the crossing
                     # that found it, so every actor finishes the episode it is
@@ -1174,7 +1130,7 @@ class TrainingRun:
             if barren is not None:
                 # Episode after episode that reaches no choice point, or that
                 # advances no game time at all: the actor is collecting nothing
-                # to learn from, or nothing the budget is counted in, so it
+                # to learn from and nothing the budget is counted in, so it
                 # leaves the fleet exactly as one on a failing port does.
                 raise RunPortError(barren)
 
@@ -1197,10 +1153,7 @@ class TrainingRun:
         summary = result.summary
         report.episodes += 1
         report.decisions += summary.decisions
-        # The measured round clock, which is what the budget is spent in. Taken
-        # from the summary rather than accumulated per transition, because the
-        # budget is accounted at episode granularity: this is the moment an
-        # episode's game time exists.
+        # The measured round clock, reported beside the decisions.
         report.game_ms += summary.round_ms
         report.sequences_accepted += result.sequences_accepted
         # Completion order across the fleet: an episode joins the series when it
@@ -1221,12 +1174,11 @@ class TrainingRun:
             # failures, and each named for what it was. A run that ended before
             # it offered a single choice is a real, valid episode (ADR 0009),
             # and an actor whose every run ends that way is collecting nothing
-            # to learn from. An episode that advanced no game time at all is
-            # the one that could also stall the run: the budget is game time,
-            # so an actor producing only those would never reach a target. Both
-            # count toward the same streak a failing port does, so the
-            # condition is loud rather than an unattended run that never
-            # finishes.
+            # to learn from - and, the budget being decisions, one that would
+            # never reach a target. An episode that advanced no game time at
+            # all is a broken instance. Both count toward the same streak a
+            # failing port does, so the condition is loud rather than an
+            # unattended run that never finishes.
             progress.consecutive_failures += 1
             if progress.consecutive_failures >= self.config.max_consecutive_episode_failures:
                 reason = (
@@ -1265,7 +1217,7 @@ class TrainingRun:
         report = self.report
         self._owed += decisions * self.config.gradient_steps_per_decision
         while self._owed >= 1.0 and self._warm():
-            metrics = self._optimise(report.game_ms)
+            metrics = self._optimise(report.decisions)
             report.optimisation_steps += 1
             report.recent_weighted_losses.append(metrics.weighted_loss)
             report.recent_unweighted_td_errors.append(
@@ -1297,12 +1249,12 @@ class TrainingRun:
             return len(self.replay) >= self.config.warmup_sequences
 
     def _periodic(self, report: TrainingProgressReport) -> None:
-        """Evaluate and checkpoint on their episode periods, if configured.
+        """Evaluate, checkpoint, close a selection period and check kill bars.
 
-        The numbered checkpoint below is written once per crossing rather than
-        once per multiple crossed, and the two cannot come apart here: the
-        period is a whole number of blocks and a block is at least one episode,
-        so a single episode cannot span two multiples in practice.
+        A numbered checkpoint is written where a selection period closes, so
+        every period has the checkpoint its mean belongs to, and additionally
+        on the `checkpoint_every_decisions` cadence. Each is answered once per
+        crossing: an episode is far shorter than either period.
         """
         period = self.config.evaluate_every_episodes
         if self.evaluate is not None and period and report.episodes % period == 0:
@@ -1317,20 +1269,21 @@ class TrainingRun:
         if self.checkpoint is not None and period and report.episodes % period == 0:
             self.checkpoint(report)
             report.checkpoints_written += 1
-        game_seconds_period = self.config.checkpoint_every_game_seconds
-        if game_seconds_period:
-            # The multiple this much game time has reached, which is what the
-            # crossing is counted by: the counter lands past a multiple, not on
-            # it, because an episode is played to its end.
-            reached = int(report.game_seconds) // game_seconds_period * game_seconds_period
-            if reached > self._numbered_at:
-                self._numbered_at = reached
-                if self.numbered_checkpoint is not None:
-                    self.numbered_checkpoint(report)
-                    report.checkpoints_written += 1
-                # After the checkpoint, so a run that stops here has written the
-                # model the period it stopped on produced.
-                self._close_period(report, reached)
+        before, self._periodic_at = self._periodic_at, report.decisions
+
+        def crossed(every: int) -> bool:
+            return bool(every) and report.decisions // every > before // every
+
+        period_closed = crossed(self.config.selection_period_decisions)
+        if self.numbered_checkpoint is not None and (
+            period_closed or crossed(self.config.checkpoint_every_decisions)
+        ):
+            self.numbered_checkpoint(report)
+            report.checkpoints_written += 1
+        if period_closed:
+            # After the checkpoint, so a run that stops here has written the
+            # model the period it stopped on produced.
+            self._close_period(report)
         self._check_kill_bars(report)
 
     def _check_kill_bars(self, report: TrainingProgressReport) -> None:
@@ -1374,8 +1327,8 @@ class TrainingRun:
                 )
             )
 
-    def _close_period(self, report: TrainingProgressReport, reached: int) -> None:
-        """Close the checkpoint period this crossing ends, and stop on a plateau.
+    def _close_period(self, report: TrainingProgressReport) -> None:
+        """Close the selection period this crossing ends, and stop on a plateau.
 
         The period's mean is the near-greedy actors' valid episodes that ended
         inside it: the series that reads as the policy's own performance rather
@@ -1397,10 +1350,9 @@ class TrainingRun:
         plateau.close_period(
             mean, min_improvement=self.config.early_stop_min_improvement
         )
-        report.checkpoint_periods.append(
-            CheckpointPeriod(
+        report.selection_periods.append(
+            SelectionPeriod(
                 index=plateau.periods_closed,
-                game_seconds_at_end=reached,
                 decisions_at_end=report.decisions,
                 near_greedy_episodes=len(near_greedy),
                 mean_final_wave=mean,
@@ -1410,12 +1362,12 @@ class TrainingRun:
         if plateau.plateaued(self.config.early_stop_patience_periods):
             plateau.stopped_at_period = plateau.periods_closed
 
-    def _optimise(self, game_ms: float) -> LearnMetrics:
+    def _optimise(self, decisions: int) -> LearnMetrics:
         # The buffer's lock is held across sampling, learning and the priority
         # update together: an actor adding to a full buffer in between would
         # evict a sequence and shift every index this batch was sampled at,
         # which replay refuses outright rather than applying to the wrong one.
-        beta = self.config.beta(game_ms)
+        beta = self.config.beta(decisions)
         self.report.importance_beta = beta
         with self.replay.lock:
             indices, sequences, weights = self.replay.sample(
@@ -1431,29 +1383,17 @@ class TrainingRun:
         return metrics
 
 
-def episode_budget(config: TrainingConfig, game_seconds_per_episode: float) -> int:
-    """Roughly how many episodes a game-time budget buys, for planning only.
-
-    Reported rather than used: a stronger policy survives longer and therefore
-    spends the same budget over fewer episodes, which is exactly why the budget
-    is counted in game time rather than in episodes.
-    """
-    if game_seconds_per_episode <= 0:
-        raise ValueError("game seconds per episode must be positive")
-    return max(1, round(config.budget_game_seconds / game_seconds_per_episode))
-
-
 __all__ = [
     "ActionDistribution",
     "ActorConfig",
     "ActorProgress",
-    "CheckpointPeriod",
     "CollectedEpisode",
     "CollectionWindow",
     "EpisodeHealth",
     "KillBar",
     "KillBarCheck",
     "NearGreedyPlateau",
+    "SelectionPeriod",
     "action_distribution",
     "collection_windows",
     "episode_health",
@@ -1461,5 +1401,4 @@ __all__ = [
     "TrainingConfig",
     "TrainingProgressReport",
     "TrainingRun",
-    "episode_budget",
 ]

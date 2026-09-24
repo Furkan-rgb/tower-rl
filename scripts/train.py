@@ -8,15 +8,14 @@ boundary lives in the bridge, and an action is a semantic upgrade purchase the
 bridge performs in the game, so there is no screen classification and no tap for
 one to gate.
 
-The budget is cumulative game time across the fleet (`--budget-game-seconds`):
-game time is what the device sells, and a decision buys a variable slice of it
-(ADR 0009). Collection runs in blocks of game time (`--block-game-seconds`),
-each landing on an episode boundary, and the run stops after the episode that
-crosses the budget - so it overshoots by at most one episode per actor, which
-the report records as `budget_overshoot_game_ms`.
+Progress has one unit, decisions (`learning/training.py`). The budget is
+cumulative decisions across the fleet (`--budget-decisions`), independent of the
+game's speed; the run stops after the episode that crosses it, so it overshoots
+by at most one episode per actor. Game time and wall time are reported beside
+it as statistics.
 
     uv run --extra tracking python scripts/train.py \\
-        --budget-game-seconds 40000
+        --budget-decisions 60000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
 into the one replay buffer and the one learner, so the budget is spent about N
@@ -30,16 +29,22 @@ four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
     uv run --extra tracking python scripts/train.py \\
-        --actors 4 --budget-game-seconds 200000
+        --actors 4 --budget-decisions 60000
 
-`--early-stop-patience-periods N` lets the run stop before its budget is spent.
-The interval between two numbered-checkpoint crossings is a period, and at each
-crossing the run takes the mean final wave of the near-greedy actors' valid
-episodes that ended in the period just closed. A curve that has not improved on
-its best period by `--early-stop-min-improvement` waves for N periods in a row
-has stopped learning, so the run ends after writing that crossing's checkpoint
-and the summary records what it stopped on. The default, 0, spends the whole
-budget as every measured run so far has.
+The decision axis is cut into selection periods (`--selection-period-decisions`,
+default 15,000). Where a period closes the run writes a numbered checkpoint,
+`checkpoint-d<decisions>.pt`, and takes the mean final wave of the near-greedy
+actors' valid episodes that ended inside it; the summary lists them as
+`selection_periods`, and the arm is chosen from them by hand by the rule in
+`docs/solution.md` 9.2b. `--checkpoint-every-decisions` writes extra numbered
+checkpoints between them, for a learning curve; they are never the arm.
+
+`--early-stop-patience-periods N` lets the run stop before its budget is spent:
+a curve that has not improved on its best period by
+`--early-stop-min-improvement` waves for N selection periods in a row has
+stopped learning, so the run ends after writing that period's checkpoint and
+the summary records what it stopped on. The default, 0, spends the whole
+budget.
 
 `--kill-bar AT:START:MIN` (repeatable) pre-registers a floor on the decision
 axis: when the fleet's cumulative decisions first reach AT, the near-greedy
@@ -48,16 +53,14 @@ waves, or the run stops there and the summary records which bar stopped it. A
 window with no such episode measures nothing and does not stop the run.
 
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
-budget. The weights, the optimizer moments, the game-time and decision counters
+budget. The weights, the optimizer moments, the decision and game-time counters
 and every schedule and cadence derived from them come back from the file; the
 replay buffer does not, so the run re-warms it under the loaded policy before
-learning restarts. `--budget-game-seconds` stays the whole run's total. A
-checkpoint written before the budget was game time (format 1 or 2) records none
-and is refused by name.
+learning restarts. `--budget-decisions` stays the whole run's total.
 
     uv run --extra tracking python scripts/train.py \\
         --resume state/runs/<session>/<run>/checkpoints/latest.pt \\
-        --budget-game-seconds 800000
+        --budget-decisions 120000
 
 The run records itself to the local MLflow store under `state/`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
@@ -109,7 +112,7 @@ from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
-    GAME_TIME_FORMAT_VERSION,
+    DECISION_BUDGET_FORMAT_VERSION,
     CheckpointError,
     ResumeState,
     resume_state,
@@ -279,7 +282,7 @@ def build_arm(
         seed=arguments.seed,
     )
     config = TrainingConfig(
-        budget_game_seconds=arguments.budget_game_seconds,
+        budget_decisions=arguments.budget_decisions,
         warmup_sequences=arguments.warmup_sequences,
         batch_size=arguments.batch_size,
         gradient_steps_per_decision=arguments.gradient_steps_per_decision,
@@ -293,7 +296,8 @@ def build_arm(
         collection_window_episodes=arguments.collection_window_episodes,
         evaluate_every_episodes=arguments.evaluate_every_episodes,
         checkpoint_every_episodes=arguments.checkpoint_every_episodes,
-        checkpoint_every_game_seconds=arguments.checkpoint_every_game_seconds,
+        checkpoint_every_decisions=arguments.checkpoint_every_decisions,
+        selection_period_decisions=arguments.selection_period_decisions,
         early_stop_patience_periods=arguments.early_stop_patience_periods,
         early_stop_min_improvement=arguments.early_stop_min_improvement,
         parameter_sync_episodes=arguments.parameter_sync_episodes,
@@ -456,12 +460,12 @@ def build_arm(
         arm.record_collection_windows()
         # The periods the run judges itself on, after the windows: a crossing
         # is closed inside the same hook, and this is the record of it.
-        arm.record_checkpoint_periods()
+        arm.record_selection_periods()
         arm.record_decision_time()
         print(
-            f"[{name}] episode {report.episodes} game seconds "
-            f"{report.game_seconds:.0f}/{config.budget_game_seconds} decisions "
-            f"{report.decisions} steps {report.optimisation_steps}",
+            f"[{name}] episode {report.episodes} decisions "
+            f"{report.decisions}/{config.budget_decisions} game seconds "
+            f"{report.game_seconds:.0f} steps {report.optimisation_steps}",
             flush=True,
         )
 
@@ -490,15 +494,14 @@ def build_arm(
         )
         print(
             f"[{name}] resuming {resume.parent_checkpoint} at "
-            f"{resume.game_ms / 1000.0:.0f} game seconds of "
-            f"{config.budget_game_seconds}",
+            f"{resume.decisions} decisions of {config.budget_decisions}",
             flush=True,
         )
         if config.early_stop_patience_periods and not progress.plateau.restored:
             print(
                 f"[{name}] the parent checkpoint records no early-stopping "
                 "tracker, so the plateau count starts fresh from this segment's "
-                "first checkpoint period",
+                "first selection period",
                 flush=True,
             )
     # The evaluation comes back beside the report rather than on it: the report
@@ -511,20 +514,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Everything the run is configured by, validated before a device is touched."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--budget-game-seconds",
+        "--budget-decisions",
         type=int,
-        default=40_000,
-        help=(
-            "the whole run's budget: cumulative game seconds across the fleet. "
-            "The default is the old 20,000-decision default priced at run 1's "
-            "cadence, where a slice mostly ran to the 2,000 ms quiet backstop"
-        ),
-    )
-    parser.add_argument(
-        "--block-game-seconds",
-        type=int,
-        default=4_000,
-        help="game seconds collected before the loop checks the budget; lands on an episode",
+        required=True,
+        help="the whole run's budget: cumulative decisions across the fleet",
     )
     parser.add_argument(
         "--resume",
@@ -532,9 +525,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "a checkpoint to continue a run's budget from: the weights, the "
-            "optimizer, the game-time and decision counters and every schedule "
+            "optimizer, the decision and game-time counters and every schedule "
             "and cadence derived from them come back, and the replay buffer is "
-            "re-warmed under the loaded policy. --budget-game-seconds stays the "
+            "re-warmed under the loaded policy. --budget-decisions stays the "
             "whole run's total, so a checkpoint at or past it is refused"
         ),
     )
@@ -649,14 +642,24 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument(
-        "--checkpoint-every-game-seconds",
+        "--checkpoint-every-decisions",
         type=int,
         default=0,
         help=(
-            "game seconds between numbered checkpoints, each written beside "
-            "latest.pt as checkpoint-gs<seconds>.pt and evaluable afterwards "
-            "as an arm; 0 writes none, and any value must be a multiple of "
-            "--block-game-seconds"
+            "decisions between extra numbered checkpoints, written beside "
+            "latest.pt as checkpoint-d<decisions>.pt for a learning curve; 0 "
+            "writes them only where a selection period closes"
+        ),
+    )
+    parser.add_argument(
+        "--selection-period-decisions",
+        type=int,
+        default=15_000,
+        help=(
+            "decisions per selection period. A numbered checkpoint is written "
+            "where each closes; the arm is the checkpoint of the period with "
+            "the highest near-greedy mean final wave from period 2 on, and "
+            "early stopping counts these periods"
         ),
     )
     parser.add_argument(
@@ -665,9 +668,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help=(
             "stop the run when the near-greedy collection curve has not "
-            "improved for this many checkpoint periods in a row, after writing "
-            "that crossing's checkpoint; 0 spends the whole budget, and any "
-            "value needs --checkpoint-every-game-seconds to have a period"
+            "improved for this many selection periods in a row, after writing "
+            "that period's checkpoint; 0 spends the whole budget"
         ),
     )
     parser.add_argument(
@@ -675,7 +677,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=0.2,
         help=(
-            "waves a checkpoint period must add to the best period mean so far "
+            "waves a selection period must add to the best period mean so far "
             "to count as an improvement; 0.2 is about the standard error of a "
             "hundred-episode window, so anything inside it is noise"
         ),
@@ -808,31 +810,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             f"1..{MAX_GUEST_FRAME_RATE_HZ}; no measured fps supports a guest "
             "rate above that"
         )
-    if arguments.checkpoint_every_game_seconds < 0:
-        raise SystemExit("--checkpoint-every-game-seconds cannot be negative")
-    if (
-        arguments.checkpoint_every_game_seconds
-        and arguments.checkpoint_every_game_seconds % arguments.block_game_seconds
-    ):
-        # The budget is spent a block at a time, so a period that is not a whole
-        # number of blocks would put its checkpoints at the block boundaries
-        # nearest to it rather than where it asked for them - a selection made
-        # over candidates the operator did not choose.
-        raise SystemExit(
-            f"--checkpoint-every-game-seconds "
-            f"{arguments.checkpoint_every_game_seconds} is not a multiple of "
-            f"--block-game-seconds {arguments.block_game_seconds}"
-        )
+    if arguments.budget_decisions < 1:
+        raise SystemExit("--budget-decisions must be positive")
+    if arguments.checkpoint_every_decisions < 0:
+        raise SystemExit("--checkpoint-every-decisions cannot be negative")
+    if arguments.selection_period_decisions < 1:
+        raise SystemExit("--selection-period-decisions must be positive")
     if arguments.early_stop_patience_periods < 0:
         raise SystemExit("--early-stop-patience-periods cannot be negative")
-    if arguments.early_stop_patience_periods and not arguments.checkpoint_every_game_seconds:
-        # The period early stopping counts in is the interval between numbered
-        # checkpoint crossings. Without one there is no period at all, and a run
-        # asked to stop on a plateau would quietly spend its whole budget.
-        raise SystemExit(
-            "--early-stop-patience-periods counts checkpoint periods and needs "
-            "--checkpoint-every-game-seconds to have one"
-        )
     if arguments.early_stop_min_improvement < 0:
         raise SystemExit("--early-stop-min-improvement cannot be negative")
     if (arguments.n_step_final is None) != (arguments.n_step_anneal_steps == 0):
@@ -865,13 +850,13 @@ def resume_point(
     Three refusals, all here rather than an hour into collection. The identity
     is the checkpoint's own: a file from another arm, another device profile or
     another observation, action or reward schema is not experience this run can
-    go on from, and `CheckpointIdentity.incompatibilities` names which. The unit
-    is the second: a checkpoint written before the budget was game time records
-    no game time at all, so continuing it here would read its whole spent budget
-    as zero. The budget is the third: `--budget-game-seconds` is the whole run's
-    total, not this segment's, so a checkpoint at 50,123 of 200,000 continues to
-    200,000 and a larger budget extends the run - but a checkpoint that has
-    already spent the budget is nothing this run can add to.
+    go on from, and `CheckpointIdentity.incompatibilities` names which. The
+    format is the second: a file from before the decision budget (format below
+    4) counted its selection periods in game time, so it is for evaluation
+    only. The budget is the third: `--budget-decisions` is the whole run's total, not
+    this segment's, so a checkpoint at 50,123 of 120,000 continues to 120,000
+    and a larger budget extends the run - but a checkpoint that has already
+    spent the budget is nothing this run can add to.
     """
     if arguments.resume is None:
         return None
@@ -895,22 +880,17 @@ def resume_point(
         state = resume_state(arguments.resume, expected=expected)
     except CheckpointError as failure:
         raise SystemExit(f"--resume {arguments.resume}: {failure}") from failure
-    if state.format_version < GAME_TIME_FORMAT_VERSION:
+    if state.format_version < DECISION_BUDGET_FORMAT_VERSION:
         raise SystemExit(
             f"--resume {arguments.resume} is a format {state.format_version} "
-            "checkpoint, written when the budget was counted in decisions: it "
-            "records no game time, so there is no budget position for "
-            f"--budget-game-seconds {arguments.budget_game_seconds} to continue "
-            "from and the run would re-collect the whole budget. A run budgeted "
-            "in decisions cannot be continued under this unit; train a new run "
-            "instead"
+            "checkpoint from the game-time budget era: it is for evaluation "
+            "only and cannot be resumed under --budget-decisions"
         )
-    if state.game_ms >= arguments.budget_game_seconds * 1000:
+    if state.decisions >= arguments.budget_decisions:
         raise SystemExit(
-            f"--resume {arguments.resume} is already at "
-            f"{state.game_ms / 1000:.0f} game seconds, which "
-            f"--budget-game-seconds {arguments.budget_game_seconds} does not "
-            "extend; raise the budget above it to continue the run"
+            f"--resume {arguments.resume} is already at {state.decisions} "
+            f"decisions, which --budget-decisions {arguments.budget_decisions} "
+            "does not extend; raise the budget above it to continue the run"
         )
     return state
 
@@ -985,15 +965,9 @@ def train_session(
         resume=resume,
     )
 
-    # The blocks this segment still owes, not the whole budget's: a resumed run
-    # starts with part of it already spent.
-    remaining = arguments.budget_game_seconds - int(arm.training.report.game_seconds)
-    blocks = -(-remaining // arguments.block_game_seconds)
     try:
-        for _ in range(blocks):
-            if arm.training.finished:
-                break
-            arm.training.advance(arguments.block_game_seconds)
+        # To the whole run's budget: a resumed run starts with part of it spent.
+        arm.training.run()
 
         killed = arm.training.killed_by
         if killed is not None:
@@ -1009,10 +983,10 @@ def train_session(
         elif arm.training.stopped_early:
             plateau = arm.training.report.plateau
             # An early stop is the run's own decision and is invisible in the
-            # counters alone - a run that stopped at 60,000 of 200,000 game
-            # seconds looks like one that was interrupted.
+            # counters alone - a run that stopped at 30,000 of 60,000
+            # decisions looks like one that was interrupted.
             print(
-                f"[{arm.name}] stopped early at checkpoint period "
+                f"[{arm.name}] stopped early at selection period "
                 f"{plateau.stopped_at_period}: the near-greedy curve did not "
                 f"improve on {plateau.best_mean_final_wave:.2f} waves for "
                 f"{arguments.early_stop_patience_periods} periods",
@@ -1025,10 +999,10 @@ def train_session(
         # difference against the scripted floor. Taken after the budget is
         # spent, so it costs none of the budget and cannot be chosen after
         # the fact from a series of mid-run points.
-        # Skipped for a run stopped on a kill bar: it selects no arm, so the
-        # evaluation would buy nothing, and it costs hours of device time (2.28 h
-        # in run 3). The summary records the skip. A plateau stop still
-        # evaluates: that run may yet be the arm.
+        # Skipped for a run stopped on a kill bar: whether a killed run's arm
+        # is evaluated is its pre-registration's decision (solution.md 9.2b),
+        # and this evaluation costs hours of device time (2.28 h in run 3).
+        # The summary records the skip. A plateau stop still evaluates.
         if killed is not None:
             print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
         else:
@@ -1045,8 +1019,7 @@ def train_session(
             "session": str(session),
             "profile_id": profile_id,
             "source_revision": revision,
-            "budget_game_seconds_per_arm": arguments.budget_game_seconds,
-            "block_game_seconds": arguments.block_game_seconds,
+            "budget_decisions": arguments.budget_decisions,
             "actors": len(instances),
             "actor_serials": [instance.serial for instance in instances],
             # Instances that never came up at all, which cost the fleet an actor

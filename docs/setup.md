@@ -512,16 +512,20 @@ nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
   uv run --extra tracking python scripts/train.py \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
-      --budget-game-seconds 360000 --block-game-seconds 4000 \
-      --checkpoint-every-game-seconds 60000 \
+      --budget-decisions 120000 --checkpoint-every-decisions 5000 \
+      --selection-period-decisions 15000 \
       --epsilon-anneal-decisions 2500 \
       --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
       --seed 1 > /dev/null 2>&1 &
 ```
 
-That is `M2-P002`'s option-B training line for seed 1, unchanged, with
-`run_stage.sh` in front of it; `nohup`'s own stdout goes nowhere because the
-script already writes everything to the log below.
+That is `M2-P002`'s option-B training line for seed 1 with `run_stage.sh` in
+front of it, its budget restated in decisions (`#68`; the game-time flags it
+was run with are gone): `--budget-decisions` is the fleet's cumulative
+decisions, `--selection-period-decisions` cuts the axis into the periods the
+arm is chosen on, and `--checkpoint-every-decisions` adds numbered checkpoints
+between period closes. `nohup`'s own stdout goes nowhere because the script
+already writes everything to the log below.
 
 The stage command after `--` is run exactly as written; `run_stage.sh` does not
 bring the fleet up, because `train.py` and `run_actors.py` bring up and tear

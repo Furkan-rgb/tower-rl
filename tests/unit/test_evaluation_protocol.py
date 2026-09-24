@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from tower_rl.environment.run_environment import (
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.training_report import numbered_checkpoint_name
 from tower_rl.learning.checkpoint import (
     Checkpoint,
     CheckpointIdentity,
@@ -125,14 +127,12 @@ def checkpoint_identity(
     }
 
 
-#: Decisions a synthetic checkpoint records per game second of its name. The
-#: two units are related by how a run happened to play, so the selection reads
-#: the decisions out of the file rather than deriving them from the name; this
-#: is only what these fixtures happen to have played at.
-DECISIONS_PER_GAME_SECOND = 2
+#: Game seconds a synthetic checkpoint records per decision: a statistic in the
+#: file, and what a game-time-era name of the same checkpoint would have said.
+GAME_SECONDS_PER_DECISION = 3
 
 
-def write_checkpoint_file(path: Path, game_seconds: int) -> None:
+def write_checkpoint_file(path: Path, decisions: int) -> None:
     """A real, readable checkpoint: the selection reads the decisions out of it."""
     save(
         Checkpoint(
@@ -146,8 +146,8 @@ def write_checkpoint_file(path: Path, game_seconds: int) -> None:
                 source_revision="test",
             ),
             progress=TrainingProgress(
-                environment_decisions=game_seconds * DECISIONS_PER_GAME_SECOND,
-                environment_game_ms=game_seconds * 1000.0,
+                environment_decisions=decisions,
+                environment_game_ms=decisions * GAME_SECONDS_PER_DECISION * 1000.0,
             ),
             backbone_state={"weight": torch.ones(1)},
         ),
@@ -155,15 +155,24 @@ def write_checkpoint_file(path: Path, game_seconds: int) -> None:
     )
 
 
+def game_time_era_name(decisions: int) -> str:
+    """What the checkpoint would have been called when the budget was game time."""
+    return f"checkpoint-gs{decisions * GAME_SECONDS_PER_DECISION:07d}.pt"
+
+
 def run_with_checkpoints(
-    root: Path, game_seconds: list[int], *, run_id: str = RUN_ID
+    root: Path,
+    decisions: list[int],
+    *,
+    run_id: str = RUN_ID,
+    name: Callable[[int], str] = numbered_checkpoint_name,
 ) -> tuple[Path, list[Path]]:
-    """A run directory holding numbered checkpoints, named by their game seconds."""
+    """A run directory holding numbered checkpoints, named by their decisions."""
     run = root / run_id
     (run / "checkpoints").mkdir(parents=True)
     paths = []
-    for spent in game_seconds:
-        path = run / "checkpoints" / f"checkpoint-gs{spent:07d}.pt"
+    for spent in decisions:
+        path = run / "checkpoints" / name(spent)
         write_checkpoint_file(path, spent)
         paths.append(path)
     return run, paths
@@ -224,13 +233,11 @@ def test_the_selection_is_the_checkpoint_with_the_highest_interquartile_mean(
     report = json.loads(output.read_text())
     assert report["selection"]["checkpoint"] == str(best)
     assert report["selection"]["selected_on"] == "final_wave"
-    assert report["selection"]["game_seconds"] == 200
-    # The decisions behind it travel beside the budget position, read out of
-    # the file rather than off its name.
-    assert report["selection"]["decisions"] == 200 * DECISIONS_PER_GAME_SECOND
+    # The decisions behind it, read out of the file rather than off its name.
+    assert report["selection"]["decisions"] == 200
     assert len(report["candidates"]) == 3
     # The table is in the order the run produced them, not the command line's.
-    assert [item["game_seconds"] for item in report["candidates"]] == [100, 200, 300]
+    assert [item["decisions"] for item in report["candidates"]] == [100, 200, 300]
     # Three separated arms: nothing contests the winner at this sample.
     assert report["selection_contested_by"] == []
 
@@ -271,7 +278,7 @@ def test_an_evaluation_of_another_runs_checkpoint_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run, _ = run_with_checkpoints(tmp_path, [100])
-    other = tmp_path / "elsewhere" / "checkpoint-gs0900000.pt"
+    other = tmp_path / "elsewhere" / "checkpoint-d0900000.pt"
     other.parent.mkdir(parents=True)
     write_checkpoint_file(other, 900_000)
     directory = evaluation_directory(
@@ -287,7 +294,7 @@ def test_two_runs_at_the_same_period_do_not_borrow_each_others_evaluations(
 ) -> None:
     """The file names collide; the run id is what says whose checkpoint it is.
 
-    Two runs trained at the same `--checkpoint-every-game-seconds` leave files
+    Two runs trained at the same `--checkpoint-every-decisions` can leave files
     called exactly the same thing. Identifying a candidate by its file name
     would accept the other run's evaluation here, and the model reported as this
     run's work would be a model it never produced.
@@ -335,15 +342,13 @@ def test_candidates_that_disagree_about_their_run_are_refused(
         invoke(select_checkpoint, [str(run), *[str(item) for item in directories]], monkeypatch)
 
 
-def test_candidates_are_ordered_by_game_seconds_not_by_how_their_names_sort(
+def test_candidates_are_ordered_by_decisions_not_by_how_their_names_sort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The zero padding only orders correctly while every name is the same width.
 
-    A ten-million-game-second run is about three days of collection on the
-    fleet, not a hypothetical, and at that point the widths mix:
-    `checkpoint-gs10000000` sorts before `checkpoint-gs9000000` as text and
-    after it as a number.
+    Past ten million decisions the widths mix: `checkpoint-d10000000` sorts
+    before `checkpoint-d9000000` as text and after it as a number.
     """
     run, checkpoints = run_with_checkpoints(tmp_path, [9_000_000, 10_000_000])
     nine, ten = checkpoints
@@ -368,7 +373,7 @@ def test_candidates_are_ordered_by_game_seconds_not_by_how_their_names_sort(
     )
 
     report = json.loads(output.read_text())
-    assert [item["game_seconds"] for item in report["candidates"]] == [
+    assert [item["decisions"] for item in report["candidates"]] == [
         9_000_000,
         10_000_000,
     ]
@@ -395,8 +400,44 @@ def test_a_run_without_numbered_checkpoints_has_nothing_to_choose_among(
     run = tmp_path / "run"
     (run / "checkpoints").mkdir(parents=True)
 
-    with pytest.raises(SystemExit, match="--checkpoint-every-game-seconds"):
+    with pytest.raises(SystemExit, match="no numbered checkpoints"):
         invoke(select_checkpoint, [str(run), str(tmp_path)], monkeypatch)
+
+
+def test_a_run_from_the_game_time_era_is_still_selected_among(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its files are named by game seconds; the selection never parses a name.
+
+    The candidates are found by the shared prefix and ordered by the decisions
+    each file records, so an old run reads exactly as a new one does.
+    """
+    run, checkpoints = run_with_checkpoints(
+        tmp_path, [100, 200, 300], name=game_time_era_name
+    )
+    assert checkpoints[0].name == "checkpoint-gs0000300.pt"
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals", path.stem, {"a": waves}, checkpoint_identity(path)
+        )
+        for path, waves in zip(
+            checkpoints, ([4, 5, 4, 5], [11, 12, 11, 12], [7, 8, 7, 8]), strict=True
+        )
+    ]
+    output = tmp_path / "selection.json"
+
+    code = invoke(
+        select_checkpoint,
+        [str(run), *[str(item) for item in directories], "--resamples", "200",
+         "--output", str(output)],
+        monkeypatch,
+    )
+
+    assert code == 0
+    report = json.loads(output.read_text())
+    assert report["selection"]["checkpoint"] == str(checkpoints[1])
+    assert report["selection"]["decisions"] == 200
+    assert [item["decisions"] for item in report["candidates"]] == [100, 200, 300]
 
 
 def test_a_directory_that_mixes_two_arms_is_refused(
@@ -564,6 +605,27 @@ def test_the_report_accepts_a_set_b_that_played_the_selected_model(
     assert json.loads(output.read_text())["selection"]["decisions"] == 300
 
 
+def test_a_selection_written_when_the_budget_was_game_time_is_still_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old selection.json carries `game_seconds` beside the rest; it is ignored."""
+    arms = arm_directories(tmp_path)
+
+    code = invoke(
+        report_arms,
+        [
+            *[f"{name}={path}" for name, path in arms.items()],
+            "--selection", str(selection_file(tmp_path, game_seconds=900)),
+            "--resamples", "200",
+            "--output-directory", str(tmp_path / "pooled"),
+            "--output", str(tmp_path / "arms.json"),
+        ],
+        monkeypatch,
+    )
+
+    assert code == 0
+
+
 def test_a_set_b_that_played_another_model_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -686,9 +748,8 @@ def test_train_then_select_then_report(
         session = train.train_session(
             train.parse_arguments(
                 [
-                    "--budget-game-seconds", "1200",
-                    "--block-game-seconds", "200",
-                    "--checkpoint-every-game-seconds", "400",
+                    "--budget-decisions", "300",
+                    "--checkpoint-every-decisions", "100",
                     "--batch-size", "2",
                     "--gradient-steps-per-decision", "0.2",
                     "--warmup-sequences", "2",
@@ -711,8 +772,8 @@ def test_train_then_select_then_report(
         )
 
     run = Path(session["session"]) / session["arm"]["run_id"]
-    checkpoints = sorted((run / "checkpoints").glob("checkpoint-gs*.pt"))
-    assert len(checkpoints) >= 2, "the budget crosses the period more than once"
+    checkpoints = sorted((run / "checkpoints").glob("checkpoint-d*.pt"))
+    assert len(checkpoints) >= 2, "the budget crosses the cadence more than once"
 
     # Set A: every candidate, each in its own directory.
     set_a = [
@@ -786,7 +847,7 @@ def attached(module: Any, monkeypatch: pytest.MonkeyPatch) -> RecordedRun:
 def test_the_greedy_curve_is_logged_onto_the_training_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """On both axes: the run's decision axis, and the budget axis in game seconds."""
+    """On the run's decision axis, which is its budget axis."""
     run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
     weak, best = checkpoints
     directories = [
@@ -812,21 +873,12 @@ def test_the_greedy_curve_is_logged_onto_the_training_run(
         monkeypatch,
     )
 
-    # Each candidate twice: once on the decisions the store's step axis is in,
-    # and once on the game seconds the run was actually budgeted in.
+    # Each candidate once, on the decisions read out of its file.
     on_decisions = [
         point for point in recorded.points if "greedy_final_wave_iqm" in point.metrics
     ]
-    on_game_seconds = [
-        point
-        for point in recorded.points
-        if "greedy_final_wave_iqm_by_game_seconds" in point.metrics
-    ]
-    assert [point.decisions for point in on_decisions] == [
-        100 * DECISIONS_PER_GAME_SECOND,
-        200 * DECISIONS_PER_GAME_SECOND,
-    ]
-    assert [point.decisions for point in on_game_seconds] == [100, 200]
+    assert [point.decisions for point in on_decisions] == [100, 200]
+    assert len(recorded.points) == 2
     for point in on_decisions:
         assert set(point.metrics) == {
             "greedy_final_wave_iqm",
@@ -838,11 +890,6 @@ def test_the_greedy_curve_is_logged_onto_the_training_run(
             <= point.metrics["greedy_final_wave_iqm"]
             <= point.metrics["greedy_final_wave_ci_high"]
         )
-    # The same numbers on both axes, under their own keys.
-    assert [point.metrics["greedy_final_wave_iqm"] for point in on_decisions] == [
-        point.metrics["greedy_final_wave_iqm_by_game_seconds"]
-        for point in on_game_seconds
-    ]
     assert on_decisions[1].metrics["greedy_final_wave_iqm"] > (
         on_decisions[0].metrics["greedy_final_wave_iqm"]
     )

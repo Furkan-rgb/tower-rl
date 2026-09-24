@@ -920,41 +920,52 @@ Before recurrence and multiple actors, train a single-actor Double/Dueling DQN o
 
 If real-game learning time is prohibitive for debugging, unit-test the learner with standard toy environments. Do not feed toy or synthetic Tower transitions into the real replay or use toy success as evidence that the Tower environment is correct.
 
-### 9.2b Comparing arms on one device
+### 9.2b Budget, checkpoints and arm selection
 
 The multi-backbone goal is retired (`#7`): the project commits to one backbone,
 the `BACKBONE` constant in `scripts/train.py`, and `train.py` trains a single
-arm. The equal-budget machinery below is built and is what any arm comparison
-still runs on — it has been used for an equal-budget comparison that was not
-about backbones: the 60 Hz against 120 Hz equivalence fleet, where `M1B-E053`'s
-provisional reject did not replicate in `M1B-E054` and 120 Hz cleared. Read
-"arm" below as "the thing being compared", not necessarily as a backbone.
+arm per invocation. Arms — "the thing being compared", such as the 60 Hz
+against 120 Hz equivalence fleet of `M1B-E053`/`M1B-E054`, or run 4 against
+run 5 — are compared at an equal budget, each arm with its own backbone and its
+own in-memory replay; arms never share transitions.
 
-Several candidates are compared, and there is only one clone to run them on.
-Training one arm to its full budget and then the next would confound the
-backbone with whatever drifted in between — the device, the host, the account —
-which is the same trap `experiment/comparison.py` exists to avoid on the
-evaluation side. Training arms are therefore interleaved as well: each arm holds
-its own backbone, replay buffer and actor, and `scripts/train.py` hands the
-device to the next arm every `block_game_seconds`, in a shuffled round-robin so
-no arm is systematically first.
+**Training progress has one unit: decisions** (`#68`). The budget
+(`--budget-decisions`) is cumulative decisions across the arm's fleet,
+independent of game speed. Learning happens per decision, and game time per
+decision is not a constant: it moves with the policy (`M2-P005` diagnostic (c)
+and its addendum: run 5 spent 6.98 game-seconds per decision against run 4's
+4.42 over matched decisions, from policy state, not the build), so a game-time
+budget buys a stronger policy fewer updates. The budget is accounted at episode
+granularity — an episode in progress is played to its classified end — so a run
+stops past its budget by at most one episode per actor. Every schedule counted
+in decisions reads the same counter: epsilon, the replay ratio, the
+importance-sampling beta (annealed over the decision budget), the kill bars
+and the selection periods. The n-step anneal alone counts gradient steps, as
+BBF defines it. Game time and wall time are still measured and reported, as
+statistics. `TrainingRun.advance(decisions)` can spend the budget in blocks
+and carries every schedule across them, so a run advanced in ten blocks is the
+same run as one advanced in one.
 
-Three properties make that honest:
+**Selection periods and checkpoints.** The decision axis is cut into
+selection periods of `--selection-period-decisions` (default 15,000). A
+numbered checkpoint `checkpoint-d<decisions>.pt` is written at the episode that
+closes each period, and additionally on `--checkpoint-every-decisions` if set;
+the two are independent, and one episode crossing both writes one file.
+Checkpoints from the game-time era are named `checkpoint-gs<game seconds>.pt`;
+every reader orders candidates by the decisions recorded inside the file and
+never parses the name. Checkpoint formats 1-3 are from the game-time era: they
+still load for evaluation, but `train.py` refuses to resume them, because their
+selection-period counters were counted in game time. Format 4 is the first a
+run resumes from.
 
-- The budget is equal **per arm** and counted in game time — cumulative game
-  seconds across the arm's fleet, measured from the game's own round clock — so
-  neither a stronger policy surviving longer nor a cadence that asks for fewer
-  decisions buys itself more experience. Game time is what the device sells.
-- A block ends on an episode boundary. An episode in progress is played to its
-  classified end, because a half-episode is not experience and its sequences
-  would be tagged with a policy that stopped acting.
-- Exploration, the importance-sampling beta and the gradient-step debt are all
-  carried across blocks, so an arm resumes in exactly the state it paused in.
-  A run advanced in ten blocks must be the same run as one advanced in one.
-
-Replay is per arm and in memory. Arms never share transitions: they are
-different policies, and pooling their experience would make the comparison one
-of optimisers over a common dataset rather than of agents.
+**The arm rule.** At each period close the run records the mean final wave of
+the near-greedy actors' valid episodes in that period. The arm is the
+checkpoint at the close of the period with the highest such mean, counting only
+periods from the second on that have a mean at all, with a tie going to the
+earlier period. This is the only arm rule, and it is applied by hand from the
+summary's `selection_periods`; no code selects the arm. A kill-bar stop does
+not change which checkpoint is the arm; the pre-registration decides whether a
+killed run's arm is evaluated.
 
 ### 9.2c Decision moments must not depend on speed
 
@@ -1416,9 +1427,10 @@ default): when cumulative decisions first reach AT, the near-greedy actors'
 valid episodes that ended in (START, AT] must average at least MIN waves, or
 the run stops at that episode boundary. A window with no such episode measures
 nothing and does not stop the run. Every check is recorded in the summary's
-`early_stopping.kill_bar_checks`. A run stopped this way selects no arm, so it
-skips the final evaluation and records `final_evaluation_skipped: kill_bar`;
-a plateau stop still takes it.
+`early_stopping.kill_bar_checks`. A run stopped this way skips the final
+evaluation of its last weights and records `final_evaluation_skipped:
+kill_bar`; a plateau stop still takes it. Whether a killed run's arm is
+evaluated is the pre-registration's decision (section 9.2b).
 
 Every point carries the learner diagnostics that separate a broken learner from
 a slow one: the weighted loss and the unweighted mean absolute TD error under
@@ -1586,9 +1598,9 @@ Run directories answer "what did this run produce"; they do not answer "how do
 these twenty runs compare". Training therefore records itself through an
 `ExperimentTracker` port (`src/tower_rl/experiment/tracking.py`): a run is
 opened per arm with its resolved configuration as parameters and its provenance
-as tags, reports metrics **keyed by decisions consumed**, with the game seconds
-they were spent at beside them - a run's budget, and what arms are equalised on,
-is game time (`--budget-game-seconds`) - and logs its manifest, its summary
+as tags, reports metrics **keyed by decisions consumed** - a run's budget, and
+what arms are equalised on (`--budget-decisions`) - with the game seconds they
+were spent at beside them as a statistic, and logs its manifest, its summary
 (learning curve and per-episode evaluation records) and each curve point's checkpoint,
 stored under the point's weight fingerprint so a tracked point resolves to an
 exact file. The measured reference floors travel with every run as parameters,
@@ -1632,8 +1644,9 @@ actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
 interleaved on one instance), `workstation_preflight.py` (host checks),
 `spectate.py` (one windowed instance a human watches, optionally recorded),
 `render_recording.py` (a recording and its decision log composed into one
-video), `select_checkpoint.py` (the post-hoc choice among a run's numbered
-checkpoints), `report_arms.py` (IQM and per-wave comparison of evaluation
+video), `select_checkpoint.py` (ranks a run's numbered checkpoints by
+greedy-evaluation IQM; a checkpoint-evaluation tool, not the M2 arm rule),
+`report_arms.py` (IQM and per-wave comparison of evaluation
 sets), `diagnose_plasticity.py` (the plasticity diagnostic over a recorded
 observation batch), and `migrate_state.py` (the one-time move of
 `~/.local/state/tower-rl` into `state/`). The shell helpers beside them —
@@ -1671,32 +1684,32 @@ Interactive only where evidence/confirmation is inherently needed. Produces a ve
 **What exists today.** Training runs through `scripts/train.py`, a device runner
 for the instrumented profile. It trains one arm on the single backbone named by
 the `BACKBONE` constant (`stacked-dqn`) — the multi-backbone comparison of
-section 9.2b was retired and there is no `--backbone` flag — advancing the run
-in `--block-game-seconds` blocks to `--budget-game-seconds`, checkpointing
-atomically under `state/runs`, and taking one exploration-free evaluation on the
-final weights after the budget is spent.
+section 9.2b was retired and there is no `--backbone` flag — running to
+`--budget-decisions`, checkpointing atomically under `state/runs`, and taking
+one exploration-free evaluation on the final weights after the budget is spent.
 
-The budget is cumulative game time across the fleet. It is accounted at episode
-granularity, because an episode's game time is known only when it ends: the run
-stops after the episode each actor crossed the budget in, and the arm summary
-reports `budget_overshoot_game_ms`, at most one episode per actor. The
-learning-side schedules stay in decisions by design — the replay ratio
-(`--gradient-steps-per-decision`) and the exploration anneal
-(`--epsilon-anneal-decisions`).
+The budget is cumulative decisions across the fleet, accounted at episode
+granularity: the run stops after the episode each actor crossed the budget in.
+Section 9.2b gives the reasons and the schedules that read it.
 
-`--checkpoint-every-game-seconds` leaves `checkpoint-gs<game seconds>.pt`
-candidates beside the `latest.pt` resume point, one per crossing of the period,
-which `scripts/select_checkpoint.py` later chooses among.
+Numbered `checkpoint-d<decisions>.pt` candidates are left beside the
+`latest.pt` resume point at every selection-period close
+(`--selection-period-decisions`, default 15,000) and on the optional
+`--checkpoint-every-decisions` cadence. The M2 arm is chosen among the
+period-close ones by hand, by section 9.2b's arm rule, from the summary's
+`selection_periods`. `scripts/select_checkpoint.py` ranks checkpoints by the
+IQM of their greedy evaluations; it is a checkpoint-evaluation tool, not the
+M2 arm rule.
 
 `--resume <checkpoint.pt>` continues a run's budget in a second sitting (`#32`):
-the weights, the optimizer moments and both counters come back, and epsilon,
-beta and the checkpoint cadence are derived from them, so the segment carries on
-where a run that never stopped would have been. Replay is not persisted and
-re-warms under the loaded policy. `--budget-game-seconds` stays the whole run's
-total; a checkpoint whose identity names another arm, profile or schema, one
-that has already spent the budget, and one written before the budget was game
-time (checkpoint format 1 or 2, which records none) are each refused by name
-before a device is touched.
+the weights, the optimizer moments and the counters come back, and epsilon,
+beta, the selection periods and the checkpoint cadence are derived from them,
+so the segment carries on where a run that never stopped would have been.
+Replay is not persisted and re-warms under the loaded policy.
+`--budget-decisions` stays the whole run's total; a checkpoint whose identity
+names another arm, profile or schema, one that has already spent the budget,
+and one in a game-time-era format (before format 4, which evaluates only) are
+each refused by name before a device is touched.
 
 Example behavior:
 

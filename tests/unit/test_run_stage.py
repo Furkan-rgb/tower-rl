@@ -258,6 +258,26 @@ def test_host_load_snapshots_bracket_a_successful_stage(shims: Shims) -> None:
     assert summary in written
 
 
+def test_host_load_snapshots_carry_memory_and_swap(shims: Shims) -> None:
+    """`free -m` and swap used, alongside load and CPU, in every snapshot.
+
+    CPU alone missed the failure mode this exists for: a cold-boot pile-up
+    that drives the host into swap.
+    """
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    written = log_text(shims)
+    stamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    mem_lines = re.findall(
+        rf"^{stamp} host-load: mem_used_mb \d+ .*swap_used_mb \d+", written, re.MULTILINE
+    )
+    assert len(mem_lines) == 2, written
+
+
 def test_a_third_host_load_snapshot_is_taken_on_the_failure_path(shims: Shims) -> None:
     bring_up(shims, "emulator-5556", "emulator-5558")
     stage = shims.stage("echo collapsing >&2; exit 3")
@@ -279,6 +299,46 @@ def test_a_stage_that_fails_is_still_cleaned_up(shims: Shims) -> None:
     assert result.returncode == 3
     assert shims.cleaned == ["emulator-5556", "emulator-5558"]
     assert "stage test-stage: exit 3, cleanup ok, instances 2/2 cleaned" in result.stdout
+
+
+def test_a_failed_stage_surfaces_crash_shaped_lines_from_each_emulator_log(
+    shims: Shims,
+) -> None:
+    """The last matching lines of each instance's emulator log, on failure only.
+
+    Diagnosing the M2-P004 gfxstream crash took three rounds partly because
+    nothing surfaced these lines next to the stage's own summary.
+    """
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    shims.logs.mkdir(parents=True, exist_ok=True)
+    (shims.logs / "tower-rl-emulator-emulator-5556.log").write_text(
+        "boot ok\n"
+        "ColorBuffer::create failed\n"
+        "harmless line\n"
+    )
+    (shims.logs / "tower-rl-emulator-emulator-5558.log").write_text("boot ok\nnothing wrong here\n")
+    stage = shims.stage("echo collapsing >&2; exit 3")
+
+    result = run_stage(shims, str(stage))
+
+    assert result.returncode == 3
+    written = log_text(shims)
+    assert "crash-lines: emulator-5556" in written
+    assert "ColorBuffer::create failed" in written
+    assert "crash-lines: emulator-5558" in written
+
+
+def test_a_successful_stage_does_not_surface_emulator_log_lines(shims: Shims) -> None:
+    bring_up(shims, "emulator-5556")
+    shims.logs.mkdir(parents=True, exist_ok=True)
+    (shims.logs / "tower-rl-emulator-emulator-5556.log").write_text("ColorBuffer::create failed\n")
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    written = log_text(shims)
+    assert "crash-lines" not in written
 
 
 def test_a_cleanup_that_fails_fails_the_stage(shims: Shims) -> None:

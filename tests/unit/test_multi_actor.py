@@ -177,6 +177,29 @@ def test_one_actor_failing_leaves_the_others_intact_and_still_tears_down() -> No
     assert [actor["failure"] for actor in report["actors"]] == [None, failed["failure"], None]
 
 
+def test_an_actor_failure_is_logged_the_moment_it_is_caught(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every actor's failure line carries its own timestamp, not the summary's.
+
+    `run_actor` never raises, so nothing here waits on the fleet's own
+    summary: the exception is logged at the point `run_actor` catches it, with
+    enough to tell actors apart on sight — index, serial and exception type.
+    """
+
+    def collect(instance: CloneInstance) -> dict[str, object]:
+        raise RuntimeError("gfxstream renderer crashed")
+
+    def tear_down(instance: CloneInstance) -> None:
+        pass
+
+    run_actor(CloneInstance(index=3), collect, tear_down)
+
+    printed = capsys.readouterr().out
+    assert "actor 3 (emulator-5562) failed" in printed
+    assert "RuntimeError: gfxstream renderer crashed" in printed
+
+
 def test_a_teardown_failure_is_reported_without_losing_the_episodes() -> None:
     def collect(instance: CloneInstance) -> dict[str, object]:
         return actor_record([summary(final_wave=9)])

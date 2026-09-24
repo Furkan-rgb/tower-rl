@@ -237,6 +237,11 @@ log_host_load() {
   {
     echo "$timestamp host-load: $(cat /proc/loadavg 2>/dev/null || echo unavailable)"
     echo "$timestamp host-load: nproc $(nproc 2>/dev/null || echo unavailable)"
+    # `free -m` one-liner plus swap used: a cold-boot pile-up that pushes host
+    # load past 10 (see the module docstring in `run_actors.py`) is exactly the
+    # kind of contention that also drives the host into swap, and CPU alone
+    # does not say so.
+    echo "$timestamp host-load: $(free -m 2>/dev/null | awk 'NR==2 {print "mem_used_mb", $3, "mem_total_mb", $2} NR==3 {print "swap_used_mb", $3, "swap_total_mb", $2}' | tr '\n' ' ')"
     echo "$timestamp host-load: top 5 by cpu"
     # `|| true`: `head -6` closing the pipe on a host with more than a
     # handful of processes can send `ps` SIGPIPE, and under `pipefail`
@@ -246,6 +251,27 @@ log_host_load() {
       echo "$timestamp host-load: $line"
     done || true
   } >> "$log_path"
+}
+
+#: On a failed stage, the last handful of crash-shaped lines from each
+#: instance's own emulator log, so a host renderer crash is visible beside the
+#: summary rather than requiring a second pass through per-instance log files
+#: after the fact. The path matches how `bring_up` names the file it captures
+#: each instance's own stdout/stderr into (`EMULATOR_LOG_DIRECTORY` in
+#: `src/tower_rl/simulation/instance.py`), which is the same `state/logs`
+#: directory this script's own log lives in by default. `|| true` throughout:
+#: teardown must never abort on this, a past review finding.
+log_emulator_crash_lines() {
+  local serial log_file
+  for serial in "${expected_serials[@]}"; do
+    log_file="$log_directory/tower-rl-emulator-$serial.log"
+    [ -r "$log_file" ] || continue
+    {
+      echo "crash-lines: $serial ($log_file)"
+      grep -E 'ColorBuffer|segfault|X connection|FATAL|ERROR' "$log_file" 2>/dev/null |
+        tail -n 5 || true
+    } >> "$log_path"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -510,6 +536,7 @@ finish() {
   verify_host_clean || cleanup_ok=no
   if [ "$stage_status" -ne 0 ]; then
     log_host_load
+    log_emulator_crash_lines || true
   fi
   local exit_code="$stage_status"
   if [ "$exit_code" -eq 0 ] && [ "$cleanup_ok" = no ]; then

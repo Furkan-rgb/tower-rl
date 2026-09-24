@@ -122,6 +122,16 @@ def run_actor(
         record = collect(instance)
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
+        # Logged the moment the exception is caught, not only in the fleet's
+        # final summary: every actor's failure otherwise carries the summary's
+        # timestamp, which is the wall-clock end of the whole fleet rather than
+        # the moment this actor actually died — the gap that turned a host
+        # renderer crash into a three-round diagnosis.
+        print(
+            f"actor {instance.index} ({instance.serial}) failed: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
     finally:
         try:
             tear_down(instance)

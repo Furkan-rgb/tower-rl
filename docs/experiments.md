@@ -26,6 +26,129 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M3-P001: stacked-dqn benchmark row, 120,712 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-24. Board `#78`. Milestone 3 portfolio row for stacked-dqn
+(`docs/task.md` §1.1, Outcome A: ≥4 learners trained/evaluated under one
+identical, pre-registered, budgeted protocol on the same fixed account
+state). `M3-P001` was previously used for the BBF recipe on stacked-dqn; the
+developer removed BBF from the repo entirely (`81241e6`, "stacked-dqn is the
+only learner so far"), deleting that entry along with the recipe code in
+`scripts/train.py`, and freed the identifier for this, the stacked-dqn
+benchmark row itself. Developer-approved; run while the developer is asleep.
+
+**Why.** Run 4 (18.143, n=105) trained on 60,356 decisions — half of the
+120,712-decision common budget this portfolio uses elsewhere (`M2-P006`,
+`M2-P006b`) — and its checkpoint was picked after the fact from a run that
+was not run under a pre-registered stopping rule for this purpose. Per
+`docs/task.md` §1.1 ("one run per learner"), this is the single,
+pre-registered, budgeted run that becomes stacked-dqn's row in the
+portfolio table, whatever it scores: no reruns, no best-of.
+
+**Command.** Run 5b's command (scratchpad `run5b-command.txt`), i.e. run 4's
+own hyperparameters, with these changes: `--seed 0` (unchanged from run 4/5b),
+`--early-stop-patience-periods 0` so the run spends the whole budget like
+every other learner in the portfolio gets to (no early stop on this row —
+`--early-stop-min-improvement` is dropped, it has no effect at patience 0),
+and `--kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1` — the scripted-floor
+collapse definition adopted after `M2-P006`'s diagnosis (the 8.6/10.2 bars
+derived from within-run episode SE sat 2.5 waves above the scripted baseline
+and could reject a healthy run; `M2-P006b` used the same 6.1/6.1 floor).
+Everything else is run 4's command unchanged: ladder exploration,
+`--gradient-steps-per-decision 1.0`, `--n-step 10 --n-step-final 3
+--n-step-anneal-steps 10000`, `--checkpoint-every-decisions 5000`,
+`--selection-period-decisions 15000`, `--budget-decisions 120712` (2× run
+4's own final decision count).
+
+Verified against `main` @ `f767aa7`: `train.py --help` lists no `--recipe`
+flag and every flag below (BBF's recipe machinery is fully gone, confirming
+this row is stacked-dqn's own defaults, not a leftover recipe override).
+Dry-parsed the exact command through `train.parse_arguments`, no
+`SystemExit`; resolved config confirmed: `budget_decisions=120712`,
+`checkpoint_every_decisions=5000`, `selection_period_decisions=15000`,
+`early_stop_patience_periods=0`, `exploration=ladder`,
+`gradient_steps_per_decision=1.0`, `n_step=10`, `n_step_final=3`,
+`n_step_anneal_steps=10000`, `epsilon_anneal_decisions=8000`, `seed=0`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]` — every
+other field at `train.py`'s own default, matching run 4's unflagged values
+(`discount=0.99`, `learning_rate=0.0001`, `target_ema_decay=0.995`,
+`priority_alpha=0.0`, `replay_capacity=4096`, `batch_size=8`, etc.).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p001-dqn-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 120712 --checkpoint-every-decisions 5000 \
+      --selection-period-decisions 15000 --epsilon-anneal-decisions 8000 \
+      --early-stop-patience-periods 0 --seed 0 --gradient-steps-per-decision 1.0 \
+      --n-step 10 --n-step-final 3 --n-step-anneal-steps 10000 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`), exported
+in the same shell that invokes `run_stage.sh`. Evaluation on the default
+build (`state/bridge/current`, never repointed, `TOWER_BRIDGE_BUILD_DIR`
+unset).
+
+**Kill, cap and arm — same rules as `M2-P006`/`M2-P006b`.** A kill-bar stop
+is a collapse and no evaluation is run (a killed run's arm is not
+evaluated). At the 5h wall cap, the stage stops cleanly and is resumed from
+`latest.pt` in a follow-up stage to finish the budget (format-4 resume) —
+neither a kill nor a verdict, and only the completed budget gets evaluated.
+The arm is the checkpoint at the close of the best selection period,
+counting only periods 2+ with a near-greedy mean, ties to the earlier
+period (`docs/solution.md` §9.2b).
+
+**Evaluation.** The arm, greedy, on the default build,
+`--upgrade-availability all --frame-game-ms 100`, n=105 (15 episodes × 7
+actors), run 4's eval command shape:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p001 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p001/eval-arm
+
+The one-retry rule applies: an actor/instance bring-up failure (not an
+ordinary per-episode invalid classification) permits one fresh retry after
+full cleanup and host verification; if the retry writes into the same
+output directory as a failed first attempt, verify by file timestamp that
+every record postdates the retry's own launch before computing statistics,
+moving any surviving first-attempt file aside first. After one retry, stop
+and report with crash lines and logcat. Statistics use only the retry's
+records, never pooled with a failed first attempt.
+
+**Statistics.** Report the mean, SD, and 95% CI of the arm's n=105 final
+waves. `bootstrap_difference` (seed 0, 10,000 resamples) against
+scripted-`all` (6.105, n=105) and random-`all` (3.556, n=90); **BETTER** iff
+the CI's lower bound is > 0, **WORSE** iff the upper bound is < 0, otherwise
+**NOT DISTINGUISHABLE**. Also report the difference against run 4's arm
+(18.143, n=105) descriptively — this comparison is **budget-confounded**
+(run 4 trained on half this run's budget and was picked after the fact) and
+is not read as a verdict on the training recipe.
+
+**Power.** Unchanged from `M2-P006`: at run 4's own arm SD (3.740, n=105 per
+arm), the difference's SE ≈ 0.516, 95% CI half-width ≈1.0, minimum
+detectable difference at 80% power ≈1.45 waves.
+
+**Secondary.** The `#75` wall check (episodes reaching wave 20+, and any
+wave 22, against the plateau diagnosis's account-state ceiling). The
+production learner step time, read from
+`decision_time.fleet.buckets.learner_step.wall_seconds` /
+`optimisation_steps` in the run's `summary.json`.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup and
+host verification (no qemu via `/proc/*/exe`, empty `adb devices`) after.
+Stop after three consecutive unexplained failures. `state/bridge/current` is
+never repointed. One device stage at a time; no polling loops.
+
+### Results, as run
+
+(to be filled in after the run)
+
 ## Learner profile (2026-09-24)
 
 **Status:** Corrects prior claims below (see the "Correction (2026-09-24)"

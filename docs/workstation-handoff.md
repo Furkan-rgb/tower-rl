@@ -551,7 +551,7 @@ from an ARM64 AVD and is also tied to the pinned Lavapipe/Swangle renderer.
 
    ```text
    mkdir -p runtime
-   ./scripts/workstation_preflight.py --json > runtime/workstation-preflight.json
+   ./scripts/doctor.py --json > runtime/doctor.json
    ```
 
    Characterize the host, Android SDK, emulator version, virtualization, ABI,

@@ -316,17 +316,17 @@ Two modules sit at the top level of `tower_rl` rather than in a package, because
 neither is part of a run:
 
 - `doctor.py` — read-only host, package and Android-device diagnostics, returning
-  `CheckResult` rows with a `pass`/`warn`/`fail` status. It reads the SDK through
-  `simulation.android_sdk` and the archive through `xapk`, so it sits *above*
-  `simulation`; that is why `experiment` is forbidden to import it. Its callers
-  are the operator and `tests/unit/test_doctor.py` — nothing in a run imports it.
+  `CheckResult` rows with a `pass`/`warn`/`fail` status: host and SDK inventory,
+  Android tools, the XAPK when one is given, and the device when a serial is
+  given. It reads the SDK through `simulation.android_sdk` and the archive
+  through `xapk`, so it sits *above* `simulation`; that is why `experiment` is
+  forbidden to import it. `scripts/doctor.py` is its one entry point — both the
+  XAPK and the serial are optional there — and `tests/unit/test_doctor.py` is
+  its other caller; nothing in a run imports it.
 - `xapk.py` — metadata-only inspection of a locally supplied XAPK archive
   (manifest, splits, checksums), used by `doctor` and by `tests/unit/test_xapk.py`.
   It never extracts or copies proprietary bytes. The XAPK is reference material;
   the validated runtime is Play-installed.
-
-`scripts/workstation_preflight.py` is the host-only check and uses
-`simulation.android_sdk` directly.
 
 ## 6. Flow: a fleet collection run
 

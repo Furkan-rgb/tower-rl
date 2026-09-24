@@ -1640,8 +1640,8 @@ are the scripts under `scripts/`, run as `uv run python scripts/<name>.py`, each
 parsing its own `argparse` arguments and returning nonzero on failure:
 `clone_session.py` (one instance up, down, or inspected), `run_episodes.py` (one
 actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
-`train.py` (a training run on a fleet), `workstation_preflight.py` (host checks),
-`spectate.py` (one windowed instance a human watches, optionally recorded),
+`train.py` (a training run on a fleet), `doctor.py` (host, SDK, XAPK and device
+checks), `spectate.py` (one windowed instance a human watches, optionally recorded),
 `render_recording.py` (a recording and its decision log composed into one
 video), `select_checkpoint.py` (the post-hoc choice among a run's numbered
 checkpoints), `report_arms.py` (IQM and per-wave comparison of evaluation
@@ -1650,8 +1650,9 @@ from the installed bridge's own `CMakeCache.txt`). The shell helpers beside
 them —
 `create_avd.sh`, `launch_avd.sh` and `instrumented_bridge.sh` — are not
 argparse entry points.
-`tower_rl.doctor` is a library module with the host/APK/device checks below and
-no command of its own; the M0 `probe` and its vision layer no longer exist.
+`tower_rl.doctor` is a library module with the host/SDK/APK/device checks
+below; `scripts/doctor.py` is its one command. The M0 `probe` and its vision
+layer no longer exist.
 
 The rest of this section is the V1 target, not a description of the present.
 

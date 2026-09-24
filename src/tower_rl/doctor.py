@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -10,8 +11,13 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from tower_rl.simulation.android_sdk import find_android_tool
+from tower_rl.simulation.android_sdk import find_android_tool, sdk_roots
 from tower_rl.xapk import XapkInspectionError, inspect_xapk
+
+#: The tools a training host needs discoverable on `PATH` or under a standard
+#: SDK layout. `sdkmanager` is here beside the three the fleet touches at
+#: runtime because it is what installs a missing system image.
+ANDROID_TOOLS = ("adb", "emulator", "apkanalyzer", "sdkmanager")
 
 
 class CheckStatus(StrEnum):
@@ -33,8 +39,23 @@ class CheckResult:
 
 
 
-def _run(command: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
+def _run(command: list[str], timeout: float = 20) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout)
+
+
+def _memory_bytes() -> int | None:
+    if platform.system() == "Darwin":
+        memory = _run(["sysctl", "-n", "hw.memsize"])
+        if memory.returncode == 0 and memory.stdout.strip().isdigit():
+            return int(memory.stdout.strip())
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        for line in meminfo.read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    return int(parts[1]) * 1024
+    return None
 
 
 def check_host() -> CheckResult:
@@ -44,6 +65,8 @@ def check_host() -> CheckResult:
         "release": platform.release(),
         "machine": platform.machine(),
         "python": platform.python_version(),
+        "cpu_count": os.cpu_count(),
+        "memory_bytes": _memory_bytes(),
         "free_storage_bytes": usage.free,
     }
     if platform.system() == "Darwin":
@@ -59,7 +82,7 @@ def check_host() -> CheckResult:
 
 
 def check_android_tools() -> CheckResult:
-    resolved = {name: find_android_tool(name) for name in ("adb", "emulator", "apkanalyzer")}
+    resolved = {name: find_android_tool(name) for name in ANDROID_TOOLS}
     missing = [name for name, path in resolved.items() if path is None]
     if missing:
         return CheckResult(
@@ -73,6 +96,46 @@ def check_android_tools() -> CheckResult:
         status=CheckStatus.PASS,
         message="required Android tools found",
         details={name: str(path) for name, path in resolved.items()},
+    )
+
+
+def check_sdk_inventory() -> CheckResult:
+    """The SDK root, its AVDs and its installed system images.
+
+    Separate from `check_android_tools`: a host can have every tool on `PATH`
+    and still have no AVD or system image to boot one from, which is a
+    different finding from a missing binary.
+    """
+    root = next((candidate for candidate in sdk_roots() if candidate.is_dir()), None)
+    avds: list[str] = []
+    avd_error: str | None = None
+    emulator = find_android_tool("emulator")
+    if emulator is not None:
+        listing = _run([str(emulator), "-list-avds"])
+        if listing.returncode == 0:
+            avds = listing.stdout.splitlines()
+        else:
+            avd_error = listing.stderr.strip() or f"emulator -list-avds exited {listing.returncode}"
+    system_images: list[str] = []
+    if root is not None and (root / "system-images").is_dir():
+        image_root = root / "system-images"
+        system_images = [
+            str(path.parent.relative_to(image_root))
+            for path in sorted(image_root.rglob("source.properties"))
+        ]
+    details: dict[str, object] = {
+        "android_sdk_root": str(root) if root else None,
+        "avds": avds,
+        "avd_error": avd_error,
+        "system_images": system_images,
+    }
+    if root is None:
+        return CheckResult("sdk_inventory", CheckStatus.WARN, "no Android SDK root found", details)
+    return CheckResult(
+        "sdk_inventory",
+        CheckStatus.PASS,
+        f"{len(avds)} AVD(s), {len(system_images)} system image(s)",
+        details,
     )
 
 
@@ -173,8 +236,18 @@ def check_device(serial: str | None) -> CheckResult:
     return CheckResult("device", CheckStatus.PASS, f"device ready: {serial}", properties)
 
 
-def run_doctor(xapk: Path, serial: str | None) -> list[CheckResult]:
-    return [check_host(), check_android_tools(), check_xapk(xapk), check_device(serial)]
+def run_doctor(xapk: Path | None, serial: str | None) -> list[CheckResult]:
+    """Every check this project can run without a device-changing action.
+
+    `xapk` is optional: the reference package is not required to characterize
+    a host, which is what makes this the one command a fresh checkout runs
+    first, before `local/*.xapk` is even in place.
+    """
+    checks = [check_host(), check_android_tools(), check_sdk_inventory()]
+    if xapk is not None:
+        checks.append(check_xapk(xapk))
+    checks.append(check_device(serial))
+    return checks
 
 
 def render_json(results: list[CheckResult]) -> str:

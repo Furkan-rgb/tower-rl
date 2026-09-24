@@ -246,10 +246,13 @@ Do not place AVD data, snapshots, or Android user data in the repository.
 
 Run the metadata-only checks before installation:
 
-There is no `tower-rl` console script. The checks are
-`tower_rl.doctor.run_doctor(xapk, serial)`, rendered with
-`tower_rl.doctor.render_json`; host tooling alone is
-`uv run python scripts/workstation_preflight.py`.
+```text
+uv run python scripts/doctor.py --xapk local/the-tower-29-0-1.xapk --serial emulator-5554
+```
+
+There is no `tower-rl` console script. `scripts/doctor.py` is the one `doctor`
+entry point, both the XAPK and the serial are optional, and `--json` renders
+`tower_rl.doctor.render_json`.
 
 Boot the canonical AVD visibly, which is what `scripts/launch_avd.sh` does —
 `-gpu <renderer> -no-audio -no-boot-anim` and, with no snapshot named,
@@ -297,8 +300,8 @@ its metadata without installing or copying proprietary bytes into the repo:
 unzip -l local/the-tower-29-0-1.xapk
 ```
 
-Confirm the Play-installed running setup with `run_doctor(xapk, serial)` against
-the running serial.
+Confirm the Play-installed running setup with `scripts/doctor.py --xapk ... --serial ...`
+against the running serial.
 
 The M0 `probe` command and the visual profile it validated no longer exist. The
 environment is read through the instrumented bridge instead

@@ -76,6 +76,78 @@ cadence effect.
 option if it has one for this; otherwise this figure is enforced by the
 operator and reported at expiry rather than by the tool). Eval stage ≤1.5h.
 
+### Results, as run (2026-09-24)
+
+**Stage 2 — training.** `stage m2-run4-train-seed0: exit 0, cleanup ok,
+instances 0/7 cleaned, 1 exited during teardown, wall 03:04:49` — well inside
+the 7h box. Ran its full budget; neither kill bar fired.
+
+| period | game-s at checkpoint | near-greedy mean, final wave | n |
+| --- | --- | --- | --- |
+| 1 | 60000 | 6.06 | 180 |
+| 2 | 120000 | 11.57 | 90 |
+| 3 | 180000 | 12.87 | 78 |
+| 4 | 240000 | 16.46 | 67 |
+
+Kill-bar checks (neither stopped the run): K1 at 12,062 decisions, mean
+10.03 (bar 8.6); K2 at 26,347 decisions, mean 11.26 (bar 10.2).
+
+Arm = period 4 (highest mean, no tie): `checkpoint-gs0240594.pt`, sha256
+`bc94b628c2e2a028857d6a9238fe2445f1911818eda34d6c55089b969350fdde`, at
+`state/runs/session-20260924-030851/stacked-dqn-20260924-030851-6014a1/checkpoints/`.
+Health: 0 `pin_restarts`, 0 `UNLOCK_*`; 793 episodes, 790 valid (3 invalid: 2
+`action_pipeline_failed`, 1 `observation_invalid`).
+
+Throughput: `game_seconds_per_hour` 110,758.8 vs run 3's 36,855.7 — **3.01×**.
+Learner lock share (learner-step wall / bridge-round-trip wall, fleet-summed
+over the whole run): 4,477.4s / 35,852.4s = **12.5%**.
+
+**Stage 3, first attempt — failed, not pooled.** `m2-run4-eval-arm`: `exit 1,
+cleanup ok, instances 0/7 cleaned, 0 exited during teardown, wall 00:23:49`.
+5 of 7 actors (`emulator-5560/5562/5564/5566/5568`) failed simultaneously with
+`BridgeDisconnectedError` ("bridge closed the stream" / "bridge is not
+connected"), then failed teardown with `adb: device '<serial>' not found` —
+the devices themselves vanished, not just the bridge socket.
+`emulator-5556`/`emulator-5558` completed cleanly (30 valid episodes, 0
+invalid). Root cause, confirmed by host-side evidence (memory ruled out
+first: 68Gi free, 92Gi available at the time; the exhausted swap was
+`redis-server`'s, unrelated): `journalctl -k` for the failure window shows 10
+`RenderThread[pid]: segfault ... in libgfxstream_backend.so` entries at the
+same instant (06:33:34), all at the same in-library offset — 2 render
+threads × the 5 failed instances. Each failed instance's own log
+(`state/logs/tower-rl-emulator-emulator-{5560,5562,5564,5566,5568}.log`)
+independently shows `ERROR | Failed to find ColorBuffer: 96`, then `X
+connection to :0 broken (explicit kill or server shutdown)` at the same
+point — the shared host X display behind the `-gpu host` renderer crashed
+and took exactly those 5 instances with it; the 2 survivors show no such
+lines. A host GPU/X-server renderer fault, not memory, not another agent,
+not a code regression in this run's own changes. These 30 episodes are **not
+pooled** with the retry below.
+
+**Stage 3, retry — `m2-run4-eval-arm-2`.** Fresh, complete: `exit 0, cleanup
+ok, instances 0/7 cleaned, 1 exited during teardown, wall 00:26:57`. 7/7
+actors, 105/105 valid, 0 invalid, 0 `GAME_TIME_DEFLATED`, 0 `pin_restarts`, 0
+`bridge_event_divergence`, 0 `UNLOCK_*`. Same checkpoint, sha reconfirmed
+unchanged before the retry.
+
+| arm | n | mean final wave | sd | SE |
+| --- | --- | --- | --- | --- |
+| run-4 arm, `all`, 100 ms | 105 | 18.143 | 3.740 | 0.365 |
+
+Bootstrap 95% CI of the difference (`bootstrap_difference`, seed 0, 10,000
+resamples), against each reference's own raw episodes:
+
+- vs run-3 arm (15.98, n=105, at 16.667 ms): **+2.162 [+1.152, +3.190]** —
+  lower bound > 0, run 4 is **better**.
+- vs run-3 arm at 100 ms (`M2-S001`, 16.17, n=35): **+1.971 [+0.505,
+  +3.514]** — lower bound > 0, run 4 is **better**.
+- vs scripted-`all` (6.105, n=105): **+12.038 [+11.305, +12.743]**.
+- vs random-`all` (3.556, n=90): **+14.587 [+13.789, +15.354]**.
+
+**Verdict.** The DER-rate gradient step, BBF n-step anneal, and
+`frame_game_ms` 100 change together produce an arm that beats run 3's arm by
+both available comparisons, CI lower bound clearly above zero either way.
+
 ## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
 
 **Finding that motivates this (scout, verified against manifests and docs).**

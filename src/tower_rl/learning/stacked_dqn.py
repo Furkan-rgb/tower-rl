@@ -43,6 +43,15 @@ class StackedDqnConfig:
     #: change, so a short n-step needs several bootstrap hops to carry one wave
     #: back to the decisions that earned it.
     n_step: int = 10
+    #: Where the n-step anneal ends, or None to hold `n_step` fixed. BBF
+    #: (Schwarzer et al. 2023, arXiv:2305.19452) starts long for fast early
+    #: credit propagation and shortens it as the value estimate becomes worth
+    #: bootstrapping from; here `n_step` is where it starts.
+    n_step_final: int | None = None
+    #: Gradient steps the anneal from `n_step` to `n_step_final` takes, after
+    #: which the final n holds. Counted in the learner's own steps, which a
+    #: checkpoint carries, so a resumed run continues the schedule.
+    n_step_anneal_steps: int = 0
     learning_rate: float = 1e-4
     #: Decoupled weight decay, hence AdamW rather than Adam.
     weight_decay: float = 1e-5
@@ -61,8 +70,25 @@ class StackedDqnConfig:
             raise ValueError("discount must be within (0, 1)")
         if self.n_step < 1:
             raise ValueError("n-step must be positive")
+        if (self.n_step_final is None) != (self.n_step_anneal_steps == 0):
+            raise ValueError("an n-step anneal needs both a final n and a length in steps")
+        if self.n_step_final is not None and self.n_step_final < 1:
+            raise ValueError("the final n-step must be positive")
+        if self.n_step_anneal_steps < 0:
+            raise ValueError("the n-step anneal cannot take a negative number of steps")
         if not 0.0 < self.target_ema_decay < 1.0:
             raise ValueError("target EMA decay must be within (0, 1)")
+
+    def n_step_at(self, gradient_steps: int) -> int:
+        """The n the target is built with after this many gradient steps.
+
+        Exponential interpolation, as in BBF: n0 * (n1 / n0) ** (t / T), rounded,
+        with t held at T once the anneal is over. Fixed at `n_step` without one.
+        """
+        if self.n_step_final is None:
+            return self.n_step
+        progress = min(gradient_steps, self.n_step_anneal_steps) / self.n_step_anneal_steps
+        return round(self.n_step * float((self.n_step_final / self.n_step) ** progress))
 
 
 @dataclass
@@ -168,7 +194,8 @@ class StackedDqnBackbone:
                 target_q,
                 mask,
                 discount=self.config.discount,
-                n_step=self.config.n_step,
+                # Taken before this step is counted, so the first step is t = 0.
+                n_step=self.config.n_step_at(self._steps),
             )
             # Padding is filler that fills a window for a short episode. It is
             # never a target, so it leaves the loss and the priorities alone.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import torch
 
@@ -156,3 +158,95 @@ def test_state_round_trips_exactly() -> None:
     assert restored.model_version == backbone.model_version
     assert parameters_are_equal(restored.online, backbone.online)
     assert parameters_are_equal(restored.target, backbone.target)
+
+
+# --- The n-step anneal (BBF): n from 10 down to 3 over the first gradient steps
+
+
+def _annealed(**overrides: object) -> StackedDqnBackbone:
+    settings: dict[str, object] = {
+        "n_step": 10,
+        "n_step_final": 3,
+        "n_step_anneal_steps": 10_000,
+    }
+    settings.update(overrides)
+    return _backbone(**settings)
+
+
+def test_the_n_step_anneal_is_exponential_and_then_holds() -> None:
+    config = StackedDqnConfig(n_step=10, n_step_final=3, n_step_anneal_steps=10_000)
+
+    assert config.n_step_at(0) == 10
+    # Halfway is the geometric mean, 10 * 0.3 ** 0.5 = 5.48, not the linear 6.5.
+    assert config.n_step_at(5_000) == 5
+    assert config.n_step_at(10_000) == 3
+    assert config.n_step_at(50_000) == 3
+    schedule = [config.n_step_at(step) for step in range(0, 10_001, 100)]
+    assert schedule == sorted(schedule, reverse=True), "the anneal never lengthens n"
+
+
+def test_without_an_anneal_n_is_fixed_at_every_step() -> None:
+    """The default is every run before run 4: n = n_step throughout."""
+    config = StackedDqnConfig()
+
+    assert config.n_step_final is None and config.n_step_anneal_steps == 0
+    assert {config.n_step_at(step) for step in (0, 1, 10_000, 10**7)} == {config.n_step}
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"n_step_final": 3},
+        {"n_step_anneal_steps": 100},
+        {"n_step_final": 0, "n_step_anneal_steps": 100},
+    ],
+)
+def test_a_half_configured_anneal_is_refused(settings: dict[str, int]) -> None:
+    with pytest.raises(ValueError):
+        StackedDqnConfig(**settings)  # type: ignore[arg-type]
+
+
+def _record_n_steps(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Every n the learner hands the shared target, in the order it did."""
+    import tower_rl.learning.stacked_dqn as module
+
+    seen: list[int] = []
+    real = module.n_step_targets
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        seen.append(int(kwargs["n_step"]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "n_step_targets", recording)
+    return seen
+
+
+def test_learning_builds_its_target_with_the_n_of_its_own_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _record_n_steps(monkeypatch)
+    backbone = _annealed(n_step_anneal_steps=2)
+    batch = collate((_sequence(length=16, burn_in=4),), (1.0,))
+
+    for _ in range(4):
+        backbone.learn(batch)
+
+    # t = 0, 1, 2 (= T), 3 (> T): 10, 10 * 0.3 ** 0.5 = 5.48, 3, 3.
+    assert seen == [10, 5, 3, 3]
+
+
+def test_a_resumed_learner_continues_the_anneal_where_it_left_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = _annealed(n_step_anneal_steps=4)
+    batch = collate((_sequence(length=16, burn_in=4),), (1.0,))
+    for _ in range(2):
+        parent.learn(batch)
+
+    seen = _record_n_steps(monkeypatch)
+    resumed = _annealed(n_step_anneal_steps=4)
+    resumed.load_state_dict(parent.state_dict())
+    resumed.learn(batch)
+
+    # Step two of four, not step zero again: 10 * 0.3 ** 0.5.
+    assert seen == [parent.config.n_step_at(2)] == [5]

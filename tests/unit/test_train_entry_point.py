@@ -344,6 +344,97 @@ def test_early_stopping_is_off_by_default_and_resolved_with_its_threshold(
     assert defaults.early_stop_min_improvement == 0.2
 
 
+def test_the_n_step_anneal_and_kill_bars_are_off_by_default(tmp_path: Path) -> None:
+    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+
+    assert defaults.n_step == 10
+    assert defaults.n_step_final is None and defaults.n_step_anneal_steps == 0
+    assert defaults.kill_bars == []
+
+
+def test_a_half_configured_n_step_anneal_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="together"):
+        arguments(tmp_path, **{"--n-step-final": "3"})
+    with pytest.raises(SystemExit, match="together"):
+        arguments(tmp_path, **{"--n-step-anneal-steps": "100"})
+
+
+def test_a_kill_bar_is_parsed_as_at_start_minimum(tmp_path: Path) -> None:
+    parsed = train.parse_arguments(
+        [
+            "--run-dir", str(tmp_path),
+            "--kill-bar", "12000:8000:8.6",
+            "--kill-bar", "26262:8000:10.2",
+        ]
+    )
+
+    assert [
+        (bar.at_decisions, bar.window_start_decisions, bar.min_mean_final_wave)
+        for bar in parsed.kill_bars
+    ] == [(12000, 8000, 8.6), (26262, 8000, 10.2)]
+    for malformed in ("12000:8000", "8000:12000:8.6", "a:b:c"):
+        with pytest.raises(SystemExit):
+            train.parse_arguments(["--run-dir", str(tmp_path), "--kill-bar", malformed])
+
+
+def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> None:
+    """The stop is the run's own and is recorded like the plateau stop."""
+    report = session(
+        tmp_path,
+        budget=TRAINING_BUDGET,
+        settings={
+            "--kill-bar": "100:0:1000",
+            "--n-step-final": "3",
+            "--n-step-anneal-steps": "5",
+        },
+    )
+
+    arm = report["arm"]
+    stopping = arm["early_stopping"]
+    assert stopping["early_stopped"]
+    [check] = stopping["kill_bar_checks"]
+    assert check["stopped"] and check["bar"]["at_decisions"] == 100
+    assert check["mean_final_wave"] < 1000
+    assert arm["game_seconds"] < int(TRAINING_BUDGET)
+    # A killed run selects no arm, so its final evaluation is skipped and says so.
+    assert arm["final_evaluation"] is None
+    assert arm["final_evaluation_skipped"] == "kill_bar"
+    resolved = arm["resolved_config"]
+    assert resolved["kill_bars"] == [[100, 0, 1000.0]]
+    assert (resolved["n_step"], resolved["n_step_final"], resolved["n_step_anneal_steps"]) == (
+        10,
+        3,
+        5,
+    )
+
+
+def test_a_run_not_stopped_on_a_kill_bar_still_takes_its_final_evaluation(
+    trained: dict[str, Any],
+) -> None:
+    arm = trained["arm"]
+
+    assert arm["final_evaluation"] is not None
+    assert arm["final_evaluation_skipped"] is None
+
+
+def test_a_plateau_stop_still_takes_its_final_evaluation(tmp_path: Path) -> None:
+    """Only a kill bar skips it: a plateaued run may still be the arm."""
+    report = session(
+        tmp_path,
+        budget="4000",
+        settings={
+            "--checkpoint-every-game-seconds": "200",
+            "--early-stop-patience-periods": "1",
+            "--early-stop-min-improvement": "1000",
+        },
+    )
+
+    arm = report["arm"]
+    assert arm["early_stopping"]["stopped_at_period"] is not None
+    assert arm["final_evaluation"] is not None
+    assert arm["final_evaluation_skipped"] is None
+
+
 def test_early_stopping_without_a_checkpoint_period_is_refused(tmp_path: Path) -> None:
     """The period it counts in is the interval between numbered checkpoints."""
     with pytest.raises(SystemExit, match="--checkpoint-every-game-seconds"):

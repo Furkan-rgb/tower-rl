@@ -41,6 +41,12 @@ has stopped learning, so the run ends after writing that crossing's checkpoint
 and the summary records what it stopped on. The default, 0, spends the whole
 budget as every measured run so far has.
 
+`--kill-bar AT:START:MIN` (repeatable) pre-registers a floor on the decision
+axis: when the fleet's cumulative decisions first reach AT, the near-greedy
+actors' valid episodes that ended in (START, AT] must average at least MIN
+waves, or the run stops there and the summary records which bar stopped it. A
+window with no such episode measures nothing and does not stop the run.
+
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
 budget. The weights, the optimizer moments, the game-time and decision counters
 and every schedule and cadence derived from them come back from the file; the
@@ -120,6 +126,7 @@ from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
+    KillBar,
     NearGreedyPlateau,
     TrainingConfig,
     TrainingProgressReport,
@@ -174,6 +181,21 @@ class ActorInstance:
     environment: InstrumentedRunEnvironment
 
 
+def kill_bar(text: str) -> KillBar:
+    """One `--kill-bar AT:START:MIN`, as the run's config holds it."""
+    try:
+        at, start, minimum = text.split(":")
+        return KillBar(
+            at_decisions=int(at),
+            window_start_decisions=int(start),
+            min_mean_final_wave=float(minimum),
+        )
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not AT:START:MIN with 0 <= START < AT ({error})"
+        ) from error
+
+
 def build_backbone(
     arguments: argparse.Namespace, device: torch.device
 ) -> tuple[Backbone, StackedDqnConfig, NetworkConfig]:
@@ -188,6 +210,8 @@ def build_backbone(
         seed=arguments.seed,
         history_length=arguments.history_length,
         n_step=arguments.n_step,
+        n_step_final=arguments.n_step_final,
+        n_step_anneal_steps=arguments.n_step_anneal_steps,
         discount=arguments.discount,
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
@@ -273,6 +297,7 @@ def build_arm(
         early_stop_patience_periods=arguments.early_stop_patience_periods,
         early_stop_min_improvement=arguments.early_stop_min_improvement,
         parameter_sync_episodes=arguments.parameter_sync_episodes,
+        kill_bars=tuple(arguments.kill_bars),
     )
     stride = max(1, arguments.sequence_length // 2)
     burn_in = int(arguments.stacked_burn_in)
@@ -534,7 +559,28 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--history-length", type=int, default=8)
-    parser.add_argument("--n-step", type=int, default=10)
+    parser.add_argument(
+        "--n-step",
+        type=int,
+        default=10,
+        help="the n-step return, or where it starts under --n-step-final",
+    )
+    parser.add_argument(
+        "--n-step-final",
+        type=int,
+        default=None,
+        help=(
+            "anneal n exponentially from --n-step to this over "
+            "--n-step-anneal-steps gradient steps, then hold it (BBF); unset "
+            "holds --n-step fixed"
+        ),
+    )
+    parser.add_argument(
+        "--n-step-anneal-steps",
+        type=int,
+        default=0,
+        help="gradient steps the n-step anneal takes; needs --n-step-final",
+    )
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument(
@@ -632,6 +678,19 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "waves a checkpoint period must add to the best period mean so far "
             "to count as an improvement; 0.2 is about the standard error of a "
             "hundred-episode window, so anything inside it is noise"
+        ),
+    )
+    parser.add_argument(
+        "--kill-bar",
+        dest="kill_bars",
+        type=kill_bar,
+        action="append",
+        default=[],
+        metavar="AT:START:MIN",
+        help=(
+            "stop the run if, when the fleet first reaches AT decisions, the "
+            "near-greedy actors' valid episodes that ended in (START, AT] "
+            "average fewer than MIN waves; repeatable, off by default"
         ),
     )
     parser.add_argument(
@@ -776,6 +835,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if arguments.early_stop_min_improvement < 0:
         raise SystemExit("--early-stop-min-improvement cannot be negative")
+    if (arguments.n_step_final is None) != (arguments.n_step_anneal_steps == 0):
+        raise SystemExit(
+            "--n-step-final and --n-step-anneal-steps configure one anneal and "
+            "are given together or not at all"
+        )
+    if arguments.n_step_anneal_steps < 0:
+        raise SystemExit("--n-step-anneal-steps cannot be negative")
     if arguments.stacked_burn_in < arguments.history_length - 1:
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
@@ -929,7 +995,18 @@ def train_session(
                 break
             arm.training.advance(arguments.block_game_seconds)
 
-        if arm.training.stopped_early:
+        killed = arm.training.killed_by
+        if killed is not None:
+            bar = killed.bar
+            print(
+                f"[{arm.name}] stopped at {killed.decisions} decisions on the kill "
+                f"bar at {bar.at_decisions}: the near-greedy mean final wave over "
+                f"({bar.window_start_decisions}, {bar.at_decisions}] was "
+                f"{killed.mean_final_wave:.2f} over {killed.near_greedy_episodes} "
+                f"episodes, below {bar.min_mean_final_wave}",
+                flush=True,
+            )
+        elif arm.training.stopped_early:
             plateau = arm.training.report.plateau
             # An early stop is the run's own decision and is invisible in the
             # counters alone - a run that stopped at 60,000 of 200,000 game
@@ -948,13 +1025,20 @@ def train_session(
         # difference against the scripted floor. Taken after the budget is
         # spent, so it costs none of the budget and cannot be chosen after
         # the fact from a series of mid-run points.
-        try:
-            run_evaluation(True)
-        except (RunPortError, ValueError) as failure:
-            # Losing the headline measurement must not lose the run: the
-            # collection curve and the checkpoints are already on disk.
-            arm.training.report.evaluation_failures.append(str(failure))
-            print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
+        # Skipped for a run stopped on a kill bar: it selects no arm, so the
+        # evaluation would buy nothing, and it costs hours of device time (2.28 h
+        # in run 3). The summary records the skip. A plateau stop still
+        # evaluates: that run may yet be the arm.
+        if killed is not None:
+            print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
+        else:
+            try:
+                run_evaluation(True)
+            except (RunPortError, ValueError) as failure:
+                # Losing the headline measurement must not lose the run: the
+                # collection curve and the checkpoints are already on disk.
+                arm.training.report.evaluation_failures.append(str(failure))
+                print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
 
         summary = arm.summary()
         report: dict[str, object] = {

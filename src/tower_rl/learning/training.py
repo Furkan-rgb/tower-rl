@@ -20,6 +20,11 @@ really moved to for `early_stop_patience_periods` periods in a row has stopped
 learning, and the rest of the budget buys nothing, so the run ends after
 writing that crossing's checkpoint.
 
+A run may also be given kill bars: pre-registered floors at points on the
+decision axis, matched against an earlier run.  When the fleet first reaches a
+bar's decision count, the near-greedy actors' valid episodes that ended inside
+its window must average at least its threshold, or the run stops there.
+
 A run collects with one actor or with a fleet of them, and the budget is the
 fleet's: N actors, each on its own emulator instance, collect concurrently into
 one replay buffer and one learner, so the gradient steps a run takes track the
@@ -73,6 +78,43 @@ from tower_rl.learning.replay import PrioritizedSequenceReplay
 #: (`STALE_OR_DUPLICATE`) for its own report; it is not imported from there
 #: because the learning package does not depend on a script.
 STALE_OR_DUPLICATE = "stale_or_duplicate"
+
+
+@dataclass(frozen=True)
+class KillBar:
+    """A floor the near-greedy curve must clear by a point on the decision axis.
+
+    Pre-registered against an earlier run at matched fleet decisions: when the
+    fleet's cumulative decisions first reach `at_decisions`, the near-greedy
+    actors' valid episodes that ended in (`window_start_decisions`,
+    `at_decisions`] must average at least `min_mean_final_wave`. A run that has
+    fallen that far behind its comparator stops rather than spending the rest of
+    its budget confirming it. Absolute rather than relative to the run's own
+    best, which is what separates it from the plateau rule.
+    """
+
+    at_decisions: int
+    window_start_decisions: int
+    min_mean_final_wave: float
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.window_start_decisions < self.at_decisions:
+            raise ValueError("a kill bar's window must end after it starts, at or after zero")
+
+
+@dataclass(frozen=True)
+class KillBarCheck:
+    """What one kill bar found when the run reached it."""
+
+    bar: KillBar
+    #: Where the run stood when it was checked: the first episode boundary at
+    #: or past the bar, so never below `bar.at_decisions`.
+    decisions: int
+    near_greedy_episodes: int
+    #: None when no near-greedy actor ended a valid episode in the window. That
+    #: measures nothing, so it does not stop the run; it is recorded as that.
+    mean_final_wave: float | None
+    stopped: bool
 
 
 def _mean(values: list[float]) -> float | None:
@@ -274,6 +316,9 @@ class TrainingConfig:
     #: publications; the lag it buys is bounded by this many of the actor's own
     #: episodes, never by the fleet's rate.
     parameter_sync_episodes: int = 1
+    #: Pre-registered floors on the decision axis the run stops itself on; see
+    #: `KillBar`. Empty is off, which is every run before run 4.
+    kill_bars: tuple[KillBar, ...] = ()
 
     def __post_init__(self) -> None:
         if self.budget_game_seconds < 1:
@@ -685,6 +730,8 @@ class TrainingProgressReport:
     #: The run's read of its own near-greedy curve, and the state a resume
     #: restores so a run trained in two sittings is judged on one curve.
     plateau: NearGreedyPlateau = field(default_factory=NearGreedyPlateau)
+    #: Every kill bar this segment reached, in the order it reached them.
+    kill_bar_checks: list[KillBarCheck] = field(default_factory=list)
 
     @property
     def game_seconds(self) -> float:
@@ -835,10 +882,24 @@ class TrainingRun:
     #: was built. Each actor touches only its own entry of a dict whose keys are
     #: all present from construction, so it needs no lock of its own.
     _since_sync: dict[str, int] = field(default_factory=dict, init=False)
+    #: Where on the decision axis this segment's `report.collected` starts: zero
+    #: for a fresh run, the parent's count for a resumed one. A kill bar places
+    #: each episode on the whole run's axis from here.
+    _segment_start_decisions: int = field(default=0, init=False)
+    #: Kill bars still to be reached, by index into `config.kill_bars`.
+    _bars_pending: list[int] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         if not self.actors:
             raise ValueError("a run needs at least one actor")
+        self._segment_start_decisions = self.report.decisions
+        # A bar the parent already passed was answered by the parent: it would
+        # have stopped there had it failed.
+        self._bars_pending = [
+            index
+            for index, bar in enumerate(self.config.kill_bars)
+            if bar.at_decisions > self.report.decisions
+        ]
         identities = [actor.config.actor_id for actor in self.actors]
         if len(set(identities)) != len(identities):
             # Per-actor reporting is keyed by identity; two actors under one
@@ -907,13 +968,18 @@ class TrainingRun:
         )
 
     @property
+    def killed_by(self) -> KillBarCheck | None:
+        """The kill bar the run stopped itself on, or None."""
+        return next((check for check in self.report.kill_bar_checks if check.stopped), None)
+
+    @property
     def stopped_early(self) -> bool:
-        """Whether the run stopped itself on a near-greedy curve that plateaued."""
-        return self.report.plateau.stopped_at_period is not None
+        """Whether the run stopped itself: on a plateau, or below a kill bar."""
+        return self.report.plateau.stopped_at_period is not None or self.killed_by is not None
 
     @property
     def finished(self) -> bool:
-        """Whether nothing is left to collect: the budget is spent, or it plateaued."""
+        """Whether nothing is left to collect: the budget is spent, or it stopped itself."""
         return self.report.game_ms >= self.config.budget_game_ms or self.stopped_early
 
     @property
@@ -1265,6 +1331,48 @@ class TrainingRun:
                 # After the checkpoint, so a run that stops here has written the
                 # model the period it stopped on produced.
                 self._close_period(report, reached)
+        self._check_kill_bars(report)
+
+    def _check_kill_bars(self, report: TrainingProgressReport) -> None:
+        """Check every kill bar the fleet's decisions have now reached.
+
+        Each episode is placed on the decision axis where it ended, in the
+        fleet's completion order - which is how the comparator run's episodes
+        were placed too. A resumed segment holds only its own episodes, so a
+        window that straddles the resume point is read over the part of it this
+        segment collected.
+        """
+        reached = [
+            index
+            for index in self._bars_pending
+            if self.config.kill_bars[index].at_decisions <= report.decisions
+        ]
+        if not reached:
+            return
+        near_greedy_ids = self.near_greedy_actor_ids
+        for index in reached:
+            self._bars_pending.remove(index)
+            bar = self.config.kill_bars[index]
+            waves: list[int] = []
+            ended_at = self._segment_start_decisions
+            for episode in report.collected:
+                ended_at += episode.summary.decisions
+                if (
+                    bar.window_start_decisions < ended_at <= bar.at_decisions
+                    and episode.summary.valid
+                    and episode.actor_id in near_greedy_ids
+                ):
+                    waves.append(episode.summary.final_wave)
+            mean = statistics.fmean(waves) if waves else None
+            report.kill_bar_checks.append(
+                KillBarCheck(
+                    bar=bar,
+                    decisions=report.decisions,
+                    near_greedy_episodes=len(waves),
+                    mean_final_wave=mean,
+                    stopped=mean is not None and mean < bar.min_mean_final_wave,
+                )
+            )
 
     def _close_period(self, report: TrainingProgressReport, reached: int) -> None:
         """Close the checkpoint period this crossing ends, and stop on a plateau.
@@ -1343,6 +1451,8 @@ __all__ = [
     "CollectedEpisode",
     "CollectionWindow",
     "EpisodeHealth",
+    "KillBar",
+    "KillBarCheck",
     "NearGreedyPlateau",
     "action_distribution",
     "collection_windows",

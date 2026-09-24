@@ -437,6 +437,11 @@ class TrainingReport:
             # saying so is what keeps a fresh baseline from reading as a
             # continued one.
             "tracker_restored_from_parent": plateau.restored,
+            # Every kill bar the run reached, and whether it stopped the run
+            # there; `early_stopped` above is true for either kind of stop.
+            "kill_bar_checks": [
+                asdict(check) for check in self.training.report.kill_bar_checks
+            ],
         }
 
     def summary(self) -> dict[str, object]:
@@ -485,6 +490,11 @@ class TrainingReport:
             "early_stopping": self._early_stopping(),
             "final_evaluation": (
                 asdict(self.final_point) if self.final_point is not None else None
+            ),
+            # Why there is no final evaluation, when it was skipped on purpose:
+            # a run stopped on a kill bar selects no arm and is not evaluated.
+            "final_evaluation_skipped": (
+                "kill_bar" if self.training.killed_by is not None else None
             ),
             "learning_curve": [asdict(point) for point in self.learning_curve],
             "mean_recent_unweighted_absolute_td_error": (

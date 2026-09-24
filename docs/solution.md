@@ -1339,7 +1339,14 @@ Use configurable defaults close to established R2D2 practice:
 - overlapping actor sequences;
 - n-step return: 10. About 21.7 decisions pass per wave and the whole reward is
   the wave delta, so a shorter n-step needs several bootstrap hops to carry one
-  wave back to the decisions that earned it;
+  wave back to the decisions that earned it. `stacked-dqn` may instead anneal
+  it (`--n-step-final`, `--n-step-anneal-steps`): n falls exponentially from
+  `--n-step` to the final value over the first gradient steps and then holds,
+  n(t) = round(n0 · (n1/n0)^(min(t,T)/T)), as in BBF (Schwarzer et al. 2023,
+  arXiv:2305.19452) - long early for fast credit propagation, short once the
+  value estimate is worth bootstrapping from. The step counter is the
+  learner's own and travels in the checkpoint, so a resume continues the
+  schedule; unset, n is fixed, as for every run before run 4;
 - discount 0.99. Its horizon of 100 decisions is comparable to the ~121 decision
   episode; 0.997 is a horizon of 333 and is effectively undiscounted here;
 - Double Q-learning;
@@ -1387,6 +1394,16 @@ standard error near 0.2 waves where the 5-episode exploration-free points of the
 first run could not resolve less than about 3 waves. Exploration-free evaluation
 is then a single pre-registered measurement of the final checkpoint, sized at 30
 episodes, and it is the headline number against the scripted floor.
+
+A run can also be pre-registered to stop itself behind a comparator run at
+matched fleet decisions (`--kill-bar AT:START:MIN`, repeatable, off by
+default): when cumulative decisions first reach AT, the near-greedy actors'
+valid episodes that ended in (START, AT] must average at least MIN waves, or
+the run stops at that episode boundary. A window with no such episode measures
+nothing and does not stop the run. Every check is recorded in the summary's
+`early_stopping.kill_bar_checks`. A run stopped this way selects no arm, so it
+skips the final evaluation and records `final_evaluation_skipped: kill_bar`;
+a plateau stop still takes it.
 
 Every point carries the learner diagnostics that separate a broken learner from
 a slow one: the weighted loss and the unweighted mean absolute TD error under

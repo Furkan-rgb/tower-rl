@@ -196,7 +196,7 @@ environment and nothing that observes or drives it.
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
   `TrainingProgressReport`, `episode_health`, `collection_windows`,
-  `CheckpointPeriod` and `NearGreedyPlateau`.
+  `CheckpointPeriod`, `NearGreedyPlateau`, and `KillBar`/`KillBarCheck`.
 - `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
   explores at, at each point of the budget.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
@@ -248,6 +248,15 @@ collected under. The three counters travel in the checkpoint's
 judged on one curve rather than counting again from zero; a resume from a file
 written before they existed starts the tracker fresh and says so, in the log
 and in `early_stopping.tracker_restored_from_parent`.
+
+A run may also stop on a `KillBar` (`--kill-bar`): at the first episode
+boundary where the fleet's cumulative decisions reach the bar, `TrainingRun`
+takes the near-greedy mean over the bar's decision window and stops if it is
+below the bar's minimum. Each check is a `KillBarCheck` on the report
+(`early_stopping.kill_bar_checks`); `stopped_early` covers both kinds of stop
+and `killed_by` names the bar. `scripts/train.py` skips the final evaluation
+after a kill-bar stop. A bar the parent run already passed is not rechecked
+on resume.
 
 **State.** `TrainingRun` owns everything the fleet shares: one
 `PrioritizedSequenceReplay` all actors write into, one `Backbone` inside

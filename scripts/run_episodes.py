@@ -274,7 +274,8 @@ def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--frame-game-ms",
         type=float,
-        default=1000.0 / 60.0,
+        # 100 ms, adopted in M1B-E018 and shown equivalent and 2.6-3.0x faster under M2 in M2-S001.
+        default=100.0,
         help="game time one rendered frame is worth; the floor on decision granularity",
     )
     parser.add_argument(

@@ -115,7 +115,8 @@ class CadenceConfig:
     #: What one rendered frame is worth. This is the floor on decision
     #: granularity and it is fixed, so the same game moments are offered to the
     #: policy however fast the host renders.
-    frame_game_ms: float = 1000.0 / 60.0
+    #: 100 ms, adopted in M1B-E018 and shown equivalent and 2.6-3.0x faster under M2 in M2-S001.
+    frame_game_ms: float = 100.0
     #: Backstop: ask for a decision even when nothing else changed. Also the
     #: budget one advance may spend before returning.
     max_quiet_game_ms: int = 2000

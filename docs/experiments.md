@@ -339,6 +339,117 @@ normally. **Reversible per stage**: the build is selected by whether
 `TOWER_BRIDGE_BUILD_DIR` is set for that stage's `run_stage.sh`/runner
 invocation, with no code change either way.
 
+## M2-P006 — Milestone 2, run 5b: 2× run-4 decisions (`--budget-decisions`), `render-interval-16` training collection, collapse-only kill bars from run 3's curve (pre-registered, written before any run)
+
+**Date:** 2026-09-24. Board `#67`. Supersedes the abandoned run-5b attempt
+under the old game-seconds budget axis (`M2-P005`, `#64`, closed) — `#68`
+(commit `3b12cd5`, on `main`) makes decisions the single training-progress
+unit and gives `train.py` a real `--budget-decisions` option, used here
+instead of approximating a decision target through game-seconds.
+
+**Hypothesis.** Training on twice run 4's decisions, now expressed directly
+on the decisions axis rather than a game-second proxy whose rate is policy-
+and build-dependent (`M2-P005`: run 5's kill-bar stop reached only ~1.21×
+run 4's decisions at its own game-s/decision rate, not the 2× intended),
+gives an arm that beats run 4's arm (18.143, n=105) on the default build.
+
+**Recipe: identical to run 4's command in every hyperparameter**, except:
+
+(a) `--budget-decisions 120712` (2 × run 4's own final decision count,
+60,356). `--budget-game-seconds` is dropped — `#68` makes decisions the
+whole-budget axis.
+
+(b) `render-interval-16` for training collection only.
+`TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16`
+(`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`),
+exported in the launching shell before `scripts/run_stage.sh` so both its
+`instrumented_bridge.sh` calls and `train.py`'s subprocess inherit it.
+Evaluation stays on the default build (`state/bridge/current`, never
+repointed, `TOWER_BRIDGE_BUILD_DIR` unset), per the Lead's `#27` stage 3
+adopt decision (commit `6683750`).
+
+(c) Collapse-only kill bars, unchanged from run 4: `--kill-bar
+12000:8000:8.6 --kill-bar 26262:8000:10.2`. Verified against `main`'s code
+(`scripts/train.py::kill_bar`, `src/tower_rl/learning/training.py::KillBar`)
+that `#68` did not change the kill-bar unit — still fleet-cumulative
+decisions — so no arithmetic correction is needed. These are run 4's own
+bars, derived from run 3's (weaker) curve, not from run 4's own the way
+`M2-P005`'s tighter bars were; `M2-P005`'s diagnostic showed a run can fall
+~0.8 waves (≈5.4× SE) behind run 4's own curve without that being collapse,
+so these bars catch a run gone categorically wrong, not ordinary run-to-run
+variance against the strongest curve measured so far.
+
+(d) `--checkpoint-every-decisions 5000`, `--selection-period-decisions
+15000` (`train.py`'s own default, stated explicitly). Numbered checkpoints
+(`checkpoint-d<decisions>.pt`) every 5,000 decisions plus every
+selection-period close, for `#65`'s learning curve — ≈32 checkpoints at
+≈3.2 MB each, no disk concern.
+
+**Beta** (`TrainingConfig.beta`) anneals over the budget *fraction*,
+unaffected by `#68`. At double the budget it reaches `beta_end` later in
+absolute decisions than in run 4, but `priority_alpha = 0.0` in every run
+measured so far collapses the importance-sampling weight to 1 regardless of
+beta, so this is stated for the record and not expected to matter.
+
+**Arm selection**, `docs/solution.md` §9.2b: the checkpoint at the close of
+the best selection period, counting only periods 2+ with a near-greedy mean,
+ties to the earlier period. **A kill-bar stop does not change which
+checkpoint is the arm, but a killed run's arm is NOT evaluated** — a bar
+firing means the run collapsed, so evaluating its best-so-far checkpoint
+against run 4's fully-trained arm would not be informative. A fired bar is
+recorded (which one, the window mean) and the entry stops there — no stage 3.
+
+**Cap policy (Lead decision).** If the 5h wall cap is reached before the
+budget is spent, the stage stops cleanly and every checkpoint written so far
+is kept. This is **neither a kill nor a verdict** — the run is resumed from
+`latest.pt` in a follow-up stage to finish the budget (format-4 resume,
+supported since `#68`), and only the completed budget gets a verdict. No
+partial-run evaluation.
+
+**Evaluation, if not killed and the budget completes.** The arm, greedy, on
+the default build, `--upgrade-availability all --frame-game-ms 100`, n=105
+(15 episodes × 7 actors), run 4's eval procedure:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<run-5b arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m2-run5b/eval-arm
+
+Bootstrap 95% CI of the difference against run 4's arm (18.143, n=105)
+(`bootstrap_difference`, seed 0, 10,000 resamples). **BETTER** iff the CI's
+lower bound is > 0. **WORSE** iff the upper bound is < 0. Otherwise **NOT
+DISTINGUISHABLE**. Secondary, same method: vs scripted-`all` (6.105, n=105)
+and random-`all` (3.556, n=90).
+
+**Power.** At run 4's own arm SD (3.740, n=105 per arm), the difference's
+SE ≈ 0.516, so the 95% CI half-width is ≈1.0. The minimum difference
+detectable with 80% power is ≈2.8 × 0.516 ≈ **1.45 waves**; a true 1-wave
+difference is resolved only about half the time. A `NOT DISTINGUISHABLE`
+verdict means "not resolved at this n", not "no effect".
+
+**Timebox.** Training ≤5h wall hard cap. Run 5's own decisions/hour on
+`render-interval-16` was 29,273.9 vs run 4's 27,677.0 on the default build —
+only 1.06×, despite the build's own 1.74–1.92× game-time speedup (`#27`
+stage 3). This is consistent with a synchronous gradient step (~120 ms) per
+decision pacing the fleet, not render/collection time — the build changes
+game-time throughput, not decision throughput. At 29,273.9 decisions/hour,
+120,712 decisions projects to **≈4.12h**, inside the cap but not by a wide
+margin; see the cap policy above if it is not.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases fine).
+Every device stage under `scripts/run_stage.sh` with full cleanup and host
+verification (no qemu via `/proc/*/exe`, empty `adb devices`) after. Stop
+after three consecutive unexplained failures. `state/bridge/current` is
+never repointed. One eval retry is allowed after full cleanup if instances
+drop mid-eval (the gfxstream renderer crash seen in run 4's first eval
+attempt); after that, stop and report with crash lines and logcat.
+
+### Results, as run
+
+(to be filled in after the run)
+
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,

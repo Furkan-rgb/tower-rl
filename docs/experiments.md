@@ -893,6 +893,55 @@ or a general fidelity break, but is not fully resolved and would need a
 second seed (H3) or a near-greedy (not greedy) collection-time fidelity
 check to separate cleanly.
 
+### Addendum — the free same-policy discriminator for finding (c) (desk-only, no device)
+
+The diagnostic device stage already collected the one comparison finding (c)
+needed and never had: **the same checkpoint** (run 4's arm), played greedily,
+**on both builds** — this stage's own 35 episodes on `render-interval-16`
+("B") against run 4's own `eval-arm-2` (default build, "A", n=105), both
+`--upgrade-availability all --frame-game-ms 100`.
+
+| | A (default), n=105 | B (`render-interval-16`), n=35 |
+| --- | --- | --- |
+| game-s/decision, per-episode mean (sd) | 2.565 (0.460) | 2.665 (0.689) |
+| game-s/decision, pooled (Σgame_ms/Σdecisions) | 2.428 | 2.461 |
+| decisions/wave, mean | 13.587 | 13.238 |
+| `advances_cut_short`/episode, mean | 0.257 (27/105) | 0.143 (5/35) |
+
+Bootstrap (seed 0, 10,000 resamples) on the per-episode game-s/decision
+values: difference B−A **+0.100 [−0.121, +0.357]**; ratio B/A **1.039
+[0.954, 1.140]** — both **include the null** (0 and 1.0 respectively). For
+the *same* policy, game-s/decision is statistically indistinguishable
+between the two builds, and `decisions/wave` and `advances_cut_short` both
+sit at or below A's reading on B, not above.
+
+**This answers the question directly: B/A ≈ 1.0, not 1.58×.** Desk finding
+(c)'s 1.58× game-time-per-decision inflation was **policy state, not the
+build** — it reflects what a mid-training, exploring near-greedy policy was
+doing differently in run 5 (whatever combination of more WAIT, different
+purchase timing, or different survival at that point in training), not a
+`render-interval-16` decision-cadence effect. Combined with the FAITHFUL
+verdict above, this closes out H1 for practical purposes: neither greedy
+outcomes nor per-decision game-time pacing differ by build for a fixed,
+fully-formed policy.
+
+**Decision-budget arithmetic, for scale.** Run 4 reached **60,356 decisions**
+and **58,046 gradient steps** over its full 240,000-game-second budget
+(4.002 game-s/decision, averaged over the whole run). Run 5 reached **24,355
+decisions** at **160,108.1 game-seconds** when K2 stopped it (6.574
+game-s/decision, averaged over its own shorter run to that point — not the
+same figure as the same-policy A/B reading above, because this is a
+different, earlier-training, exploring policy over a different span). Had
+run 5's kill bar not fired and it had run to its full 480,000-game-second
+budget **at that same observed rate**, it would have reached only
+**≈73,016 decisions** (480,000 / 6.574) — **1.21×** run 4's decision count,
+not the 2× the budget doubling was meant to buy. The `--budget-game-seconds`
+doubling does not translate one-for-one into a decisions doubling whenever
+game-s/decision is not the same as the run it is being compared to, and here
+it was not (6.574 vs run 4's whole-run 4.002) — a further reason `M2-P005`'s
+framing of "the decision budget is 2× run 4's" was optimistic, independent
+of anything the kill bar or the build did.
+
 ## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
 
 **Finding that motivates this (scout, verified against manifests and docs).**

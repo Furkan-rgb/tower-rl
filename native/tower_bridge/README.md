@@ -317,6 +317,38 @@ compatibility error instead of a handshake.
 `docs/setup.md` has the full build-install-verify recipe, including the digest
 the installed directory is named for.
 
+### Render-off experiment build
+
+`-DTOWER_BRIDGE_RENDER_FRAME_INTERVAL=N` (an integer in 1..60, default 1) builds
+a variant in which the game renders and presents one player-loop frame in N
+(#27). The loop itself — scripts, physics, `Time.frameCount`, the
+`captureDeltaTime` step — still runs every frame; what is skipped is rendering.
+At the default nothing is defined and the production artifact is byte for byte
+the same, which `docs/setup.md` records as a digest pair.
+
+Above 1 the bridge resolves the static `m_RenderFrameInterval` (`System.Int32`)
+of `UnityEngine.Rendering.OnDemandRendering` at initialization, and on every
+connection writes N into it before the handshake with
+`il2cpp_field_static_set_value` — the engine polls that field each frame, and
+its public setter is managed code this thread must not run. The value is read
+back; a class, field or type that does not resolve fails initialization, and a
+read-back that is not N answers `compatibility_error` ("render frame interval
+not applied") instead of a handshake, so the build never runs rendered under
+the render-off label. It logs `render interval=… readback=…
+effective_render_fps=… target=…` once per connection (the effective rate is
+`OnDemandRendering::GetEffectiveRenderFrameRate`, reported and never gated on),
+and one `renderprobe frames=… rendered=… wall_us=…` line per advance, from
+`Time::get_renderedFrameCount` across the advance — the direct evidence that
+about one frame in N rendered. The interval is an in-memory static of the game
+process: nothing is saved, and a force-stop drops it.
+
+The variant is selected per run by `TOWER_BRIDGE_BUILD_DIR` pointing at a build
+directory that also holds the unchanged `libunity-bridge.so` from
+`state/bridge/current` and the variant's own `CMakeCache.txt`; the N=16 build is
+at `state/bridge/builds/render-interval-16/`. It is never installed as
+`state/bridge/current`. **Spectate and recording must never use it**: the screen
+shows one frame in N.
+
 `scripts/instrumented_bridge.sh` deploys to, verifies, and cleans the private
 rooted clone. It expects the build directory to hold both `libtower_bridge.so`
 and the patched `libunity-bridge.so` whose only change is an added `DT_NEEDED`

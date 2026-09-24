@@ -65,6 +65,11 @@ as a limitation that run-to-run spread is unmeasured, citing `M2-P006` and
 and 8.32 with the same recipe and seed. A 3-runs-per-learner design was
 offered and declined.
 
+**Developer decision, 2026-09-24, BBF implementation check:** for the BBF arm
+the known-answer implementation check is dropped by developer decision
+(2026-09-24); component tests against the official code and the configuration
+check stand in its place. The configuration check is `docs/solution.md` 9.4c.
+
 ## 2. Authoritative project objective
 
 For a fixed permanent account state, train an agent to maximize its expected final wave in Tier 1 by choosing in-run upgrades and deciding when to wait.

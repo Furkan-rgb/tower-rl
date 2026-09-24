@@ -165,6 +165,7 @@ def checkpoint_policy(
             "only stacked-dqn can be rebuilt as a policy"
         )
     defaults = NetworkConfig()
+    learner_defaults = StackedDqnConfig()
     backbone = StackedDqnBackbone(
         config=StackedDqnConfig(
             history_length=int(settings["history_length"]),
@@ -180,6 +181,16 @@ def checkpoint_policy(
             discount=float(settings["discount"]),
             learning_rate=float(settings["learning_rate"]),
             target_ema_decay=float(settings["target_ema_decay"]),
+            # Absent from a checkpoint written before the BBF recipe, whose
+            # optimizer was built from these defaults. They decide how the
+            # optimizer is split into groups, which its state must match.
+            weight_decay=float(settings.get("weight_decay", learner_defaults.weight_decay)),
+            weight_decay_on_vectors=bool(
+                settings.get(
+                    "weight_decay_on_vectors", learner_defaults.weight_decay_on_vectors
+                )
+            ),
+            adam_eps=float(settings.get("adam_eps", learner_defaults.adam_eps)),
         ),
         network_config=NetworkConfig(
             identity_capacity=int(

@@ -52,6 +52,16 @@ actors' valid episodes that ended in (START, AT] must average at least MIN
 waves, or the run stops there and the summary records which bar stopped it. A
 window with no such episode measures nothing and does not stop the run.
 
+`--recipe bbf` trains the same backbone under BBF's recipe (Schwarzer et al.
+2023): four times the width, shrink-and-perturb resets every 40,000 gradient
+steps, n-step and discount anneals restarted by each reset, AdamW with BBF's
+weight decay mask and epsilon, and exploration annealed to zero. The recipe is
+a set of defaults (`RECIPES`), so the manifest records every value it resolved
+to; `docs/solution.md` "BBF recipe" compares each with the official code.
+
+    uv run --extra tracking python scripts/train.py \\
+        --recipe bbf --actors 7 --budget-decisions 120000
+
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
 budget. The weights, the optimizer moments, the decision and game-time counters
 and every schedule and cadence derived from them come back from the file; the
@@ -74,7 +84,7 @@ import json
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -121,6 +131,7 @@ from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.learning.exploration import (  # noqa: E402
     EXPLORATION_OPTIONS,
     LADDER,
+    UNIFORM,
     ExplorationSchedule,
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
@@ -169,6 +180,58 @@ BACKBONE = "stacked-dqn"
 #: ignore can be told from one that was never given at all.
 DEFAULT_EPSILON_END = 0.05
 
+#: The learner settings no flag reaches, as every run before BBF trained with
+#: them: they vary only by recipe. `network_width` multiplies the network's
+#: hidden widths.
+UNFLAGGED_DEFAULTS: dict[str, object] = {
+    "discount_initial": StackedDqnConfig().discount_initial,
+    "weight_decay": StackedDqnConfig().weight_decay,
+    "weight_decay_on_vectors": StackedDqnConfig().weight_decay_on_vectors,
+    "adam_eps": StackedDqnConfig().adam_eps,
+    "reset_every_steps": StackedDqnConfig().reset_every_steps,
+    "network_width": 1,
+}
+
+BBF = "bbf"
+
+#: What `--recipe` names: each a complete set of settings that become the run's
+#: defaults, flagged or not. A flag given beside a recipe still overrides it,
+#: except where `parse_arguments` refuses. Without `--recipe` the defaults are
+#: the ones above and the parser's own.
+RECIPES: dict[str, dict[str, object]] = {
+    # BBF, Schwarzer et al. 2023 (arXiv:2305.19452), from `BBF.gin` and
+    # `spr_agent.py`; the value-by-value comparison and every deviation are in
+    # `docs/solution.md` "BBF recipe".
+    BBF: {
+        "network_width": 4,
+        # Two updates per decision: a gradient step at four times the width
+        # measured 17.4 ms on the idle 4090 at production shapes, inside the
+        # 25 ms the choice of two was conditioned on. BBF itself takes 8.
+        "gradient_steps_per_decision": 2.0,
+        "n_step": 10,
+        "n_step_final": 3,
+        "n_step_anneal_steps": 10_000,
+        "discount_initial": 0.97,
+        "discount": 0.997,
+        "learning_rate": 1e-4,
+        "weight_decay": 0.1,
+        "weight_decay_on_vectors": False,
+        "adam_eps": 1.5e-4,
+        # tau 0.005.
+        "target_ema_decay": 0.995,
+        "reset_every_steps": 40_000,
+        # BBF anneals epsilon to zero. Uniform keeps every actor near-greedy,
+        # so the arm rule reads the whole fleet.
+        "exploration": UNIFORM,
+        "epsilon_start": 1.0,
+        "epsilon_end": 0.0,
+        "epsilon_anneal_decisions": 8_000,
+        # A reset dips the curve by design; the plateau rule would read that
+        # as a stall. The fixed budget and the kill bars bound the run instead.
+        "early_stop_patience_periods": 0,
+    },
+}
+
 
 @dataclass(frozen=True)
 class ActorInstance:
@@ -215,10 +278,27 @@ def build_backbone(
         n_step_final=arguments.n_step_final,
         n_step_anneal_steps=arguments.n_step_anneal_steps,
         discount=arguments.discount,
+        discount_initial=arguments.discount_initial,
         learning_rate=arguments.learning_rate,
+        weight_decay=arguments.weight_decay,
+        weight_decay_on_vectors=arguments.weight_decay_on_vectors,
+        adam_eps=arguments.adam_eps,
         target_ema_decay=arguments.target_ema_decay,
+        reset_every_steps=arguments.reset_every_steps,
+        # The budget in gradient steps, BBF's `no_resets_after`: the decision
+        # budget at the replay ratio. The warm-up takes no steps, so the run
+        # ends a warm-up's worth short of it and its last cycle is that much
+        # shorter than an interval.
+        no_resets_after_steps=int(
+            arguments.budget_decisions * arguments.gradient_steps_per_decision
+        ),
     )
     network = NetworkConfig()
+    network = replace(
+        network,
+        hidden=network.hidden * arguments.network_width,
+        core_hidden=network.core_hidden * arguments.network_width,
+    )
     return (
         StackedDqnBackbone(
             config=stacked,
@@ -766,8 +846,36 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_false",
         help="run without recording to MLflow; the run leaves no tracked history",
     )
+    parser.add_argument(
+        "--recipe",
+        choices=tuple(RECIPES),
+        default=None,
+        help=(
+            "train under a named recipe: its settings become the defaults, and "
+            "the manifest records every value it resolved to. bbf is BBF "
+            "(docs/solution.md, BBF recipe); unset is stacked-dqn as run 4 "
+            "trained it"
+        ),
+    )
+    parser.set_defaults(**UNFLAGGED_DEFAULTS)
+    recipe = parser.parse_known_args(argv)[0].recipe
+    if recipe is not None:
+        parser.set_defaults(**RECIPES[recipe])
     arguments = parser.parse_args(argv)
 
+    if arguments.recipe == BBF:
+        if arguments.exploration == LADDER:
+            raise SystemExit(
+                "the bbf recipe anneals every actor to epsilon 0; a ladder would "
+                "hold most of the fleet off the greedy policy"
+            )
+        if arguments.early_stop_patience_periods:
+            # A reset dips the curve on purpose, and the plateau rule cannot
+            # tell that dip from a run that stopped learning.
+            raise SystemExit(
+                "the bbf recipe resets its network, which the plateau rule would "
+                "read as a stall; leave --early-stop-patience-periods at 0"
+            )
     if arguments.epsilon_end is None:
         arguments.epsilon_end = DEFAULT_EPSILON_END
     elif arguments.exploration == LADDER:

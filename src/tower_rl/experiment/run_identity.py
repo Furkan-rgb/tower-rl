@@ -155,6 +155,10 @@ def resolved_config(
     """
     return {
         "backbone": name,
+        # The named recipe the settings below were resolved from, or None for
+        # stacked-dqn as run 4 trained it. Every value it set is recorded below
+        # in its own right.
+        "recipe": arguments.recipe,
         "budget_decisions": config.budget_decisions,
         # The checkpoint this run continues, as `learning.checkpoint.ResumeState`
         # cites it: the file and the identity hash of the run that wrote it.
@@ -189,7 +193,17 @@ def resolved_config(
         "n_step_final": learner.n_step_final,
         "n_step_anneal_steps": learner.n_step_anneal_steps,
         "discount": learner.discount,
+        # Where a discount anneal starts; None holds `discount` fixed.
+        "discount_initial": learner.discount_initial,
         "learning_rate": learner.learning_rate,
+        # The optimizer as built: a checkpoint's optimizer state only loads
+        # into one split into the same parameter groups.
+        "weight_decay": learner.weight_decay,
+        "weight_decay_on_vectors": learner.weight_decay_on_vectors,
+        "adam_eps": learner.adam_eps,
+        # Shrink-and-perturb resets; 0 is none.
+        "reset_every_steps": learner.reset_every_steps,
+        "no_resets_after_steps": learner.no_resets_after_steps,
         "target_ema_decay": (
             arguments.target_ema_decay if name == "stacked-dqn" else None
         ),

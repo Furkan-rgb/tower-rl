@@ -1276,3 +1276,89 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
     for answered in (once, split):
         assert answered == sorted(set(answered)) and answered
     assert min(crossings(second)) > max(crossings(first))
+
+
+# --- The BBF recipe: one name, resolved to explicit values on the record -----
+
+
+def test_the_bbf_recipe_resolves_to_bbfs_values(tmp_path: Path) -> None:
+    parsed = train.parse_arguments(
+        ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--recipe", "bbf"]
+    )
+
+    assert parsed.recipe == "bbf"
+    assert parsed.network_width == 4
+    assert parsed.gradient_steps_per_decision == 2.0
+    assert (parsed.n_step, parsed.n_step_final, parsed.n_step_anneal_steps) == (10, 3, 10_000)
+    assert (parsed.discount_initial, parsed.discount) == (0.97, 0.997)
+    assert (parsed.learning_rate, parsed.weight_decay, parsed.adam_eps) == (1e-4, 0.1, 1.5e-4)
+    assert parsed.weight_decay_on_vectors is False
+    assert parsed.target_ema_decay == 0.995
+    assert parsed.reset_every_steps == 40_000
+    assert (parsed.exploration, parsed.epsilon_end) == ("uniform", 0.0)
+    assert parsed.early_stop_patience_periods == 0
+
+
+def test_without_a_recipe_the_learner_is_the_one_run_4_trained(tmp_path: Path) -> None:
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+
+    assert defaults.recipe is None
+    assert defaults.network_width == 1
+    assert defaults.discount_initial is None
+    assert (defaults.weight_decay, defaults.weight_decay_on_vectors) == (1e-5, True)
+    assert defaults.adam_eps == 1e-8
+    assert defaults.reset_every_steps == 0
+
+
+def test_the_bbf_recipe_refuses_a_ladder_and_the_plateau_rule(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="epsilon 0"):
+        arguments(tmp_path, **{"--recipe": "bbf", "--exploration": "ladder"})
+    with pytest.raises(SystemExit, match="plateau"):
+        arguments(tmp_path, **{"--recipe": "bbf", "--early-stop-patience-periods": "2"})
+
+
+def test_a_bbf_session_resets_records_its_recipe_and_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the entry point with the fake port, with resets short enough to happen."""
+    monkeypatch.setitem(train.RECIPES["bbf"], "reset_every_steps", 5)
+    monkeypatch.setitem(train.RECIPES["bbf"], "n_step_anneal_steps", 4)
+
+    report = session(tmp_path / "first", budget=TRAINING_BUDGET, settings={"--recipe": "bbf"})
+
+    resolved = report["arm"]["resolved_config"]
+    assert resolved["recipe"] == "bbf"
+    assert (resolved["network_hidden"], resolved["network_core_hidden"]) == (
+        SMALL_NETWORK.hidden * 4,
+        SMALL_NETWORK.core_hidden * 4,
+    )
+    assert (resolved["discount_initial"], resolved["discount"]) == (0.97, 0.997)
+    assert (resolved["weight_decay"], resolved["weight_decay_on_vectors"]) == (0.1, False)
+    assert resolved["adam_eps"] == 1.5e-4
+    assert resolved["reset_every_steps"] == 5
+    # The decision budget at the replay ratio the test harness runs at.
+    assert resolved["no_resets_after_steps"] == int(int(TRAINING_BUDGET) * 0.2)
+    assert (resolved["exploration"], resolved["epsilon_end"]) == ("uniform", 0.0)
+
+    checkpoint = latest_checkpoint(report)
+    written = load(checkpoint)
+    state = written.backbone_state
+    assert state["steps"] > 5 and state["resets"] >= 1
+    assert state["cycle_steps"] == state["steps"] - 5 * state["resets"]
+    # An evaluation rebuilds the policy from the record alone, optimizer included.
+    policy, _ = checkpoint_policy(
+        checkpoint,
+        decision_cadence=str(written.identity.decision_cadence),
+        upgrade_availability=str(written.identity.upgrade_availability),
+    )
+    assert policy.network_config.hidden == SMALL_NETWORK.hidden * 4
+
+    arm, _ = resumed_arm(tmp_path / "second", checkpoint, budget=600, **{"--recipe": "bbf"})
+
+    resumed = arm.training.backbone.state_dict()
+    assert (resumed["steps"], resumed["cycle_steps"], resumed["resets"]) == (
+        state["steps"],
+        state["cycle_steps"],
+        state["resets"],
+    )
+    assert resumed["reset_seed"] == state["reset_seed"]

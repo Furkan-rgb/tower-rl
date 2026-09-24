@@ -606,7 +606,117 @@ after that, stop and report with crash lines and logcat.
 
 ### Results, as run
 
-(to be filled in after the run)
+**Stage 2 — training.** `stage m2-run5-train-seed0: exit 0, cleanup ok,
+instances 0/7 cleaned, 1 exited during teardown, wall 00:58:31` — well inside
+the 7h box; the box was never a binding constraint. Internal (collection-only)
+wall time `wall_seconds` 2995.1s (00:49:55). `TOWER_BRIDGE_BUILD_DIR` build
+digest reconfirmed `7b5e97...aa228` before launch.
+
+**K2 fired; the run stopped itself after 2 periods, at 160,108 of the 480,000
+game-second budget (33.4%).** Neither bar's window means are close calls in
+opposite directions: K1 passed with margin (mean 10.102 vs bar 9.2, window
+(8000,12000], n=49), K2 failed (mean 10.344 vs bar 10.6, window (8000,24328],
+n=195, checked at fleet decision 24,355). `early_stopping.kill_bar_checks`
+(verbatim):
+
+| bar | at (decisions) | window start | min mean | checked at (decisions) | n | mean | stopped |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| K1 | 12000 | 8000 | 9.2 | 12,036 | 49 | 10.102 | no |
+| K2 | 24328 | 8000 | 10.6 | 24,355 | 195 | 10.344 | **yes** |
+
+Totals at the stop: 24,355 decisions, 22,103 optimisation (gradient) steps,
+626 accepted replay sequences, 634 episodes (626 valid, 8 invalid:
+6 `observation_invalid`, 2 `action_pipeline_failed`), 0 `pin_restarts`, 0
+`actors_withdrawn`, 2 `failed_episodes` (`lifecycle_timeout` on `speed_max`
+and one `did not reach an active run` — ordinary single-actor bring-up flake,
+not the `#59`/gfxstream signature). `advances_cut_short` 155/626 valid
+episodes (24.8%), markedly higher than run 4's ≈0.3–0.5 per episode at the
+period level — read as a `render-interval-16` timing-measurement artefact
+consistent with `#27` stage 3's own elevated (but still in-margin)
+`advances_cut_short` reading for that build, not a new failure mode.
+
+**Near-greedy curve vs run 4's**, by closed period (period boundaries fall at
+different decision counts between the two runs because periods are cut by
+game-seconds, not decisions, and `render-interval-16` changes the
+decisions/game-second density):
+
+| period | run 5 decisions-at-end | run 5 mean | run 5 n | run 4 decisions-at-end | run 4 mean | run 4 n |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 (60,000 gs) | 10,189 | 5.793 | 184 | 10,205 | 6.056 | 180 |
+| 2 (120,000 gs) | 18,646 | 10.465 | 101 | 24,328 | 11.567 | 90 |
+
+Run 5's period 1 lands at almost the same decision count as run 4's (10,189
+vs 10,205) and a comparable mean (5.79 vs 6.06). Run 5's period 2 closes
+**6,000 decisions earlier** than run 4's did (`render-interval-16` collects
+more decisions per wall-hour but very nearly the same decisions per
+game-second here — decisions/hour rose only 1.06× against game-s/hour's
+1.74×, so periods, which are cut by game-seconds, close at a similar decision
+count either way) and its near-greedy mean (10.465) sits below run 4's later
+period-2 reading (11.567). The kill-bar windows are the fairer,
+decision-matched comparison and are what actually judged this: run 5's
+window mean at the same absolute decision range run 4 set the K2 bar from
+(10.344) fell under run 4's own margin (10.6), which is why K2 fired.
+
+**Arm selection.** Only period 2 closed at or after period 2 (`M2-P002`
+amendment 3 excludes period 1), so it is the only eligible period and the
+arm by construction: `checkpoint-gs0120026.pt`, sha256
+`2c55b4a0501c276a10d9dab2d404f37d98203ea983b375dfe1b871984fb7dbc4`
+(verified against its `.sha256` sidecar), at
+`state/runs/session-20260924-084043/stacked-dqn-20260924-084043-f6567d/checkpoints/`.
+Checkpoint identity `5cffec80fccb` (from the evaluation manifest below).
+
+**Throughput vs run 4** (both fleet-summed over their own run):
+
+| | run 5 (`render-interval-16`) | run 4 (default build) | ratio |
+| --- | --- | --- | --- |
+| game-s/hour | 192,444.6 | 110,758.8 | **1.74×** |
+| decisions/hour | 29,273.9 | 27,677.0 | **1.06×** |
+
+The game-time ratio is in the neighbourhood of `#27` stage 3's measured
+1.92× per-actor collection-rate ratio (not identical — this run is much
+shorter and includes proportionally more bring-up/warm-up than a steady-state
+reading, and is a different, later point on the training curve). The
+decisions/hour ratio is far smaller: `render-interval-16` buys more simulated
+game-time per wall-hour, not proportionally more choice-point decisions per
+wall-hour, at this cadence and roster.
+
+**Stage 3 — arm evaluation, default build.** `stage m2-run5-eval-arm: exit 0,
+cleanup ok, instances 0/7 cleaned, 1 exited during teardown, wall 00:15:13`.
+7/7 actors, 105/105 valid, 0 invalid — no instance drop, so the one allowed
+retry was not needed. `TOWER_BRIDGE_BUILD_DIR` unset for this stage
+(confirmed absent from the launching shell's environment before launch).
+
+| arm | n | mean final wave | sd | SE |
+| --- | --- | --- | --- | --- |
+| run-5 arm (period-2 checkpoint), `all`, 100 ms | 105 | 7.657 | 1.770 | 0.173 |
+
+Bootstrap 95% CI of the difference (`bootstrap_difference`, seed 0, 10,000
+resamples), against each reference's own raw episodes (run 4's arm and both
+baselines' raw episode files reproduce the doc's recorded means exactly:
+18.143/105, 6.105/105, 3.556/90):
+
+- vs run-4 arm (18.143, n=105): **−10.486 [−11.267, −9.686]** — lower bound
+  well below 0. **NOT BETTER.**
+- vs scripted-`all` (6.105, n=105): **+1.552 [+1.200, +1.886]** — beats
+  scripted.
+- vs random-`all` (3.556, n=90): **+4.102 [+3.640, +4.552]** — beats random.
+
+**Verdict: NOT BETTER.** The primary comparison's CI lies entirely below
+zero: the run-5 arm is worse than run 4's arm, not merely statistically
+indistinguishable from it. This is not read as evidence against the 2×-budget
+or `render-interval-16` changes themselves — K2 stopped the run at 33% of its
+budget, before either change had a chance to compound, on a kill bar that did
+exactly the job it was set up to do (stop early on a trajectory tracking
+below the reference run's own early curve at matched decisions) rather than
+on any fault in this run. The evaluated arm is a period-2 checkpoint,
+directly comparable in training extent to a `run 3`-scale amount of
+collection, not to run 4's period-4 arm; the CI answers the question the
+task packet asked (did the run-5 arm beat run 4's?) and the answer is no, but
+it is not a like-for-like test of "does more budget / does
+`render-interval-16` help", which a kill-bar stop this early cannot speak to
+either way.
+
+## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
 
 **Finding that motivates this (scout, verified against manifests and docs).**
 Every M2 run (`M2-E001` onward, including run 3) trained and evaluated at

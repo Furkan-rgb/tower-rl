@@ -846,7 +846,52 @@ pooling of partial attempts).
 
 ### Results, as run
 
-(to be filled in after the device stage)
+`stage m2-run5-diag-eval: exit 0, cleanup ok, instances 0/7 cleaned, 1 exited
+during teardown, wall 00:10:26`. `TOWER_BRIDGE_BUILD_DIR` build digest
+reconfirmed `7b5e97...aa228`, checkpoint sha256 reconfirmed
+`bc94b628...50fdde` before launch. 7/7 actors, 35/35 valid, 0 invalid — no
+instance drop, retry not needed.
+
+| arm | n | mean final wave | sd |
+| --- | --- | --- | --- |
+| run-4 arm on `render-interval-16` | 35 | 17.857 | 4.008 |
+
+Bootstrap 95% CI of the difference against run 4's own default-build reading
+(18.143, n=105): **−0.286 [−1.800, +1.190]** — the whole interval is inside
+±2.0. **Verdict: FAITHFUL.** The same checkpoint, played greedily, reaches
+statistically indistinguishable performance on `render-interval-16` as on the
+default build it was trained and evaluated on.
+
+**Reading against H1–H3.** This directly weakens H1 as an explanation for the
+in-training shortfall: at evaluation time (greedy, no exploration, a fully
+trained network), `render-interval-16` does not measurably change outcomes
+for a policy that reads the full observation, extending `#27` stage 3's
+scripted-policy fidelity finding to a trained one. It does **not** rule out a
+narrower version of H1 — this stage tests greedy inference on a *finished*
+network, not near-greedy *collection* with exploration noise on a
+*mid-training* network, which is what actually happened during run 5's
+collection and is where desk finding (c)'s 1.58× game-time-per-decision
+inflation was measured. That inflation is also confounded with policy
+strength itself (a policy that survives to a higher wave necessarily
+accumulates more advances, hence more game-time, before its episode ends,
+independent of any build effect), which this diagnostic's design does not
+separate out. H2's mechanism is confirmed present (beta genuinely is
+fraction-of-budget) but is not expected to matter given `priority_alpha=0` in
+both runs. H3 (seed variance) remains neither confirmed nor excluded — this
+diagnostic did not add a second seed of either run, so it cannot speak to it
+directly; the FAITHFUL build result at least removes "the build silently
+breaks trained-policy inference" as a competing explanation that would have
+had to be ruled out before seed variance could be considered the leading
+account.
+
+**Net effect on `M2-P005`'s verdict.** Unchanged: NOT BETTER stands. This
+diagnostic narrows *why* — the build itself is faithful for a trained,
+greedy policy; the gap is most consistent with the near-greedy collection
+dynamics during the shortened run (matched-decision-range game-time-per-
+decision inflation, desk finding (c)) rather than with an annealing schedule
+or a general fidelity break, but is not fully resolved and would need a
+second seed (H3) or a near-greedy (not greedy) collection-time fidelity
+check to separate cleanly.
 
 ## M2-S001 — `frame_game_ms` 100 under the M2 setup: equivalence + fleet throughput (pre-registered, written before any run)
 

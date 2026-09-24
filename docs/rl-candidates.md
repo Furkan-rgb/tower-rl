@@ -173,7 +173,7 @@ cadence work, not simply removed; section 9 revises the ranking accordingly.
 
 ### 2.5 Why published margins should not be expected to transfer
 
-Most of the modern sample-efficiency literature — SPR, SR-SPR, BBF, EfficientZero
+Most of the modern sample-efficiency literature — SPR, SR-SPR, EfficientZero
 and its successors, the transformer world-model line — is measured on Atari
 100k, from pixels. A large part of what those methods buy is efficient
 representation learning from images: self-predictive latent losses, image
@@ -241,9 +241,10 @@ observation is low-dimensional, so no encoder pretraining is needed. The action
 space is discrete and masked, which value-based methods handle exactly and
 cheaply. Replay makes every expensive real decision reusable many times over,
 which is what matters when environment time rather than GPU time is the binding
-constraint. BBF reaches an interquartile mean of 1.045 on Atari 100k with a
-replay ratio of 8, showing that a purely model-free value-based agent can be
-competitive at a budget of this magnitude when the optimisation is right.
+constraint. The data-efficient Atari-100k literature shows that a purely
+model-free value-based agent, with the right replay ratio, target-network
+handling and n-step schedule, can be competitive at a budget of this
+magnitude.
 
 **Expected sample efficiency (judgement).** It should beat the always-wait floor
 of wave 2 within the first few hundred episodes, because the reward signal for
@@ -442,8 +443,8 @@ gradient signal per real decision than one-step TD.
 
 The first problem is nominal sample efficiency: as reported by the EfficientZero
 V2 authors, DreamerV3 reaches an Atari 100k mean of 1.120 and median of 0.490,
-against BBF at 2.247 and 0.917 and EZ-V2 at 2.428 and 1.286. At a
-budget of this magnitude Dreamer is not the efficiency leader.
+against EZ-V2 at 2.428 and 1.286. At a budget of this magnitude Dreamer is not
+the efficiency leader.
 
 The second problem is specific to this environment and is discussed under
 masking below: the actor is trained in imagination, where no oracle mask exists.
@@ -535,10 +536,10 @@ this candidate is sequenced last rather than dismissed.
 is implemented correctly and if the cadence problem is addressed; plausibly the
 worst in practice, because the probability of a subtly incorrect implementation
 is the highest of any candidate and the budget does not permit the debugging
-loop that a correct one requires. The published margin over BBF on Atari 100k
-is real but modest relative to the complexity difference, and section 2.5
-applies: part of that margin is pixel representation learning that does not
-exist here.
+loop that a correct one requires. The published margin over the strongest
+model-free data-efficient baselines on Atari 100k is real but modest relative
+to the complexity difference, and section 2.5 applies: part of that margin is
+pixel representation learning that does not exist here.
 
 **Implementation cost and risk.** Highest. MCTS in a learned latent space,
 Reanalyse infrastructure, value and reward transforms, prioritisation, and the
@@ -675,7 +676,7 @@ as an ablation switch, not as part of the baseline, and measure it.
 
 **SPR and self-predictive auxiliary losses.** SPR raised the Atari 100k median
 from a previous state of the art to 0.415 using latent future prediction plus
-image augmentation, and its descendants SR-SPR and BBF build on it. Judgement:
+image augmentation, and its descendant SR-SPR builds on it. Judgement:
 the augmentation half does not exist here and the representation half is much
 less valuable when the observation is already an exact structured state. A latent
 transition-prediction auxiliary loss over the upgrade-row encoding might still
@@ -684,8 +685,9 @@ priority ablation.
 
 **Periodic resets and high replay ratio.** Resets with a preserved replay buffer
 are the standard fix for primacy bias at high replay ratios, and shrink-and-
-perturb at 50 percent is what lets BBF run a replay ratio of 8 with a large
-network. But this is not unconditional: SimbaV2 reports that hyperspherical
+perturb at 50 percent is the mechanism the data-efficient Atari-100k literature
+uses to run a high replay ratio with a large network without primacy bias
+taking over. But this is not unconditional: SimbaV2 reports that hyperspherical
 normalisation scales smoothly with update-to-data ratio without resets, and that
 resetting can degrade its performance. Since resets deliberately induce periodic
 performance drops, and since evaluation here is expensive, treat resets as a
@@ -982,8 +984,8 @@ update-to-data ratio of 1, above Simba at 0.818 and BRO at 0.807 with a ratio of
 8, and above TD-MPC2 at 0.749. Two findings transfer directly: normalisation
 choices matter more than depth on low-dimensional inputs, and hyperspherical
 normalisation scales with update-to-data ratio without resets, with resets
-actively degrading it. That is a concrete reason not to copy BBF's reset schedule
-uncritically into rank 1.
+actively degrading it. That is a concrete reason not to copy a fixed
+shrink-and-perturb reset schedule uncritically into rank 1.
 
 ### 8.2 Reusing prior computation rather than starting from scratch
 
@@ -1087,31 +1089,33 @@ the MuZero family rested on section 2.4 and is reversed here.
 
 | Rank | Candidate | Strongest evidence | Fit to this regime | Cost | Risk |
 | --- | --- | --- | --- | --- | --- |
-| 1 | **Finish the BBF recipe on the existing `stacked-dqn`** — weight decay 0.1, width, shrink-and-perturb resets, 10→3 n-step and 0.97→0.997 γ anneals, prioritized replay on | Atari-100k IQM 1.045 at RR 8; +0.45 IQM over SR-SPR at *every* replay ratio; every component validated on 29 held-out ALE games (Schwarzer 2023) | Exact masking; replay ratio already between 54:1 and 126:1 depending on the counting convention (see #53), so what is missing is the regularisation and capacity, not the gradient count | 3–5 d | Low |
-| 2 | **Offline bootstrap from the logged baselines** (RLPD symmetric sampling + LayerNorm value net) | RLPD reports up to 2.5× from symmetric sampling with no pretraining and no offline-RL constraint (Ball 2023) | Costs **no new device time**: 223 valid baseline episodes already exist from `M2-E007`. Highest expected gain per device-hour in the list, and still never built | 2–3 d | Low |
-| 3 | **Gumbel MuZero / EfficientZero-V2 with full Reanalyse**, via LightZero (Apache-2.0) — *the different-paradigm candidate* | EZ-V2 Proprio Control **50k**: mean 723.2 vs DreamerV3 517.1 and SAC 552.0, TD-MPC2 740.9 (Wang 2024) — the only published vector-observation result at our budget. Atari-100k mean 2.428 / median 1.286 | Good structural fit: at the choice-point branching factor of ≈4.2, 32 simulations are exhaustive to a depth of ~2 to 3 (4^k ≤ 32 gives k ≈ 2.5) — roughly half to three-quarters of a wave (3.2–5.0 decisions, `M2-E007`), not a full wave; `action_mask` is first-class in LightZero's env dict; Reanalyse converts idle compute into better targets on scarce data, which is exactly this project's asymmetry | 15–20 d | High |
-| 4 | **DreamerV3** (NM512/dreamerv3-torch, MIT; danijar/dreamerv3 JAX, MIT) | One hyperparameter set over 150+ tasks (Nature 2025); but **weakest of the three** on Proprio Control 50k at 517.1, and Atari-100k mean 1.120 / median 0.490 | Robustness is still its real argument, and tuning is unaffordable here. Against it: no native masking, a bespoke mask head in imagination with no reference, and the worst low-dimensional number of the model-based options | 8–12 d | High |
-| 5 | Recurrent value-based agent, R2D2 skeleton | Ni et al. 2022 | Further demoted: an episode is now ~27 decisions and `history_length=8` already spans a quarter of one | 5–8 d | Moderate |
-| 6 | Masked PPO | Huang & Ontañón 2022 | Control instrument only, unchanged | 2 d | Lowest |
+| 1 | **Offline bootstrap from the logged baselines** (RLPD symmetric sampling + LayerNorm value net) | RLPD reports up to 2.5× from symmetric sampling with no pretraining and no offline-RL constraint (Ball 2023) | Costs **no new device time**: 223 valid baseline episodes already exist from `M2-E007`. Highest expected gain per device-hour in the list, and still never built | 2–3 d | Low |
+| 2 | **Gumbel MuZero / EfficientZero-V2 with full Reanalyse**, via LightZero (Apache-2.0) — *the different-paradigm candidate* | EZ-V2 Proprio Control **50k**: mean 723.2 vs DreamerV3 517.1 and SAC 552.0, TD-MPC2 740.9 (Wang 2024) — the only published vector-observation result at our budget. Atari-100k mean 2.428 / median 1.286 | Good structural fit: at the choice-point branching factor of ≈4.2, 32 simulations are exhaustive to a depth of ~2 to 3 (4^k ≤ 32 gives k ≈ 2.5) — roughly half to three-quarters of a wave (3.2–5.0 decisions, `M2-E007`), not a full wave; `action_mask` is first-class in LightZero's env dict; Reanalyse converts idle compute into better targets on scarce data, which is exactly this project's asymmetry | 15–20 d | High |
+| 3 | **DreamerV3** (NM512/dreamerv3-torch, MIT; danijar/dreamerv3 JAX, MIT) | One hyperparameter set over 150+ tasks (Nature 2025); but **weakest of the three** on Proprio Control 50k at 517.1, and Atari-100k mean 1.120 / median 0.490 | Robustness is still its real argument, and tuning is unaffordable here. Against it: no native masking, a bespoke mask head in imagination with no reference, and the worst low-dimensional number of the model-based options | 8–12 d | High |
+| 4 | Recurrent value-based agent, R2D2 skeleton | Ni et al. 2022 | Further demoted: an episode is now ~27 decisions and `history_length=8` already spans a quarter of one | 5–8 d | Moderate |
+| 5 | Masked PPO | Huang & Ontañón 2022 | Control instrument only, unchanged | 2 d | Lowest |
+
+The stacked-dqn backbone itself (section 3.1) is not re-ranked here: it is
+the project's existing rank-1 learner and its further tuning is tracked on
+the board rather than in this table.
 
 **Not candidates.** SimbaV2, BRO and TD-MPC2 are continuous-action methods
 (SimbaV2: 57 continuous-control tasks). Their transferable content is
-normalisation architecture for low-dimensional inputs and belongs to rank 1 as
-an ablation. The 2026 world-model line (Simulus, EAWM/EASimulus) is pixel
-Atari-100k; it is worth reading before rank 3 or 4 is built and is not itself a
-candidate here.
+normalisation architecture for low-dimensional inputs and belongs to the
+stacked-dqn backbone as an ablation. The 2026 world-model line (Simulus,
+EAWM/EASimulus) is pixel Atari-100k; it is worth reading before rank 2 or 3 is
+built and is not itself a candidate here.
 
 **Three decisions recommended to the Lead.** First, that "raise the replay
 ratio because compute is free" be retired as a proposal: `training.py`
 already runs between 54 and 126 transitions replayed per transition
 generated, depending on the counting convention (see #53) — on the order of
-SPR's 64 to BBF's 256. Second, that the MuZero family be promoted above
-DreamerV3, because the cadence change removed the objection in section 2.4
-and because EZ-V2 is the only entry on this list with a published
-low-dimensional result at our budget. Third, that `M2-E004`'s absent
-plasticity signature not be read as permission to raise width or weight decay
-without re-measuring it — it was measured in the regime BBF's resets exist to
-leave.
+SPR's 64:1. Second, that the MuZero family be promoted above DreamerV3,
+because the cadence change removed the objection in section 2.4 and because
+EZ-V2 is the only entry on this list with a published low-dimensional result
+at our budget. Third, that `M2-E004`'s absent plasticity signature not be read
+as permission to raise width or weight decay without re-measuring it — it was
+measured in the regime that periodic network resets are meant to leave.
 
 ## 10. Run-3 ablation order
 
@@ -1125,7 +1129,7 @@ scripted 6.429):
    effect: removes the near-constant, WAIT-biased greedy policy that actors
    3–6 play for most of the anneal — the largest single deviation measured
    (D1, #53).
-2. **n-step.** 10 → 3 (Ape-X/Rainbow), or the BBF 10→3 anneal already
+2. **n-step.** 10 → 3 (Ape-X/Rainbow), or the exponential 10→3 anneal already
    specified in section 3.1. Expected effect: removes the off-policy bias in
    the uncorrected n-step bootstrap and raises the action-attributable share
    of the return (D2, #53).
@@ -1152,18 +1156,13 @@ scripted 6.429):
 8. **Masked pooling.** Mean-pool the trunk over `unlocked` rows instead of
    all 60. Expected effect: second-order; removes a channel that is ~88%
    constant given only ~7 of 61 actions are ever valid (D6, #53).
-9. **BBF block.** Weight decay 0.1, shrink-and-perturb resets, and the n-step
-   and γ anneals together, run as one arm (R3, SOTA-BACKBONES §4). Expected
-   effect (pre-registered): post-anneal near-greedy mean final wave ≥ 6.4 (the
-   scripted floor) by the third checkpoint; falsified by no improvement over
-   run 2's curve at matched game-seconds. Gated on run 2's verdict.
-10. **MuZero-family arm.** Gumbel MuZero with full Reanalyse, built behind the
-    existing `Backbone` protocol (R6, SOTA-BACKBONES §4). Expected effect
-    (pre-registered): beats the best model-free arm at matched game-seconds;
-    falsified by failing to do so, or by the search's recommended action
-    agreeing with the raw prior on >95% of decisions, which at the
-    choice-point branching factor of ≈4.2 would mean the search buys nothing.
-    Gated on run 2's verdict.
+9. **MuZero-family arm.** Gumbel MuZero with full Reanalyse, built behind the
+   existing `Backbone` protocol (R6, SOTA-BACKBONES §4). Expected effect
+   (pre-registered): beats the best model-free arm at matched game-seconds;
+   falsified by failing to do so, or by the search's recommended action
+   agreeing with the raw prior on >95% of decisions, which at the
+   choice-point branching factor of ≈4.2 would mean the search buys nothing.
+   Gated on run 2's verdict.
 
 Items 1–3 are confounded with each other if run together; item 4 is a reward
 schema change (`reward-v2`) and must be its own arm.
@@ -1175,9 +1174,6 @@ schema change (`reward-v2`) and must be its own arm.
   https://openreview.net/forum?id=r1lyTjAqYX
 - Schwarzer et al., Data-Efficient Reinforcement Learning with Self-Predictive
   Representations (SPR), ICLR 2021. https://arxiv.org/abs/2007.05929
-- Schwarzer et al., Bigger, Better, Faster: Human-level Atari with Human-level
-  Efficiency (BBF), ICML 2023. https://arxiv.org/abs/2305.19452 and
-  https://proceedings.mlr.press/v202/schwarzer23a.html
 - Nikishin et al., The Primacy Bias in Deep Reinforcement Learning, ICML 2022.
   https://arxiv.org/abs/2205.07802
 - Vieillard et al., Munchausen Reinforcement Learning, NeurIPS 2020.

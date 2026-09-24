@@ -55,6 +55,16 @@ scaling). Every claim carries its `docs/experiments.md` evidence pointer.
 This end goal does not relax any V1 gate, safety boundary, or non-goal in
 this document.
 
+**Developer decision, 2026-09-24: one training run per learner.** Each
+learner's comparison-table row (Outcome C) is one run fixed by
+pre-registration before it starts; it is never chosen afterwards as the best
+of several runs. Its 95% intervals cover the evaluation episodes of that
+run's arm, not run-to-run variation. The table says "single run" and states
+as a limitation that run-to-run spread is unmeasured, citing `M2-P006` and
+`M2-P006b`: runs 4, 5 and 5b gave (8k,12k] near-greedy means of 9.87, 10.02
+and 8.32 with the same recipe and seed. A 3-runs-per-learner design was
+offered and declined.
+
 ## 2. Authoritative project objective
 
 For a fixed permanent account state, train an agent to maximize its expected final wave in Tier 1 by choosing in-run upgrades and deciding when to wait.

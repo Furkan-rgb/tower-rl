@@ -575,6 +575,34 @@ a wide margin). Host cleanup verified twice (`run_stage.sh` teardown and an
 independent recheck): no qemu process, empty `adb devices`. Comment posted
 on `#67`; board item not moved.
 
+**Lead reading (2026-09-24).** Matched-decision near-greedy mean final wave
+per 15,000-decision window (±SE, n), recomputed from each run's
+`summary.json` `collected_episodes` (actors with epsilon floor ≤0.02):
+
+| Decisions | Run 4 (default build) | Run 5b seed 1 (render-interval-16) |
+| --- | --- | --- |
+| 0–15k | 6.85±0.21 (212) | 7.17±0.23 (221) |
+| 15–30k | 11.79±0.17 (90) | 11.63±0.21 (105) |
+| 30–45k | 13.98±0.42 (63) | 13.97±0.42 (66) |
+| 45–60k | 16.80±0.63 (49) | 14.79±0.43 (57) |
+| 60–75k | end of run | 15.39±0.41 (57) |
+| 75–105k | — | 15.08 → 15.73 (peak at 90–105k, n=55) |
+| 105–120k | — | 15.57 (58) |
+
+(a) The curves match through 45k decisions and diverge at 45–60k; run 5b
+then plateaus at about 15.5 through 121k decisions. The extra 60k decisions
+added about 1 wave to run 5b's own curve and did not close the gap.
+(b) The arm readings are consistent. Run 4's arm checkpoint was taken while
+its curve was still rising steeply (period-4 in-training mean 16.46, arm
+eval 18.143). Run 5b's arm sits on a plateau (in-training 15.679, eval
+15.590). (c) Reading: run-to-run divergence after about 45k decisions is the
+supported explanation. A training-build effect is not supported: the curves
+are identical to 45k, and M2-P005 found render-interval-16 FAITHFUL for
+evaluating the trained run-4 arm at high waves. With one run per arm this
+cannot be proven, so render-interval-16 stays the training build. (d) Run
+4's recipe was still rising at 60k decisions, while run 5b plateaued. A
+plateau is the symptom that BBF-style resets target (#58).
+
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,

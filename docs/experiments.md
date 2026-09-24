@@ -227,6 +227,99 @@ every stage. The device is at two consecutive unexplained failures (`#59`):
 if any arm here fails unexplained, **stop all device work and report; do not
 retry.**
 
+### Results, as run (2026-09-24)
+
+All three stages reported `cleanup ok` and host verified clean (no qemu
+process, no adb device) after every stage: `stage m2-27s3-eval-A1: exit 0,
+cleanup ok, instances 0/7 cleaned, wall 00:07:47`; `stage m2-27s3-eval-B:
+exit 1, cleanup ok, instances 0/7 cleaned, wall 00:06:32`; `stage
+m2-27s3-eval-A2: exit 0, cleanup ok, instances 0/7 cleaned, wall 00:07:21`.
+
+**Arm B lost one actor** (`emulator-5558`): `RunPortError: the instance did
+not reach an active run` at `environment.reset()` — a failure signature this
+project has documented repeatedly before (`src/tower_rl/environment/run_environment.py:433`;
+recurs across several earlier entries), not the `#59` GPU-crash signature
+(`ColorBuffer`/`X connection`/segfault). Read as explained, ordinary
+single-actor bring-up flake rather than a repeat of `#59`, so device work
+continued to A2 per the pre-registered design; the lost actor's episodes were
+**not** retried. A1 and A2 lost zero actors.
+
+| arm | attempted | valid | actors clean | n floor (≥23) |
+| --- | --- | --- | --- | --- |
+| A1 | 28 | 28 | 7/7 | met |
+| B | 28 | 24 | 6/7 | met |
+| A2 | 28 | 28 | 7/7 | met |
+
+Zero invalid episodes and zero `bridge_event_divergence` in every arm.
+
+**Gate (a) — fidelity:**
+
+1. Mean final wave: A1 6.107 (sd 0.315, n=28), B 6.042 (sd 0.204, n=24), A2
+   6.071 (sd 0.262, n=28); pooled A (n=56) 6.089. Bootstrap 95% CI
+   (B − pooled A), seed 0, 10,000 resamples: **−0.048 [−0.143, +0.071]** —
+   inside ±0.5. **PASS.**
+2. decisions/wave: A1 4.132, B 4.175, A2 4.146; pooled A 4.139.
+   |B − pooled A| = **0.036** ≤ 0.5. **PASS.**
+3. Per-wave `game_ms` (all waves of all valid episodes, n=171/145/170
+   waves): A1 mean 32,269.7 ms (sd 6,750.6), B 31,757.1 ms (sd 7,643.2), A2
+   32,088.7 ms (sd 6,906.0). |B − pooled A| = **422.4 ms**, exceeding the
+   pre-registered ±100 ms margin. **This margin is not usable as written**:
+   A1 vs A2 alone — two runs of the *identical* installed bridge — differ by
+   **181.0 ms**, comparable in magnitude to the alleged B effect, against a
+   per-wave standard deviation of ~6,800–7,600 ms. A flat one-frame absolute
+   bound made sense for `M1B-E053`'s matched single-instance-pair comparison;
+   it does not discriminate anything at this pooled, multi-instance,
+   multi-episode aggregate, where ordinary same-build noise is of the same
+   order as the reading it was meant to gate. Recorded as a pre-registration
+   defect, not silently overridden: **literal reading is FAIL, but the
+   criterion is shown non-discriminating by its own A1-vs-A2 control.**
+4. `advances_cut_short` per valid episode: A1 0.321, B 0.208, A2 0.286;
+   pooled A 0.304. B is **lower** than pooled A, well inside the +0.2
+   margin. **PASS.**
+5. Validity: zero invalid episodes in every arm (`invalid_by_reason: {}`
+   throughout) — B introduces no new invalid class. **PASS** (the one lost
+   actor is a fleet-level dropout, not an episode-level invalid, and is
+   already accounted for by the n≥23 floor above, which B cleared).
+6. A1 vs A2 drift on the primary metric (final wave): bootstrap 95% CI
+   (A2 − A1) **−0.036 [−0.179, +0.107]** — inside ±0.5. Condition 6 is
+   **not** triggered; the two installed-bridge measurements agree on the
+   metric the design treats as primary.
+
+**Gate (b) — skip probe: not obtained.** `adb shell dumpsys SurfaceFlinger
+--latency '<BLAST layer>'` (layer named via `--list`:
+`SurfaceView[com.TechTreeGames.TheTower/com.unity3d.player.UnityPlayerActivity](BLAST)#151`,
+confirmed present and unchanged across A2's and B's reads) returned only the
+refresh-period header (`8333333`, i.e. 8.33 ms / 120 Hz) and **no frame
+rows**, on both B and A2, across several layer-name phrasings tried. This
+reproduces `M1B-E053`'s own finding, on 2026-09-17, in this exact project:
+*"`dumpsys SurfaceFlinger --latency` returned no frame rows for the Unity
+`SurfaceView` layer"* — a pre-existing, documented limitation of this
+BLAST-mode layer on this device image, not a new failure. No `K240-sf-mid.txt`
+reading exists to compare against; gate (b) contributes nothing either way.
+
+**Gate (c) — speed:** per-actor steady-state collection rate
+(`total_budgeted_game_seconds` / `total_advance_wall_seconds`): A1 mean
+10.891 game-s/wall-s (7 actors, 10.79–10.95), A2 mean 10.875 (10.80–10.97),
+pooled A 10.883; B mean **20.917** (6 actors, 19.81–22.09). **Ratio B / mean(A1,
+A2) = 1.92×** — clears the ≥1.3 bar with wide margin, and is consistent with
+stage 2's solo fps ratio (2.08×) once accounted for stage 2's own
+non-advance overhead (`render-off-probe-analysis.md` point 4).
+
+**Verdict: ADOPT is supported by every criterion that discriminates; the one
+literal fidelity sub-condition that fails (gate (a).3, per-wave `game_ms`) is
+not a genuine signal — it fails identically on the same-build A1-vs-A2
+control, which the pre-registered design itself uses to detect exactly this
+kind of false positive.** Final wave, decisions/wave, advances_cut_short and
+validity all pass with wide margins on real per-arm variance; the speed gate
+clears its bar by 1.5×; the skip probe is inconclusive by absence of data,
+not by contradiction. This is not declared an automatic ADOPT, because gate
+(a) as literally written did not hold in full — recorded here for the Lead's
+decision, in the same shape `M2-S001` left its own miscalibrated throughput
+bar for the Lead rather than resolving it unilaterally. Recommendation: if
+adopted, replace the flat ±100 ms per-wave `game_ms` margin with one set from
+measured variance (e.g. a multiple of the pooled per-wave SE) before this
+design is reused.
+
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,

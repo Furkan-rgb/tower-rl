@@ -134,7 +134,7 @@ def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
 
         assert "--no-track" in str(refusal.value)
         untracked = train.parse_arguments(
-            ["--no-track", "--run-dir", str(tmp_path)]
+            ["--budget-decisions", "1000", "--no-track", "--run-dir", str(tmp_path)]
         )
         assert isinstance(train.build_tracker(untracked), NoExperimentTracker)
 
@@ -291,7 +291,7 @@ def test_tracking_writes_only_into_the_git_ignored_state_directory(
     for path, _ in recorded.artifacts:
         assert REPOSITORY not in path.resolve().parents
 
-    defaults = train.parse_arguments([])
+    defaults = train.parse_arguments(["--budget-decisions", "1000"])
     store = tracking_uri(defaults.run_dir)
     artifacts = Path(artifact_root(defaults.run_dir))
 

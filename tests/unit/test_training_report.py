@@ -521,18 +521,3 @@ def test_the_summary_carries_the_periods_the_run_judged_itself_on(
     assert arm["early_stopping"]["closing_period_near_greedy_mean_final_wave"] == (
         periods[-1]["mean_final_wave"]
     )
-    # The arm: the best period from period 2 on, ties to the earlier, and the
-    # checkpoint written where it closed is on disk.
-    eligible = [period for period in periods[1:] if period["mean_final_wave"] is not None]
-    best_period = max(eligible, key=lambda period: (period["mean_final_wave"], -period["index"]))
-    selected = arm["arm"]
-    assert selected["period"] == best_period["index"]
-    assert selected["decisions"] == best_period["decisions_at_end"]
-    assert Path(selected["checkpoint"]).name == f"checkpoint-d{selected['decisions']:07d}.pt"
-    assert Path(selected["checkpoint"]).exists()
-
-
-def test_a_run_shorter_than_two_periods_selects_no_arm(trained: dict[str, Any]) -> None:
-    """Period 1 is never the arm, so a run with fewer periods has none."""
-    assert trained["arm"]["selection_periods"] == []
-    assert trained["arm"]["arm"] is None

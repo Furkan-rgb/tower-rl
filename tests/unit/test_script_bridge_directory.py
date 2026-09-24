@@ -32,7 +32,7 @@ POINTER = "/tmp/tower-bridge-live.latest"
     [
         (run_episodes, ["run_episodes.py"]),
         (compare_arms, ["compare_arms.py", "--arm", "scripted", "--arm", "random"]),
-        (train, ["train.py", "--no-track"]),
+        (train, ["train.py", "--budget-decisions", "1000", "--no-track"]),
     ],
     ids=["run_episodes", "compare_arms", "train"],
 )

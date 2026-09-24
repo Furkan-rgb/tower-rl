@@ -949,19 +949,23 @@ same run as one advanced in one.
 **Selection periods and checkpoints.** The decision axis is cut into
 selection periods of `--selection-period-decisions` (default 15,000). A
 numbered checkpoint `checkpoint-d<decisions>.pt` is written at the episode that
-closes each period, and additionally on `--checkpoint-every-decisions` if set
-(run 5b: every 5,000); the two are independent, and one episode crossing both
-writes one file. Checkpoints from the game-time era are named
-`checkpoint-gs<game seconds>.pt`; every reader orders candidates by the
-decisions recorded inside the file and never parses the name, and every
-checkpoint format resumes because every format records decisions.
+closes each period, and additionally on `--checkpoint-every-decisions` if set;
+the two are independent, and one episode crossing both writes one file.
+Checkpoints from the game-time era are named `checkpoint-gs<game seconds>.pt`;
+every reader orders candidates by the decisions recorded inside the file and
+never parses the name. Checkpoint formats 1-3 are from the game-time era: they
+still load for evaluation, but `train.py` refuses to resume them, because their
+selection-period counters were counted in game time. Format 4 is the first a
+run resumes from.
 
 **The arm rule.** At each period close the run records the mean final wave of
 the near-greedy actors' valid episodes in that period. The arm is the
 checkpoint at the close of the period with the highest such mean, counting only
 periods from the second on that have a mean at all, with a tie going to the
-earlier period. A run stopped on a kill bar selects no arm. `select_arm` in
-`learning/training.py` implements it and the arm summary records it as `arm`.
+earlier period. This is the only arm rule, and it is applied by hand from the
+summary's `selection_periods`; no code selects the arm. A kill-bar stop does
+not change which checkpoint is the arm; the pre-registration decides whether a
+killed run's arm is evaluated.
 
 ### 9.2c Decision moments must not depend on speed
 
@@ -1423,9 +1427,10 @@ default): when cumulative decisions first reach AT, the near-greedy actors'
 valid episodes that ended in (START, AT] must average at least MIN waves, or
 the run stops at that episode boundary. A window with no such episode measures
 nothing and does not stop the run. Every check is recorded in the summary's
-`early_stopping.kill_bar_checks`. A run stopped this way selects no arm, so it
-skips the final evaluation and records `final_evaluation_skipped: kill_bar`;
-a plateau stop still takes it.
+`early_stopping.kill_bar_checks`. A run stopped this way skips the final
+evaluation of its last weights and records `final_evaluation_skipped:
+kill_bar`; a plateau stop still takes it. Whether a killed run's arm is
+evaluated is the pre-registration's decision (section 9.2b).
 
 Every point carries the learner diagnostics that separate a broken learner from
 a slow one: the weighted loss and the unweighted mean absolute TD error under
@@ -1639,8 +1644,9 @@ actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
 interleaved on one instance), `workstation_preflight.py` (host checks),
 `spectate.py` (one windowed instance a human watches, optionally recorded),
 `render_recording.py` (a recording and its decision log composed into one
-video), `select_checkpoint.py` (the post-hoc choice among a run's numbered
-checkpoints), `report_arms.py` (IQM and per-wave comparison of evaluation
+video), `select_checkpoint.py` (ranks a run's numbered checkpoints by
+greedy-evaluation IQM; a checkpoint-evaluation tool, not the M2 arm rule),
+`report_arms.py` (IQM and per-wave comparison of evaluation
 sets), `diagnose_plasticity.py` (the plasticity diagnostic over a recorded
 observation batch), and `migrate_state.py` (the one-time move of
 `~/.local/state/tower-rl` into `state/`). The shell helpers beside them —
@@ -1689,9 +1695,11 @@ Section 9.2b gives the reasons and the schedules that read it.
 Numbered `checkpoint-d<decisions>.pt` candidates are left beside the
 `latest.pt` resume point at every selection-period close
 (`--selection-period-decisions`, default 15,000) and on the optional
-`--checkpoint-every-decisions` cadence; `scripts/select_checkpoint.py` later
-chooses among them, and the summary's `arm` names the one section 9.2b's arm
-rule picks.
+`--checkpoint-every-decisions` cadence. The M2 arm is chosen among the
+period-close ones by hand, by section 9.2b's arm rule, from the summary's
+`selection_periods`. `scripts/select_checkpoint.py` ranks checkpoints by the
+IQM of their greedy evaluations; it is a checkpoint-evaluation tool, not the
+M2 arm rule.
 
 `--resume <checkpoint.pt>` continues a run's budget in a second sitting (`#32`):
 the weights, the optimizer moments and the counters come back, and epsilon,
@@ -1699,10 +1707,9 @@ beta, the selection periods and the checkpoint cadence are derived from them,
 so the segment carries on where a run that never stopped would have been.
 Replay is not persisted and re-warms under the loaded policy.
 `--budget-decisions` stays the whole run's total; a checkpoint whose identity
-names another arm, profile or schema, and one that has already spent the
-budget, are each refused by name before a device is touched. Every checkpoint
-format resumes: format 1 and 2 files record no game time and resume with it at
-zero.
+names another arm, profile or schema, one that has already spent the budget,
+and one in a game-time-era format (before format 4, which evaluates only) are
+each refused by name before a device is touched.
 
 Example behavior:
 

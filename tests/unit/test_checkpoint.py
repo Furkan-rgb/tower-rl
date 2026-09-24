@@ -190,7 +190,7 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
     assert state.decisions == 900 and state.episodes == 12
     # Game time travels beside it as a statistic.
     assert state.game_ms == 1_800_000.0
-    assert load(path).format_version == CHECKPOINT_FORMAT_VERSION
+    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 4
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
     assert "optimizer" in state.backbone_state, "the moments travel with the weights"
@@ -203,12 +203,12 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
 
 
 def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
-    """A run of hours must not become unresumable for the format it was written in.
+    """An old file still loads, for evaluation.
 
-    Version 1 carried no tracking run id, so a resume from one opens a new
-    tracked run instead of continuing the parent's series. Version 2 added it;
-    neither records game time, which reads back as zero. Both record the
-    decisions the budget is counted in, so both resume.
+    Version 1 carried no tracking run id and neither it nor version 2 records
+    game time, which reads back as zero. Reading is `load`'s; whether a run may
+    continue from it is `scripts/train.py`'s, which refuses anything before
+    the decision budget (format 4).
     """
     path = tmp_path / "legacy.pt"
     save(
@@ -228,12 +228,12 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
     # It says nothing about game time, and says so as zero rather than as a
     # guess.
     assert state.game_ms == 0.0
-    assert load(path).format_version == 1
+    assert load(path).format_version == state.format_version == 1
 
     # A version this code does not know is still refused rather than guessed at.
     future = tmp_path / "future.pt"
-    torch.save({"format_version": 4, "identity": {}}, future)
-    with pytest.raises(CheckpointError, match="format 4 is not supported"):
+    torch.save({"format_version": 5, "identity": {}}, future)
+    with pytest.raises(CheckpointError, match="format 5 is not supported"):
         load(future)
 
 

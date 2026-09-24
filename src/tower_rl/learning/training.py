@@ -16,9 +16,9 @@ end - so a run stops after the episode that crossed it.
 The decision axis is cut into selection periods (`selection_period_decisions`,
 15,000 by default).  When a period closes the run writes a numbered checkpoint
 and reads the mean final wave of the near-greedy actors' valid episodes that
-ended inside it.  The run's arm is the checkpoint of the best such period from
-period 2 onward (`select_arm`).  A curve that has not improved on the level it
-last really moved to for `early_stop_patience_periods` periods in a row has
+ended inside it; the arm is chosen from those periods by the rule in
+`docs/solution.md` 9.2b, applied by hand.  A curve that has not improved on
+the level it last really moved to for `early_stop_patience_periods` periods in a row has
 stopped learning, and the rest of the budget buys nothing, so the run ends
 there.  Numbered checkpoints may also be written more often than periods close
 (`checkpoint_every_decisions`), for a learning curve; that cadence selects
@@ -284,8 +284,8 @@ class TrainingConfig:
     checkpoint_every_decisions: int = 0
     #: Decisions per selection period. A period's near-greedy mean is what the
     #: arm is chosen on and what early stopping counts; a numbered checkpoint
-    #: is written wherever one closes. 15,000 is run 4's 60,000 game-second
-    #: period in decisions (60,356 decisions over its four periods).
+    #: is written wherever one closes. 15,000 is run 4's average period
+    #: (60,356 decisions / 4 periods), not a measured length.
     selection_period_decisions: int = 15_000
     #: How many selection periods in a row may close without the near-greedy
     #: curve improving before the run stops itself, after the checkpoint of the
@@ -508,24 +508,6 @@ class NearGreedyPlateau:
     def plateaued(self, patience_periods: int) -> bool:
         """Whether the curve has failed to improve for `patience_periods` in a row."""
         return bool(patience_periods) and self.periods_without_improvement >= patience_periods
-
-
-def select_arm(periods: Sequence[SelectionPeriod]) -> SelectionPeriod | None:
-    """The period whose checkpoint is the run's arm, or None if none is eligible.
-
-    The highest near-greedy mean among periods 2 onward. Period 1 is excluded
-    because it pools the exploration anneal and the pre-warm-up episodes
-    (`M2-P002` amendment 3); a period with no near-greedy mean measured nothing
-    and is not eligible; a tie goes to the earlier period (`M2-P003`).
-    """
-    eligible = [
-        period for period in periods if period.index >= 2 and period.mean_final_wave is not None
-    ]
-    return max(
-        eligible,
-        key=lambda period: (period.mean_final_wave, -period.index),
-        default=None,
-    )
 
 
 def action_distribution(episodes: Sequence[CollectedEpisode]) -> ActionDistribution | None:
@@ -1414,7 +1396,6 @@ __all__ = [
     "SelectionPeriod",
     "action_distribution",
     "collection_windows",
-    "select_arm",
     "episode_health",
     "Learner",
     "TrainingConfig",

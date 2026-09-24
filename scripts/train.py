@@ -34,10 +34,10 @@ and tears them all down when the run ends.
 The decision axis is cut into selection periods (`--selection-period-decisions`,
 default 15,000). Where a period closes the run writes a numbered checkpoint,
 `checkpoint-d<decisions>.pt`, and takes the mean final wave of the near-greedy
-actors' valid episodes that ended inside it. The summary's `arm` is the
-checkpoint of the best period from period 2 on. `--checkpoint-every-decisions`
-writes extra numbered checkpoints between them, for a learning curve; they are
-never the arm.
+actors' valid episodes that ended inside it; the summary lists them as
+`selection_periods`, and the arm is chosen from them by hand by the rule in
+`docs/solution.md` 9.2b. `--checkpoint-every-decisions` writes extra numbered
+checkpoints between them, for a learning curve; they are never the arm.
 
 `--early-stop-patience-periods N` lets the run stop before its budget is spent:
 a curve that has not improved on its best period by
@@ -112,6 +112,7 @@ from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
+    DECISION_BUDGET_FORMAT_VERSION,
     CheckpointError,
     ResumeState,
     resume_state,
@@ -515,11 +516,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--budget-decisions",
         type=int,
-        default=60_000,
-        help=(
-            "the whole run's budget: cumulative decisions across the fleet. "
-            "The default is about run 4's budget (60,356 decisions)"
-        ),
+        required=True,
+        help="the whole run's budget: cumulative decisions across the fleet",
     )
     parser.add_argument(
         "--resume",
@@ -849,11 +847,13 @@ def resume_point(
 ) -> ResumeState | None:
     """The checkpoint this run continues, read and checked before a device is touched.
 
-    Two refusals, both here rather than an hour into collection. The identity
+    Three refusals, all here rather than an hour into collection. The identity
     is the checkpoint's own: a file from another arm, another device profile or
     another observation, action or reward schema is not experience this run can
     go on from, and `CheckpointIdentity.incompatibilities` names which. The
-    budget is the second: `--budget-decisions` is the whole run's total, not
+    format is the second: a file from before the decision budget (format below
+    4) counted its selection periods in game time, so it is for evaluation
+    only. The budget is the third: `--budget-decisions` is the whole run's total, not
     this segment's, so a checkpoint at 50,123 of 120,000 continues to 120,000
     and a larger budget extends the run - but a checkpoint that has already
     spent the budget is nothing this run can add to.
@@ -880,6 +880,12 @@ def resume_point(
         state = resume_state(arguments.resume, expected=expected)
     except CheckpointError as failure:
         raise SystemExit(f"--resume {arguments.resume}: {failure}") from failure
+    if state.format_version < DECISION_BUDGET_FORMAT_VERSION:
+        raise SystemExit(
+            f"--resume {arguments.resume} is a format {state.format_version} "
+            "checkpoint from the game-time budget era: it is for evaluation "
+            "only and cannot be resumed under --budget-decisions"
+        )
     if state.decisions >= arguments.budget_decisions:
         raise SystemExit(
             f"--resume {arguments.resume} is already at {state.decisions} "
@@ -993,10 +999,10 @@ def train_session(
         # difference against the scripted floor. Taken after the budget is
         # spent, so it costs none of the budget and cannot be chosen after
         # the fact from a series of mid-run points.
-        # Skipped for a run stopped on a kill bar: it selects no arm, so the
-        # evaluation would buy nothing, and it costs hours of device time (2.28 h
-        # in run 3). The summary records the skip. A plateau stop still
-        # evaluates: that run may yet be the arm.
+        # Skipped for a run stopped on a kill bar: whether a killed run's arm
+        # is evaluated is its pre-registration's decision (solution.md 9.2b),
+        # and this evaluation costs hours of device time (2.28 h in run 3).
+        # The summary records the skip. A plateau stop still evaluates.
         if killed is not None:
             print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
         else:

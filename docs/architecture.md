@@ -196,7 +196,7 @@ environment and nothing that observes or drives it.
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
   `TrainingProgressReport`, `episode_health`, `collection_windows`,
-  `SelectionPeriod`, `select_arm`, `NearGreedyPlateau`, and
+  `SelectionPeriod`, `NearGreedyPlateau`, and
   `KillBar`/`KillBarCheck`.
 - `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
   explores at, at each point of the budget.
@@ -232,11 +232,13 @@ checkpoint cadence. At the episode that crosses a period's multiple
 `TrainingRun` closes the period just ended: it takes the mean final wave of the
 near-greedy actors' valid episodes that ended inside it — under a uniform
 schedule that is every actor — records it as a `SelectionPeriod`, and writes a
-numbered checkpoint there, so every period close is a file on disk.
-`select_arm` picks the arm: the closed period with the highest near-greedy
-mean, period 1 excluded, a period with no mean ineligible, ties to the earlier
-period; a run stopped on a kill bar has no arm. The summary records it as
-`arm`, naming the checkpoint written at that period's close.
+numbered checkpoint there, so every period close is a file on disk. The
+summary lists them as `selection_periods`. No code picks the arm: it is chosen
+by hand from that list by the one rule in `docs/solution.md` 9.2b — the
+checkpoint at the close of the period with the highest near-greedy mean, period
+1 excluded, a period with no mean ineligible, ties to the earlier period. A
+kill-bar stop does not change which checkpoint is the arm; the
+pre-registration decides whether a killed run's arm is evaluated.
 
 **Stopping early.** A run may end before its budget is spent. At each period
 close the mean goes to `NearGreedyPlateau`, which keeps
@@ -413,9 +415,10 @@ stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the
 `TrainingProgressReport` at the parent's counters — decisions and game time
 both — so epsilon, beta, the selection periods and the numbered-checkpoint
-cadence are derived where a run that never stopped would have them. Every
-checkpoint format records decisions, so every format resumes; a format 1 or 2
-file records no game time and resumes with it at zero. `build_arm` continues
+cadence are derived where a run that never stopped would have them. A
+checkpoint before format 4 (`DECISION_BUDGET_FORMAT_VERSION`) is from the
+game-time budget era: `load` still reads it for evaluation, but `resume_point`
+refuses it by name. `build_arm` continues
 the parent's tracked run through `open_run` when it had one, and names the
 parent in `resolved_config.parent_checkpoint`; replay is not
 persisted, so the buffer re-warms under the loaded policy before learning
@@ -439,8 +442,9 @@ checkpoint's own resolved config on the CPU, and the episodes go through the
 same actor, evaluator and per-episode records the scripted and random floors go
 through, with the arm's identity written into every actor record.
 
-`scripts/select_checkpoint.py` reads one evaluation directory per candidate —
-set A — and names the highest interquartile mean of the final wave, with
+`scripts/select_checkpoint.py` is a checkpoint-evaluation tool, not the M2 arm
+rule. It reads one evaluation directory per candidate — set A — and names the
+highest interquartile mean of the final wave, with
 `experiment.comparison.stratified_bootstrap` resampling within each actor. A
 candidate is identified by the run id and identity hash its records carry, not
 by its file name, because two runs at the same period leave identically named

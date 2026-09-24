@@ -38,6 +38,7 @@ from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.policies import checkpoint_policy
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -220,7 +221,7 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     failure of the first run; a silent drift back would cost another run of
     device time to discover.
     """
-    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
 
     assert defaults.gradient_steps_per_decision == 0.25
     assert defaults.batch_size == 8
@@ -334,7 +335,7 @@ def test_by_default_numbered_checkpoints_are_written_only_where_periods_close(
     tmp_path: Path,
 ) -> None:
     """No cadence by default, and a run shorter than one period writes none."""
-    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
     assert defaults.checkpoint_every_decisions == 0
     assert defaults.selection_period_decisions == 15_000
 
@@ -348,14 +349,14 @@ def test_early_stopping_is_off_by_default_and_resolved_with_its_threshold(
     tmp_path: Path,
 ) -> None:
     """Every run measured so far spent its whole budget; that stays the default."""
-    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
 
     assert defaults.early_stop_patience_periods == 0
     assert defaults.early_stop_min_improvement == 0.2
 
 
 def test_the_n_step_anneal_and_kill_bars_are_off_by_default(tmp_path: Path) -> None:
-    defaults = train.parse_arguments(["--run-dir", str(tmp_path)])
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
 
     assert defaults.n_step == 10
     assert defaults.n_step_final is None and defaults.n_step_anneal_steps == 0
@@ -372,7 +373,7 @@ def test_a_half_configured_n_step_anneal_is_refused(tmp_path: Path) -> None:
 def test_a_kill_bar_is_parsed_as_at_start_minimum(tmp_path: Path) -> None:
     parsed = train.parse_arguments(
         [
-            "--run-dir", str(tmp_path),
+            "--budget-decisions", "1000", "--run-dir", str(tmp_path),
             "--kill-bar", "12000:8000:8.6",
             "--kill-bar", "26262:8000:10.2",
         ]
@@ -384,7 +385,9 @@ def test_a_kill_bar_is_parsed_as_at_start_minimum(tmp_path: Path) -> None:
     ] == [(12000, 8000, 8.6), (26262, 8000, 10.2)]
     for malformed in ("12000:8000", "8000:12000:8.6", "a:b:c"):
         with pytest.raises(SystemExit):
-            train.parse_arguments(["--run-dir", str(tmp_path), "--kill-bar", malformed])
+            train.parse_arguments(
+                ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--kill-bar", malformed]
+            )
 
 
 def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> None:
@@ -406,7 +409,7 @@ def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> No
     assert check["stopped"] and check["bar"]["at_decisions"] == 100
     assert check["mean_final_wave"] < 1000
     assert arm["decisions"] < int(TRAINING_BUDGET)
-    # A killed run selects no arm, so its final evaluation is skipped and says so.
+    # A killed run skips the final evaluation and says so.
     assert arm["final_evaluation"] is None
     assert arm["final_evaluation_skipped"] == "kill_bar"
     resolved = arm["resolved_config"]
@@ -428,7 +431,7 @@ def test_a_run_not_stopped_on_a_kill_bar_still_takes_its_final_evaluation(
 
 
 def test_a_plateau_stop_still_takes_its_final_evaluation(tmp_path: Path) -> None:
-    """Only a kill bar skips it: a plateaued run may still be the arm."""
+    """Only a kill bar skips it: a plateau stop still evaluates."""
     report = session(
         tmp_path,
         budget="1000",
@@ -463,7 +466,9 @@ def test_the_budget_is_the_only_progress_flag_and_it_is_in_decisions(tmp_path: P
         "--checkpoint-every-game-seconds",
     ):
         with pytest.raises(SystemExit):
-            train.parse_arguments(["--run-dir", str(tmp_path), retired, "100"])
+            train.parse_arguments(
+                ["--budget-decisions", "1000", "--run-dir", str(tmp_path), retired, "100"]
+            )
 
 
 #: Two fake instances, which is the fleet arrangement a device run takes: every
@@ -542,7 +547,8 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
 
 def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
     """The default, and the configuration the in-flight run is reproducible from."""
-    assert train.parse_arguments(["--run-dir", str(tmp_path)]).actors == 1
+    parsed = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    assert parsed.actors == 1
 
     report = session(tmp_path)
 
@@ -639,7 +645,9 @@ def test_an_instance_whose_bring_up_fails_is_still_torn_down(
         return {}
 
     monkeypatch.setattr(train, "train_session", fake_train_session)
-    monkeypatch.setattr(sys, "argv", ["train.py", "--actors", "2", "--no-track"])
+    monkeypatch.setattr(
+        sys, "argv", ["train.py", "--budget-decisions", "1000", "--actors", "2", "--no-track"]
+    )
 
     exit_code = train.main()
 
@@ -709,7 +717,8 @@ def test_a_fleet_raises_every_instance_after_its_own_bring_up(
     monkeypatch.setattr(train, "require_game_activity", fake_require_game_activity)
     monkeypatch.setattr(train, "raise_frame_rate", fake_raise_frame_rate)
     monkeypatch.setattr(
-        sys, "argv", ["train.py", "--actors", "2", "--frame-rate-hz", "90", "--no-track"]
+        sys, "argv", ["train.py", "--budget-decisions", "1000", "--actors", "2",
+         "--frame-rate-hz", "90", "--no-track"]
     )
 
     exit_code = train.main()
@@ -762,7 +771,7 @@ def test_a_single_actor_run_raises_no_rate(
     monkeypatch.setattr(
         train, "raise_frame_rate", lambda instance, frame_rate_hz: raise_calls.append(instance)
     )
-    monkeypatch.setattr(sys, "argv", ["train.py", "--no-track"])
+    monkeypatch.setattr(sys, "argv", ["train.py", "--budget-decisions", "1000", "--no-track"])
 
     exit_code = train.main()
 
@@ -895,7 +904,8 @@ def test_an_epsilon_end_passed_with_the_ladder_is_refused(tmp_path: Path) -> Non
     # is the parsed value, not the shape of the argument vector.
     with pytest.raises(SystemExit, match="--epsilon-end"):
         train.parse_arguments(
-            ["--run-dir", str(tmp_path), "--exploration", "ladder", "--epsilon-end=0.05"]
+            ["--budget-decisions", "1000", "--run-dir", str(tmp_path),
+             "--exploration", "ladder", "--epsilon-end=0.05"]
         )
 
     # Either alone is ordinary, and an unset flag resolves to the uniform floor.
@@ -1051,18 +1061,8 @@ def test_a_checkpoint_from_another_profile_is_refused_before_bring_up(
         )
 
 
-@pytest.mark.parametrize(
-    ("format_version", "game_ms"), [(1, None), (2, None), (3, "parent")]
-)
-def test_an_old_checkpoint_loads_and_resumes_whatever_its_name(
-    tmp_path: Path, format_version: int, game_ms: str | None
-) -> None:
-    """Every format records decisions, so every format continues the budget.
-
-    Formats 1 and 2 record no game time, and a format 3 file from the
-    game-time era is named by game seconds; neither matters, because the
-    resume reads the decisions out of the file and never parses its name.
-    """
+def legacy_checkpoint(tmp_path: Path, format_version: int) -> tuple[Checkpoint, Path]:
+    """A real parent rewritten in an older format under a game-time-era name."""
     first = numbered(tmp_path / "first", 200)
     parent = load(latest_checkpoint(first))
     legacy = tmp_path / "checkpoint-gs0000800.pt"
@@ -1071,7 +1071,9 @@ def test_an_old_checkpoint_loads_and_resumes_whatever_its_name(
             identity=parent.identity,
             progress=replace(
                 parent.progress,
-                environment_game_ms=parent.progress.environment_game_ms if game_ms else 0.0,
+                environment_game_ms=parent.progress.environment_game_ms
+                if format_version >= 3
+                else 0.0,
             ),
             backbone_state=parent.backbone_state,
             resolved_config=parent.resolved_config,
@@ -1079,14 +1081,35 @@ def test_an_old_checkpoint_loads_and_resumes_whatever_its_name(
         ),
         legacy,
     )
+    return parent, legacy
 
-    arm, resume = resumed_arm(tmp_path / "second", legacy, budget=400)
 
-    spent = parent.progress.environment_decisions
-    assert arm.training.report.decisions == resume.decisions == spent
-    assert not arm.training.finished
-    # Game time is only a statistic: an old file without it resumes from zero.
-    assert arm.training.report.game_ms == (parent.progress.environment_game_ms if game_ms else 0.0)
+@pytest.mark.parametrize("format_version", [1, 2, 3])
+def test_a_game_time_era_checkpoint_is_refused_for_resume_by_name(
+    tmp_path: Path, format_version: int
+) -> None:
+    """Its selection-period counters were counted in game time; it evaluates only."""
+    _, legacy = legacy_checkpoint(tmp_path, format_version)
+
+    with pytest.raises(SystemExit, match="game-time budget era") as refusal:
+        resume_from(tmp_path / "second", legacy, 400)
+
+    assert f"format {format_version} checkpoint" in str(refusal.value)
+    assert "evaluation only" in str(refusal.value)
+
+
+def test_a_game_time_era_checkpoint_still_loads_for_evaluation(tmp_path: Path) -> None:
+    """The refusal is the resume's alone: the file rebuilds into a policy."""
+    parent, legacy = legacy_checkpoint(tmp_path, 3)
+
+    assert load(legacy).format_version == 3
+    _, identity = checkpoint_policy(
+        legacy,
+        decision_cadence=parent.identity.decision_cadence.value,
+        upgrade_availability=parent.identity.upgrade_availability.value,
+    )
+
+    assert identity == parent.identity, "rebuilt from the file's own identity"
 
 
 def test_a_checkpoint_without_optimizer_state_is_a_truncated_file(

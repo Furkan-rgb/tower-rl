@@ -55,7 +55,6 @@ from tower_rl.learning.training import (
     action_distribution,
     collection_windows,
     episode_health,
-    select_arm,
 )
 
 
@@ -440,26 +439,6 @@ class TrainingReport:
             ],
         }
 
-    def _arm(self) -> dict[str, object] | None:
-        """The checkpoint `select_arm` chooses, or None.
-
-        None for a run stopped on a kill bar, which selects no arm, and for a
-        run with no eligible period.
-        """
-        if self.training.killed_by is not None:
-            return None
-        period = select_arm(self.training.report.selection_periods)
-        if period is None:
-            return None
-        return {
-            "period": period.index,
-            "decisions": period.decisions_at_end,
-            "near_greedy_mean_final_wave": period.mean_final_wave,
-            "checkpoint": str(
-                self.run_dir / "checkpoints" / numbered_checkpoint_name(period.decisions_at_end)
-            ),
-        }
-
     def summary(self) -> dict[str, object]:
         report = self.training.report
         # Flush the interval the run ended in, so a short measurement is not
@@ -499,13 +478,12 @@ class TrainingReport:
             "selection_periods": [
                 asdict(period) for period in report.selection_periods
             ],
-            "arm": self._arm(),
             "early_stopping": self._early_stopping(),
             "final_evaluation": (
                 asdict(self.final_point) if self.final_point is not None else None
             ),
             # Why there is no final evaluation, when it was skipped on purpose:
-            # a run stopped on a kill bar selects no arm and is not evaluated.
+            # a run stopped on a kill bar is not evaluated here.
             "final_evaluation_skipped": (
                 "kill_bar" if self.training.killed_by is not None else None
             ),

@@ -26,17 +26,21 @@ from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailab
 #: series. Everything else a resume needs was already in version 1 - the
 #: optimizer moments and the target network travel inside `backbone_state`, and
 #: the decision counter inside `progress` - which is why version 1 is still read
-#: rather than refused: the first M2 run's checkpoints are resumable.
+#: rather than refused by `load`.
 #: Version 3 added `environment_game_ms`, from when the budget was game time.
-#: The budget is decisions again, which every version records, so all three are
-#: read and resumable; a version 1 or 2 file reports zero game time.
-#: Early stopping added three counters to `progress` without a fourth version:
-#: they are optional fields with defaults, so a format 3 file written before
-#: them still loads and a reader that does not know them still reads everything
-#: else. Absence is meaningful rather than silent - see
+#: Early stopping added three counters to `progress` within version 3: they are
+#: optional fields with defaults, so a format 3 file written before them still
+#: loads. Absence is meaningful rather than silent - see
 #: `TrainingProgress.checkpoint_periods_closed`.
-CHECKPOINT_FORMAT_VERSION = 3
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)
+#: Version 4 is the decision-budget era (`#68`): the payload is unchanged, but
+#: its selection-period counters are counted in decisions. Versions 1 to 3 still
+#: load, for evaluation; `scripts/train.py` refuses to resume them, because
+#: their plateau counters were counted over other periods.
+CHECKPOINT_FORMAT_VERSION = 4
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4)
+#: The first format a run may resume from. Named rather than compared against
+#: the current version, so a later format does not make version 4 unresumable.
+DECISION_BUDGET_FORMAT_VERSION = 4
 
 
 class CheckpointError(RuntimeError):
@@ -327,6 +331,9 @@ class ResumeState:
     #: None when the parent was untracked, and for every version 1 checkpoint.
     tracking_run_id: str | None
     backbone_state: Mapping[str, Any]
+    #: The format the parent was written in, so the caller can refuse a file
+    #: from before the decision budget.
+    format_version: int
     #: The early-stopping tracker as the parent recorded it. `periods_closed` is
     #: None for a checkpoint written before early stopping existed: the resumed
     #: run then starts the tracker fresh and says so, rather than reading
@@ -347,6 +354,7 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
         optimisation_steps=checkpoint.progress.optimisation_steps,
         tracking_run_id=checkpoint.tracking_run_id,
         backbone_state=checkpoint.backbone_state,
+        format_version=checkpoint.format_version,
         periods_closed=checkpoint.progress.checkpoint_periods_closed,
         best_period_near_greedy_mean=checkpoint.progress.best_period_near_greedy_mean,
         periods_without_improvement=checkpoint.progress.periods_without_improvement or 0,

@@ -52,12 +52,10 @@ from tower_rl.learning.stacked_dqn import (
 from tower_rl.learning.training import (
     KillBar,
     NearGreedyPlateau,
-    SelectionPeriod,
     TrainingConfig,
     TrainingProgressReport,
     TrainingRun,
     collection_windows,
-    select_arm,
 )
 from tower_rl.simulation.instrumented_bridge import BridgeTimeoutError
 from tower_rl.simulation.instrumented_run_adapter import (
@@ -955,7 +953,9 @@ def test_a_period_is_measured_over_the_near_greedy_actors_alone() -> None:
     training = fleet(
         [environment() for _ in range(3)],
         exploration=schedule,
-        budget_decisions=100,
+        # A hundred episodes, twenty periods: enough that the racing threads
+        # always leave two near-greedy periods after the best one.
+        budget_decisions=100 * EPISODE_DECISIONS,
         selection_period_decisions=PERIOD_DECISIONS,
         early_stop_patience_periods=2,
     )
@@ -1130,45 +1130,6 @@ def test_without_a_cadence_checkpoints_are_written_only_where_periods_close() ->
     training.run()
 
     assert written == [20, 40, 60]
-
-
-def test_the_arm_is_the_best_period_from_period_two_on() -> None:
-    """Run 4's rule: period 1 excluded, no mean is ineligible, ties go earlier."""
-
-    def period(index: int, mean: float | None) -> SelectionPeriod:
-        return SelectionPeriod(
-            index=index,
-            decisions_at_end=index * 15_000,
-            near_greedy_episodes=0 if mean is None else 50,
-            mean_final_wave=mean,
-            best_mean_final_wave=None,
-        )
-
-    periods = [period(1, 30.0), period(2, 10.0), period(3, None), period(4, 12.0), period(5, 12.0)]
-
-    arm = select_arm(periods)
-
-    assert arm is not None and arm.index == 4 and arm.decisions_at_end == 60_000
-    assert select_arm(periods[:1]) is None, "period 1 alone is not eligible"
-    assert select_arm([period(1, 5.0), period(2, None)]) is None
-
-
-def test_the_arm_of_a_run_is_a_checkpoint_it_wrote() -> None:
-    """Selected over periods, among checkpoints written on a finer cadence."""
-    training = scripted_fleet(
-        period_means([30, 10, 14, 12]),
-        budget_decisions=4 * PERIOD_DECISIONS,
-        checkpoint_every_decisions=8,
-        early_stop_patience_periods=0,
-    )
-    written: list[int] = []
-    training.numbered_checkpoint = lambda report: written.append(report.decisions)
-
-    report = training.run()
-
-    arm = select_arm(report.selection_periods)
-    assert arm is not None and arm.index == 3 and arm.mean_final_wave == 14
-    assert arm.decisions_at_end == 60 and 60 in written
 
 
 # --- Stopping below a pre-registered kill bar on the decision axis -----------

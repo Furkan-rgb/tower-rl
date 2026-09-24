@@ -7,7 +7,6 @@ that code produces; `docs/solution.md` "BBF recipe" lists each component.
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import math
 import random
@@ -144,14 +143,18 @@ def test_resets_fall_every_interval_and_never_within_one_of_the_end() -> None:
     assert resets == [40_000, 80_000]
 
 
-def test_a_reset_with_exactly_one_interval_left_is_taken() -> None:
-    """`next_reset > no_resets_after` skips; equality does not (spr_agent.py 1465)."""
+def test_a_reset_with_exactly_one_interval_left_is_not_taken() -> None:
+    """No reset in the final interval, as BBF's 100k run skips its fourth.
+
+    The official code counts environment steps with `reset_offset=1`, so its
+    resets fall near 36k, 76k and 116k gradient steps; the strict bound here is
+    what gives the same outcome in gradient steps.
+    """
     config = StackedDqnConfig(reset_every_steps=40_000, no_resets_after_steps=160_000)
 
     assert [step for step in range(0, 160_001) if config.resets_after(step)] == [
         40_000,
         80_000,
-        120_000,
     ]
 
 
@@ -277,30 +280,23 @@ def test_a_reset_neither_reads_nor_moves_the_global_generator() -> None:
     assert torch.equal(torch.rand(3), expected)
 
 
-def test_the_optimizer_state_is_cleared_for_the_reset_parameters_only() -> None:
+def test_the_whole_optimizer_state_is_cleared_at_a_reset() -> None:
+    """BBF's optax chain of masked states defeats `copy_params`' keys, so the
+    fresh state replaces all of it, encoder included."""
     backbone = _bbf(reset_every_steps=0, no_resets_after_steps=0)
     for batch in _batches(3):
         backbone.learn(batch)
     state = backbone.optimizer.state
-    trunk = list(backbone.online.trunk.parameters())
-    reset = [*backbone.online.core.parameters(), *backbone.online.heads.parameters()]
-    kept = {id(p): copy.deepcopy(state[p]) for p in trunk}
-    assert all(state[p] for p in reset), "every parameter has moments before the reset"
+    parameters = list(backbone.online.parameters())
+    assert all(state[p] for p in parameters), "every parameter has moments before the reset"
 
     backbone._reset()
 
-    assert all(p not in state or not state[p] for p in reset)
-    for parameter in trunk:
-        before, after = kept[id(parameter)], state[parameter]
-        assert torch.equal(after["exp_avg"], before["exp_avg"])
-        assert torch.equal(after["exp_avg_sq"], before["exp_avg_sq"])
-        # BBF's one optax count comes from the fresh state (`copy_params`
-        # returns the target for a leaf), so bias correction restarts.
-        assert float(after["step"]) == 0.0
+    assert all(p not in state or not state[p] for p in parameters)
 
     backbone.learn(_batches(1)[0])
 
-    assert all(float(state[p]["step"]) == 1.0 for p in [*trunk, *reset])
+    assert all(float(state[p]["step"]) == 1.0 for p in parameters)
 
 
 def test_learning_resets_on_schedule_and_restarts_both_anneals(
@@ -316,7 +312,7 @@ def test_learning_resets_on_schedule_and_restarts_both_anneals(
         return real(*args, **kwargs)
 
     monkeypatch.setattr(module, "n_step_targets", recording)
-    backbone = _bbf(reset_every_steps=3, no_resets_after_steps=9, n_step_anneal_steps=2)
+    backbone = _bbf(reset_every_steps=3, no_resets_after_steps=10, n_step_anneal_steps=2)
 
     for batch in _batches(9):
         backbone.learn(batch)
@@ -489,14 +485,14 @@ def test_a_resumed_learner_is_the_same_learner_across_a_reset(tmp_path: Path) ->
     """Split before the reset at step 3 and resumed from the file, it ends identical."""
     batches = _batches(6)
     # Unseeded, so the reset seed has to come back from the file.
-    whole = _bbf(seed=None, reset_every_steps=3, no_resets_after_steps=6)
+    whole = _bbf(seed=None, reset_every_steps=3, no_resets_after_steps=7)
     for batch in batches[:2]:
         whole.learn(batch)
     saved = _round_trip(whole, tmp_path / "latest.pt")
     for batch in batches[2:]:
         whole.learn(batch)
 
-    resumed = _bbf(seed=None, reset_every_steps=3, no_resets_after_steps=6)
+    resumed = _bbf(seed=None, reset_every_steps=3, no_resets_after_steps=7)
     resumed.load_state_dict(saved)
     for batch in batches[2:]:
         resumed.learn(batch)

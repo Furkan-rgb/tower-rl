@@ -79,9 +79,9 @@ class StackedDqnConfig:
     #: core and the heads with fresh ones, does the same to the target from an
     #: initialisation of its own, and restarts the n-step and discount anneals.
     reset_every_steps: int = 0
-    #: The gradient steps the run has budgeted. No reset is taken unless a full
-    #: `reset_every_steps` of the budget is left after it to recover in: BBF's
-    #: `no_resets_after`.
+    #: The gradient steps the run has budgeted. No reset is taken unless more
+    #: than a full `reset_every_steps` of the budget is left after it to recover
+    #: in, so none falls in the final interval: BBF's `no_resets_after`.
     no_resets_after_steps: int = 0
     #: A target that follows the online network smoothly. At this replay ratio a
     #: periodic hard copy moves the target in large infrequent jumps, which is
@@ -153,15 +153,19 @@ class StackedDqnConfig:
     def resets_after(self, gradient_steps: int) -> bool:
         """Whether a reset follows the step that brought the count to this.
 
-        Every `reset_every_steps`, unless less than one interval of the budget
-        would be left to recover in - BBF's `next_reset > no_resets_after` skip.
+        Every `reset_every_steps`, unless one interval of the budget or less
+        would be left to recover in. BBF skips on `next_reset > no_resets_after
+        + reset_offset`, counting environment steps with `reset_offset=1`, so its
+        100k run takes resets near 36k, 76k and 116k gradient steps and skips the
+        fourth. The strict bound here gives the same outcome: no reset in the
+        final interval.
         """
         every = self.reset_every_steps
         return (
             every > 0
             and gradient_steps > 0
             and gradient_steps % every == 0
-            and gradient_steps + every <= self.no_resets_after_steps
+            and gradient_steps + every < self.no_resets_after_steps
         )
 
     def _anneal(self, gradient_steps: int) -> float:
@@ -353,14 +357,13 @@ class StackedDqnBackbone:
     def _reset(self) -> None:
         """BBF's shrink-and-perturb reset (`spr_agent.py` `jit_reset`).
 
-        The trunk is BBF's encoder: each parameter becomes 0.5 old + 0.5 fresh
-        and keeps its Adam moments. The core and the heads are its head: they
-        are replaced by a fresh initialisation and their Adam state is dropped.
-        The target is treated the same way from a fresh initialisation of its
-        own. Adam's step count restarts for the kept trunk moments too, because
-        BBF's optimizer state has one shared count and the reset takes it from
-        the fresh state, so those moments are bias-corrected from step one
-        again, exactly as there. The anneals then start their next cycle.
+        The trunk is BBF's encoder: each parameter becomes 0.5 old + 0.5 fresh.
+        The core and the heads are its head: they are replaced by a fresh
+        initialisation. The target is treated the same way from a fresh
+        initialisation of its own. The whole Adam state is cleared, trunk
+        included. BBF's optimizer state is an optax chain of masked states, so
+        `copy_params`' `keys_to_copy` never matches inside it and the fresh state
+        replaces all of it. The anneals then start their next cycle.
         """
         self._resets += 1
         fresh_online = self._fresh_network("online")
@@ -377,12 +380,7 @@ class StackedDqnBackbone:
                     strict=True,
                 ):
                     old.copy_(new)
-        for parameter in _parameters_of(self.online.core, self.online.heads):
-            self.optimizer.state.pop(parameter, None)
-        for parameter in self.online.trunk.parameters():
-            state = self.optimizer.state.get(parameter)
-            if state:
-                state["step"].zero_()
+        self.optimizer.state.clear()
         self._cycle_steps = 0
 
     def _fresh_network(self, role: str) -> StackedPolicyNetwork:

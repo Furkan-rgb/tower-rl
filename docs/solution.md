@@ -1537,11 +1537,11 @@ What the recipe adds to the learner (`learning/stacked_dqn.py`):
 - **Resets.** Every `reset_every_steps` gradient steps, the learner
   shrinks-and-perturbs its trunk to 0.5 old + 0.5 fresh initialisation. The
   core and heads are replaced by a fresh initialisation. The target network
-  gets the same treatment from its own fresh initialisation. AdamW state is
-  dropped for the core and heads. The trunk keeps its moments, but its step
-  count restarts. As in BBF, a reset at step s happens only if s + interval
-  is within the run's budget in gradient steps (`no_resets_after_steps`, the
-  decision budget times the replay ratio). The fresh networks are drawn from a
+  gets the same treatment from its own fresh initialisation. The whole AdamW
+  state is cleared, as BBF's is. A reset at step s happens only if more than
+  one interval is left, s + interval < the run's budget in gradient steps
+  (`no_resets_after_steps`, the decision budget times the replay ratio), so
+  none falls in the final interval. The fresh networks are drawn from a
   seed derived from the run's seed and the reset's number, without touching
   the global generator, so a resumed run resets exactly as the uninterrupted
   one would.
@@ -1575,10 +1575,10 @@ read on 2026-09-24.
 | network width | Impala ResNet at 4x width | paper §3 "Larger network"; gin `width_scale=4` | `network_width` 4: trunk and core hidden 128 → 512 (2.55M parameters) | Same factor. There is no CNN; the input is feature vectors. **Deviation:** the identity embedding is a lookup table, not a width, and stays at 16. |
 | replay ratio | 8 in the headline; 2 in the reduced-compute results and the released gin (`replay_ratio=64` / `batch_size=32`) | paper §3 "Base agent", Fig. 6; gin; `spr_agent.py:1369` | 2 gradient steps per decision | The packet's rule was 2 if a 4x step is at most 25 ms, else 1. The measured step is 17.3–17.6 ms (`docs/experiments.md`, "BBF recipe: learner step at four times the width"). BBF's Fig. 6 shows its components paying off at RR 1–2, at about 0.15 IQM below RR 8. |
 | batch | 32 transitions | gin `batch_size=32` | 8 sequences × 80 steps, burn-in 7 (about 504 learnable transitions) | Shared with every arm (9.4). Each update already replays more transitions than BBF's. |
-| reset interval | every 40k gradient steps; none within one interval of the end | paper §3; gin `reset_every`, `no_resets_after`; `reset_weights`, `spr_agent.py:1444–1471` | `reset_every_steps` 40,000; `no_resets_after_steps` = budget × ratio, with the same skip rule | Same rule. **Deviation:** the warm-up takes no steps, so the final cycle is shorter by a warm-up's worth. |
+| reset interval | every 40k gradient steps; none within one interval of the end | paper §3; gin `reset_every`, `no_resets_after`; `reset_weights`, `spr_agent.py:1444–1471` | `reset_every_steps` 40,000; `no_resets_after_steps` = budget × ratio; a reset only if s + 40,000 < budget | Same outcome. The official code counts environment steps and skips on `next_reset > no_resets_after + reset_offset`, with `reset_offset=1`. At 2 updates per step its resets fall near 36k, 76k and 116k gradient steps, and its 100k run skips the fourth. The strict bound here gives the same result in gradient steps: no reset in the final 40k. **Deviation:** the warm-up takes no steps, so the final cycle is shorter by a warm-up's worth. |
 | which layers | encoder shrink-and-perturbed; head and projections fresh; target reset from its own init | gin `shrink_perturb_keys`, `reset_target`; `jit_reset`, `spr_agent.py:203–300`; defaults at 1016–1020 | trunk shrink-and-perturbed; core and heads fresh; target likewise from its own init | Trunk is to encoder as core plus heads is to head. There is no projection or transition model, since there is no SPR. |
 | interpolation | 0.5 old + 0.5 fresh | gin `shrink_factor=0.5`, `perturb_factor=0.5`; paper §3 "Harder resets" | `SHRINK_FACTOR` 0.5, `PERTURB_FACTOR` 0.5 | Same. |
-| optimizer state at reset | kept for copied encoder moments; fresh for reset keys; optax's shared `count` comes from the fresh state, so Adam's bias correction restarts | `copy_params`, `spr_agent.py:118` | core and heads state dropped; trunk moments kept, its `step` zeroed | Same effect in PyTorch's per-parameter state. |
+| optimizer state at reset | the whole Adam state is replaced by a fresh one, encoder included | `copy_params`, `spr_agent.py:118`; `jit_reset`, `spr_agent.py:203–300` | `optimizer.state.clear()`: every moment and step count restarts | Same. The optimizer state is an optax chain of `MaskedState`s, so `copy_params`' `keys_to_copy` (encoder) never matches inside it and the fresh state replaces all of it. The tier C review reproduced this with the verbatim code: encoder count 5 → 0, mu 0.1229 → 0.0. |
 | n-step anneal | 10 → 3, exponential, over 10k gradient steps after each reset | paper §3 "Receding update horizon"; gin `max_update_horizon`, `update_horizon`, `cycle_steps`; `exponential_decay_scheduler`, `spr_agent.py:311` | 10 → 3 over 10,000, per cycle | Same. The test runs the official scheduler verbatim as its oracle. |
 | discount anneal | 0.97 → 0.997, the same schedule on 1 − γ | paper §3 "Increasing discount factor"; gin `min_gamma`, `gamma`; `spr_agent.py:1254–1260` | 0.97 → 0.997 over 10,000, per cycle | Same. |
 | target network | EMA τ 0.005 every step | gin `target_update_tau=0.005`, `target_update_period=1` | `target_ema_decay` 0.995 | Same. |

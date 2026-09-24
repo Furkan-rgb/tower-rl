@@ -72,17 +72,15 @@ no environment variable that moves it. A linked git worktree shares this same
 checkout so a run started from a worktree still finds the one bridge install
 and the one set of runs.
 
-A host that still has the old `~/.local/state/tower-rl` tree brings it in once,
-with no emulator running:
+The one-time move of an older host's `~/.local/state/tower-rl` tree into
+`state/` is done on this host. `scripts/migrate_state.py` is now just the
+`profile.cmake` writer described below.
 
-```text
-uv run python scripts/migrate_state.py
-```
-
-It renames each entry into `state/`, re-points `state/bridge/current` at its
-sibling relatively, writes `state/bridge/config/profile.cmake` out of the
-installed build's `CMakeCache.txt` (below), prints what moved where, and leaves
-the old location absent.
+`state/mlflow.db` still records the `tower-rl-training` experiment's artifacts
+(16 runs) under `~/.local/state/tower-rl/mlartifacts`: the migration moved the
+store but not the artifact URIs already written into it. **Do not delete
+`~/.local/state/tower-rl`** — those runs' artifacts live there and nowhere
+else.
 
 ### Building and installing the bridge
 

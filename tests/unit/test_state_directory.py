@@ -163,18 +163,12 @@ def test_a_malformed_worktree_dot_git_file_raises(tmp_path: Path) -> None:
 
 
 def test_nothing_in_the_code_still_points_at_the_former_home_directory_location() -> None:
-    """The move is complete only if no source or entry point names the old tree.
-
-    `scripts/migrate_state.py` is the exception and is excluded by name: moving
-    the old location is precisely what it is for, and it is the one file that may
-    still say where that location was.
-    """
+    """The move is complete: no source or entry point names the old tree."""
     trees = sorted((REPOSITORY / "src").rglob("*.py")) + sorted(SCRIPTS.glob("*"))
     offenders = [
         str(path.relative_to(REPOSITORY))
         for path in trees
         if path.is_file()
-        if path.name != "migrate_state.py"
         if FORMER_LOCATION in path.read_text()
     ]
     assert offenders == []

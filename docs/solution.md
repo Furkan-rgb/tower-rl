@@ -1645,8 +1645,9 @@ actor's episodes against one port), `run_actors.py` (a fleet, for throughput),
 `render_recording.py` (a recording and its decision log composed into one
 video), `select_checkpoint.py` (the post-hoc choice among a run's numbered
 checkpoints), `report_arms.py` (IQM and per-wave comparison of evaluation
-sets), and `migrate_state.py` (the one-time move of `~/.local/state/tower-rl`
-into `state/`). The shell helpers beside them —
+sets), and `migrate_state.py` (writes `state/bridge/config/profile.cmake`
+from the installed bridge's own `CMakeCache.txt`). The shell helpers beside
+them —
 `create_avd.sh`, `launch_avd.sh` and `instrumented_bridge.sh` — are not
 argparse entry points.
 `tower_rl.doctor` is a library module with the host/APK/device checks below and

@@ -415,7 +415,24 @@ unattended, redirected to a file, or read afterwards rather than watched. There
 per wall second, the speed the game is actually played at. The fleet runs at 120
 Hz to make an advance cheap in wall time, which buys throughput and nothing a
 human wants; `--frame-rate-hz 120` is accepted if you want to watch it at that
-rate.
+rate. `--frame-game-ms` is pinned the same way, to `1000/60` — real time — even
+though `run_episodes.py`'s own default is the fleet's 100 ms; M2-S001 found the
+two equivalent, so pinning changes only the pace a human watches at, not what
+the agent plays through. Pass `--frame-game-ms` explicitly to override it.
+
+**An unattended `--record` session must run with `--no-window`.** A hidden or
+covered emulator window starves for host compositor frames — measured at
+roughly **1 fps** — which is slow enough to hit the environment's per-advance
+wall-clock ceiling and fail the session outright (board #59). `screenrecord`
+captures the guest display directly, so recording needs no host window at all;
+the terminal panel (or `--no-panel`'s log lines) still works either way, since
+it is drawn in the terminal and not the emulator's own window:
+
+```text
+uv run python scripts/spectate.py --policy checkpoint:<path-to-checkpoint.pt> \
+  --no-window --no-panel --record session.mp4
+uv run python scripts/render_recording.py --recording state/recordings/session
+```
 
 **Spectating takes the host to itself.** The script refuses to start while any
 emulator is running — `adb devices` non-empty, or a `qemu-system` process

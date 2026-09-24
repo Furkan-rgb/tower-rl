@@ -56,6 +56,9 @@ case "$*" in
     rm -f "$state"/devices.[0-9]*
     rm -rf "$TOWER_STAGE_PROC_ROOT/${serial#emulator-}"
     ;;
+  "logcat -d -b main,system,crash,events -v threadtime")
+    echo "logcat-line: $serial"
+    ;;
   "shell ip -o -4 addr show")
     if [ -e "$state/online-$serial" ]; then
       echo "2: eth0    inet 10.0.2.15/24 scope global eth0"
@@ -73,7 +76,14 @@ esac
 TIMEOUT_STUB = """#!/usr/bin/env bash
 set -uo pipefail
 echo "timeout $*" >> "$TOWER_STUB_STATE/adb-calls"
-shift 3
+# Two call shapes reach this stub: `timeout -k <grace> <bound> cmd...` (cleanup)
+# and `timeout <bound> cmd...` (the failure-path logcat dump). Each is stripped
+# down to the wrapped command before the real binary applies its own bound.
+if [ "$1" = "-k" ]; then
+  shift 3
+else
+  shift 1
+fi
 exec /usr/bin/timeout -k 1 3 "$@"
 """
 
@@ -326,6 +336,40 @@ def test_a_failed_stage_surfaces_crash_shaped_lines_from_each_emulator_log(
     assert "crash-lines: emulator-5556" in written
     assert "ColorBuffer::create failed" in written
     assert "crash-lines: emulator-5558" in written
+
+
+def test_a_failed_stage_dumps_guest_logcat_before_cleanup(shims: Shims) -> None:
+    """A bring-up failure leaves no emulator log line, so the guest's own log
+    has to be pulled while the instance is still attached — before cleanup, not
+    after, and it must not change the exit status or skip cleanup (board #59).
+    """
+    bring_up(shims, "emulator-5556", "emulator-5558")
+    stage = shims.stage("echo collapsing >&2; exit 3")
+
+    result = run_stage(shims, str(stage))
+
+    assert result.returncode == 3
+    assert shims.cleaned == ["emulator-5556", "emulator-5558"], "cleanup still ran"
+    written = log_text(shims)
+    assert "logcat: emulator-5556 (" in written
+    assert "logcat: emulator-5558 (" in written
+    logcat_5556 = shims.logs / "test-stage-emulator-5556-logcat.txt"
+    logcat_5558 = shims.logs / "test-stage-emulator-5558-logcat.txt"
+    assert "logcat-line: emulator-5556" in logcat_5556.read_text()
+    assert "logcat-line: emulator-5558" in logcat_5558.read_text()
+    assert "stage test-stage: exit 3, cleanup ok, instances 2/2 cleaned" in result.stdout
+
+
+def test_a_successful_stage_does_not_dump_guest_logcat(shims: Shims) -> None:
+    bring_up(shims, "emulator-5556")
+    stage = shims.stage("echo collecting")
+
+    result = run_stage(shims, str(stage), instances=1)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    written = log_text(shims)
+    assert "logcat:" not in written
+    assert not (shims.logs / "test-stage-emulator-5556-logcat.txt").exists()
 
 
 def test_a_successful_stage_does_not_surface_emulator_log_lines(shims: Shims) -> None:

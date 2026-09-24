@@ -320,6 +320,25 @@ adopted, replace the flat ±100 ms per-wave `game_ms` margin with one set from
 measured variance (e.g. a multiple of the pooled per-wave SE) before this
 design is reused.
 
+**Lead decision (2026-09-24, on this stage, commit `e101b77`): ADOPT
+`render-interval-16` for TRAINING collection only.** Fidelity passes on the
+arbiter: final wave B−A is −0.048 [−0.143, +0.071], inside ±0.5, and
+decisions/wave, advances_cut_short and validity also pass. The per-wave
+`game_ms` ±100 ms margin cannot be met at this n: A1 vs A2 alone differ by
+181 ms, against a per-wave SD of about 7000 ms, so that result is not
+evidence of a difference — it is the pre-registration defect already
+identified above, not a fidelity break. The skip probe gave no reading (a
+repeat of `M1B-E053`); the mechanism therefore rests on fps at 2.1× the
+vsync ceiling (solo, stage 2) and 1.92× per-actor collection (fleet, stage
+3), not on a probe reading. **Mitigation: arm evaluation stays on the
+default build** (`state/bridge/current`), so benchmark numbers remain
+like-for-like with run 4 and the baselines, all of which were measured on
+the default build; only training collection switches. **Spectate never uses
+this build** — a human-facing recording must show the game rendering
+normally. **Reversible per stage**: the build is selected by whether
+`TOWER_BRIDGE_BUILD_DIR` is set for that stage's `run_stage.sh`/runner
+invocation, with no code change either way.
+
 ## M2-P004 — Milestone 2, run 4: DER-rate gradient steps, BBF n-step anneal, `frame_game_ms` 100, one seed (pre-registered, written before any run)
 
 **Change vs run 3 (`M2-P003`).** Everything else identical to run 3: `stacked-dqn`,

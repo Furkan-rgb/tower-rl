@@ -329,6 +329,21 @@ about twenty-four times the episode throughput of the normal-speed reference.
 A renderer or resolution change must be re-validated against the screen
 classifier before any unattended run, because the boundary taps depend on it.
 
+**Training collection and evaluation deliberately run on different bridge
+builds.** The default build (`state/bridge/current`) renders every frame and
+is what every baseline and formal evaluation has ever been measured under.
+An experiment variant built with `TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16`
+renders one player-loop frame in sixteen; fleet equivalence held on final
+wave, decisions/wave, and `advances_cut_short`, and per-actor collection
+throughput was 1.92× the default build's (`#27` stage 3, `docs/experiments.md`).
+The Lead decision (2026-09-24) adopted the render-interval-16 build for
+**training collection only**: evaluation arms stay on the default build so
+their numbers remain like-for-like with the baselines and with run 4, and
+`scripts/spectate.py` recordings never use it, because a human-facing
+recording must show the game rendering normally. The build is selected per
+stage by `TOWER_BRIDGE_BUILD_DIR`, never by repointing `state/bridge/current`,
+so the split is reversible per invocation with no code change either way.
+
 Sparse visual captures independently check lifecycle state and provide failure
 artifacts. Normal-speed parity runs compare the bridge actor with the existing
 visible actor before training, and each higher time scale repeats deterministic,

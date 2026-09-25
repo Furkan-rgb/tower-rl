@@ -164,7 +164,90 @@ polling loops.
 
 ### Results, as run
 
-(to be filled in after the run)
+**Verdict: WORSE than the M3-P001 stacked-dqn arm; BETTER than both
+baselines.** Budget completed on the second attempt, no kill bar fired.
+
+**Discarded attempt.**
+`state/runs/session-20260925-032627/dreamerv3-20260925-032627-bb98fc/` was
+aborted under the Lead's decision: `emulator-5562` failed bring-up ("never
+became ready: the game is still starting: main_unavailable", a transient
+flake), and the fleet proceeded on 6/7 actors without retrying it. Stopped
+by SIGINT at 644/120,712 decisions once the shortfall was noticed (the
+fleet was healthy and progressing on 6 actors, but 6 vs 7 actors confounds
+collection correlation and wall time against every other portfolio row, all
+run at 7). `run_stage.sh` exited 130, cleanup_checks passed for every
+instance, host verified clean before the relaunch. This run directory was
+left in place, untouched, and not resumed from — discarded under the
+protocol's actor count, not a change to the pre-registration.
+
+**Training, as actually run.**
+`state/runs/session-20260925-033344/dreamerv3-20260925-033344-f22d4f/`.
+Launched 2026-09-25T03:33:44+02:00 (fresh, `parent_checkpoint: null`),
+exited 06:26:58 (stage wall 02:57:54, well inside the 5h cap), all 7 actors
+present throughout. `decisions`: 121,413 (past the 120,712 budget by the
+expected overshoot). `optimisation_steps`: 30,231 (0.25 gradient steps per
+decision, as fixed by the train ratio). `episodes`: 1,376 (1,373 valid).
+Neither kill bar fired: K1 (`12000:8000:6.1`) read **6.545** over 55
+episodes at 12,026 decisions — close to the 6.1 floor but clear of it; K2
+(`26262:8000:6.1`) read **8.551** over 227 episodes at 26,302 decisions.
+Not early-stopped (patience 0, whole budget spent). 8 selection periods
+closed.
+
+**In-training selection-period curve** (near-greedy mean final wave; period
+1 excluded from arm selection per §9.2b):
+
+| period | decisions at close | near-greedy episodes | mean final wave |
+|---|---|---|---|
+| 1 | 15,012 | 320 | 5.088 |
+| 2 | 30,003 | 149 | 10.772 |
+| 3 | 45,065 | 159 | 11.616 |
+| 4 | 60,047 | 141 | 12.589 |
+| 5 | 75,131 | 147 | 12.884 |
+| 6 | 90,010 | 144 | 12.813 |
+| **7** | **105,118** | **146** | **12.973** |
+| 8 | 120,050 | 154 | 12.747 |
+
+**Arm**, `docs/solution.md` §9.2b: the best of each period's own near-greedy
+mean across periods 2-8 is period 7, **12.973**, at 105,118 decisions —
+`checkpoint-d0105118.pt`, sha256
+`5aa6eea1f82f97b6da2661938d0318ffb75a7fb3f0b8cfbf684f54a806f3b4bc`, verified
+against its `.sha256` sidecar before evaluation. Note: the run's own
+early-stopping tracker (`early_stopping.best_period_near_greedy_mean_final_wave`)
+reports 12.884 (period 5) instead, because that tracker's baseline only
+moves on a ≥0.2-wave improvement over the running baseline (`training.py`,
+`PlateauTracker.close_period`) — period 7 beat period 5 by only 0.089
+waves, short of that threshold, so the early-stop baseline (a patience
+mechanism) never moved to it. §9.2b's own rule reads each period's measured
+mean directly, not that tracker, so the arm is period 7's checkpoint.
+
+**Evaluation.** `state/records/m3-p002/eval-arm/`, default build, all 7
+actors completed with no failures, n=105/105 valid, no retry needed. Mean
+final wave **12.676**, SD **2.392**, 95% CI (normal approx.) **[12.219,
+13.134]**.
+
+**Statistics** (`bootstrap_difference`, seed 0, 10,000 resamples). vs the
+`M3-P001` stacked-dqn arm (13.476, n=105, same protocol, same budget — not
+budget-confounded): **-0.800 [-1.467, -0.152], WORSE**. vs scripted-`all`
+(6.105, n=105): **+6.571 [+6.105, +7.038], BETTER**. vs random-`all` (3.556,
+n=90): **+9.121 [+8.573, +9.678], BETTER**.
+
+**Secondary — `#75` wall check.** Max final wave in the eval set: **17**.
+Zero of 105 episodes reached wave 20+; none reached wave 22.
+
+**Secondary — production learner step time.**
+`decision_time.fleet.buckets.learner_step.wall_seconds` (7,212.667s) /
+`optimisation_steps` (30,231) = **238.59 ms/step** under real 7-actor
+device load — about 1.5× the idle-host estimate in §9.4c (141 ms/update +
+16.7 ms collate ≈ 157.7 ms/update). Per decision: 7,212.667s / 121,413
+decisions = **59.41 ms/decision** (learner only), consistent with 0.25
+gradient steps per decision at that per-step cost.
+
+Host cleanup verified after every stage: the aborted training stage (0/7
+required active cleanup, all cleanup_checks passed), the relaunched
+training stage (0/7 required active cleanup), and the eval stage (0/7
+required active cleanup, 1/7 exited during teardown while already
+offline) — zero qemu processes and empty `adb devices` confirmed after
+each.
 
 ## M3-P001: stacked-dqn benchmark row, 120,712 decisions (pre-registered, written before the run)
 

@@ -66,6 +66,7 @@ def _sequence(*, padding: int = 0, filler: float = 0.0, done: bool = True) -> Re
             reward=0.0 if index < padding else 1.0 + index,
             done=done and index == LENGTH - 1,
             admissible=True,
+            game_ms=1000.0,
             padding=index < padding,
         )
         for index in range(LENGTH)

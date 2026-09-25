@@ -463,6 +463,15 @@ class TrainingReport:
             "optimisation_steps": report.optimisation_steps,
             "mean_recent_weighted_loss": report.mean_recent_weighted_loss,
             "sequences_accepted": report.sequences_accepted,
+            # Among transitions that carried a reward, the fraction whose span
+            # ended on the wave change: near 1 supports booking a reward at the
+            # end of its span under the game-time discount. Reported, not enforced.
+            "reward_bearing_transitions": report.reward_bearing_transitions,
+            "wave_change_ended_span_fraction": (
+                report.wave_change_ended_span / report.reward_bearing_transitions
+                if report.reward_bearing_transitions
+                else None
+            ),
             "wall_seconds": report.wall_seconds,
             "final_waves": report.final_waves,
             # The collection curve first: it is what the run is read from, and

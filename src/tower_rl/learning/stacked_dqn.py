@@ -39,6 +39,13 @@ class StackedDqnConfig:
     #: 121 decisions, so 0.997 (horizon 333) is effectively undiscounted and
     #: leaves the return dominated by noise far past anything the state predicts.
     discount: float = 0.99
+    #: Discount per second of game time instead of per decision, or None for
+    #: `discount` per decision. A transition that spans t game-seconds is then
+    #: discounted by this ** t: a purchase takes no game time and costs no
+    #: discount, and the horizon is fixed in waves rather than in however many
+    #: choice points a policy makes (docs/solution.md 9.4d). When set,
+    #: `discount` is not read.
+    discount_per_game_second: float | None = None
     #: About 21.7 decisions pass per wave, and the whole reward is the wave
     #: change, so a short n-step needs several bootstrap hops to carry one wave
     #: back to the decisions that earned it.
@@ -68,6 +75,10 @@ class StackedDqnConfig:
             raise ValueError("history length must be at least one step")
         if not 0.0 < self.discount < 1.0:
             raise ValueError("discount must be within (0, 1)")
+        if self.discount_per_game_second is not None and not (
+            0.0 < self.discount_per_game_second < 1.0
+        ):
+            raise ValueError("discount per game-second must be within (0, 1)")
         if self.n_step < 1:
             raise ValueError("n-step must be positive")
         if (self.n_step_final is None) != (self.n_step_anneal_steps == 0):
@@ -78,6 +89,28 @@ class StackedDqnConfig:
             raise ValueError("the n-step anneal cannot take a negative number of steps")
         if not 0.0 < self.target_ema_decay < 1.0:
             raise ValueError("target EMA decay must be within (0, 1)")
+
+    @property
+    def books_reward_at_span_end(self) -> bool:
+        """Whether a reward is valued at the end of its span rather than its start.
+
+        Only under the game-time discount, where a span has a length to be
+        discounted over: the wave change is booked where the span ends, so the
+        reward a transition carries, valued at its start, is d * r. Per decision
+        a transition has no length and the reward is r, as it always was.
+        """
+        return self.discount_per_game_second is not None
+
+    def transition_discounts(self, game_ms: torch.Tensor) -> torch.Tensor:
+        """Each transition's own discount d, from the game time it spanned.
+
+        float64, so a constant per-decision d multiplies up to exactly the
+        scalar powers the per-decision target has always used.
+        """
+        if self.discount_per_game_second is None:
+            return torch.full_like(game_ms, self.discount, dtype=torch.float64)
+        seconds = game_ms.to(torch.float64) / 1000.0
+        return torch.pow(self.discount_per_game_second, seconds)
 
     def n_step_at(self, gradient_steps: int) -> int:
         """The n the target is built with after this many gradient steps.
@@ -181,6 +214,15 @@ class StackedDqnBackbone:
         rewards = batch.rewards[:, burn_in:]
         dones = batch.dones[:, burn_in:]
         real = (~batch.padding[:, burn_in:]).to(rewards.dtype)
+        discounts = self.config.transition_discounts(batch.game_ms[:, burn_in:])
+        # The reward each transition carries, valued at its start. Change C's
+        # potential-based shaping term F_t = d_t * phi(s_t+1) - phi(s_t) is
+        # added here, booked at the decision epoch.
+        step_rewards = (
+            rewards * discounts.to(rewards.dtype)
+            if self.config.books_reward_at_span_end
+            else rewards
+        )
 
         online_q, _ = self.online(scalars, rows, mask, history)
         chosen = online_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
@@ -188,12 +230,12 @@ class StackedDqnBackbone:
         with torch.no_grad():
             target_q, _ = self.target(scalars, rows, mask, history)
             targets, learnable = n_step_targets(
-                rewards,
+                step_rewards,
                 dones,
                 online_q.detach(),
                 target_q,
                 mask,
-                discount=self.config.discount,
+                discounts=discounts,
                 # Taken before this step is counted, so the first step is t = 0.
                 n_step=self.config.n_step_at(self._steps),
             )
@@ -220,10 +262,10 @@ class StackedDqnBackbone:
             fit = value_fit_correlation(
                 online_q.detach(),
                 mask,
-                rewards,
+                step_rewards,
                 dones,
                 real,
-                discount=self.config.discount,
+                discounts=discounts,
             )
         return LearnMetrics(
             weighted_loss=float(loss.detach().item()),

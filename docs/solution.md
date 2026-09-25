@@ -1389,7 +1389,8 @@ Use configurable defaults close to established R2D2 practice:
   travels in the checkpoint, so a resume continues the schedule; unset, n is
   fixed, as for every run before run 4;
 - discount 0.99. Its horizon of 100 decisions is comparable to the ~121 decision
-  episode; 0.997 is a horizon of 333 and is effectively undiscounted here;
+  episode; 0.997 is a horizon of 333 and is effectively undiscounted here.
+  `stacked-dqn` may instead discount by game time (section 9.4d);
 - Double Q-learning;
 - dueling head;
 - prioritized replay;
@@ -1596,6 +1597,44 @@ The deviations, the rows in bold, and these differences are the whole list. Meas
 production shapes on an idle 4090: 141 ms per update, plus 16.7 ms to collate.
 At 0.25 per decision that is ≈40 ms per decision, ≈1.3 h over 120,712
 decisions (`docs/experiments.md`, "DreamerV3 learner step time").
+
+### 9.4d Discounting by game time (stacked-dqn, behind a flag)
+
+Section 7.3 makes the discount time-aware once the variance of the interval
+between decisions is measured. Under choice points that interval is not one
+length: a confirmed purchase advances no game time at all
+(`docs/environment-contract.md`), while a WAIT spans game time up to the next
+choice point. Discounting per decision taxes every purchase by (1 − γ)·V and
+makes the horizon depend on how many choice points a policy creates.
+
+`scripts/train.py --discount-per-game-second γ_s` discounts `stacked-dqn` by
+game time instead, as a semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
+1999):
+
+- a transition that spans Δt game-seconds (`RunTransition.game_ms`, the round
+  clock summed over its advances) has its own discount d = γ_s^Δt, so a
+  purchase has d = 1;
+- its reward, the wave change over the span, is booked at the end of the span
+  and valued at the span's start as d·r;
+- the n-step bootstrap is discounted by the product of the window's ds. n stays
+  counted in decisions and its anneal is unchanged; padding spans 0 s;
+- the value-fit correlation uses the same d·r and d, so it measures the return
+  the target is trained towards.
+
+The chosen value is γ_s = 0.997 per game-second: a horizon of 333 game-seconds,
+about 9.5 waves of 35 s, the smallest round horizon that covers the 8–10 waves
+to the next boss wall. Nothing longer is taken: with a model estimated from
+limited data, a planning horizon shorter than the true one plans better (Jiang,
+Kulesza, Singh & Lewis 2015).
+
+Unset, the discount is `--discount` per decision (0.99), with targets identical
+to the bit to those before the flag existed; the two flags are refused
+together, and the flag is refused under `--backbone dreamerv3`, which keeps its
+published per-step discount. The flag is recorded in the resolved config, and a
+resume under a different discount than its checkpoint's is refused. The run
+summary reports, among transitions that carried a reward, the fraction whose
+span's last event was the wave change - the evidence for booking at the span's
+end. Per decision stays the default pending the M3-P003 comparison.
 
 ### 9.5 Distributed exploration
 

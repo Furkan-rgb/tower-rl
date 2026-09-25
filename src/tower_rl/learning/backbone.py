@@ -60,6 +60,9 @@ class SequenceBatch:
     dones: Tensor  # [batch, time]
     #: True where a step is filler rather than experience. [batch, time]
     padding: Tensor
+    #: Game time each transition spanned, in ms; 0 for a purchase and for
+    #: padding. [batch, time]
+    game_ms: Tensor
     weights: Tensor  # [batch]
     burn_in: int
 
@@ -168,7 +171,7 @@ def collate(
     # tensors are cut from it there. Action indices and flags are small
     # integers, which float32 holds exactly. Building nested Python lists and a
     # tensor per field instead was most of a gradient step's time.
-    step_width = SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + len(RUN_ACTIONS) + 4
+    step_width = SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + len(RUN_ACTIONS) + 5
     values = itertools.chain.from_iterable(
         part
         for sequence in sequences
@@ -177,7 +180,7 @@ def collate(
             step.features.scalars,
             step.features.rows,
             step.features.mask,
-            (step.action_index, step.reward, step.done, step.padding),
+            (step.action_index, step.reward, step.done, step.padding, step.game_ms),
         )
     )
     batch = len(sequences)
@@ -199,6 +202,7 @@ def collate(
         rewards=steps[..., tail_at + 1].contiguous(),
         dones=steps[..., tail_at + 2] != 0,
         padding=steps[..., tail_at + 3] != 0,
+        game_ms=steps[..., tail_at + 4].contiguous(),
         weights=flat[stepped:],
         burn_in=burn_in,
     )

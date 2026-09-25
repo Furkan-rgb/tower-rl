@@ -8,6 +8,7 @@ which profile a sequence came from, and it refuses to mix them.
 
 from __future__ import annotations
 
+import math
 import random
 import threading
 from collections import deque
@@ -62,10 +63,16 @@ class ReplayStep:
     #: terminal step can reach replay at all. A padded step is never a training
     #: target and never contributes a TD error; see `Actor._emit`.
     padding: bool = False
+    #: The game time the transition spanned, in ms: 0 for a purchase. Required,
+    #: because a default of 0 would silently mean "no discount" to a learner
+    #: that discounts by game time, at every call site that forgot it.
+    game_ms: float = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if not 0 <= self.action_index < len(RUN_ACTIONS):
             raise ReplayRejected(f"action index {self.action_index} is outside the schema")
+        if not math.isfinite(self.game_ms) or self.game_ms < 0.0:
+            raise ReplayRejected(f"game time {self.game_ms} ms is not finite and non-negative")
 
 
 @dataclass(frozen=True)

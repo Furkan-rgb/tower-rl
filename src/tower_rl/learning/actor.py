@@ -18,7 +18,12 @@ from tower_rl.environment.decision_time import (
     POLICY_FORWARD,
     DecisionTimeProfile,
 )
-from tower_rl.environment.episode import REWARD_SCHEMA_VERSION, EpisodeSummary, TerminationOutcome
+from tower_rl.environment.episode import (
+    REWARD_SCHEMA_VERSION,
+    DecisionEvent,
+    EpisodeSummary,
+    TerminationOutcome,
+)
 from tower_rl.environment.features import StateFeatures, encode_state
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION, WAIT, action_at, action_index
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
@@ -76,6 +81,14 @@ class EpisodeResult:
     #: makes a degenerate policy - one that waits out every episode - visible
     #: while it is happening rather than only in the final wave.
     wait_decisions: int = 0
+    #: Transitions that carried a reward, and how many of those ended on the
+    #: wave change. A learner that discounts by game time books a reward at the
+    #: end of its span; the second count over the first says how often the wave
+    #: change really is where the span ended (docs/solution.md 9.4d). A span's
+    #: events are its conditions in the order first met, so this reads the
+    #: last new condition, not strictly the last advance.
+    reward_bearing_transitions: int = 0
+    wave_change_ended_span: int = 0
 
 
 @dataclass
@@ -99,6 +112,7 @@ class Actor:
         carried_state = self.policy.initial_state()
         steps: list[ReplayStep] = []
         total_reward = 0.0
+        reward_bearing = wave_change_ended = 0
         termination = TerminationOutcome.OPERATOR_STOP
 
         for _ in range(self.config.max_decisions_per_episode):
@@ -114,6 +128,10 @@ class Actor:
                 )
             transition = self.environment.step(action_at(action_index))
             total_reward += transition.reward
+            if transition.reward != 0.0:
+                reward_bearing += 1
+                if transition.events and transition.events[-1] is DecisionEvent.WAVE_CHANGED:
+                    wave_change_ended += 1
             steps.append(
                 ReplayStep(
                     features=features,
@@ -121,6 +139,7 @@ class Actor:
                     reward=transition.reward,
                     done=transition.terminated,
                     admissible=transition.admissible,
+                    game_ms=transition.game_ms,
                 )
             )
             if transition.termination is not None:
@@ -139,6 +158,8 @@ class Actor:
             accepted,
             total_reward,
             wait_decisions=sum(1 for step in steps if step.action_index == WAIT_ACTION_INDEX),
+            reward_bearing_transitions=reward_bearing,
+            wave_change_ended_span=wave_change_ended,
         )
 
     def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:
@@ -225,5 +246,7 @@ class Actor:
             done=False,
             admissible=True,
             padding=True,
+            # No time passes in filler, so it discounts nothing.
+            game_ms=0.0,
         )
         return (filler,) * (length - len(steps)) + tuple(steps)

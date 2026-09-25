@@ -1684,8 +1684,10 @@ which is under 1. Two trajectories with different final waves are ranked as
 before, and only equal final waves are graded further. In expectation the
 learner may trade less than one wave of expected final wave for in-wave
 survival. There is nothing to game: the wave clock is exogenous, time only
-advances, and a purchase earns nothing. The evaluation metric, the final wave,
-is unchanged.
+advances, and a purchase earns nothing. The ranking and the absence of anything
+to game hold while waves are clock-driven. That was measured at this baseline on
+2026-09-25, and must be re-justified if progression alters wave timing. The
+evaluation metric, the final wave, is unchanged.
 
 The flag is off by default, and learning without it is identical to the bit. It
 is refused without `--discount-per-game-second`, since β and d come from it, and

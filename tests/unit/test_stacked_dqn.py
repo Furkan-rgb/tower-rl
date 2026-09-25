@@ -8,10 +8,12 @@ from fakes.backbone_equality import parameters_are_equal
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
+from tower_rl.learning import stacked_dqn
 from tower_rl.learning.backbone import collate
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork
 from tower_rl.learning.replay import ReplaySequence, ReplayStep, SequenceMetadata
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.value_learning import n_step_targets
 
 ACTIONS = len(RUN_ACTIONS)
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
@@ -335,15 +337,27 @@ def test_learning_with_the_survival_time_reward_off_is_bit_identical(
         assert all(torch.equal(left_state[key], right_state[key]) for key in left_state)
 
 
-def test_learning_with_the_survival_time_reward_on_learns_from_it() -> None:
-    """On, the wave reward is replaced: the same batch trains other weights."""
+def test_learning_with_the_survival_time_reward_on_learns_from_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On, the target is built from the survival reward in place of the wave reward."""
     spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
     batch = collate((_timed_sequence(spans),), (1.0,))
-    wave = _backbone(discount_per_game_second=0.997)
     survival = _backbone(discount_per_game_second=0.997, survival_time_reward=True)
+    captured: list[torch.Tensor] = []
 
+    def capturing(rewards: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        captured.append(rewards.clone())
+        return n_step_targets(rewards, *args, **kwargs)
+
+    monkeypatch.setattr(stacked_dqn, "n_step_targets", capturing)
     metrics = survival.learn(batch)
-    wave.learn(batch)
 
+    config = survival.config
+    expected = config.survival_rewards(
+        config.transition_discounts(batch.game_ms[:, batch.burn_in :])
+    ).to(batch.rewards.dtype)
+    assert len(captured) == 1
+    assert torch.equal(captured[0], expected)
+    assert not torch.equal(expected, batch.rewards[:, batch.burn_in :])
     assert torch.isfinite(torch.tensor(metrics.weighted_loss))
-    assert not parameters_are_equal(wave.online, survival.online)

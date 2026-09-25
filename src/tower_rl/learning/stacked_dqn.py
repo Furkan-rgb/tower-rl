@@ -59,8 +59,8 @@ class StackedDqnConfig:
     #: the wave reward cannot express. Needs `discount_per_game_second`.
     survival_time_reward: bool = False
     #: About 21.7 decisions pass per wave, and the whole reward is the wave
-    #: change, so a short n-step needs several bootstrap hops to carry one wave
-    #: back to the decisions that earned it.
+    #: change (under the wave reward), so a short n-step needs several
+    #: bootstrap hops to carry one wave back to the decisions that earned it.
     n_step: int = 10
     #: Where the n-step anneal ends, or None to hold `n_step` fixed. Starting
     #: long gives fast early credit propagation; shortening it as the value

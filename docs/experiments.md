@@ -181,6 +181,193 @@ after. Stop after three consecutive unexplained failures.
 `state/bridge/current` is never repointed. One device stage at a time; no
 polling loops.
 
+### Results, as run
+
+**Verdict: ADOPT, per the pre-registered rule exactly as written. Not
+"wall crossed."** Health (the new gate): the budget completes (122,666
+decisions past the 120,712 budget), neither kill bar fires (K1 mean
+**10.917** at 12,321 decisions over 12 near-greedy episodes, K2 mean
+**11.552** at 26,325 decisions over 58 near-greedy episodes, both clear of
+the 6.1 floor), and the loss is finite (`mean_recent_weighted_loss`
+0.04007) — healthy under the prospective gate above; value-fit correlation
+(0.7589) is descriptive only and does not gate. Eval mean final wave
+**16.346** ≥ the ADOPT threshold **15.97** — **ADOPT**. The wall-crossed
+tier needs ADOPT **and** eval P(final ≥ 22) ≥ 0.05; observed P(final ≥ 22)
+is **0.000** (0/104), so the tier is **not** met.
+
+**Deviation from the pre-registration.** Training bring-up was clean (7/7
+actors throughout, no retry needed). Evaluation needed its one allowed
+retry: the first attempt (`m3-p005-eval-arm`) failed at bring-up — actor 6
+(`emulator-5568`) hit `ActorFailure: instrumented_bridge.sh deploy failed
+on emulator-5568: ... adb: error: cannot bind listener: Address already in
+use`, 6/7 actors up. Per the one-retry rule this was stopped cleanly
+(`kill -INT`), and the log confirmed the `KeyboardInterrupt` was caught,
+all 7 instances torn down, and the host verified clean (no qemu process, no
+adb device). No episodes had been collected yet at that point (the failure
+was during bring-up, before any actor reached its 15-episode budget), so
+there was no partial-attempt output to move aside. The retry
+(`m3-p005-eval-arm-retry1`) was launched fresh into the same output
+directory and completed 7/7 actors, exit 0, cleanup verified (the
+port-bind conflict did not recur — most likely a leftover `adb forward`
+from the killed first attempt that had cleared by the retry).
+
+**Training.**
+`state/runs/session-20260925-201545/stacked-dqn-20260925-201545-e7a020/`.
+Stage wall `02:00:15`, exit 0, "verified: no qemu process, no adb device".
+Manifest confirmed `actors=7`, `backbone=stacked-dqn`, `seed=0`,
+`early_stop_patience_periods=0`, `kill_bars=[[12000,8000,6.1],
+[26262,8000,6.1]]`, `budget_decisions=120712`,
+`discount_per_game_second=0.997`, `survival_time_reward=True`,
+`ez_greedy=True` — all three flags resolved as intended.
+`decisions`: **122,666** (past the 120,712 budget by the expected
+at-most-one-episode-per-actor overshoot). `optimisation_steps`: 119,116.
+`episodes`: 721 (713 valid; 7 invalid among the 720 collected episodes: 5
+`observation_invalid`, 2 `action_pipeline_failed`; 1 further episode failed
+outside the collected set — "the previous run could not be resumed to
+start an episode: stale_or_duplicate", the same noise category recorded
+elsewhere). Neither kill bar fired: K1 (`12000:8000:6.1`)
+read a near-greedy mean of **10.917** over 12 episodes at 12,321 decisions;
+K2 (`26262:8000:6.1`) read **11.552** over 58 episodes at 26,325 decisions
+— both clear of the 6.1 floor. Not early-stopped (`early_stopped: false`,
+patience 0 by design). 8 selection periods closed.
+
+**Selection-period curve** (`mean_final_wave` at each period's own close,
+decisions at close in parentheses). As pre-registered, this curve is
+descriptive only and not comparable with `M3-P004`'s: ε-z-greedy's
+temporally-extended exploration puts about 6% exploratory decisions into
+actor 3, which the ladder split still counts as "near-greedy."
+
+| period | decisions | mean final wave |
+| --- | --- | --- |
+| 1 | 15,132 | 5.807 |
+| 2 | 30,181 | 11.196 |
+| 3 | 45,111 | 14.545 |
+| 4 | 60,165 | 15.323 |
+| 5 | 75,240 | 16.033 |
+| 6 | 90,134 | 15.862 |
+| **7** | **105,143** | **16.517 (max, arm)** |
+| 8 | 120,375 | 16.276 |
+
+The curve rises fairly steadily from period 1 through period 7, then dips
+slightly at period 8 — unlike `M3-P004`'s curve (peak at period 3, then a
+decline with one partial rebound). The run's own early-stop tracker agrees
+(`best_period_near_greedy_mean_final_wave: 16.517241379310345`,
+`closing_period_near_greedy_mean_final_wave: 16.275862068965516`,
+`periods_without_improvement: 1`).
+
+**Arm** (`docs/solution.md` §9.2b): counting periods 2-8, the best
+near-greedy mean is period 7 at 105,143 decisions, **16.517** waves —
+`checkpoints/checkpoint-d0105143.pt`, sha256
+`3caae789da6425b98d3fab7e519c68198f62fcedf702a3a4253393a7db93509a`, verified
+against its `.sha256` sidecar before evaluation (digest matches
+byte-for-byte).
+
+**Mechanism signals, from training records** (`collected_episodes`, 720
+episodes; actor indices are 0-based, matching `exploration_epsilon_floors`
+and the "actor 3 ≈ 6%" note above).
+
+- M1. Training episodes with final ≥ 22: **0/720** (control 0/815).
+  Maximum training final wave: **21** — the same ceiling as `M3-P004`'s
+  training run, not a new one.
+- M2. Per-actor P(final ≥ 12) / P(final ≥ 18), actors 2-4, vs `M3-P004`:
+  actor 2 (`emulator-5560`) **0.375/0.083** (n=96) vs control
+  **0.415/0.160** (n=106) — lower on both; actor 3 (`emulator-5562`)
+  **0.517/0.230** (n=87) vs control **0.462/0.269** (n=104) — higher on
+  P≥12, close on P≥18; actor 4 (`emulator-5564`) **0.529/0.212** (n=85) vs
+  control **0.385/0.257** (n=109) — higher on P≥12, lower on P≥18. No
+  consistent rise across actors 2-4.
+- M3. Per-actor mean `options_started` falls steadily from the most
+  exploratory actor to the most greedy (actor 0: 15.34, actor 1: 13.70,
+  actor 2: 10.28, actor 3: 6.06, actor 4: 3.86, actor 5: 3.60, actor 6:
+  3.07), as expected from the per-actor epsilon floors. Share of episodes
+  with `longest_option ≥ 5` / `≥ 10` follows the same gradient (actor 0:
+  0.868/0.592 down to actor 6: 0.275/0.143). Episodes with `longest_option
+  ≥ 10` (n=286) had a **lower** mean final wave (**8.171**) than those
+  without (n=434, **10.912**) — the opposite of the hypothesised direction;
+  reported as a plain fact, not reinterpreted (this signal is confounded
+  with actor identity, since long options are concentrated in the most
+  exploratory, lowest-epsilon-floor actors, which also have the lowest raw
+  final waves for other reasons).
+- M4. Purchases per decision, all 7 actors, vs `M3-P004`: lower in every
+  actor (e.g. actor 0: 0.327 vs 0.560; actor 3: 0.128 vs 0.175; actor 6:
+  0.114 vs 0.177) — a broad decrease, not isolated to the more exploratory
+  actors.
+
+**Evaluation.** `state/records/m3-p005/eval-arm/` (after the retry
+described above), default build, all 7 actors completed with no
+actor-level failures — 104/105 episodes valid (1 invalid:
+`advance was not confirmed: stale_or_duplicate`, the same noise category
+the training run itself records). Mean final wave **16.346**, SD **4.368**,
+n=**104**, 95% CI (normal approx.) **[15.507, 17.186]**.
+
+**Statistics** (`bootstrap_difference`, seed 0, 10,000 resamples), reported
+descriptively per this entry's own n=1 honesty section, not as a
+BETTER/WORSE verdict: vs `M3-P004` (18.270, n=100): **-1.924 [-2.989,
+-0.872]**. vs `M3-P003` (17.076, n=105): **-0.730 [-1.811, +0.370]**. vs
+`M3-P001` (13.476, n=105): **+2.870 [+1.917, +3.828]**. vs scripted-`all`
+(6.105, n=105, `state/records/m2-run3/eval-scripted`): **+10.241 [+9.395,
++11.078]**. vs random-`all` (3.556, n=90, `state/records/m2-run3/eval-random`
++ `eval-random-topup2` pooled, 90 episodes): **+12.791 [+11.889,
++13.667]**. Per the pre-registration, none of these differences is read as
+evidence of improvement or regression from the treatment by itself.
+
+**Secondary signals, against `M3-P004`.**
+
+- S1. P(final ≥ 20): **0.481** (50/104) vs control **0.540** (54/100) —
+  lower. P(final ≥ 21): **0.154** (16/104) vs control **0.020** (2/100) —
+  higher, but not a new ceiling: the run-4 arm already reached wave 21 in
+  32/105 eval episodes (`state/records/m2-run4/eval-arm-2`), so this is not
+  a "first ever" result. All 16 of this run's wave-≥21 episodes died
+  partway through wave 21 (`completed: false` on the wave-21 entry,
+  `termination_detail` empty on all 16) — none completed it. P(final ≥
+  22): **0.000** (0/104) vs control **0.000** (0/100) — no episode reached
+  wave 22, so the pre-registration's "wall crossed" tier condition
+  (P(final ≥ 22) ≥ 0.05) is not met. **No episode in this run, in training
+  or evaluation, has reached wave 22** — consistent with every prior run.
+- S2 (the mechanism check). Mean game-seconds survived inside the final
+  wave, for episodes dying in wave 20: **27.625s** (n=34) vs control
+  **16.785s** (n=52, `state/records/m3-p004/eval-arm`) — a **rise**, in the
+  hypothesised direction. The hypothesis's stated falsifier ("no training
+  or eval episode reaches wave 22, and no rise in how far exploring actors
+  2-4 reach") is **partially triggered**: no episode reached wave 22 (the
+  primary falsifier condition), while the secondary in-wave survival signal
+  did rise, and M2 above shows no consistent rise across exploring actors
+  2-4. These are separate observations; neither cancels the other.
+- S3. P(final ≥ 13): **0.625** (65/104) vs control **0.850** (85/100) — a
+  decrease.
+- S5. Median cash at entry (log-space `cash_log`). Waves 7-10: **3.458**
+  (n=410) vs control **3.341** (n=396, `state/records/m3-p004/eval-arm`) —
+  higher. Waves 17-20: **3.710** (n=218) vs control **3.683** (n=296) —
+  about the same.
+- S6. Loss, TD error and value-fit correlation, reported descriptively:
+  `mean_recent_weighted_loss` **0.04007** (`M3-P004`: 0.03893, both
+  finite), `mean_recent_unweighted_absolute_td_error` **0.15868**
+  (`M3-P004`: 0.14678), `mean_recent_gradient_norm` **6.815** (`M3-P004`:
+  7.145), `mean_recent_value_fit_correlation` **0.7589** (`M3-P004`:
+  0.79597) — lower, though per the health-gate rationale above this
+  correlation is not read as evidence of anything by itself.
+- Production learner step time: `decision_time.fleet.buckets.learner_step
+  .wall_seconds` (3,879.889s) / `optimisation_steps` (119,116) = **32.57
+  ms/step**, close to `M3-P001`'s 31.62 ms/step and somewhat above
+  `M3-P004`'s 28.71 ms/step and `M3-P003`'s 28.16 ms/step.
+
+**Secondary — `#75` wall check.** Max final wave in the eval set: **21**
+(16/104 episodes, all dying partway through wave 21 after completing wave
+20 — see S1/S2 above; none completed wave 21). 50/104 reached wave 20.
+Zero of 104 reached wave 22. The wall is **not falsified**: no episode
+completed wave 21 or reached wave 22 — consistent with every prior run's
+ceiling. Wave-21 deaths are **not new**: the run-4 arm eval already reached
+wave 21 in 32/105 episodes (`state/records/m2-run4/eval-arm-2`), and this
+run's arm reaches it in a smaller share (16/104) than run 4's, though more
+than `M3-P004`'s 2/100. No run, including this one, has ever reached wave
+22.
+
+Host cleanup verified after training and both eval attempts: zero qemu
+processes (`/proc/*/exe`), empty `adb devices`, `run_stage.sh`'s own
+teardown reported `cleanup ok` for the training stage (1 instance exited
+during teardown while already offline) and for both eval stages (0 and 1
+instance exited during teardown respectively, both already offline).
+
 ## M3-P004: stacked-dqn with the survival-time reward, 120,712 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-25. Board `#82`. Developer-approved (≈2h training plus

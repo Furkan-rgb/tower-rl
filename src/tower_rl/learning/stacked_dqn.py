@@ -257,7 +257,11 @@ class StackedDqnBackbone:
             self._option_remaining -= 1
             self._option_length += 1
             self.longest_option = max(self.longest_option, self._option_length)
-            return self._option_action if self._option_action in valid else WAIT_INDEX
+            if self._option_action in valid:
+                return self._option_action
+            if WAIT_INDEX not in valid:
+                raise ValueError("WAIT is not available in this state")
+            return WAIT_INDEX
         if epsilon > 0.0 and self._random.random() < epsilon:
             self._option_remaining = zeta_duration(self._random) - 1
             self._option_action = self._random.choice(valid)

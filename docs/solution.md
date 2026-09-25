@@ -1722,7 +1722,7 @@ n decisions, flipping no coin meanwhile. The paper's values are kept and are
 constants, not flags: μ = 2 (§4.2, every Atari result) and n ≤ 10,000 (App. B,
 the cap of its R2D2-based agents, which this recurrent-replay, laddered stack is
 shaped like; its Rainbow agents used 100). Every actor keeps its ladder ε, as
-the paper did not retune ε, so the share of decisions spent inside an option
+the paper's agents reuse their baseline's ε, so the share of decisions spent inside an option
 rises well above ε on every rung (about 0.73 for 0.4, 0.06 for 0.016). The
 episode records carry each episode's `options_started` and `longest_option`.
 Five deviations, each forced by this environment or chosen for a reason:

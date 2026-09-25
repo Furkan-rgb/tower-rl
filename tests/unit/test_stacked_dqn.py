@@ -447,6 +447,18 @@ def test_a_masked_option_waits_counts_down_and_resumes(
     assert durations.draws == 2
 
 
+def test_a_masked_option_refuses_a_state_where_wait_is_masked_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WAIT is always legal in an active run; a state without it is loud, not guessed."""
+    backbone, _ = _ez(monkeypatch, 3)
+    state = backbone.initial_state()
+    backbone.act(_features(valid=(2,)), state, epsilon=1.0)
+
+    with pytest.raises(ValueError, match="WAIT is not available"):
+        backbone.act(_features(valid=(1,)), state, epsilon=1.0)
+
+
 def test_an_episode_boundary_ends_an_option(monkeypatch: pytest.MonkeyPatch) -> None:
     backbone, durations = _ez(monkeypatch, 5, 5)
     state = backbone.initial_state()

@@ -198,11 +198,13 @@ polling loops.
 
 ### Results, as run
 
-**Verdict: DO NOT ADOPT under a strict reading of the pre-registered health
-check — flagged to the developer rather than resolved unilaterally (see
-below); the eval performance itself clears both the primary and the
-suggestive-improvement bars decisively.** Budget completed, no kill bar
-fired, no fleet shortfall (7/7 actors throughout, no relaunch needed).
+**Verdict: DO NOT ADOPT, per the pre-registered rule exactly as written.**
+The health check's value-fit correlation condition fails: **0.7968 < 0.8**.
+Budget completed, no kill bar fired, no fleet shortfall (7/7 actors
+throughout, no relaunch needed) — but the health check requires all four
+conditions, and this one does not hold, so the rule does not adopt,
+regardless of how far the eval mean itself clears the eval-mean condition
+(details below).
 
 **Training.**
 `state/runs/session-20260925-104153/stacked-dqn-20260925-104153-ae0fc6/`.
@@ -286,9 +288,9 @@ variance at this margin.
   advance (`#80`), so `decisions - advances` is not `purchases` per wave,
   and the only purchase count the record carries is the episode-level total
   (no per-wave breakdown at all). This is a data-schema gap, not a
-  computation I chose to skip — **flagged to the developer** rather than
-  approximated silently, since S5's purchase-count half is one of the three
-  required conditions for the "suggestive improvement" tier.
+  computation skipped: S5's purchase-count half is **unassessed**, not
+  passed, since it is one of the three required conditions for the
+  "suggestive improvement" tier.
 - S6. Learner health: `mean_recent_value_fit_correlation` **0.7968**
   (control `M3-P001`: 0.9147), `mean_recent_weighted_loss` **0.0359**
   (control: 0.0538, finite in both), `mean_recent_unweighted_absolute_td_error`
@@ -299,42 +301,37 @@ variance at this margin.
   (`learning_curve` is empty; the run only exposes a rolling last-100-step
   mean), so this is the only figure available for that health check, and it
   is the same kind of figure `M3-P001`/`M3-P002` reported for the analogous
-  purpose. **Flagged to the developer** (sent during training, unanswered as
-  of this write-up) rather than rounded either way myself, since a literal
-  reading of the health check (all four conditions, including this one,
-  must hold) flips the top-level verdict.
+  purpose. The rule is applied as pre-registered, with no post-hoc
+  reinterpretation of the proxy: **0.7968 < 0.8** fails this health
+  condition.
 - Production learner step time:
   `decision_time.fleet.buckets.learner_step.wall_seconds` (3,374.482s) /
   `optimisation_steps` (119,836) = **28.16 ms/step**, in the same range as
   `M3-P001`'s 31.62 ms/step and prior fleet-load measurements.
 
 **Secondary — `#75` wall check.** Max final wave in the eval set: **20**
-(43/105 episodes, all ending mid-wave-20 with `completed: false` and
-`health_fraction` at or near 1.0 — i.e. cut off alive, not dead; sampled
-records confirm this, and the pattern is universal across the dataset: every
-episode's *last* logged wave is `completed: false`, since a wave entry only
-completes once the episode survives into the next one, so this is ordinary
-death-mid-wave, not a special cutoff mechanism). Zero of 105 reached wave
-22. The wall (`#75`: 0/255 prior episodes ever passed wave 21) is **not
-falsified** by this run, but is now demonstrated far more often (41% of
-episodes reach wave 20, vs 0% in `M3-P001`/`M3-P002`) — consistent with, not
-contrary to, the account-state-ceiling account of `#75`.
+(43/105 episodes). All 43 are `termination=game_over` deaths during wave 20
+(last-wave game time spreads 0.7–34.7s, max episode wall 146s vs the 900s
+ceiling, so no wall-clock cap is involved); `health_fraction` in wave rows
+is recorded at wave ENTRY, not at death. Zero of 105 reached wave 22. The
+wall (`#75`: 0/255 prior episodes ever passed wave 21) is **not falsified**
+by this run, but is now demonstrated far more often (41% of episodes reach
+wave 20, vs 0% in `M3-P001`/`M3-P002`) — whether in-run play alone can pass
+it remains open (`#80`).
 
 **Applying the pre-registered rule.** Eval-mean condition (b): 17.076 ≥
 11.14, clears with wide margin. Health condition (a): budget completed ✓,
-no kill bar ✓, finite loss ✓, value-fit correlation ≥0.8 **borderline fail**
-at 0.7968 on the only available (rolling last-100-step) proxy. A strict,
-literal application of "AND" across all four health conditions therefore
-gives **DO NOT ADOPT** on this one sub-threshold reading, despite the eval
-mean beating the adopt bar by more than 5 waves. Had health condition (a)
-been read as satisfied, the run would also clear the "suggestive
-improvement" tier's P(final ≥ 20) ≥ 0.10 branch (0.410 ≫ 0.10) — but S5's
-purchase-count half is unavailable (above), so that tier's third condition
-cannot be fully checked either way. **Both open items — the S6 borderline
-and the S5 data gap — were reported to the developer rather than resolved
-unilaterally**, per standing instruction; this write-up states the literal
-outcome of the rule as specified, with both caveats stated plainly, and does
-not round the verdict in either direction on its own judgment.
+no kill bar ✓, finite loss ✓, value-fit correlation ≥0.8 **fails** at
+0.7968 on the only available (rolling last-100-step) proxy. The rule is
+applied exactly as pre-registered, with no post-hoc reinterpretation of the
+proxy: since all four health conditions must hold and this one does not,
+the rule gives **DO NOT ADOPT** (value-fit 0.7968 < 0.8) — regardless of the
+eval mean clearing the eval-mean condition by more than 5 waves. S5's
+purchase-count half (above) is **unassessed**, not passed: it is not
+computable from the recorded schema, so the "suggestive improvement" tier's
+third condition has no reading either way. The eval result (17.076 vs
+`M3-P001`'s 13.476) is reported descriptively above, as a single run, not as
+evidence bearing on this verdict.
 
 Host cleanup verified after both stages: zero qemu processes (`/proc/*/exe`),
 empty `adb devices`, `run_stage.sh`'s own teardown reported `cleanup ok` for

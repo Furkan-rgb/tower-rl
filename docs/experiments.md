@@ -7,6 +7,41 @@ milestone unless the corresponding gate in `task.md` is satisfied.
 Do not add proprietary package bytes, extracted assets, account/save state,
 personal screenshots, bulk logs, replay, or model artifacts.
 
+## Research log: the M3 experiment series (index as of 2026-09-25)
+
+Starting with `M3-P001`, each change to the training recipe is
+pre-registered before the run: a hypothesis, a control, a fixed
+single-run budget of 120,712 decisions, a decision rule stating in
+advance what result counts as ADOPT/DO NOT ADOPT (and, where
+applicable, a stricter "wall crossed" tier), and a greedy evaluation on
+the default build targeting n=105 (some runs deliver fewer valid
+episodes to ordinary noise, e.g. n=100 or n=104). Results are appended
+below each pre-registration unedited, including where a later commit
+corrected the write-up (`M3-P003`'s wall-check wording, `5cf93d9`;
+`M3-P004`'s false "first past wave 20" claim, `5b76b42`) — the table
+below reflects the corrected claims. The recurring obstacle across the
+series is the wave 20/21 wall (`#75`): stacked-dqn and DreamerV3 runs
+cluster around waves 12-18, individual episodes have reached wave 21
+since M2 run 4 (32/105 eval episodes), but no training or evaluation
+episode across any run to date — M2 or M3 — has reached wave 22. Three
+changes were tried against that wall in turn: the semi-MDP game-time
+discount (`M3-P003`, `#81`), the survival-time reward stacked on top of
+it (`M3-P004`, `#82`), and ε-z-greedy temporally-extended exploration
+stacked on both (`M3-P005`, `#83`). `M3-P003` and `M3-P004` both
+cleared their eval-mean bar by a wide margin but were DO NOT ADOPT on
+the pre-registered health gate (value-fit correlation just under 0.8);
+`M3-P005` changed that gate's rationale and was ADOPT, though its own
+pre-registered "wall crossed" tier was not met. None of the three
+changes produced an episode that completed wave 21 or reached wave 22.
+
+| ID | question | change vs control | control | result (eval mean final wave, n, P(≥20)) | verdict | what was learned | commit(s) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `M3-P001` | Stacked-dqn portfolio benchmark row: what does the default recipe score under Milestone 3's fixed, pre-registered protocol? | none — baseline row (default stacked-dqn hyperparameters, `docs/task.md` §1.1) | scripted-`all` 6.105 (n=105); random-`all` 3.556 (n=90) | 13.476, SD 2.535, n=105, P(≥20)=0.000 (0/105) | BETTER than both baselines | Max eval wave 19; learner step time 31.62 ms/step; fixes the portfolio's stacked-dqn row (no reruns) | baseline row; verified against `main@f767aa7` |
+| `M3-P002` | DreamerV3 portfolio row: how does DreamerV3 score under the identical protocol? | `--backbone dreamerv3` (fixed size12m config, uniform exploration, no added noise) | `M3-P001` arm 13.476, n=105 (same protocol); scripted 6.105; random 3.556 | 12.676, SD 2.392, n=105, P(≥20)=0.000 (0/105) | WORSE than `M3-P001`; BETTER than both baselines | Max eval wave 17; learner step time 238.59 ms/step, ≈1.5× the idle-host estimate | `0a261e4` (land) |
+| `M3-P003` | Does a semi-MDP game-time discount (rather than per-decision) change the arm? | `--discount-per-game-second 0.997` | `M3-P001` 13.476, n=105 | 17.076, SD 3.797, n=105, P(≥20)=0.410 (43/105) | DO NOT ADOPT — health gate fails (value-fit correlation 0.7968 < 0.8), despite the eval mean clearing its own bar by a wide margin | Pre-boss cash at wave entry rose; wave 20 reached in 41% of eval episodes vs 0% for `M3-P001`/`M3-P002`; purchase-count-per-wave was not computable from the recorded schema (unassessed, not passed); no episode reached wave 21 or 22 | `4f32cde` (land), `5cf93d9` (results correction) |
+| `M3-P004` | Does a graded survival-time reward (vs the wave reward's flat within-wave signal) pass the wall? | `--survival-time-reward` on top of `M3-P003`'s game-time discount | `M3-P003` 17.076, n=105 | 18.270, SD 3.213, n=100, P(≥20)=0.540 (54/100) | DO NOT ADOPT — health gate fails (value-fit correlation 0.79597 < 0.8, the same failure mode as `M3-P003`), despite the eval mean clearing its own bar by a wide margin | 2/100 episodes reached wave 21 — the first `M3`-series episodes to do so, not the first ever (M2 run 4 already reached wave 21 in 32/105); in-wave survival time at wave-20 death fell (16.785s vs control 18.747s), opposite the hypothesised direction | `ae3c3fa`/`610045e` (land), `5b76b42` (results correction) |
+| `M3-P005` | Does ε-z-greedy's temporally-extended exploration produce the sustained investment needed to pass the wall? | `--ez-greedy` on top of `M3-P004`'s flags (game-time discount + survival-time reward) | `M3-P004` 18.270, SD 3.213, n=100 | 16.346, SD 4.368, n=104, P(≥20)=0.481 (50/104) | ADOPT, per the pre-registered rule (healthy AND eval mean ≥15.97); "wall crossed" tier not met (P(≥22)=0.000 < 0.05) | P(≥21) rose to 0.154 (16/104) vs control 0.020, but not a new ceiling (M2 run 4 already reached wave 21 in 32/105); all 16 wave-21 deaths were incomplete; no consistent rise across exploring actors 2-4; long-option episodes (`longest_option`≥10) had a lower, not higher, mean final wave | `438a923` (land) |
+
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
 repository root instead of `~/.local/state/tower-rl`. The entries below keep the

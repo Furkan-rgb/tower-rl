@@ -40,7 +40,8 @@ changes produced an episode that completed wave 21 or reached wave 22.
 | `M3-P002` | DreamerV3 portfolio row: how does DreamerV3 score under the identical protocol? | `--backbone dreamerv3` (fixed size12m config, uniform exploration, no added noise) | `M3-P001` arm 13.476, n=105 (same protocol); scripted 6.105; random 3.556 | 12.676, SD 2.392, n=105, P(≥20)=0.000 (0/105) | WORSE than `M3-P001`; BETTER than both baselines | Max eval wave 17; learner step time 238.59 ms/step, ≈1.5× the idle-host estimate | `0a261e4` (land) |
 | `M3-P003` | Does a semi-MDP game-time discount (rather than per-decision) change the arm? | `--discount-per-game-second 0.997` | `M3-P001` 13.476, n=105 | 17.076, SD 3.797, n=105, P(≥20)=0.410 (43/105) | DO NOT ADOPT — health gate fails (value-fit correlation 0.7968 < 0.8), despite the eval mean clearing its own bar by a wide margin | Pre-boss cash at wave entry rose; wave 20 reached in 41% of eval episodes vs 0% for `M3-P001`/`M3-P002`; purchase-count-per-wave was not computable from the recorded schema (unassessed, not passed); no episode reached wave 21 or 22 | `4f32cde` (land), `5cf93d9` (results correction) |
 | `M3-P004` | Does a graded survival-time reward (vs the wave reward's flat within-wave signal) pass the wall? | `--survival-time-reward` on top of `M3-P003`'s game-time discount | `M3-P003` 17.076, n=105 | 18.270, SD 3.213, n=100, P(≥20)=0.540 (54/100) | DO NOT ADOPT — health gate fails (value-fit correlation 0.79597 < 0.8, the same failure mode as `M3-P003`), despite the eval mean clearing its own bar by a wide margin | 2/100 episodes reached wave 21 — the first `M3`-series episodes to do so, not the first ever (M2 run 4 already reached wave 21 in 32/105); in-wave survival time at wave-20 death fell (16.785s vs control 18.747s), opposite the hypothesised direction | `ae3c3fa`/`610045e` (land), `5b76b42` (results correction) |
-| `M3-P005` | Does ε-z-greedy's temporally-extended exploration produce the sustained investment needed to pass the wall? | `--ez-greedy` on top of `M3-P004`'s flags (game-time discount + survival-time reward) | `M3-P004` 18.270, SD 3.213, n=100 | 16.346, SD 4.368, n=104, P(≥20)=0.481 (50/104) | ADOPT, per the pre-registered rule (healthy AND eval mean ≥15.97); "wall crossed" tier not met (P(≥22)=0.000 < 0.05) | P(≥21) rose to 0.154 (16/104) vs control 0.020, but not a new ceiling (M2 run 4 already reached wave 21 in 32/105); all 16 wave-21 deaths were incomplete; no consistent rise across exploring actors 2-4; long-option episodes (`longest_option`≥10) had a lower, not higher, mean final wave | `438a923` (land) |
+| `M3-P005` | Does ε-z-greedy's temporally-extended exploration produce the sustained investment needed to pass the wall? | `--ez-greedy` on top of `M3-P004`'s flags (game-time discount + survival-time reward) | `M3-P004` 18.270, SD 3.213, n=100 | 16.346, SD 4.368, n=104, P(≥20)=0.481 (50/104) | ADOPT, per the pre-registered rule (healthy AND eval mean ≥15.97); "wall crossed" tier not met (P(≥22)=0.000 < 0.05) | P(≥21) rose to 0.154 (16/104) vs control 0.020, but not a new ceiling (M2 run 4 already reached wave 21 in 32/105); all 16 wave-21 deaths were incomplete; no consistent rise across exploring actors 2-4; long-option episodes (`longest_option`≥10) had a lower, not higher, mean final wave | `438a923` (land), `90def22` (pre-registration), `93ff866` (results) |
+| `M3-P006` | Does ~8× more training (1,000,000 decisions vs 120,712) with the adopted `M3-P005` recipe cross the wave 20-21 wall? | `--budget-decisions 1000000` (plus `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--replay-capacity 4096` explicit, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2`) on top of `M3-P005`'s exact recipe | `M3-P005` 16.346, SD 4.368, n=104 | pending | pending | pending | pending |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -60,6 +61,163 @@ The move renames each entry as it stood, so a past run's directory keeps its
 name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
+
+## M3-P006: stacked-dqn with the adopted `M3-P005` recipe, 1,000,000 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-25. Board `#84`. Developer-approved (~16 h training plus
+eval; standing approval covers this pre-registered single run).
+
+**Question.** Does ~8× more training (1,000,000 decisions against
+120,712) with the adopted `M3-P005` recipe cross the wave 20-21 wall
+(`#75`)? This is the developer's hypothesis: the strategy must be
+discovered by experience, and more training is the key.
+
+**Control: `M3-P005`** (eval mean **16.346**, SD **4.368**, n=104,
+P(final ≥ 20) = **0.481**, P(final ≥ 21) = **0.154**, P(final ≥ 22) =
+**0.000**, `state/records/m3-p005/eval-arm`). Training: 0 of 720
+episodes reached wave ≥ 22, max training final wave 21.
+
+**Recipe (frozen).** `M3-P005`'s exact `train.py` command (stacked-dqn,
+`--discount-per-game-second 0.997 --survival-time-reward --ez-greedy`,
+`--exploration ladder`, `--actors 7 --renderer host --frame-rate-hz 120
+--decision-cadence choice-points --upgrade-availability all
+--frame-game-ms 100`, `--epsilon-anneal-decisions 8000`, `--seed 0`,
+`--gradient-steps-per-decision 1.0`, `--n-step 10 --n-step-final 3
+--n-step-anneal-steps 10000`, `--kill-bar 12000:8000:6.1 --kill-bar
+26262:8000:6.1`), changing ONLY:
+
+- `--budget-decisions 1000000` (the change under test).
+- `--selection-period-decisions 50000`. At 1M, 15,000-decision periods
+  give ~67 noisy period means (SE ≈ 0.42 waves, below the project's own
+  100-episode/SE 0.2 standard); 50,000 gives ~20 periods of ~190
+  near-greedy episodes each (SE ≈ 0.23). Source: the lead's fundamentals
+  audit, `scratchpad/fundamentals-audit.md` (P2).
+- `--checkpoint-every-decisions 25000` (learning-curve granularity; 40
+  checkpoint files over the budget, unchanged rationale from `M3-P005`,
+  scaled so the file count stays comparable).
+- `--replay-capacity 4096`, passed explicitly. It is the unchanged
+  default, stated because at ~200,000 decisions the buffer becomes FIFO
+  for the first time in any run to date (every prior run stayed under
+  the 120,712-decision budget, below the ~200k-decision fill point). The
+  oldest data still being replayed is then ~200,000 updates old,
+  comparable with DQN's 1M-transition buffer at 0.25 updates per step.
+  Source: `scratchpad/fundamentals-audit.md` (item 2, "KEEP (do not scale
+  for stacked-dqn)").
+- Early stop: `--early-stop-patience-periods 5
+  --early-stop-min-improvement 0.2`, i.e. stop if 250,000 decisions (5
+  selection periods of 50,000) pass without the best period mean
+  improving on the running best by ≥ 0.2 waves. Confirmed against the
+  code before pre-registering, not assumed: `scripts/train.py:42-47`
+  (docstring) and `src/tower_rl/learning/training.py`'s
+  `SelectionPeriodPlateau.close_period`/`.plateaued`
+  (`src/tower_rl/learning/training.py:483-513`) — patience is counted in
+  selection periods, and each period's mean is judged against
+  `best_mean_final_wave`, "the mean of the last period that cleared it by
+  `min_improvement`... deliberately not the highest mean the run has
+  seen" (a period that merely creeps up without clearing the threshold
+  does not move the bar it is judged against). This matches the semantics
+  stated above exactly; the run is not pre-registered on an unconfirmed
+  reading.
+
+**Verified against `main` @ `1c95210`** (the merge landing
+`DreamerConfig.train_ratio=512`, board `#84`'s first step): `train.py
+--help` lists every flag above; dry-parsed the exact command through
+`train.parse_arguments`, no `SystemExit`, all fields resolved as
+intended (`budget_decisions=1000000`, `selection_period_decisions=50000`,
+`checkpoint_every_decisions=25000`, `early_stop_patience_periods=5`,
+`early_stop_min_improvement=0.2`, `replay_capacity=4096`,
+`discount_per_game_second=0.997`, `survival_time_reward=True`,
+`ez_greedy=True`, `seed=0`, `exploration=ladder`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]`,
+`gradient_steps_per_decision=1.0`, `n_step=10`, `n_step_final=3`,
+`n_step_anneal_steps=10000`).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p006-train-seed0 --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 1000000 --checkpoint-every-decisions 25000 \
+      --selection-period-decisions 50000 --epsilon-anneal-decisions 8000 \
+      --early-stop-patience-periods 5 --early-stop-min-improvement 0.2 --seed 0 \
+      --gradient-steps-per-decision 1.0 --n-step 10 --n-step-final 3 --n-step-anneal-steps 10000 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100 \
+      --discount-per-game-second 0.997 --survival-time-reward --ez-greedy \
+      --replay-capacity 4096
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed,
+`TOWER_BRIDGE_BUILD_DIR` unset).
+
+**Arm rule.** `docs/solution.md` §9.2b, unchanged: the best near-greedy
+selection-period mean, counting periods 2 and later, ties broken to the
+earlier period.
+
+**Evaluation.** The arm, greedy, on the default build,
+`--upgrade-availability all --frame-game-ms 100`, n=105 (7×15):
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p006 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p006/eval-arm
+
+**Reading (pre-registered).**
+
+- **"Wall crossed"** if eval P(final ≥ 22) ≥ 0.05.
+- Otherwise, **"more training did not cross the wall under this
+  recipe."**
+- Reported descriptively against `M3-P005` (16.346, n=104): the eval mean
+  final wave with 95% CI, P(final ≥ 20), P(final ≥ 21), P(final ≥ 22),
+  max wave, `bootstrap_difference` against `M3-P005`, and the arm's
+  selection-period index.
+- If the arm comes from a period ending at ≤150,000 decisions, that is
+  recorded explicitly: the extra training past that point did not
+  improve the selected policy.
+- The full selection-period curve is reported, with its shape stated
+  plainly: rising, plateau, or peak-then-decline.
+
+**Health.** The budget completes or the early stop fires, no kill bar
+fires, and the loss is finite. Value-fit correlation is reported
+descriptively only, per `M3-P005`'s prospective health-gate change (the
+0.8 threshold discriminated nothing across `M3-P003`/`M3-P004`).
+
+**Known confounds, stated in advance.**
+
+- One seed (0). The seed-to-seed noise floor established in `M3-P005`
+  (≈2.3-3.3 waves between single runs) applies here too: this is not a
+  multi-seed comparison.
+- Actor 3's ε-z-greedy options (ε ≈ 0.016) count as "near-greedy" under
+  the ladder split, the same confound `M3-P005` noted for its own
+  selection curve.
+- Replay is **not** saved in checkpoints; a resume re-warms it empty
+  (see Resume policy below).
+
+**Resume policy.** The run is one continuous training stage. If it
+crashes, ONE resume from the latest checkpoint is allowed, after cleanup
+and host verification. Because the replay buffer restarts empty on a
+resume, the post-resume segment of the run is labelled and reported
+separately from the pre-crash segment, and the resume itself is recorded
+as a deviation from the pre-registration. A second crash means stop and
+report, not a second resume.
+
+**Timebox.** 20 h wall-clock for the training stage. `M3-P005` ran at
+≈61,000 decisions/h (122,666 decisions in wall `02:00:15`); at that rate
+1,000,000 decisions is expected to take ≈16.5 h, leaving headroom inside
+the 20 h box.
+
+**Operations, unchanged from `M3-P005`.** Fleet bring-up, the one-retry
+rule for bring-up and for evaluation, partial-attempt handling, and the
+default-build evaluation protocol are as in `M3-P005`.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
 
 ## M3-P005: stacked-dqn with ε-z-greedy exploration, 120,712 decisions (pre-registered, written before the run)
 

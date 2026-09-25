@@ -95,11 +95,13 @@ class DreamerConfig:
     actor_unimix: float = 0.01
     actor_outscale: float = 0.01
     free_nats: float = 1.0
-    # Loop geometry (configs.yaml batch_size, batch_length; atari100k train_ratio).
+    # Loop geometry (configs.yaml batch_size, batch_length; train_ratio per
+    # Table 2 (Proprio/Visual Control, 500K-1M-step budget, 12M model), which
+    # matches the code's crafter preset: run.steps 1.1e6, envs 1, train_ratio 512).
     batch_size: int = 16
     batch_length: int = 64
     #: Replayed steps per collected decision.
-    train_ratio: float = 256.0
+    train_ratio: float = 512.0
     imagination_horizon: int = 15
     horizon: int = 333
     return_lambda: float = 0.95

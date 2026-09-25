@@ -26,6 +26,146 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M3-P002: DreamerV3 benchmark row, 120,712 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-25. Board `#79`. Milestone 3 portfolio row for DreamerV3
+(`docs/task.md` §1.1, Outcome A). Same pipeline as `M3-P001` (`4a09297`),
+`--backbone dreamerv3` (`docs/solution.md` §9.4c, landed on `main` at
+`0a261e4`).
+
+**Why.** Same as `M3-P001`: one pre-registered, budgeted run per learner
+becomes that learner's portfolio row, whatever it scores — no reruns, no
+best-of.
+
+**Fixed by DreamerV3, not flags** (§9.4c): `size12m` (deter 2048, hidden
+256, classes 16, units 256, 10.1M parameters), batch 16×64 (`--batch-size
+16`, `--sequence-length 64`, `--stacked-burn-in 0` — every window starts
+from the zero state), train ratio 256 counted per agent step = **0.25
+gradient steps per decision** (`--gradient-steps-per-decision` is refused
+if it contradicts this; not passed), warm-up 25 windows
+(`--warmup-sequences 25`), uniform replay (`--priority-alpha 0`, unchanged
+from stacked-dqn), no added exploration noise (`--exploration uniform`,
+`--epsilon-start 0 --epsilon-end 0` — "exploration-free" means no added
+noise; the policy's own entropy is the only exploration, per §6.11/§9.2b).
+**Acting and evaluation sample the policy** rather than argmax — the
+official agent always samples; each acting copy draws its latents and
+action from its own `random.Random` stream, reseeded per actor
+(`acting_copy`); each evaluation instance is seeded by its own serial
+(§9.4c).
+
+**Command.** `M3-P001`'s command (`--seed 0`, `--early-stop-patience-periods
+0`, `--budget-decisions 120712`, `--checkpoint-every-decisions 5000`,
+`--selection-period-decisions 15000`, the 6.1/6.1 kill bars, `--actors 7
+--renderer host --frame-rate-hz 120 --decision-cadence choice-points
+--upgrade-availability all --frame-game-ms 100`), with `--backbone
+dreamerv3` added and every stacked-only/contradicting flag dropped:
+
+- `--exploration ladder` dropped — DreamerV3 fixes `exploration=uniform`;
+  passing `ladder` contradicts the fixed value and is refused.
+- `--gradient-steps-per-decision 1.0` dropped — contradicts the fixed 0.25
+  (train ratio 256).
+- `--n-step 10 --n-step-final 3 --n-step-anneal-steps 10000` dropped —
+  `n_step`, `n_step_final`, `n_step_anneal_steps` are in `train.py`'s
+  `STACKED_ONLY_FLAGS` and are refused outright under `--backbone
+  dreamerv3` (DreamerV3 has no n-step return; it learns from imagined
+  rollouts).
+- `--epsilon-anneal-decisions 8000` dropped — also in `STACKED_ONLY_FLAGS`
+  (refused: DreamerV3 adds no exploration noise to anneal).
+
+Also implicitly dropped by never having been in the command: `--discount`,
+`--learning-rate`, `--target-ema-decay`, `--history-length` are likewise in
+`STACKED_ONLY_FLAGS` and would be refused if passed; the command never set
+them explicitly (they were at `train.py`'s stacked-dqn defaults in
+`M3-P001`), so nothing changes there.
+
+**CPU-only argument check**, before any device stage: dry-parsed the exact
+reduced command through `train.parse_arguments`, no `SystemExit`. Resolved
+config confirmed against §9.4c's fixed values: `backbone=dreamerv3`,
+`batch_size=16`, `sequence_length=64`, `stacked_burn_in=0`,
+`gradient_steps_per_decision=0.25`, `warmup_sequences=25`,
+`exploration=uniform`, `epsilon_start=0.0`, `epsilon_end=0.0`,
+`priority_alpha=0.0`, plus the shared fields unchanged from `M3-P001`:
+`budget_decisions=120712`, `checkpoint_every_decisions=5000`,
+`selection_period_decisions=15000`, `early_stop_patience_periods=0`,
+`seed=0`, `kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000,
+6.1)]`.
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p002-dreamer-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --backbone dreamerv3 \
+      --actors 7 --renderer host --frame-rate-hz 120 --decision-cadence choice-points \
+      --upgrade-availability all --budget-decisions 120712 \
+      --checkpoint-every-decisions 5000 --selection-period-decisions 15000 \
+      --early-stop-patience-periods 0 --seed 0 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed,
+`TOWER_BRIDGE_BUILD_DIR` unset).
+
+**Disk.** DreamerV3 checkpoints are ≈120 MB each (vs stacked-dqn's ≈3.2 MB);
+≈3-4 GB for the whole run's checkpoint set. 941 GB free — no concern.
+
+**Kill, cap and arm — unchanged from `M3-P001`.** A kill-bar stop is a
+collapse and no evaluation is run. At the 5h wall cap, the stage stops
+cleanly and is resumed from `latest.pt` in a follow-up stage. The arm is
+the checkpoint at the close of the best selection period, counting only
+periods 2+ with a near-greedy mean, ties to the earlier period
+(`docs/solution.md` §9.2b). Its sha256 is reconfirmed against its
+`.sha256` sidecar before evaluation.
+
+**First discriminating signal.** If the run crashes, or the fleet's
+cumulative decisions make no visible progress, within the first ~10 minutes
+of the stage, stop it cleanly and report with the crash lines rather than
+retrying blindly — a code defect is the Lead's to fix, not a protocol
+question to route around.
+
+**Evaluation.** The arm, on the default build, `--upgrade-availability all
+--frame-game-ms 100`, n=105 (15 episodes × 7 actors):
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p002 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p002/eval-arm
+
+The one-retry rule applies exactly as in `M3-P001`: an actor/instance
+bring-up failure permits one fresh retry after full cleanup and host
+verification; statistics use only the retry's records if a retry is
+needed. After one retry, stop and report with crash lines and logcat.
+
+**Statistics.** Report the mean, SD, and 95% CI of the arm's n=105 final
+waves. `bootstrap_difference` (seed 0, 10,000 resamples) against the
+`M3-P001` stacked-dqn arm (13.476, n=105,
+`state/records/m3-p001/eval-arm`), scripted-`all` (6.105, n=105), and
+random-`all` (3.556, n=90). BETTER iff the CI's lower bound is > 0, WORSE
+iff the upper bound is < 0, otherwise NOT DISTINGUISHABLE — for all three
+comparisons; the stacked-dqn comparison is a same-budget, same-protocol
+portfolio comparison (not budget-confounded the way `M3-P001` vs run 4
+was), so it is read as a verdict, same as the baseline comparisons.
+
+**Secondary.** The `#75` wall check (episodes reaching wave 20+, and any
+wave 22). The production learner step time, read from
+`decision_time.fleet.buckets.learner_step.wall_seconds` /
+`optimisation_steps` in the run's `summary.json` — projected at idle-host
+speed (§9.4c: 141 ms/update + 16.7 ms collate, ≈40 ms/decision at 0.25
+gradient steps/decision, ≈1.3h over the full budget) but measured here
+under real fleet/device load, the same way `M3-P001`'s 31.62 ms/step was.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
+
+### Results, as run
+
+(to be filled in after the run)
+
 ## M3-P001: stacked-dqn benchmark row, 120,712 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-24. Board `#78`. Milestone 3 portfolio row for stacked-dqn

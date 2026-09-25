@@ -121,6 +121,7 @@ class Actor:
                     reward=transition.reward,
                     done=transition.terminated,
                     admissible=transition.admissible,
+                    game_ms=transition.game_ms,
                 )
             )
             if transition.termination is not None:
@@ -225,5 +226,7 @@ class Actor:
             done=False,
             admissible=True,
             padding=True,
+            # No time passes in filler, so it discounts nothing.
+            game_ms=0.0,
         )
         return (filler,) * (length - len(steps)) + tuple(steps)

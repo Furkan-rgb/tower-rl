@@ -341,6 +341,9 @@ class ResumeState:
     periods_closed: int | None = None
     best_period_near_greedy_mean: float | None = None
     periods_without_improvement: int = 0
+    #: The settings the parent was written with, so a resume can refuse one
+    #: it could not continue under - a different discount is a different target.
+    resolved_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:
@@ -358,6 +361,7 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
         periods_closed=checkpoint.progress.checkpoint_periods_closed,
         best_period_near_greedy_mean=checkpoint.progress.best_period_near_greedy_mean,
         periods_without_improvement=checkpoint.progress.periods_without_improvement or 0,
+        resolved_config=checkpoint.resolved_config,
     )
 
 

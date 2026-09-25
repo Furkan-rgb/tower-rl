@@ -189,7 +189,14 @@ def resolved_config(
         # hold `n_step` fixed, which is what every run before run 4 used.
         "n_step_final": learner.n_step_final,
         "n_step_anneal_steps": learner.n_step_anneal_steps,
-        "discount": learner.discount,
+        # Only the discount the target is built with: under the game-time
+        # discount the per-decision one is not read, and is recorded as None
+        # rather than as a value that played no part.
+        "discount": (
+            None if learner.discount_per_game_second is not None else learner.discount
+        ),
+        # None discounts per decision, which is every run before board #81.
+        "discount_per_game_second": learner.discount_per_game_second,
         "learning_rate": learner.learning_rate,
         "target_ema_decay": (
             arguments.target_ema_decay if name == "stacked-dqn" else None

@@ -34,6 +34,7 @@ def _sequence(*, length: int = 8, burn_in: int = 4) -> ReplaySequence:
             reward=1.0,
             done=index == length - 1,
             admissible=True,
+            game_ms=1000.0,
         )
         for index in range(length)
     )
@@ -251,3 +252,39 @@ def test_a_resumed_learner_continues_the_anneal_where_it_left_it(
 
     # Step two of four, not step zero again: 10 * 0.3 ** 0.5.
     assert seen == [parent.config.n_step_at(2)] == [5]
+
+
+def _timed_sequence(spans_ms: tuple[float, ...], *, burn_in: int = 4) -> ReplaySequence:
+    """A sequence whose steps span these game times, a purchase at 0 ms."""
+    steps = tuple(
+        ReplayStep(
+            features=_features(seed=0.1 * index),
+            action_index=index % 3,
+            reward=1.0 if index % 2 else 0.0,
+            done=index == len(spans_ms) - 1,
+            admissible=True,
+            game_ms=game_ms,
+        )
+        for index, game_ms in enumerate(spans_ms)
+    )
+    return ReplaySequence(_sequence().metadata, steps, burn_in)
+
+
+def test_learning_under_the_game_time_discount_is_finite() -> None:
+    """T9: learn() discounting per game-second: finite loss, TD error and value fit."""
+    backbone = _backbone(discount_per_game_second=0.997)
+    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
+    batch = collate((_timed_sequence(spans), _timed_sequence(spans[::-1])), (1.0, 1.0))
+
+    for _ in range(3):
+        metrics = backbone.learn(batch)
+        assert torch.isfinite(torch.tensor(metrics.weighted_loss))
+        assert torch.isfinite(torch.tensor(metrics.unweighted_mean_absolute_td_error))
+        assert metrics.value_fit_correlation is not None
+        assert -1.0 <= metrics.value_fit_correlation <= 1.0
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, 1.5, -0.1])
+def test_a_discount_per_game_second_outside_zero_one_is_refused(value: float) -> None:
+    with pytest.raises(ValueError, match="per game-second"):
+        StackedDqnConfig(discount_per_game_second=value)

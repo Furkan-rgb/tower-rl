@@ -26,7 +26,11 @@ from tower_rl.learning.replay import (
     SequenceMetadata,
 )
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
-from tower_rl.learning.value_learning import evaluated_next_values, n_step_targets
+from tower_rl.learning.value_learning import (
+    evaluated_next_values,
+    n_step_targets,
+    value_fit_correlation,
+)
 
 ACTIONS = len(RUN_ACTIONS)
 DEVICES = [
@@ -91,7 +95,9 @@ def _list_collate(
     def _features(step_features: StateFeatures) -> tuple[list[float], list[float], list[bool]]:
         return list(step_features.scalars), list(step_features.rows), list(step_features.mask)
 
-    scalars, rows, masks, actions, rewards, dones, padding = [], [], [], [], [], [], []
+    scalars, rows, masks, actions, rewards, dones, padding, game_ms = (
+        [], [], [], [], [], [], [], []
+    )
     for sequence in sequences:
         collected = [_features(step.features) for step in sequence.steps]
         scalars.append([item[0] for item in collected])
@@ -101,6 +107,7 @@ def _list_collate(
         rewards.append([step.reward for step in sequence.steps])
         dones.append([step.done for step in sequence.steps])
         padding.append([step.padding for step in sequence.steps])
+        game_ms.append([step.game_ms for step in sequence.steps])
 
     row_tensor = torch.tensor(rows, dtype=torch.float32, device=device)
     return SequenceBatch(
@@ -111,6 +118,7 @@ def _list_collate(
         rewards=torch.tensor(rewards, dtype=torch.float32, device=device),
         dones=torch.tensor(dones, dtype=torch.bool, device=device),
         padding=torch.tensor(padding, dtype=torch.bool, device=device),
+        game_ms=torch.tensor(game_ms, dtype=torch.float32, device=device),
         weights=torch.tensor(weights, dtype=torch.float32, device=device),
         burn_in=burn_in,
     )
@@ -167,8 +175,13 @@ def test_vectorised_n_step_targets_equal_the_step_by_step_loop(device: str) -> N
             seed, device
         )
 
+        # The per-decision discount as `StackedDqnConfig` hands it over when
+        # --discount-per-game-second is off: one constant d per transition.
+        discounts = StackedDqnConfig(discount=discount).transition_discounts(
+            torch.zeros_like(rewards)
+        )
         targets, learnable = n_step_targets(
-            rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
+            rewards, dones, online_q, target_q, mask, discounts=discounts, n_step=n_step
         )
         expected_targets, expected_learnable = _loop_n_step_targets(
             rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
@@ -211,6 +224,7 @@ def _random_sequence(draw: random.Random) -> ReplaySequence:
                 reward=0.0 if index < padded else draw.gauss(0.0, 2.0),
                 done=index == end,
                 admissible=True,
+                game_ms=1000.0,
                 padding=index < padded,
             )
         )
@@ -241,7 +255,9 @@ def test_a_weight_count_that_differs_from_the_sequence_count_is_refused() -> Non
 
 def _assert_same_batch(batch: SequenceBatch, expected: SequenceBatch) -> None:
     assert batch.burn_in == expected.burn_in
-    for name in ("scalars", "rows", "mask", "actions", "rewards", "dones", "padding", "weights"):
+    for name in (
+        "scalars", "rows", "mask", "actions", "rewards", "dones", "padding", "game_ms", "weights"
+    ):
         value, reference = getattr(batch, name), getattr(expected, name)
         assert value.dtype == reference.dtype, name
         assert value.shape == reference.shape, name
@@ -289,3 +305,133 @@ def test_gradient_steps_on_a_packed_batch_equal_those_on_a_listed_one(device: st
         assert torch.equal(value, listed.online.state_dict()[name]), name
     for name, value in packed.target.state_dict().items():
         assert torch.equal(value, listed.target.state_dict()[name]), name
+
+
+# -- per-decision discount after board #81 ----------------------------------
+#
+# `n_step_targets` and `value_fit_correlation` took one scalar discount before
+# the game-time discount made it a tensor of per-transition ds. Their scalar
+# versions are frozen here as the oracle the flag-off path is held to, to the
+# bit: with --discount-per-game-second off nothing about a target may move.
+
+
+def _scalar_n_step_targets(
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    online_q: torch.Tensor,
+    target_q: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    discount: float,
+    n_step: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`n_step_targets` with one scalar discount, as it was before #81, verbatim."""
+    batch, time = rewards.shape
+    evaluated = evaluated_next_values(online_q, target_q, mask)
+
+    terminal = dones.to(rewards.dtype)
+    beyond = rewards.new_zeros(batch, n_step)
+    padded_rewards = torch.cat((rewards, beyond), dim=1)
+    padded_terminal = torch.cat((terminal, beyond), dim=1)
+
+    accumulated = torch.zeros_like(rewards)
+    alive = torch.ones_like(rewards)
+    ended_inside_window = torch.zeros_like(rewards)
+    factor = 1.0
+    for offset in range(n_step):
+        window_rewards = padded_rewards[:, offset : offset + time]
+        window_terminal = padded_terminal[:, offset : offset + time]
+        accumulated = accumulated + alive * factor * window_rewards
+        factor *= discount
+        alive = alive * (1.0 - window_terminal)
+        ended_inside_window = torch.maximum(ended_inside_window, window_terminal)
+
+    bootstrapped = max(time - n_step, 0)
+    head = accumulated[:, :bootstrapped] + (
+        alive[:, :bootstrapped] * factor * evaluated[:, n_step:]
+    )
+    targets = torch.cat((head, accumulated[:, bootstrapped:]), dim=1)
+    learnable = torch.cat(
+        (torch.ones_like(head), ended_inside_window[:, bootstrapped:]), dim=1
+    )
+    return targets, learnable
+
+
+def _scalar_value_fit_correlation(
+    online_q: torch.Tensor,
+    mask: torch.Tensor,
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    real: torch.Tensor,
+    *,
+    discount: float,
+) -> float | None:
+    """`value_fit_correlation` with one scalar discount, as it was before #81, verbatim."""
+    values = torch.where(mask, online_q, torch.full_like(online_q, float("-inf"))).amax(dim=-1)
+    time = rewards.shape[1]
+    terminal = dones.to(rewards.dtype)
+    returns = torch.zeros_like(rewards)
+    ends_inside = torch.zeros_like(rewards)
+    running = torch.zeros(rewards.shape[0], device=rewards.device)
+    ended = torch.zeros_like(running)
+    for step in reversed(range(time)):
+        running = rewards[:, step] + discount * (1.0 - terminal[:, step]) * running
+        ended = torch.maximum(terminal[:, step], ended)
+        returns[:, step] = running
+        ends_inside[:, step] = ended
+
+    keep = (ends_inside > 0) & (real > 0) & torch.isfinite(values)
+    predicted = values[keep]
+    realised = returns[keep]
+    if predicted.numel() < 2:
+        return None
+    predicted = predicted - predicted.mean()
+    realised = realised - realised.mean()
+    spread = predicted.norm() * realised.norm()
+    if float(spread.item()) <= 0.0:
+        return None
+    return float((predicted @ realised / spread).item())
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_with_the_game_time_discount_off_targets_and_value_fit_are_unchanged(
+    device: str,
+) -> None:
+    """T1: flag off, every target and every value fit equals the scalar one, bit for bit.
+
+    The random batches vary n, the discount, episode ends and front padding,
+    so windows run past the end both with and without a terminal inside. The
+    game time is random too: per decision it must be ignored entirely.
+    """
+    for seed in range(300):
+        rewards, dones, online_q, target_q, mask, discount, n_step = _random_target_inputs(
+            seed, device
+        )
+        config = StackedDqnConfig(discount=discount)
+        game_ms = torch.rand(rewards.shape, generator=torch.Generator().manual_seed(seed))
+        discounts = config.transition_discounts((game_ms * 20_000.0).to(device))
+        assert not config.books_reward_at_span_end
+
+        targets, learnable = n_step_targets(
+            rewards, dones, online_q, target_q, mask, discounts=discounts, n_step=n_step
+        )
+        expected_targets, expected_learnable = _scalar_n_step_targets(
+            rewards, dones, online_q, target_q, mask, discount=discount, n_step=n_step
+        )
+        assert targets.dtype == expected_targets.dtype, f"seed {seed}"
+        torch.testing.assert_close(
+            targets, expected_targets, rtol=0.0, atol=0.0, msg=f"seed {seed}"
+        )
+        torch.testing.assert_close(
+            learnable, expected_learnable, rtol=0.0, atol=0.0, msg=f"seed {seed}"
+        )
+
+        real = (torch.rand(rewards.shape, generator=torch.Generator().manual_seed(seed)) < 0.9)
+        real = real.to(rewards.dtype).to(device)
+        fit = value_fit_correlation(
+            online_q, mask, rewards, dones, real, discounts=discounts
+        )
+        expected_fit = _scalar_value_fit_correlation(
+            online_q, mask, rewards, dones, real, discount=discount
+        )
+        assert fit == expected_fit, f"seed {seed}"

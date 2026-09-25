@@ -12,6 +12,7 @@ import torch
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
+from tower_rl.learning.actor import Actor
 from tower_rl.learning.backbone import Backbone, collate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import ReplaySequence, ReplayStep, SequenceMetadata
@@ -50,6 +51,7 @@ def _sequence(
             reward=padded_reward if index < padding else 1.0,
             done=index == length - 1,
             admissible=True,
+            game_ms=1000.0,
             padding=index < padding,
         )
         for index in range(length)
@@ -143,3 +145,36 @@ def test_state_round_trips_exactly(backbone: Backbone) -> None:
 
 def test_the_backbone_states_where_its_parameters_live(backbone: Backbone) -> None:
     assert isinstance(backbone.device, torch.device)
+
+
+def test_collate_carries_each_steps_game_time_and_padding_carries_none() -> None:
+    """T6: a short episode, left-padded by the actor, collated into a batch."""
+    real_ms = (1500.0, 0.0, 17250.5)
+    steps = [
+        ReplayStep(
+            features=_features(seed=0.1 * index),
+            action_index=index % 3,
+            reward=1.0,
+            done=index == len(real_ms) - 1,
+            admissible=True,
+            game_ms=game_ms,
+        )
+        for index, game_ms in enumerate(real_ms)
+    ]
+    window = Actor._left_padded(steps, 6)
+    sequence = ReplaySequence(
+        SequenceMetadata(
+            episode_id="e", actor_id="a", profile_id="p",
+            observation_schema="observation-v1", action_schema="run-action-v1",
+            reward_schema="reward-v1", model_version=0, epsilon=0.0, game_speed=8.0,
+        ),
+        window,
+        BURN_IN,
+    )
+
+    batch = collate((sequence, _sequence(length=6)), (1.0, 1.0))
+
+    assert batch.game_ms.dtype == torch.float32
+    assert batch.game_ms[0].tolist() == [0.0, 0.0, 0.0, *real_ms]
+    assert batch.padding[0].tolist() == [True] * 3 + [False] * 3
+    assert batch.game_ms[1].tolist() == [1000.0] * 6

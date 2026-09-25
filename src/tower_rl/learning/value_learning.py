@@ -32,7 +32,7 @@ def n_step_targets(
     target_q: Tensor,
     mask: Tensor,
     *,
-    discount: float,
+    discounts: Tensor,
     n_step: int,
 ) -> tuple[Tensor, Tensor]:
     """Double Q n-step targets, and which steps have a well-defined one.
@@ -48,6 +48,16 @@ def n_step_targets(
     offset order, so the arithmetic per step is the same as summing its window
     one step at a time. That keeps this a learner-speed change (a per-step loop
     was thousands of tiny kernel launches) rather than a change of target.
+
+    `discounts` [B, T] is each transition's own discount d_t: one constant
+    per decision, or one per span of game time (`StackedDqnConfig.
+    transition_discounts`). A reward is weighted by the product of the ds
+    before it in the window, and the bootstrap by the product over the whole
+    window, so n stays counted in decisions whatever the ds are. Offsets past
+    the end discount by 1: they carry no reward and no bootstrap. The factor
+    is accumulated in the dtype `discounts` is given in, which for a constant
+    float64 d is exactly the scalar power `d ** k` the constant-discount target
+    was built with.
     """
     batch, time = rewards.shape
     evaluated = evaluated_next_values(online_q, target_q, mask)
@@ -56,16 +66,17 @@ def n_step_targets(
     beyond = rewards.new_zeros(batch, n_step)
     padded_rewards = torch.cat((rewards, beyond), dim=1)
     padded_terminal = torch.cat((terminal, beyond), dim=1)
+    padded_discounts = torch.cat((discounts, discounts.new_ones(batch, n_step)), dim=1)
 
     accumulated = torch.zeros_like(rewards)
     alive = torch.ones_like(rewards)
     ended_inside_window = torch.zeros_like(rewards)
-    factor = 1.0
+    factor = torch.ones_like(discounts)
     for offset in range(n_step):
         window_rewards = padded_rewards[:, offset : offset + time]
         window_terminal = padded_terminal[:, offset : offset + time]
-        accumulated = accumulated + alive * factor * window_rewards
-        factor *= discount
+        accumulated = accumulated + alive * factor.to(rewards.dtype) * window_rewards
+        factor = factor * padded_discounts[:, offset : offset + time]
         alive = alive * (1.0 - window_terminal)
         ended_inside_window = torch.maximum(ended_inside_window, window_terminal)
 
@@ -74,7 +85,7 @@ def n_step_targets(
     # ended inside the window.
     bootstrapped = max(time - n_step, 0)
     head = accumulated[:, :bootstrapped] + (
-        alive[:, :bootstrapped] * factor * evaluated[:, n_step:]
+        alive[:, :bootstrapped] * factor[:, :bootstrapped].to(rewards.dtype) * evaluated[:, n_step:]
     )
     targets = torch.cat((head, accumulated[:, bootstrapped:]), dim=1)
     learnable = torch.cat(
@@ -127,7 +138,7 @@ def value_fit_correlation(
     dones: Tensor,
     real: Tensor,
     *,
-    discount: float,
+    discounts: Tensor,
 ) -> float | None:
     """Correlation between V(s_t) and the return the episode actually realised.
 
@@ -143,16 +154,23 @@ def value_fit_correlation(
     else. `None` when the batch holds fewer than two such steps, or when either
     side is constant across them - a correlation is undefined there, and zero
     would be a claim.
+
+    `discounts` [B, T] are the same per-transition ds the target is built
+    with, and `rewards` the same rewards, so the realised return is the
+    quantity the values are trained towards rather than a different one.
     """
     values = torch.where(mask, online_q, torch.full_like(online_q, float("-inf"))).amax(dim=-1)
     time = rewards.shape[1]
     terminal = dones.to(rewards.dtype)
+    step_discounts = discounts.to(rewards.dtype)
     returns = torch.zeros_like(rewards)
     ends_inside = torch.zeros_like(rewards)
     running = torch.zeros(rewards.shape[0], device=rewards.device)
     ended = torch.zeros_like(running)
     for step in reversed(range(time)):
-        running = rewards[:, step] + discount * (1.0 - terminal[:, step]) * running
+        running = (
+            rewards[:, step] + step_discounts[:, step] * (1.0 - terminal[:, step]) * running
+        )
         ended = torch.maximum(terminal[:, step], ended)
         returns[:, step] = running
         ends_inside[:, step] = ended

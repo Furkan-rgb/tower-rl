@@ -39,6 +39,7 @@ from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import checkpoint_policy
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -1433,3 +1434,103 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
     for answered in (once, split):
         assert answered == sorted(set(answered)) and answered
     assert min(crossings(second)) > max(crossings(first))
+
+
+# -- discounting by game time (board #81) ------------------------------------
+
+
+def test_the_game_time_discount_is_off_by_default(trained: dict[str, Any]) -> None:
+    """Off, the run discounts per decision exactly as every run before it."""
+    resolved = trained["arm"]["resolved_config"]
+    assert resolved["discount_per_game_second"] is None
+    assert resolved["discount"] == 0.99
+
+
+def test_the_two_discounts_are_refused_together(tmp_path: Path) -> None:
+    """T8: each defines the discount, so one of them would go silently unused."""
+    with pytest.raises(SystemExit, match="one or the other"):
+        arguments(tmp_path, **{"--discount": "0.99", "--discount-per-game-second": "0.997"})
+
+
+def test_the_game_time_discount_is_refused_under_dreamerv3(tmp_path: Path) -> None:
+    """T8: DreamerV3 keeps its published per-step discount."""
+    with pytest.raises(SystemExit, match="stacked-dqn setting"):
+        dreamer_arguments(tmp_path, "--discount-per-game-second", "0.997")
+
+
+def test_a_game_time_run_records_its_discount_and_its_checkpoint_plays(tmp_path: Path) -> None:
+    """T8: the flag is in the run's identity, and the checkpoint rebuilds with it."""
+    report = session(tmp_path, settings={"--discount-per-game-second": "0.997"})
+    resolved = report["arm"]["resolved_config"]
+    assert resolved["discount_per_game_second"] == 0.997
+    assert resolved["discount"] is None, "the per-decision discount played no part"
+
+    policy, _ = checkpoint_policy(
+        latest_checkpoint(report),
+        decision_cadence=resolved["decision_cadence"],
+        upgrade_availability=resolved["upgrade_availability"],
+    )
+    assert isinstance(policy, StackedDqnBackbone)
+    assert policy.config.discount_per_game_second == 0.997
+
+    # It resumes under the same discount, and only under it.
+    resumed = train.resume_point(
+        arguments(
+            tmp_path / "second",
+            **{
+                "--budget-decisions": "400",
+                "--resume": str(latest_checkpoint(report)),
+                "--discount-per-game-second": "0.997",
+            },
+        ),
+        profile_id=PROFILE,
+        revision="test",
+    )
+    assert resumed is not None and resumed.decisions > 0
+    with pytest.raises(SystemExit, match="a different target"):
+        resume_from(tmp_path / "third", latest_checkpoint(report), 400)
+
+
+def test_a_checkpoint_from_before_the_game_time_discount_still_plays(tmp_path: Path) -> None:
+    """T8: a resolved config without the key rebuilds, discounting per decision."""
+    parent_path = latest_checkpoint(numbered(tmp_path / "first", 50))
+    parent = load(parent_path)
+    older = tmp_path / "older.pt"
+    settings = dict(parent.resolved_config)
+    del settings["discount_per_game_second"]
+    save(replace(parent, resolved_config=settings), older)
+
+    policy, _ = checkpoint_policy(
+        older,
+        decision_cadence=parent.identity.decision_cadence.value,
+        upgrade_availability=parent.identity.upgrade_availability.value,
+    )
+    assert isinstance(policy, StackedDqnBackbone)
+    assert policy.config.discount_per_game_second is None
+    assert policy.config.discount == settings["discount"]
+    # And it resumes under the per-decision default it was trained with.
+    assert resume_from(tmp_path / "second", older, 400).decisions > 0
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"--discount-per-game-second": "0.997"},
+        {"--discount": "0.9"},
+    ],
+)
+def test_a_resume_under_another_discount_is_refused(
+    tmp_path: Path, flags: dict[str, str]
+) -> None:
+    """A different discount is a different target: one set of weights, two scales."""
+    checkpoint = latest_checkpoint(numbered(tmp_path / "first", 50))
+
+    with pytest.raises(SystemExit, match="a different target"):
+        train.resume_point(
+            arguments(
+                tmp_path / "second",
+                **{"--budget-decisions": "400", "--resume": str(checkpoint), **flags},
+            ),
+            profile_id=PROFILE,
+            revision="test",
+        )

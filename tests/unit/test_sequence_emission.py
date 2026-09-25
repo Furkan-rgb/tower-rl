@@ -44,6 +44,7 @@ def _episode(decisions: int) -> list[ReplayStep]:
             reward=float(step),
             done=step == decisions - 1,
             admissible=True,
+            game_ms=1000.0,
         )
         for step in range(decisions)
     ]

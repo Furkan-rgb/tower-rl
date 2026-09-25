@@ -173,6 +173,10 @@ BACKBONES = (BACKBONE, DREAMERV3)
 #: ignore can be told from one that was never given at all.
 DEFAULT_EPSILON_END = 0.05
 
+#: The per-decision discount when neither `--discount` nor
+#: `--discount-per-game-second` is given, held here for the same reason.
+DEFAULT_DISCOUNT = 0.99
+
 
 @dataclass(frozen=True)
 class ActorInstance:
@@ -219,6 +223,7 @@ def build_backbone(
         n_step_final=arguments.n_step_final,
         n_step_anneal_steps=arguments.n_step_anneal_steps,
         discount=arguments.discount,
+        discount_per_game_second=arguments.discount_per_game_second,
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
     )
@@ -536,6 +541,7 @@ STACKED_ONLY_FLAGS = (
     "n_step_final",
     "n_step_anneal_steps",
     "discount",
+    "discount_per_game_second",
     "learning_rate",
     "target_ema_decay",
     # An epsilon anneal: DreamerV3 adds no exploration noise to anneal.
@@ -666,7 +672,25 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="gradient steps the n-step anneal takes; needs --n-step-final",
     )
-    parser.add_argument("--discount", type=float, default=0.99)
+    parser.add_argument(
+        "--discount",
+        type=float,
+        # Unset rather than 0.99, so a value given beside
+        # --discount-per-game-second can be told from the default.
+        default=None,
+        help=f"the discount per decision (default {DEFAULT_DISCOUNT})",
+    )
+    parser.add_argument(
+        "--discount-per-game-second",
+        type=float,
+        default=None,
+        help=(
+            "discount by game time instead of per decision: a transition that "
+            "spans t game-seconds is discounted by this ** t, so a purchase "
+            "costs no discount (docs/solution.md 9.4d); unset discounts per "
+            "decision, and --discount may not be given with it"
+        ),
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument(
         "--target-ema-decay",
@@ -861,6 +885,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
+    if arguments.discount is not None and arguments.discount_per_game_second is not None:
+        # Two definitions of one discount: neither may be silently unused.
+        raise SystemExit(
+            "--discount and --discount-per-game-second each define the discount; "
+            "give one or the other"
+        )
+    if arguments.discount is None:
+        arguments.discount = DEFAULT_DISCOUNT
     if arguments.epsilon_end is None:
         arguments.epsilon_end = DEFAULT_EPSILON_END
     elif arguments.exploration == LADDER:
@@ -982,6 +1014,26 @@ def resume_point(
             "checkpoint from the game-time budget era: it is for evaluation "
             "only and cannot be resumed under --budget-decisions"
         )
+    if arguments.backbone == BACKBONE and "discount" in state.resolved_config:
+        # The discount defines the target. Resuming under another one would
+        # train one set of weights towards two value scales without a word.
+        # A file that recorded no settings at all has nothing to compare; one
+        # from before the game-time discount has no per-second key, which
+        # reads as None - per decision, which is what it was trained under.
+        recorded = (
+            state.resolved_config.get("discount"),
+            state.resolved_config.get("discount_per_game_second"),
+        )
+        requested = (
+            None if arguments.discount_per_game_second is not None else arguments.discount,
+            arguments.discount_per_game_second,
+        )
+        if recorded != requested:
+            raise SystemExit(
+                f"--resume {arguments.resume} was trained with discount {recorded[0]} "
+                f"and discount per game-second {recorded[1]}; this run asks for "
+                f"{requested[0]} and {requested[1]}, a different target"
+            )
     if state.decisions >= arguments.budget_decisions:
         raise SystemExit(
             f"--resume {arguments.resume} is already at {state.decisions} "

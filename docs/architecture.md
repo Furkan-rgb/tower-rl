@@ -418,8 +418,9 @@ second axis: `episode_game_seconds_cumulative` per episode and
 `--resume <checkpoint>` makes the run a second segment of an earlier one:
 `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
 device is touched — refusing one whose `CheckpointIdentity` names another arm,
-profile or schema, and one that has already spent `--budget-decisions`, which
-stays the whole run's total — and `build_arm`
+profile or schema, a stacked-dqn one whose recorded discount differs from the
+command's (`docs/solution.md` §9.4d), and one that has already spent
+`--budget-decisions`, which stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the
 `TrainingProgressReport` at the parent's counters — decisions and game time
 both — so epsilon, beta, the selection periods and the numbered-checkpoint

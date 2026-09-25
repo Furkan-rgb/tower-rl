@@ -182,7 +182,15 @@ def checkpoint_policy(
                 else int(settings["n_step_final"])
             ),
             n_step_anneal_steps=int(settings.get("n_step_anneal_steps", 0)),
-            discount=float(settings["discount"]),
+            # Acting reads neither discount. A game-time run records the
+            # per-decision one as None, and a run before it records no
+            # per-game-second key at all; both rebuild on the defaults.
+            discount=(
+                StackedDqnConfig.discount
+                if settings.get("discount") is None
+                else float(settings["discount"])
+            ),
+            discount_per_game_second=settings.get("discount_per_game_second"),
             learning_rate=float(settings["learning_rate"]),
             target_ema_decay=float(settings["target_ema_decay"]),
         ),

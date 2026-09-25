@@ -577,7 +577,7 @@ class DreamerBackbone:
                 batch.rewards,
                 batch.dones,
                 observed,
-                discount=c.discount,
+                discounts=torch.full_like(batch.rewards, c.discount),
             )
         return LearnMetrics(
             weighted_loss=float(loss.detach().item()),

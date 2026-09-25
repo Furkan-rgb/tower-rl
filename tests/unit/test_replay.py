@@ -75,6 +75,7 @@ def _sequence(length: int = 4, burn_in: int = 1, **metadata: object) -> ReplaySe
             reward=1.0,
             done=step == length - 1,
             admissible=True,
+            game_ms=1000.0,
         )
         for step in range(length)
     )
@@ -119,8 +120,8 @@ def test_incompatible_profile_or_schema_is_rejected_and_counted() -> None:
 def test_inadmissible_transitions_never_enter_replay() -> None:
     replay = PrioritizedSequenceReplay(capacity=4, seed=1)
     steps = (
-        ReplayStep(_features(), action_index(WAIT), 1.0, False, admissible=True),
-        ReplayStep(_features(), action_index(WAIT), 0.0, False, admissible=False),
+        ReplayStep(_features(), action_index(WAIT), 1.0, False, admissible=True, game_ms=0.0),
+        ReplayStep(_features(), action_index(WAIT), 0.0, False, admissible=False, game_ms=0.0),
     )
 
     assert not replay.add(ReplaySequence(_metadata(), steps, burn_in=0))
@@ -241,3 +242,16 @@ def test_snapshot_reports_what_a_checkpoint_must_state() -> None:
         "reward-v1",
     ]
     assert snapshot["rejected"] == 1
+
+
+@pytest.mark.parametrize("game_ms", [-1.0, float("nan"), float("inf")])
+def test_a_step_whose_game_time_is_negative_or_not_finite_is_refused(game_ms: float) -> None:
+    """T7: a learner that discounts by game time would read it as a discount."""
+    with pytest.raises(ReplayRejected, match="game time"):
+        ReplayStep(_features(), action_index(WAIT), 0.0, False, admissible=True, game_ms=game_ms)
+
+
+def test_a_step_must_say_how_much_game_time_it_spanned() -> None:
+    """No default: a forgotten call site must fail, not silently discount nothing."""
+    with pytest.raises(TypeError, match="game_ms"):
+        ReplayStep(_features(), action_index(WAIT), 0.0, False, admissible=True)  # type: ignore[call-arg]

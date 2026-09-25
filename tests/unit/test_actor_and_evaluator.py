@@ -5,7 +5,13 @@ import math
 import pytest
 from fakes.fake_run_port import FakeRunPort
 
-from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome, WaveRecord
+from tower_rl.environment.episode import (
+    EpisodeSummary,
+    RunTransition,
+    TerminationOutcome,
+    WaveRecord,
+)
+from tower_rl.environment.run_actions import RunActionId
 from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -24,7 +30,7 @@ from tower_rl.learning.policies import (
     RandomPolicy,
     WaitOnlyPolicy,
 )
-from tower_rl.learning.replay import PrioritizedSequenceReplay
+from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayStep
 
 PROFILE = "fake-profile-v1"
 
@@ -537,3 +543,30 @@ def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:
     assert report.total_decisions == 0
     assert report.decisions_per_episode == 0.0
     assert report.distribution.mean >= 1.0
+
+
+def test_each_stored_step_carries_the_game_time_its_transition_spanned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T7: the actor keeps `transition.game_ms`; a purchase spans none of it."""
+    environment = _environment(damage_per_second=1.0)
+    spans: list[float] = []
+    step = environment.step
+
+    def recorded(action: RunActionId) -> RunTransition:
+        transition = step(action)
+        spans.append(transition.game_ms)
+        return transition
+
+    monkeypatch.setattr(environment, "step", recorded)
+    actor = Actor(environment=environment, policy=CheapestFirstPolicy())
+    stored: list[ReplayStep] = []
+    monkeypatch.setattr(
+        actor, "_emit", lambda steps, summary: (stored.extend(steps), (0, 0))[1]
+    )
+
+    actor.run_episode()
+
+    assert [step.game_ms for step in stored] == spans
+    assert 0.0 in spans, "a confirmed purchase takes no game time"
+    assert any(span > 0.0 for span in spans), "a wait does"

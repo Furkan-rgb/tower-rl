@@ -288,3 +288,62 @@ def test_learning_under_the_game_time_discount_is_finite() -> None:
 def test_a_discount_per_game_second_outside_zero_one_is_refused(value: float) -> None:
     with pytest.raises(ValueError, match="per game-second"):
         StackedDqnConfig(discount_per_game_second=value)
+
+
+# --- The survival-time reward (board #82)
+
+
+def test_the_survival_time_reward_is_refused_without_the_game_time_discount() -> None:
+    """Per decision a span has no length for the reward to be integrated over."""
+    with pytest.raises(ValueError, match="survival-time reward"):
+        StackedDqnConfig(survival_time_reward=True)
+
+
+def test_a_span_of_no_game_time_survives_exactly_nothing() -> None:
+    config = StackedDqnConfig(discount_per_game_second=0.997, survival_time_reward=True)
+    discounts = config.transition_discounts(torch.zeros(1, 3))
+
+    assert torch.equal(config.survival_rewards(discounts), torch.zeros(1, 3, dtype=torch.float64))
+
+
+def test_a_seventeen_second_span_earns_its_discounted_share_of_a_wave() -> None:
+    """(1 - g^17) / (-ln g * 35): the longest span M3-P003 saw, about half a wave."""
+    config = StackedDqnConfig(discount_per_game_second=0.997, survival_time_reward=True)
+    discounts = config.transition_discounts(torch.tensor([[17000.0]]))
+
+    assert config.survival_rewards(discounts).item() == pytest.approx(0.47352, rel=1e-5)
+
+
+@pytest.mark.parametrize("discount_per_game_second", [None, 0.997])
+def test_learning_with_the_survival_time_reward_off_is_bit_identical(
+    discount_per_game_second: float | None,
+) -> None:
+    """Off, the flag changes nothing: same metrics and same weights, bit for bit."""
+    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
+    batch = collate((_timed_sequence(spans), _timed_sequence(spans[::-1])), (1.0, 0.5))
+    default = _backbone(discount_per_game_second=discount_per_game_second)
+    explicit = _backbone(
+        discount_per_game_second=discount_per_game_second, survival_time_reward=False
+    )
+
+    for _ in range(3):
+        assert default.learn(batch) == explicit.learn(batch)
+
+    for left, right in ((default.online, explicit.online), (default.target, explicit.target)):
+        left_state, right_state = left.state_dict(), right.state_dict()
+        assert left_state.keys() == right_state.keys()
+        assert all(torch.equal(left_state[key], right_state[key]) for key in left_state)
+
+
+def test_learning_with_the_survival_time_reward_on_learns_from_it() -> None:
+    """On, the wave reward is replaced: the same batch trains other weights."""
+    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
+    batch = collate((_timed_sequence(spans),), (1.0,))
+    wave = _backbone(discount_per_game_second=0.997)
+    survival = _backbone(discount_per_game_second=0.997, survival_time_reward=True)
+
+    metrics = survival.learn(batch)
+    wave.learn(batch)
+
+    assert torch.isfinite(torch.tensor(metrics.weighted_loss))
+    assert not parameters_are_equal(wave.online, survival.online)

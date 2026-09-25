@@ -224,6 +224,7 @@ def build_backbone(
         n_step_anneal_steps=arguments.n_step_anneal_steps,
         discount=arguments.discount,
         discount_per_game_second=arguments.discount_per_game_second,
+        survival_time_reward=arguments.survival_time_reward,
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
     )
@@ -542,6 +543,7 @@ STACKED_ONLY_FLAGS = (
     "n_step_anneal_steps",
     "discount",
     "discount_per_game_second",
+    "survival_time_reward",
     "learning_rate",
     "target_ema_decay",
     # An epsilon anneal: DreamerV3 adds no exploration noise to anneal.
@@ -689,6 +691,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "spans t game-seconds is discounted by this ** t, so a purchase "
             "costs no discount (docs/solution.md 9.4d); unset discounts per "
             "decision, and --discount may not be given with it"
+        ),
+    )
+    parser.add_argument(
+        "--survival-time-reward",
+        action="store_true",
+        help=(
+            "learn from game time survived, in waves, instead of the wave reward, "
+            "so dying later in a wave scores higher (docs/solution.md 9.4e); "
+            "needs --discount-per-game-second"
         ),
     )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -952,6 +963,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     if arguments.n_step_anneal_steps < 0:
         raise SystemExit("--n-step-anneal-steps cannot be negative")
     settle_dreamer_settings(parser, argv, arguments)
+    if arguments.survival_time_reward and arguments.discount_per_game_second is None:
+        # The reward is integrated under the game-time discount; per decision
+        # a span has no length to integrate over. After the DreamerV3 check, so
+        # that backbone is told it does not read the flag at all.
+        raise SystemExit("--survival-time-reward needs --discount-per-game-second")
     if (
         arguments.backbone == BACKBONE
         and arguments.stacked_burn_in < arguments.history_length - 1
@@ -1023,16 +1039,21 @@ def resume_point(
         recorded = (
             state.resolved_config.get("discount"),
             state.resolved_config.get("discount_per_game_second"),
+            # Likewise the reward: a file from before the survival-time reward
+            # has no key, which reads as off - the wave reward it learned from.
+            state.resolved_config.get("survival_time_reward", False),
         )
         requested = (
             None if arguments.discount_per_game_second is not None else arguments.discount,
             arguments.discount_per_game_second,
+            arguments.survival_time_reward,
         )
         if recorded != requested:
             raise SystemExit(
-                f"--resume {arguments.resume} was trained with discount {recorded[0]} "
-                f"and discount per game-second {recorded[1]}; this run asks for "
-                f"{requested[0]} and {requested[1]}, a different target"
+                f"--resume {arguments.resume} was trained with discount {recorded[0]}, "
+                f"discount per game-second {recorded[1]} and survival-time reward "
+                f"{recorded[2]}; this run asks for {requested[0]}, {requested[1]} "
+                f"and {requested[2]}, a different target"
             )
     if state.decisions >= arguments.budget_decisions:
         raise SystemExit(

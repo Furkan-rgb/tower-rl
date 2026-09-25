@@ -53,8 +53,11 @@ PROFILE = "fake-profile-v1"
 #: which the backbone contract suite covers.
 SMALL_NETWORK = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
-def arguments(run_dir: Path, **overrides: str) -> argparse.Namespace:
-    """The real parser, so the entry point's own defaults and checks are used."""
+def arguments(run_dir: Path, **overrides: str | None) -> argparse.Namespace:
+    """The real parser, so the entry point's own defaults and checks are used.
+
+    A value of None gives the flag alone, as a switch is given.
+    """
     argv: list[str] = []
     settings = {
         "--budget-decisions": "200",
@@ -77,7 +80,7 @@ def arguments(run_dir: Path, **overrides: str) -> argparse.Namespace:
     }
     settings.update(overrides)
     for flag, value in settings.items():
-        argv += [flag, value]
+        argv += [flag] if value is None else [flag, value]
     return train.parse_arguments(argv)
 
 
@@ -104,7 +107,7 @@ def session(
     run_dir: Path,
     budget: str = "200",
     actors: int = 1,
-    settings: dict[str, str] | None = None,
+    settings: dict[str, str | None] | None = None,
     tracker: Any = None,
     resume: Any = None,
     **fake: Any,
@@ -1534,3 +1537,80 @@ def test_a_resume_under_another_discount_is_refused(
             profile_id=PROFILE,
             revision="test",
         )
+
+
+# -- the survival-time reward (board #82) ------------------------------------
+
+SURVIVAL: dict[str, str | None] = {
+    "--discount-per-game-second": "0.997",
+    "--survival-time-reward": None,
+}
+
+
+def test_the_survival_time_reward_is_off_by_default(trained: dict[str, Any]) -> None:
+    """Off, the run learns from the wave reward exactly as every run before it."""
+    assert trained["arm"]["resolved_config"]["survival_time_reward"] is False
+
+
+def test_the_survival_time_reward_is_refused_without_the_game_time_discount(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit, match="needs --discount-per-game-second"):
+        arguments(tmp_path, **{"--survival-time-reward": None})
+
+
+def test_the_survival_time_reward_is_refused_under_dreamerv3(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="stacked-dqn setting"):
+        dreamer_arguments(tmp_path, "--survival-time-reward")
+
+
+def survival_resume(run_dir: Path, checkpoint: Path, **flags: str | None) -> Any:
+    """A second segment's `--resume` of this checkpoint, under these flags."""
+    return train.resume_point(
+        arguments(
+            run_dir, **{"--budget-decisions": "400", "--resume": str(checkpoint), **flags}
+        ),
+        profile_id=PROFILE,
+        revision="test",
+    )
+
+
+def test_a_survival_time_run_records_its_reward_and_resumes_only_under_it(
+    tmp_path: Path,
+) -> None:
+    """The key is in the run's identity, and a resume must ask for the same reward."""
+    report = session(tmp_path, settings=SURVIVAL)
+    assert report["arm"]["resolved_config"]["survival_time_reward"] is True
+    checkpoint = latest_checkpoint(report)
+
+    resumed = survival_resume(tmp_path / "second", checkpoint, **SURVIVAL)
+    assert resumed is not None and resumed.decisions > 0
+    with pytest.raises(SystemExit, match="a different target"):
+        survival_resume(
+            tmp_path / "third", checkpoint, **{"--discount-per-game-second": "0.997"}
+        )
+
+
+def test_a_wave_reward_checkpoint_is_not_resumed_under_the_survival_time_reward(
+    tmp_path: Path,
+) -> None:
+    """The reward defines the target as the discount does: one set of weights, two scales."""
+    checkpoint = latest_checkpoint(
+        numbered(tmp_path / "first", 50, **{"--discount-per-game-second": "0.997"})
+    )
+
+    with pytest.raises(SystemExit, match="a different target"):
+        survival_resume(tmp_path / "second", checkpoint, **SURVIVAL)
+
+
+def test_a_checkpoint_from_before_the_survival_time_reward_resumes_with_it_off(
+    tmp_path: Path,
+) -> None:
+    """A resolved config without the key reads as the wave reward it learned from."""
+    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
+    older = tmp_path / "older.pt"
+    settings = dict(parent.resolved_config)
+    del settings["survival_time_reward"]
+    save(replace(parent, resolved_config=settings), older)
+
+    assert resume_from(tmp_path / "second", older, 400).decisions > 0

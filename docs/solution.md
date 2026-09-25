@@ -1639,6 +1639,64 @@ the bias is accepted rather than measured, because an exact measure needs
 per-advance events on `RunTransition`. Per decision stays the default pending
 the M3-P003 comparison.
 
+### 9.4e Survival-time reward (stacked-dqn, behind a flag)
+
+Under the wave reward a death 5 s into a wave and a death 30 s into it score the
+same: neither earns the next +1, and every action-value difference between the
+two outcomes is 0. Invariant potential-based shaping cannot change that. Ng,
+Harada & Russell 1999 (Th. 1) give Q*' = Q* − Φ for F = γΦ(s') − Φ(s), so every
+action-value difference is kept, and Grzes 2017 (Eq. 3) shows the only term of a
+shaped return that can move the policy is γ^N Φ(s_N) at the terminal state -
+which invariance requires to be 0. Grading the time of death is exactly that
+term.
+
+`scripts/train.py --survival-time-reward` therefore replaces, in the learner
+only, the wave reward with game time survived, measured in waves:
+
+- a transition spanning Δt game-seconds, with d = γ_s^Δt from §9.4d, carries
+  r̃ = (1 − d) / (β · 35), where β = −ln γ_s. This is a reward of 1/35 per
+  game-second integrated exactly under the game-time discount (Bradtke & Duff
+  1995, Eq. 12), so it is valued at the span's start with no end-of-span booking
+  and adds no instance of §9.4d's bias;
+- the n-step target is unchanged. Within a window the rewards telescope to
+  (1 − D)/(β · 35), with D the product of the window's ds, however the window is
+  cut into decisions and purchases. The dying span accrues up to the death, and
+  nothing after `done` counts;
+- a purchase and padding span 0 s, so d = 1 and they earn exactly 0. A truncated,
+  non-terminal episode bootstraps as before.
+
+35 s is one wave, and only sets the unit (`WAVE_SECONDS`). Waves are
+clock-driven. In the M3-P003 evaluation records
+(`state/records/m3-p003/eval-arm/*.json`, 105 valid episodes, read 2026-09-25),
+all 1,585 completed waves from wave 2 on, boss waves included, lasted
+34.88–35.20 game-s; wave 1 lasted 33.7–34.6 s. The 43 deaths in wave 20 came
+0.7–34.7 s into it. So game time survived is, to within 0.2 s per wave, 35 ×
+waves passed plus the time into the final wave. With γ_s = 0.997, from the start
+of a wave, a death at 5 s is worth 0.142 and a death at 30 s is worth 0.820.
+Under the wave reward both are worth the same. An immortal policy is worth
+1/(β · 35) = 9.51, against 9.02 under the wave reward, and the longest span
+(about 17 s) earns 0.474.
+
+This changes the optimised objective, by a bounded amount; section 7.5 of
+`docs/task.md` records the developer's acceptance. Undiscounted, a trajectory's
+return is the waves it passed plus the fraction of the final wave it survived,
+which is under 1. Two trajectories with different final waves are ranked as
+before, and only equal final waves are graded further. In expectation the
+learner may trade less than one wave of expected final wave for in-wave
+survival. There is nothing to game: the wave clock is exogenous, time only
+advances, and a purchase earns nothing. The evaluation metric, the final wave,
+is unchanged.
+
+The flag is off by default, and learning without it is identical to the bit. It
+is refused without `--discount-per-game-second`, since β and d come from it, and
+under `--backbone dreamerv3`. The stored rewards are unchanged and stay
+`reward-v1`. The shaping is identified by `survival_time_reward` in the resolved
+config (manifest and MLflow), and a resume under a different setting than its
+checkpoint's is refused. A checkpoint from before the flag reads as off. The
+value-fit correlation is computed against this reward's return, a smooth function
+of remaining survival rather than a staircase, so its 0.8 threshold is not
+comparable with a wave-reward run's.
+
 ### 9.5 Distributed exploration
 
 Exploration is a named schedule, chosen with `--exploration` and resolved per

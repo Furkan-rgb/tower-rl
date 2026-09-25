@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -292,5 +294,106 @@ def test_a_window_past_the_end_is_learnable_only_if_it_terminated() -> None:
     padded, padded_learnable = n_step_targets(
         padded_rewards, padded_dones, q, q, mask, discounts=discounts, n_step=3
     )
+    assert torch.equal(padded[:, 2:], ended)
+    assert torch.equal(padded_learnable[:, 2:], ended_learnable)
+
+
+# -- the survival-time reward (board #82) -----------------------------------
+#
+# Under --survival-time-reward a transition carries (1 - d) / (beta * 35), the
+# game time it survived in waves, valued at its start; n_step_targets is the
+# same function. With no bootstrap value, a target is exactly the reward.
+
+SURVIVAL = StackedDqnConfig(discount_per_game_second=GAMMA_S, survival_time_reward=True)
+BETA = -math.log(GAMMA_S)
+
+
+def _survived(
+    seconds: list[float], dones_at: tuple[int, ...] = (), bootstrap: float = 0.0
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The n-step target over the whole sequence, and whether it is learnable."""
+    time = len(seconds)
+    discounts = SURVIVAL.transition_discounts(torch.tensor([seconds]) * 1000.0)
+    step_rewards = SURVIVAL.survival_rewards(discounts).float()
+    dones = torch.zeros(1, time, dtype=torch.bool)
+    for index in dones_at:
+        dones[0, index] = True
+    q = torch.full((1, time + 1, ACTIONS), bootstrap)
+    mask = torch.ones(1, time + 1, ACTIONS, dtype=torch.bool)
+    # One more step, of no reward, so the whole window has a bootstrap state.
+    step_rewards = torch.cat((step_rewards, torch.zeros(1, 1)), dim=1)
+    dones = torch.cat((dones, torch.zeros(1, 1, dtype=torch.bool)), dim=1)
+    discounts = torch.cat((discounts, torch.ones(1, 1, dtype=torch.float64)), dim=1)
+    targets, learnable = n_step_targets(
+        step_rewards, dones, q, q, mask, discounts=discounts, n_step=time
+    )
+    return targets[0, 0], learnable[0, 0]
+
+
+@pytest.mark.parametrize("cut", [[35.0], [10.0, 0.0, 0.0, 25.0], [5.0, 5.0, 5.0, 20.0]])
+def test_survival_reward_depends_on_the_time_survived_not_how_it_was_cut(
+    cut: list[float],
+) -> None:
+    """A 35 s window earns (1 - g^35)/(beta*35) and bootstraps with g^35, however split."""
+    reward, _ = _survived(cut)
+    with_bootstrap, learnable = _survived(cut, bootstrap=BOOTSTRAP)
+
+    assert learnable == 1.0
+    assert reward.item() == pytest.approx((1 - GAMMA_S**35) / (BETA * 35), rel=1e-6)
+    bootstrap_weight = (with_bootstrap - reward).item() / BOOTSTRAP
+    assert bootstrap_weight == pytest.approx(GAMMA_S**35, rel=1e-6)
+
+
+def test_dying_later_in_the_wave_scores_higher_by_the_time_survived() -> None:
+    """Death 30 s in beats death 5 s in by (g^5 - g^30)/(beta*35); nothing after counts."""
+    early, early_learnable = _survived([5.0, 40.0, 40.0], dones_at=(0,), bootstrap=BOOTSTRAP)
+    late, late_learnable = _survived([30.0, 40.0, 40.0], dones_at=(0,), bootstrap=BOOTSTRAP)
+
+    assert early_learnable == late_learnable == 1.0
+    assert early.item() == pytest.approx((1 - GAMMA_S**5) / (BETA * 35), rel=1e-6)
+    assert late.item() == pytest.approx((1 - GAMMA_S**30) / (BETA * 35), rel=1e-6)
+    assert (late - early).item() == pytest.approx(
+        (GAMMA_S**5 - GAMMA_S**30) / (BETA * 35), rel=1e-5
+    )
+
+
+def test_a_truncated_end_still_bootstraps_under_the_survival_reward() -> None:
+    """Not done is not dead: the window's end is valued, and the open tail is not learned."""
+    seconds = [3.0, 0.0, 4.0]
+    discounts = SURVIVAL.transition_discounts(torch.tensor([seconds]) * 1000.0)
+    step_rewards = SURVIVAL.survival_rewards(discounts).float()
+    dones = torch.zeros(1, 3, dtype=torch.bool)
+    q = torch.full((1, 3, ACTIONS), BOOTSTRAP)
+    mask = torch.ones(1, 3, ACTIONS, dtype=torch.bool)
+
+    targets, learnable = n_step_targets(
+        step_rewards, dones, q, q, mask, discounts=discounts, n_step=2
+    )
+
+    assert learnable.tolist() == [[1.0, 0.0, 0.0]]
+    expected = (1 - GAMMA_S**3) / (BETA * 35) + GAMMA_S**3 * BOOTSTRAP
+    assert targets[0, 0].item() == pytest.approx(expected, rel=1e-6)
+
+
+def test_padding_adds_exactly_nothing_to_the_survival_reward() -> None:
+    """Front padding spans no game time, so it earns 0.0 and moves no real target."""
+    ended_discounts = SURVIVAL.transition_discounts(torch.tensor([[1.0, 2.0, 3.0]]) * 1000.0)
+    padded_discounts = SURVIVAL.transition_discounts(
+        torch.tensor([[0.0, 0.0, 1.0, 2.0, 3.0]]) * 1000.0
+    )
+    padded_rewards = SURVIVAL.survival_rewards(padded_discounts)
+    assert torch.equal(padded_rewards[:, :2], torch.zeros(1, 2, dtype=torch.float64))
+
+    def targets(discounts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        time = discounts.shape[1]
+        dones = torch.zeros(1, time, dtype=torch.bool)
+        dones[0, -1] = True
+        q = torch.full((1, time, ACTIONS), BOOTSTRAP)
+        mask = torch.ones(1, time, ACTIONS, dtype=torch.bool)
+        rewards = SURVIVAL.survival_rewards(discounts).float()
+        return n_step_targets(rewards, dones, q, q, mask, discounts=discounts, n_step=3)
+
+    ended, ended_learnable = targets(ended_discounts)
+    padded, padded_learnable = targets(padded_discounts)
     assert torch.equal(padded[:, 2:], ended)
     assert torch.equal(padded_learnable[:, 2:], ended_learnable)

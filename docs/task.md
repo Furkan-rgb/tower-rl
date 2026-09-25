@@ -303,6 +303,8 @@ The authoritative V1 objective is:
 
 Reward design must stay aligned with this objective and avoid rewarding proxy behaviors merely because they are easy to measure. Any shaping beyond survival/wave progress must be justified in `solution.md`, separately reported in experiment metadata, and shown not to change the intended objective.
 
+One recorded exception: on 2026-09-25 the developer accepted that stacked-dqn's `--survival-time-reward` (`solution.md` §9.4e) changes the optimised objective by less than one wave, grading deaths within the final wave. The accepted change is bounded, keeps the pathwise ranking of different final waves, and applies to that flag only.
+
 ### 7.6 Model-selection contract
 
 `best` must mean the strongest checkpoint under a repeatable multi-episode evaluation protocol, not the checkpoint associated with the single highest observed run.

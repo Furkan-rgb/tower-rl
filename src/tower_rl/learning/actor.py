@@ -76,6 +76,11 @@ class EpisodeResult:
     #: makes a degenerate policy - one that waits out every episode - visible
     #: while it is happening rather than only in the final wave.
     wait_decisions: int = 0
+    #: The policy's ez-greedy options this episode (`StackedDqnBackbone`): how
+    #: many started and the most decisions one ran for. 0 for a policy without
+    #: them, and for stacked-dqn with ez-greedy off.
+    options_started: int = 0
+    longest_option: int = 0
 
 
 @dataclass
@@ -140,6 +145,11 @@ class Actor:
             accepted,
             total_reward,
             wait_decisions=sum(1 for step in steps if step.action_index == WAIT_ACTION_INDEX),
+            # Read off the policy rather than returned by `act`, so the policy
+            # interface every other arm implements is unchanged; its
+            # `initial_state` above started the counts for this episode.
+            options_started=int(getattr(self.policy, "options_started", 0)),
+            longest_option=int(getattr(self.policy, "longest_option", 0)),
         )
 
     def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:

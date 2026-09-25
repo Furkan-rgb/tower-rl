@@ -225,6 +225,7 @@ def build_backbone(
         discount=arguments.discount,
         discount_per_game_second=arguments.discount_per_game_second,
         survival_time_reward=arguments.survival_time_reward,
+        ez_greedy=arguments.ez_greedy,
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
     )
@@ -544,6 +545,7 @@ STACKED_ONLY_FLAGS = (
     "discount",
     "discount_per_game_second",
     "survival_time_reward",
+    "ez_greedy",
     "learning_rate",
     "target_ema_decay",
     # An epsilon anneal: DreamerV3 adds no exploration noise to anneal.
@@ -700,6 +702,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "learn from game time survived, in waves, instead of the wave reward, "
             "so dying later in a wave scores higher (docs/solution.md 9.4e); "
             "needs --discount-per-game-second"
+        ),
+    )
+    parser.add_argument(
+        "--ez-greedy",
+        action="store_true",
+        help=(
+            "repeat each exploratory action for a zeta-distributed number of "
+            "decisions (mu 2, at most 10000) instead of one, Dabney et al. 2021 "
+            "(docs/solution.md 9.5)"
         ),
     )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -1055,6 +1066,17 @@ def resume_point(
                 f"{recorded[2]}; this run asks for {requested[0]}, {requested[1]} "
                 f"and {requested[2]}, a different target"
             )
+    if arguments.backbone == BACKBONE and (
+        state.resolved_config.get("ez_greedy", False) != arguments.ez_greedy
+    ):
+        # Not the target but the behaviour the replay holds: one run collected
+        # under two explorations is not the arm either one names. A file from
+        # before ez-greedy has no key, which reads as off - what it explored with.
+        raise SystemExit(
+            f"--resume {arguments.resume} was collected with ez-greedy "
+            f"{state.resolved_config.get('ez_greedy', False)}; this run asks for "
+            f"{arguments.ez_greedy}, a different exploration"
+        )
     if state.decisions >= arguments.budget_decisions:
         raise SystemExit(
             f"--resume {arguments.resume} is already at {state.decisions} "

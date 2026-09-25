@@ -204,7 +204,8 @@ environment and nothing that observes or drives it.
   `SelectionPeriod`, `NearGreedyPlateau`, and
   `KillBar`/`KillBarCheck`.
 - `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
-  explores at, at each point of the budget.
+  explores at, at each point of the budget; `zeta_duration`, how long an
+  `--ez-greedy` exploratory action lasts.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
   `EvaluationReport`.
 - `checkpoint.py` — `Checkpoint`, `CheckpointIdentity`, `save`/`load`, the
@@ -230,6 +231,10 @@ tracking store those are `collection_window_near_greedy_mean_final_wave` for the
 episode-cut window, and `selection_period_near_greedy_mean_final_wave` with
 `selection_period_best_near_greedy_mean_final_wave` for the decision-cut
 selection periods the arm is chosen on and early stopping is judged on.
+`--ez-greedy` leaves the rates alone and repeats each exploratory action for a
+drawn number of decisions (solution.md 9.5); the running option is acting
+state of `StackedDqnBackbone`, and `Actor` reads its per-episode counts off the
+policy into the episode records.
 
 **Selection periods and the arm.** The decision axis is cut into selection
 periods of `--selection-period-decisions` (default 15,000), independent of the

@@ -198,7 +198,149 @@ polling loops.
 
 ### Results, as run
 
-(to be filled in after the run)
+**Verdict: DO NOT ADOPT under a strict reading of the pre-registered health
+check — flagged to the developer rather than resolved unilaterally (see
+below); the eval performance itself clears both the primary and the
+suggestive-improvement bars decisively.** Budget completed, no kill bar
+fired, no fleet shortfall (7/7 actors throughout, no relaunch needed).
+
+**Training.**
+`state/runs/session-20260925-104153/stacked-dqn-20260925-104153-ae0fc6/`.
+Stage wall `01:56:08`, exit 0, cleanup ok, 7/7 instances cleaned, 0 exited
+during teardown. Manifest confirmed `actors=7` (all 7 serials),
+`backbone=stacked-dqn`, `seed=0`, `early_stop_patience_periods=0`,
+`kill_bars=[[12000,8000,6.1],[26262,8000,6.1]]`, `budget_decisions=120712`,
+`discount=None`, `discount_per_game_second=0.997` — the flag resolved as
+intended, `--discount` unset. `decisions`: 122,034 (past the 120,712 budget
+by the expected at-most-one-episode-per-actor overshoot).
+`optimisation_steps`: 119,836. `episodes`: 804 (797 valid). Neither kill bar
+fired: K1 (`12000:8000:6.1`) read a near-greedy mean of **10.5** over 28
+episodes at 12,000 decisions; K2 (`26262:8000:6.1`) read **11.593** over 81
+episodes at 26,437 decisions (checked slightly past the nominal 26,262 mark)
+— both clear of the 6.1 floor. Not early-stopped (`early_stopped: false`,
+patience 0 by design). 8 selection periods closed.
+
+**Selection-period curve** (`mean_final_wave` at each period's own close,
+decisions at close in parentheses):
+
+| period | decisions | mean final wave |
+| --- | --- | --- |
+| 1 | 15,097 | 6.843 |
+| 2 | 30,051 | 13.318 |
+| 3 | 45,003 | 15.031 |
+| 4 | 60,096 | 16.444 |
+| 5 | 75,023 | 17.962 |
+| **6** | **90,419** | **18.360 (max, arm)** |
+| 7 | 105,340 | 15.483 |
+| 8 | 120,121 | 15.129 |
+
+Periods 5-8 rise then fall (S4): the curve peaks at period 6 and both
+remaining periods drop below it, so the run's own early-stop tracker
+(`best_period_near_greedy_mean_final_wave: 18.36`) agrees with the raw
+per-period maximum this time — no `M3-P002`-style lag.
+
+**Arm** (`docs/solution.md` §9.2b): counting periods 2-8, the best near-greedy
+mean is period 6 at 90,419 decisions, **18.36** waves —
+`checkpoints/checkpoint-d0090419.pt`, sha256
+`34742b1e716b32d330047f2c09e4f83334f349149945a737679b6e0af7bf89b1`, verified
+against its `.sha256` sidecar before evaluation.
+
+**Evaluation.** `state/records/m3-p003/eval-arm/`, default build, all 7
+actors completed with no failures (`failure: null` on all 7, 0 invalid
+episodes) — n=105/105 valid, no retry needed. Mean final wave **17.076**, SD
+**3.797**, 95% CI (normal approx.) **[16.350, 17.802]**.
+
+**Statistics** (`bootstrap_difference`, seed 0, 10,000 resamples), reported
+descriptively per this entry's own n=1 honesty section, not as a
+BETTER/WORSE verdict: vs `M3-P001` (13.476, n=105): **+3.600 [+2.733,
++4.438]**. vs scripted-`all` (6.105, n=105): **+10.971 [+10.229, +11.657]**.
+vs random-`all` (3.556, n=90): **+13.521 [+12.719, +14.267]**. Per the
+pre-registration, none of these differences is read as evidence of
+improvement from the treatment by itself — `M3-P001` sits at the low end of
+the three-draw family, and n=1 cannot separate a real effect from seed
+variance at this margin.
+
+**Secondary signals, against `M3-P001`.**
+
+- S1. P(final ≥ 13): **0.867** (91/105) vs control **0.438** (46/105,
+  matching the pre-registration's stated 0.44).
+- S2. P(final ≥ 20): **0.410** (43/105) vs control **0.000** (0/105) — well
+  past the suggestive-improvement threshold (≥0.10) on its own.
+- S3. Game-seconds survived after wave-10 start: mean **245.8s** (n=103
+  episodes that reached wave 10) vs control **107.6s** (n=103). After
+  wave-20 start: empty for both — no episode in either eval set (0/105 in
+  each) ever reached wave 21, so this half of S3 stays uninformative exactly
+  as the pre-registration anticipated for the control, and turns out to stay
+  uninformative for the treatment too, despite 43/105 treatment episodes
+  reaching wave 20 itself.
+- S4. Selection-period curve: reported above — rises through period 6, falls
+  periods 7-8 (not "still rising or flat").
+- S5. Pre-boss spending. **Median cash at wave entry** (log-space
+  `cash_log`): waves 7-10, **2.944** (n=412 wave-entries) vs control
+  **2.139** (n=416) — higher. Waves 17-20, **3.083** (n=228) vs control
+  **3.436** (n=23, few control episodes reach this range) — lower, but the
+  control comparator here is thin. **Purchases per decision by wave range is
+  not computable from the recorded schema**: `waves[i].decisions` and
+  `waves[i].advances` are both wave-attributed and sum exactly to the
+  episode totals, but a single WAIT decision can span more than one wave
+  advance (`#80`), so `decisions - advances` is not `purchases` per wave,
+  and the only purchase count the record carries is the episode-level total
+  (no per-wave breakdown at all). This is a data-schema gap, not a
+  computation I chose to skip — **flagged to the developer** rather than
+  approximated silently, since S5's purchase-count half is one of the three
+  required conditions for the "suggestive improvement" tier.
+- S6. Learner health: `mean_recent_value_fit_correlation` **0.7968**
+  (control `M3-P001`: 0.9147), `mean_recent_weighted_loss` **0.0359**
+  (control: 0.0538, finite in both), `mean_recent_unweighted_absolute_td_error`
+  **0.1481** (control: 0.2013, no growth). Both loss and TD error are lower
+  than the control's, and value-fit correlation, while lower than the
+  control's own 0.9147, sits **just under** the rule's 0.8 health threshold
+  (shortfall ≈0.003). No true "second half of training" series is recorded
+  (`learning_curve` is empty; the run only exposes a rolling last-100-step
+  mean), so this is the only figure available for that health check, and it
+  is the same kind of figure `M3-P001`/`M3-P002` reported for the analogous
+  purpose. **Flagged to the developer** (sent during training, unanswered as
+  of this write-up) rather than rounded either way myself, since a literal
+  reading of the health check (all four conditions, including this one,
+  must hold) flips the top-level verdict.
+- Production learner step time:
+  `decision_time.fleet.buckets.learner_step.wall_seconds` (3,374.482s) /
+  `optimisation_steps` (119,836) = **28.16 ms/step**, in the same range as
+  `M3-P001`'s 31.62 ms/step and prior fleet-load measurements.
+
+**Secondary — `#75` wall check.** Max final wave in the eval set: **20**
+(43/105 episodes, all ending mid-wave-20 with `completed: false` and
+`health_fraction` at or near 1.0 — i.e. cut off alive, not dead; sampled
+records confirm this, and the pattern is universal across the dataset: every
+episode's *last* logged wave is `completed: false`, since a wave entry only
+completes once the episode survives into the next one, so this is ordinary
+death-mid-wave, not a special cutoff mechanism). Zero of 105 reached wave
+22. The wall (`#75`: 0/255 prior episodes ever passed wave 21) is **not
+falsified** by this run, but is now demonstrated far more often (41% of
+episodes reach wave 20, vs 0% in `M3-P001`/`M3-P002`) — consistent with, not
+contrary to, the account-state-ceiling account of `#75`.
+
+**Applying the pre-registered rule.** Eval-mean condition (b): 17.076 ≥
+11.14, clears with wide margin. Health condition (a): budget completed ✓,
+no kill bar ✓, finite loss ✓, value-fit correlation ≥0.8 **borderline fail**
+at 0.7968 on the only available (rolling last-100-step) proxy. A strict,
+literal application of "AND" across all four health conditions therefore
+gives **DO NOT ADOPT** on this one sub-threshold reading, despite the eval
+mean beating the adopt bar by more than 5 waves. Had health condition (a)
+been read as satisfied, the run would also clear the "suggestive
+improvement" tier's P(final ≥ 20) ≥ 0.10 branch (0.410 ≫ 0.10) — but S5's
+purchase-count half is unavailable (above), so that tier's third condition
+cannot be fully checked either way. **Both open items — the S6 borderline
+and the S5 data gap — were reported to the developer rather than resolved
+unilaterally**, per standing instruction; this write-up states the literal
+outcome of the rule as specified, with both caveats stated plainly, and does
+not round the verdict in either direction on its own judgment.
+
+Host cleanup verified after both stages: zero qemu processes (`/proc/*/exe`),
+empty `adb devices`, `run_stage.sh`'s own teardown reported `cleanup ok` for
+both the training stage (7/7 cleaned, 0 exited during teardown) and the eval
+stage (0/7 required active cleanup — all already offline, 1/7 exited during
+teardown).
 
 ## M3-P002: DreamerV3 benchmark row, 120,712 decisions (pre-registered, written before the run)
 

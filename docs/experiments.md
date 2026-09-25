@@ -26,6 +26,180 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M3-P003: stacked-dqn with the game-time discount, 120,712 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-25. Board `#81`. Developer-approved (≈3.3h training plus
+eval). Tests whether discounting stacked-dqn by elapsed game time instead of
+per decision (`docs/solution.md` §9.4d, `--discount-per-game-second`, landed
+`4f32cde`) changes the arm, per the design in scratchpad
+`semi-mdp-design.md` §7.
+
+**Why (facts behind §9.4d).** Under choice points, a decision-to-decision
+interval is not one length: a confirmed purchase advances no game time at
+all, while a WAIT spans game time up to the next choice point. Discounting
+per decision taxes every purchase by (1 − γ)·V; discounting by game time
+(a semi-MDP: Bradtke & Duff 1995, Sutton/Precup/Singh 1999) makes a
+purchase's own discount 1, taxing only elapsed time. A wave is ≈35
+game-seconds; the chosen γ_s = 0.997 gives a 333-second horizon, ≈9.5
+waves — the smallest round horizon that still covers the 8–10 waves to the
+next boss wall (a shorter-than-true planning horizon plans better when the
+model is estimated from limited data: Jiang, Kulesza, Singh & Lewis 2015).
+Late spans run 16–21 decisions per wave (`#80` diagnosis, scratchpad
+`wall80-diag-*.txt`), so a decision-indexed discount taxes a late wave's
+purchases far more than an early one's despite equal real time.
+
+**Command.** Exactly `M3-P001`'s training command
+(seed 0, ladder, `--early-stop-patience-periods 0`, `--budget-decisions
+120712`, `--checkpoint-every-decisions 5000`, `--selection-period-decisions
+15000`, `--kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1`,
+`--gradient-steps-per-decision 1.0`, `--n-step 10 --n-step-final 3
+--n-step-anneal-steps 10000`, `--actors 7 --renderer host --frame-rate-hz
+120 --decision-cadence choice-points --upgrade-availability all
+--frame-game-ms 100`), plus `--discount-per-game-second 0.997`.
+`--discount` is not passed — the two flags are refused together (verified:
+dry-parsing both together raises `SystemExit("--discount and
+--discount-per-game-second each define the discount; give one or the
+other")`).
+
+Verified against `main` @ `4f32cde`: `train.py --help` lists
+`--discount-per-game-second`; dry-parsed the exact command through
+`train.parse_arguments`, no `SystemExit`, `discount_per_game_second=0.997`
+resolved alongside every other field unchanged from `M3-P001`
+(`seed=0`, `early_stop_patience_periods=0`, `budget_decisions=120712`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]`,
+`exploration=ladder`, `gradient_steps_per_decision=1.0`, `n_step=10`,
+`n_step_final=3`, `n_step_anneal_steps=10000`).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p003-dqn-gametime-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 120712 --checkpoint-every-decisions 5000 \
+      --selection-period-decisions 15000 --epsilon-anneal-decisions 8000 \
+      --early-stop-patience-periods 0 --seed 0 --gradient-steps-per-decision 1.0 \
+      --n-step 10 --n-step-final 3 --n-step-anneal-steps 10000 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100 \
+      --discount-per-game-second 0.997
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed,
+`TOWER_BRIDGE_BUILD_DIR` unset).
+
+**Control: the existing `M3-P001` row** (13.476, n=105,
+`state/records/m3-p001/eval-arm`), not a fresh run. Its code is today's
+code with the flag off, bit-identical to before the flag existed (the
+`#81` tier-C review's flag-off equivalence test, T1). A new control run
+would only be a second draw from the same distribution and, at n=1 per arm,
+cannot be pooled with the original — at a cost of another 3.3h for no
+statistical gain. Residual risk: fleet drift since M3-P001 ran
+(2026-09-25 03:00); `M3-P002` ran normally on the same fleet afterwards, so
+no drift is suspected.
+
+**What n=1 per arm can and cannot conclude — stated honestly.** Seed-to-seed
+SD across the three stacked-dqn/DreamerV3 draws so far (18.14, 15.59,
+13.48) is ≈2.3 waves (very uncertain: 2 degrees of freedom, and the runs
+differ in code/budget too). The difference between two single runs has an
+SD of ≈3.3 waves, so it would need to exceed ≈6.5 waves to clear 95% noise;
+a +2-wave effect is **undetectable**, and so is non-inferiority at any
+margin smaller than ≈6.5 waves. The 105-episode bootstrap CIs measure only
+within-run episode noise (SE≈0.25) — read as a treatment-effect CI this
+would be **pseudo-replication** (Henderson et al. 2018: split-seed groups
+of the same algorithm can differ "significantly"; Agarwal et al. 2021's
+IQM/stratified bootstrap need multiple runs, and with n=1 the IQM is just
+the run). `M3-P001`'s 13.476 sits at the low end of the observed family
+(mean ≈15.74 across the three draws) — a treatment that does nothing would
+beat it roughly 50-80% of the time. **"Beats M3-P001" is not evidence of
+improvement.** What n=1 can do: catch breakage (divergence, value-fit
+collapse, a kill bar, a score below the 6.1 scripted floor), show the
+mechanism operates, and flag a qualitative regime change as *suggestive*
+only.
+
+**Kill, cap and arm — unchanged from `M3-P001`.** A kill-bar stop is a
+collapse and no evaluation is run. At the 5h wall cap, the stage stops
+cleanly and is resumed from `latest.pt` in a follow-up stage — the resume
+guard refuses a checkpoint whose recorded `discount_per_game_second`
+differs from the argument, so the same flag value must be passed again.
+The arm is the checkpoint at the close of the best selection period,
+counting only periods 2+ with a near-greedy mean (by each period's own
+measured mean, not any lagged early-stop tracker — `M3-P002`'s note
+applies here too), ties to the earlier period (`docs/solution.md` §9.2b).
+
+**Fleet bring-up.** A shortfall (fewer than 7 actors at manifest time) is
+stopped cleanly (SIGINT) and relaunched fresh once, exactly as `M3-P002`'s
+protocol. A crash, or no decision progress within ≈10 minutes, is stopped
+cleanly and reported rather than retried blindly.
+
+**Evaluation.** The arm, greedy, on the default build,
+`--upgrade-availability all --frame-game-ms 100`, n=105:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p003 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p003/eval-arm
+
+The one-retry rule applies exactly as in `M3-P001`/`M3-P002`.
+
+**Pre-registered decision rule** (verbatim from `semi-mdp-design.md` §7):
+
+- **ADOPT** as the default if the run is healthy (budget completes, no kill
+  bar fires, value-fit correlation ≥ 0.8 in the second half, finite loss)
+  **AND** the eval mean final wave is ≥ 11.14 (control 13.476 minus one
+  seed SD, 2.3). The burden is to show gross harm, not benefit, because the
+  change is required by theory and by the repo's own §7.3 now that the
+  interval variance is measured. Honest power: if the flag does nothing,
+  this rule wrongly rejects (fails to adopt) ≈16% of the time; it only
+  reliably catches harm of ≈5 waves or more.
+- **"Suggestive improvement"** (not a verdict) if the rule adopts, **and**
+  additionally either the eval mean > 18.14 (above every stacked-dqn/Dreamer
+  run observed so far) **or** P(final ≥ 20) ≥ 0.10 (11/105 or more), **and**
+  pre-boss purchases (waves 7-10 and 17-20) rise vs `M3-P001`.
+- **DO NOT ADOPT** otherwise — diagnose, starting with the health checks,
+  pre-boss spending, and the end-of-span reward-crediting bias, before
+  trying another γ_s.
+
+**Secondary signals, reported against `M3-P001`.**
+
+- S1. P(final ≥ 13) at eval — clearing the first boss wall. Control
+  46/105 = 0.44.
+- S2. P(final ≥ 20) at eval. Control 0/105.
+- S3. Game-seconds survived after wave-10 start and after wave-20 start
+  (from the evaluator's per-wave rows); the wave-20 measure is empty for
+  the control, so informative only if the treatment reaches 20.
+- S4. The selection-period curve, all 8 periods, read for slope over
+  periods 5-8 (still rising or flat).
+- S5. Pre-boss spending: purchases per decision and median cash at entry,
+  waves 7-10 and 17-20. Predicted direction: more purchases before a boss
+  (the purchase tax is gone), though interest-per-wave mechanics can make
+  holding cash rational, so this prediction is uncertain.
+- S6. Learner health: value-fit correlation ≥ 0.8 in the second half,
+  finite loss, no growth in TD error.
+- Also: the production learner step time.
+
+**Statistics.** `bootstrap_difference` (seed 0, 10,000 resamples) against
+`M3-P001` (13.476, n=105), scripted-`all` (6.105, n=105), and random-`all`
+(3.556, n=90) — reported descriptively, per the n=1 honesty above, not read
+as a BETTER/WORSE verdict the way `M3-P002`'s same-protocol comparison was;
+the verdict here is the pre-registered ADOPT/suggestive/DO NOT ADOPT rule,
+not a bootstrap threshold.
+
+**Secondary — `#75` wall check.** Episodes reaching wave 20+, and any wave
+22.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
+
+### Results, as run
+
+(to be filled in after the run)
+
 ## M3-P002: DreamerV3 benchmark row, 120,712 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-25. Board `#79`. Milestone 3 portfolio row for DreamerV3

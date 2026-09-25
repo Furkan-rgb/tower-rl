@@ -147,7 +147,60 @@ never repointed. One device stage at a time; no polling loops.
 
 ### Results, as run
 
-(to be filled in after the run)
+**Verdict: BETTER than both baselines. Budget completed, no kill bar fired.**
+This is stacked-dqn's fixed portfolio row per §1.1 — no reruns.
+
+**Training.** `state/runs/session-20260924-231716/stacked-dqn-20260924-231716-a592b4/`.
+Launched 2026-09-24T23:17:16+02:00, exited 2026-09-25T02:32:15+02:00 (stage
+wall 03:21:13, well inside the 5h cap). `decisions`: 121,598 (past the
+120,712 budget by the expected at-most-one-episode-per-actor overshoot).
+`optimisation_steps`: 119,398. `episodes`: 1,579 (1,569 valid). Neither kill
+bar fired: K1 (`12000:8000:6.1`) read a near-greedy mean of **10.188** over
+48 episodes at 12,004 decisions; K2 (`26262:8000:6.1`) read **10.610** over
+195 episodes at 26,283 decisions — both well clear of the 6.1 floor. Not
+early-stopped (`early_stopped: false`, patience 0 by design — the whole
+budget was spent). 8 selection periods closed.
+
+**Arm**, `docs/solution.md` §9.2b: counting periods 2-8 (period 1 excluded),
+the best near-greedy mean is period 6 at 90,031 decisions, **14.118** waves
+(68 near-greedy episodes) — `checkpoint-d0090031.pt`, sha256
+`da20046ab09c86acd771add185b8ef86de1c545032a566a5bb22cee6cb893fac`, verified
+against its `.sha256` sidecar before evaluation. Period 7 (13.521) and
+period 8 (13.800, the closing period) both came in below it, so the run's
+last period is not its arm.
+
+**Evaluation.** `state/records/m3-p001/eval-arm/`, default build, all 7
+actors completed with no failures (`failure: null` on all 7, 0 invalid
+episodes) — n=105/105 valid, no retry needed. Mean final wave **13.476**,
+SD **2.535**, 95% CI (normal approx.) **[12.991, 13.961]**.
+
+**Statistics** (`bootstrap_difference`, seed 0, 10,000 resamples). vs
+scripted-`all` (6.105, n=105): **+7.371 [+6.886, +7.876], BETTER**. vs
+random-`all` (3.556, n=90): **+9.921 [+9.352, +10.495], BETTER**. vs run 4's
+arm (18.143, n=105), descriptive only, **budget-confounded** (run 4 trained
+on half this run's budget and its checkpoint was picked after the fact,
+where this run's arm is picked under a pre-registered rule from a run that
+spent the full 120,712-decision budget): **-4.667 [-5.514, -3.781]** — this
+run's arm scores lower than run 4's, but the comparison is not read as a
+verdict on the recipe, per this entry's own pre-registration.
+
+**Secondary — `#75` wall check.** Max final wave in the eval set: **19**.
+Zero of 105 episodes reached wave 20+; none reached wave 22. Consistent with
+the plateau diagnosis's account-state ceiling — not falsified, not newly
+tested by this run (no episode approached the ceiling closely enough to
+stress it further than prior runs already have).
+
+**Secondary — production learner step time.**
+`decision_time.fleet.buckets.learner_step.wall_seconds` (3,775.433s) /
+`optimisation_steps` (119,398) = **31.62 ms/step** under real 7-actor device
+load, in the same range as prior fleet-load measurements (28.23 ms/step for
+the now-removed BBF run, 17.3-17.6 ms idle-host).
+
+Host cleanup verified after both stages: zero qemu processes (`/proc/*/exe`),
+empty `adb devices`, `run_stage.sh`'s own teardown reported `cleanup ok` for
+both the training stage (0/7 required active cleanup, all already torn down)
+and the eval stage (0/7 required active cleanup, 1/7 exited during
+teardown while already offline).
 
 ## Learner profile (2026-09-24)
 

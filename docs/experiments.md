@@ -26,6 +26,159 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M3-P004: stacked-dqn with the survival-time reward, 120,712 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-25. Board `#82`. Developer-approved (≈2h training plus
+eval).
+
+**Change.** `--survival-time-reward` (`docs/solution.md` §9.4e, landed
+`ae3c3fa`/`610045e`) on top of `--discount-per-game-second 0.997`, with
+everything else identical to `M3-P003`. One change per run.
+
+**Control: `M3-P003`** (eval mean **17.076**, SD **3.797**, n=105,
+P(final ≥ 20) = **0.41**, 0/105 reached wave 22,
+`state/records/m3-p003/eval-arm`). The developer chose to build on the
+`--discount-per-game-second` flag despite `M3-P003`'s literal DO NOT ADOPT
+(its health check failed on value-fit correlation alone, 0.7968 < 0.8; the
+eval-mean condition cleared by a wide margin) — this is the developer's
+decision, not a re-opening of that verdict.
+
+**Hypothesis.** The wave-20/21 wall (`#75`) persists partly because the
+wave reward gives no graded signal inside the fatal wave — a death 5s into
+wave 20 and a death 30s into it score identically, and invariant
+potential-based shaping cannot change that (Ng, Harada & Russell 1999
+Th. 1; Grzes 2017 Eq. 3) — while the survival-time reward does grade it
+(`docs/solution.md` §9.4e). Falsifier: no rise in wave-20 in-wave survival
+time, and no episode passing wave 21.
+
+**What n=1 per arm can and cannot conclude — stated honestly.**
+Seed-to-seed SD across the three stacked-dqn/DreamerV3 draws so far (18.14,
+15.59, 13.48) is ≈2.3 waves (very uncertain: 2 degrees of freedom, and the
+runs differ in code/budget too). The difference between two single runs has
+an SD of ≈3.3 waves, so it would need to exceed ≈6.5 waves to clear 95%
+noise; a +2-wave effect is **undetectable**, and so is non-inferiority at
+any margin smaller than ≈6.5 waves. The 105-episode bootstrap CIs measure
+only within-run episode noise (SE≈0.25) — read as a treatment-effect CI
+this would be **pseudo-replication** (Henderson et al. 2018; Agarwal et al.
+2021's IQM/stratified bootstrap need multiple runs, and with n=1 the IQM is
+just the run). What n=1 can do: catch breakage (divergence, value-fit
+collapse, a kill bar, a score below the 6.1 scripted floor), show the
+mechanism operates, and flag a qualitative regime change as *suggestive*
+only.
+
+**Command.** Exactly `M3-P003`'s command (seed 0, ladder,
+`--early-stop-patience-periods 0`, `--budget-decisions 120712`,
+`--checkpoint-every-decisions 5000`, `--selection-period-decisions 15000`,
+`--kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1`,
+`--gradient-steps-per-decision 1.0`, `--n-step 10 --n-step-final 3
+--n-step-anneal-steps 10000`, `--actors 7 --renderer host --frame-rate-hz
+120 --decision-cadence choice-points --upgrade-availability all
+--frame-game-ms 100`, `--discount-per-game-second 0.997`), plus
+`--survival-time-reward`.
+
+Verified against `main` @ `3360666` (the `#82` land commit): `train.py
+--help` lists `--survival-time-reward`; dry-parsed the exact command
+through `train.parse_arguments`, no `SystemExit`,
+`survival_time_reward=True` resolved alongside every other field unchanged
+from `M3-P003` (`discount_per_game_second=0.997`, `seed=0`,
+`early_stop_patience_periods=0`, `budget_decisions=120712`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]`,
+`exploration=ladder`, `gradient_steps_per_decision=1.0`, `n_step=10`,
+`n_step_final=3`, `n_step_anneal_steps=10000`).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p004-dqn-survival-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 120712 --checkpoint-every-decisions 5000 \
+      --selection-period-decisions 15000 --epsilon-anneal-decisions 8000 \
+      --early-stop-patience-periods 0 --seed 0 --gradient-steps-per-decision 1.0 \
+      --n-step 10 --n-step-final 3 --n-step-anneal-steps 10000 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100 \
+      --discount-per-game-second 0.997 --survival-time-reward
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed,
+`TOWER_BRIDGE_BUILD_DIR` unset).
+
+**Health.**
+
+- the budget completes, no kill bar fires, and the loss is finite;
+- value-fit correlation ≥ 0.8, computed as the code computes it, against
+  the shaped return the target trains toward (the survival-time return, not
+  the wave-reward return);
+- this correlation is **not comparable** with the numbers from earlier
+  runs (`docs/solution.md` §9.4e: the value-fit correlation is computed
+  against this reward's return, a smooth function of remaining survival
+  rather than a staircase);
+- the health proxy is the same rolling last-100-step figure used in
+  `M3-P003` (`mean_recent_value_fit_correlation` etc. — no true
+  "second half of training" series is recorded), with no post-hoc
+  reinterpretation.
+
+**Decision rule.**
+
+- **ADOPT** (keep the flag for subsequent changes) if healthy **AND** the
+  eval mean final wave is ≥ **14.78** (control 17.076 minus one seed SD,
+  2.3).
+- **"Wall crossed (suggestive, not a verdict)"** if ADOPT **AND**
+  P(final ≥ 22) ≥ 0.05 (6/105 or more). No episode has passed wave 21 in
+  any prior eval or training run.
+- **DO NOT ADOPT** otherwise.
+
+**Secondary signals, against `M3-P003`.**
+
+- S1. P(final ≥ 21) and P(final ≥ 22).
+- S2. The mean game-seconds survived inside the final wave, for episodes
+  dying in wave 20 (control from `state/records/m3-p003/eval-arm`) — the
+  mechanism check.
+- S3. P(final ≥ 13) and P(final ≥ 20).
+- S4. The selection-period curve, all 8 periods.
+- S5. Median cash at entry for waves 7-10 and 17-20 (purchase-count half
+  dropped — not computable from the recorded schema, per `M3-P003`'s own
+  finding).
+- S6. Loss and TD error — reported descriptively, since their scale changes
+  under the new reward and is not comparable with `M3-P003`'s.
+- Also: the production learner step time.
+
+**Statistics.** `bootstrap_difference` (seed 0, 10,000 resamples) against
+`M3-P003` (17.076, n=105), `M3-P001` (13.476, n=105), scripted-`all`
+(6.105, n=105) and random-`all` (3.556, n=90) — descriptive only, per the
+n=1 honesty above, not read as a BETTER/WORSE verdict; the verdict here is
+the pre-registered decision rule.
+
+**Kill, cap and arm.** The arm rule is `docs/solution.md` §9.2b (best
+selection period, counting only periods 2+ by near-greedy mean, ties to the
+earlier period). A kill-bar stop is a collapse and no evaluation is run.
+The resume guard needs both `--discount-per-game-second 0.997` and
+`--survival-time-reward` passed again — a resume with either flag
+different from the checkpoint's recorded value is refused.
+
+**Fleet bring-up and the one-retry rule.** A shortfall (fewer than 7
+actors at manifest time) is stopped cleanly (SIGINT) and relaunched fresh
+once, exactly as `M3-P002`'s/`M3-P003`'s protocol. A crash, or no decision
+progress within ≈10 minutes, is stopped cleanly and reported rather than
+retried blindly. The same one-retry rule applies to evaluation.
+
+**Evaluation.** The arm, greedy, on the default build,
+`--upgrade-availability all --frame-game-ms 100`, n=105:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p004 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p004/eval-arm
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
+
 ## M3-P003: stacked-dqn with the game-time discount, 120,712 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-25. Board `#81`. Developer-approved (≈3.3h training plus

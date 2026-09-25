@@ -261,9 +261,11 @@ the digest value matches byte-for-byte).
 **Evaluation.** `state/records/m3-p004/eval-arm/` (after the retry
 described above), default build, all 7 actors completed with no
 actor-level failures (`failure: null` on all 7) — 100/105 episodes valid
-(5 invalid: `observation_invalid` ×3, `action_pipeline_failed` ×2, the same
-noise categories the training run itself records; none from actor
-withdrawal). Mean final wave **18.270**, SD **3.213**, n=**100**, 95% CI
+(5 invalid, none from actor withdrawal: three `observation_invalid` — the
+round clock ran short of the budgeted advance at 0.988x, 0.989x and 0.986x
+— and two `action_pipeline_failed: advance was not confirmed:
+stale_or_duplicate`; the same noise categories the training run itself
+records). Mean final wave **18.270**, SD **3.213**, n=**100**, 95% CI
 (normal approx.) **[17.640, 18.900]**.
 
 **Statistics** (`bootstrap_difference`, seed 0, 10,000 resamples), reported
@@ -280,11 +282,13 @@ itself.
 **Secondary signals, against `M3-P003`.**
 
 - S1. P(final ≥ 21): **0.020** (2/100) vs control **0.000** (0/105) — the
-  first eval episodes ever to advance past wave 20 (both completed wave 20
-  and died partway through wave 21; `termination_detail` is empty on both,
-  `waves[-1] = {"wave": 21, "completed": false, ...}`). P(final ≥ 22):
-  **0.000** (0/100) vs control **0.000** (0/105) — no episode reached wave
-  22, so the pre-registration's "wall crossed" tier condition
+  first M3-series eval episodes to reach wave 21; the run-4 arm reached 21
+  in 32/105 (`state/records/m2-run4/eval-arm-2`). No eval or training
+  episode in any run has reached wave 22. Both `M3-P004` episodes completed
+  wave 20 and died partway through wave 21 (`termination_detail` is empty
+  on both, `waves[-1] = {"wave": 21, "completed": false, ...}`). P(final ≥
+  22): **0.000** (0/100) vs control **0.000** (0/105) — no episode reached
+  wave 22, so the pre-registration's "wall crossed" tier condition
   (P(final ≥ 22) ≥ 0.05) is not met, and would not have been read as a
   verdict in any case since the health check already fails ADOPT.
 - S2 (the mechanism check). Mean game-seconds survived inside the final
@@ -324,7 +328,11 @@ itself.
 (2/100 episodes, both dying partway through wave 21 after completing wave
 20 — see S1/S2 above). 54/100 reached wave 20. Zero of 100 reached wave 22.
 The wall is **not falsified**: no episode completed wave 21 or reached
-wave 22, consistent with every prior eval and training run.
+wave 22 — consistent with every prior run's ceiling, not a new one: the
+run-4 arm eval already reached wave 21 in 32/105 episodes
+(`state/records/m2-run4/eval-arm-2`), and 59 eval episodes across all
+prior runs have reached wave 21 per the `#75` plateau diagnosis; no run,
+including this one, has ever reached wave 22.
 
 Host cleanup verified after training and both eval attempts: zero qemu
 processes (`/proc/*/exe`), empty `adb devices`, `run_stage.sh`'s own

@@ -121,7 +121,7 @@ def test_the_published_configuration_is_the_one_documented() -> None:
         2048, 256, 16, 256,
     )
     assert (published.batch_size, published.batch_length) == (16, 64)
-    assert published.gradient_steps_per_decision == 0.25
+    assert published.gradient_steps_per_decision == 0.5
     assert published.discount == pytest.approx(1 - 1 / 333)
 
 

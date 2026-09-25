@@ -262,7 +262,8 @@ def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -
 # this suite shrinks stacked-dqn's network; the published sizes are what
 # `DreamerConfig()` holds and what the parse tests read without the patch.
 
-#: Batch 2 x 6 at a train ratio of 3: the published 0.25 gradient steps per decision.
+#: Batch 2 x 6 at a train ratio of 3: 0.25 gradient steps per decision (a size
+#: chosen to be small and fast, not to match the published train ratio).
 SMALL_DREAMER: dict[str, Any] = dict(
     deter=16, hidden=8, classes=4, units=8, stoch=4, blocks=2,
     batch_size=2, batch_length=6, train_ratio=3.0,
@@ -280,7 +281,7 @@ def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     assert parsed.backbone == "dreamerv3"
     assert (parsed.sequence_length, parsed.stacked_burn_in) == (64, 0)
     assert parsed.batch_size == 16
-    assert parsed.gradient_steps_per_decision == 0.25
+    assert parsed.gradient_steps_per_decision == 0.5
     assert parsed.warmup_sequences == 25
     assert parsed.exploration == "uniform"
     assert (parsed.epsilon_start, parsed.epsilon_end) == (0.0, 0.0)

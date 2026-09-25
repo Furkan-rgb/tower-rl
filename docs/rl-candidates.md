@@ -1142,7 +1142,10 @@ scripted 6.429):
    Developer decision: the benchmark reward stays +1/wave; shaping is an
    ablation only, not a change to the optimised metric. Expected effect:
    denser signal at decision cadence and a derived death penalty, provably
-   policy-invariant under this n-step learner (audit #53, Part 3).
+   policy-invariant under this n-step learner (audit #53, Part 3). A later
+   developer decision (2026-09-25; `task.md` §7.5, `solution.md` §9.4e) makes
+   one bounded exception, for `--survival-time-reward` only: the benchmark
+   reward stays `reward-v1` and the evaluation metric is unchanged.
 5. **Adam ε.** 1e-8 → 1e-3 (R2D2's, matching the lr already used). Expected
    effect: cheap; targets the smallest gradients, which sit in the advantage
    heads (D5, #53).

@@ -12,6 +12,7 @@ training loop supplies.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +28,12 @@ from tower_rl.learning.value_learning import (
     value_fit_correlation,
     weighted_sequence_loss,
 )
+
+#: One wave in game-seconds: the unit the survival-time reward is paid in.
+#: Waves are clock-driven, and every completed wave 2..19 of the M3-P003
+#: evaluation lasted 34.88-35.20 s (docs/solution.md 9.4e). It only sets the
+#: scale - a positive scale on the whole reward leaves the optimum unchanged.
+WAVE_SECONDS = 35.0
 
 
 @dataclass(frozen=True)
@@ -46,9 +53,14 @@ class StackedDqnConfig:
     #: choice points a policy makes (docs/solution.md 9.4d). When set,
     #: `discount` is not read.
     discount_per_game_second: float | None = None
+    #: Replace the wave reward, in the learner only, with game time survived in
+    #: waves, integrated exactly under the game-time discount
+    #: (docs/solution.md 9.4e). Dying later in a wave then scores higher, which
+    #: the wave reward cannot express. Needs `discount_per_game_second`.
+    survival_time_reward: bool = False
     #: About 21.7 decisions pass per wave, and the whole reward is the wave
-    #: change, so a short n-step needs several bootstrap hops to carry one wave
-    #: back to the decisions that earned it.
+    #: change (under the wave reward), so a short n-step needs several
+    #: bootstrap hops to carry one wave back to the decisions that earned it.
     n_step: int = 10
     #: Where the n-step anneal ends, or None to hold `n_step` fixed. Starting
     #: long gives fast early credit propagation; shortening it as the value
@@ -79,6 +91,8 @@ class StackedDqnConfig:
             0.0 < self.discount_per_game_second < 1.0
         ):
             raise ValueError("discount per game-second must be within (0, 1)")
+        if self.survival_time_reward and self.discount_per_game_second is None:
+            raise ValueError("the survival-time reward needs a discount per game-second")
         if self.n_step < 1:
             raise ValueError("n-step must be positive")
         if (self.n_step_final is None) != (self.n_step_anneal_steps == 0):
@@ -111,6 +125,20 @@ class StackedDqnConfig:
             return torch.full_like(game_ms, self.discount, dtype=torch.float64)
         seconds = game_ms.to(torch.float64) / 1000.0
         return torch.pow(self.discount_per_game_second, seconds)
+
+    def survival_rewards(self, discounts: torch.Tensor) -> torch.Tensor:
+        """Game time each transition survived, in waves, valued at its start.
+
+        A reward of 1/WAVE_SECONDS per game-second, integrated over a span of
+        t seconds under gamma_s ** t: (1 - d) / (beta * WAVE_SECONDS), with
+        beta = -ln gamma_s (Bradtke & Duff 1995, Eq. 12). A span of no game
+        time - a purchase, or padding - earns exactly 0. float64, as
+        `discounts` is.
+        """
+        if self.discount_per_game_second is None:
+            raise ValueError("the survival-time reward needs a discount per game-second")
+        beta = -math.log(self.discount_per_game_second)
+        return (1.0 - discounts) / (beta * WAVE_SECONDS)
 
     def n_step_at(self, gradient_steps: int) -> int:
         """The n the target is built with after this many gradient steps.
@@ -215,14 +243,17 @@ class StackedDqnBackbone:
         dones = batch.dones[:, burn_in:]
         real = (~batch.padding[:, burn_in:]).to(rewards.dtype)
         discounts = self.config.transition_discounts(batch.game_ms[:, burn_in:])
-        # The reward each transition carries, valued at its start. Change C's
-        # potential-based shaping term F_t = d_t * phi(s_t+1) - phi(s_t) is
-        # added here, booked at the decision epoch.
-        step_rewards = (
-            rewards * discounts.to(rewards.dtype)
-            if self.config.books_reward_at_span_end
-            else rewards
-        )
+        # The reward each transition carries, valued at its start: the wave
+        # change, or under the survival-time reward the game time the span
+        # survived, which replaces it here and nowhere else (solution.md 9.4e).
+        if self.config.survival_time_reward:
+            step_rewards = self.config.survival_rewards(discounts).to(rewards.dtype)
+        else:
+            step_rewards = (
+                rewards * discounts.to(rewards.dtype)
+                if self.config.books_reward_at_span_end
+                else rewards
+            )
 
         online_q, _ = self.online(scalars, rows, mask, history)
         chosen = online_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)

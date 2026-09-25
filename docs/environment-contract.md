@@ -267,7 +267,10 @@ by how many waves an episode survived.
 V1 reward is aligned to the objective of maximizing final Tier-1 wave. The
 environment may emit wave-progress and terminal survival reward according to the
 versioned reward configuration; any shaping must be separately identified in
-experiment metadata and never hide invalid or failed actions.
+experiment metadata and never hide invalid or failed actions. A reward the
+learner derives from a transition rather than stores, such as stacked-dqn's
+survival-time reward (`docs/solution.md` §9.4e), leaves the stored reward and
+`reward-v1` unchanged, and is identified by its key in the run's resolved config.
 
 ## Termination and recovery
 

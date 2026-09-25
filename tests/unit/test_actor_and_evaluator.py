@@ -565,10 +565,8 @@ def test_each_stored_step_carries_the_game_time_its_transition_spanned(
         actor, "_emit", lambda steps, summary: (stored.extend(steps), (0, 0))[1]
     )
 
-    result = actor.run_episode()
+    actor.run_episode()
 
     assert [step.game_ms for step in stored] == spans
     assert 0.0 in spans, "a confirmed purchase takes no game time"
     assert any(span > 0.0 for span in spans), "a wait does"
-    assert result.reward_bearing_transitions == sum(1 for s in stored if s.reward != 0.0)
-    assert 0 <= result.wave_change_ended_span <= result.reward_bearing_transitions

@@ -1631,10 +1631,13 @@ Unset, the discount is `--discount` per decision (0.99), with targets identical
 to the bit to those before the flag existed; the two flags are refused
 together, and the flag is refused under `--backbone dreamerv3`, which keeps its
 published per-step discount. The flag is recorded in the resolved config, and a
-resume under a different discount than its checkpoint's is refused. The run
-summary reports, among transitions that carried a reward, the fraction whose
-span's last event was the wave change - the evidence for booking at the span's
-end. Per decision stays the default pending the M3-P003 comparison.
+resume under a different discount than its checkpoint's is refused. Within a
+multi-advance span a wave reward is booked at the span's end rather than when
+it occurred, which understates it by at most γ_s^(span seconds) - about 5% on
+the longest early WAIT spans (about 17 s) and nothing on purchase spans - and
+the bias is accepted rather than measured, because an exact measure needs
+per-advance events on `RunTransition`. Per decision stays the default pending
+the M3-P003 comparison.
 
 ### 9.5 Distributed exploration
 

@@ -662,9 +662,6 @@ class TrainingProgressReport:
     episodes: int = 0
     optimisation_steps: int = 0
     sequences_accepted: int = 0
-    #: `EpisodeResult`'s end-of-span counters, summed over this segment.
-    reward_bearing_transitions: int = 0
-    wave_change_ended_span: int = 0
     wall_seconds: float = 0.0
     #: Every episode collected, in the order it was played. The collection curve
     #: is read from this; evaluation is the headline, not the curve.
@@ -1159,8 +1156,6 @@ class TrainingRun:
         # The measured round clock, reported beside the decisions.
         report.game_ms += summary.round_ms
         report.sequences_accepted += result.sequences_accepted
-        report.reward_bearing_transitions += result.reward_bearing_transitions
-        report.wave_change_ended_span += result.wave_change_ended_span
         # Completion order across the fleet: an episode joins the series when it
         # ends, which is what makes a window of them a slice of one wall-clock
         # span of collection rather than of one instance's history.

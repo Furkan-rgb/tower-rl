@@ -1446,15 +1446,6 @@ def test_the_game_time_discount_is_off_by_default(trained: dict[str, Any]) -> No
     assert resolved["discount"] == 0.99
 
 
-def test_the_summary_says_how_often_a_rewarded_span_ended_on_its_wave_change(
-    trained: dict[str, Any],
-) -> None:
-    """Reported, not enforced: the evidence for booking a reward at its span's end."""
-    arm = trained["arm"]
-    assert arm["reward_bearing_transitions"] > 0
-    assert 0.0 <= arm["wave_change_ended_span_fraction"] <= 1.0
-
-
 def test_the_two_discounts_are_refused_together(tmp_path: Path) -> None:
     """T8: each defines the discount, so one of them would go silently unused."""
     with pytest.raises(SystemExit, match="one or the other"):

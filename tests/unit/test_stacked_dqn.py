@@ -361,3 +361,125 @@ def test_learning_with_the_survival_time_reward_on_learns_from_it(
     assert torch.equal(captured[0], expected)
     assert not torch.equal(expected, batch.rewards[:, batch.burn_in :])
     assert torch.isfinite(torch.tensor(metrics.weighted_loss))
+
+
+# -- ez-greedy (board #83) ---------------------------------------------------
+
+#: Masks the golden run cycles through: WAIT alone, and one without WAIT.
+GOLDEN_MASKS = ((0, 1, 2), (0, 2), (0, 1, 2, 3), (0,), (1, 2))
+
+#: What acting at epsilon 0.5 chose on the code before ez-greedy, and the next
+#: uniform its stream then gave: off, both must stay exactly these.
+GOLDEN_ACTIONS = [
+    0, 0, 2, 0, 2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+    0, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 0, 1, 0, 2, 0, 0, 0, 0, 2,
+]  # fmt: skip
+GOLDEN_NEXT_UNIFORM = 0.5512672460905512
+
+
+def test_acting_with_ez_greedy_off_is_bit_identical() -> None:
+    """The same actions and the same stream position as before the flag existed."""
+    backbone = _backbone(ez_greedy=False)
+    state = backbone.initial_state()
+    actions = []
+    for index in range(40):
+        features = _features(valid=GOLDEN_MASKS[index % 5], seed=0.05 * index)
+        action, state = backbone.act(features, state, epsilon=0.5)
+        actions.append(action)
+
+    assert actions == GOLDEN_ACTIONS
+    assert backbone._random.random() == GOLDEN_NEXT_UNIFORM
+    assert (backbone.options_started, backbone.longest_option) == (0, 0)
+
+
+class _Durations:
+    """`zeta_duration` replaced by fixed lengths, counting its draws."""
+
+    def __init__(self, *lengths: int) -> None:
+        self.lengths = list(lengths)
+        self.draws = 0
+
+    def __call__(self, stream: object) -> int:
+        self.draws += 1
+        return self.lengths.pop(0)
+
+
+def _ez(monkeypatch: pytest.MonkeyPatch, *lengths: int) -> tuple[StackedDqnBackbone, _Durations]:
+    durations = _Durations(*lengths)
+    monkeypatch.setattr(stacked_dqn, "zeta_duration", durations)
+    return _backbone(ez_greedy=True), durations
+
+
+def test_an_option_repeats_its_action_for_exactly_n_decisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The drawing decision is the first of n; the (n + 1)th flips a fresh coin."""
+    backbone, durations = _ez(monkeypatch, 3, 1)
+    state = backbone.initial_state()
+    actions = []
+    for index in range(3):
+        action, state = backbone.act(_features(seed=0.1 * index), state, epsilon=1.0)
+        actions.append(action)
+
+    assert len(set(actions)) == 1 and durations.draws == 1
+    backbone.act(_features(), state, epsilon=1.0)
+    assert durations.draws == 2
+    assert (backbone.options_started, backbone.longest_option) == (2, 3)
+
+
+def test_a_masked_option_waits_counts_down_and_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backbone, durations = _ez(monkeypatch, 4, 1)
+    state = backbone.initial_state()
+    # Only row 2 is legal when the option starts, so it is the option's action.
+    action, state = backbone.act(_features(valid=(2,)), state, epsilon=1.0)
+    assert action == 2
+    # Unaffordable: WAIT, and the decision still counts.
+    action, state = backbone.act(_features(valid=(0, 1)), state, epsilon=1.0)
+    assert action == stacked_dqn.WAIT_INDEX
+    # Legal again: the purchase resumes for the option's last two decisions.
+    for _ in range(2):
+        action, state = backbone.act(_features(valid=(0, 1, 2)), state, epsilon=1.0)
+        assert action == 2
+    assert durations.draws == 1 and backbone.longest_option == 4
+    backbone.act(_features(), state, epsilon=1.0)
+    assert durations.draws == 2
+
+
+def test_an_episode_boundary_ends_an_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    backbone, durations = _ez(monkeypatch, 5, 5)
+    state = backbone.initial_state()
+    backbone.act(_features(), state, epsilon=1.0)
+
+    state = backbone.initial_state()
+    assert (backbone.options_started, backbone.longest_option) == (0, 0)
+    backbone.act(_features(), state, epsilon=1.0)
+    assert durations.draws == 2 and backbone.options_started == 1
+
+
+def test_epsilon_zero_never_repeats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evaluation stays greedy, even with an option left running."""
+    backbone, durations = _ez(monkeypatch, 5)
+    greedy = _backbone()
+    state, greedy_state = backbone.initial_state(), greedy.initial_state()
+    backbone.act(_features(), state, epsilon=1.0)
+    for index in range(4):
+        features = _features(seed=0.2 * index)
+        action, state = backbone.act(features, state, epsilon=0.0)
+        expected, greedy_state = greedy.act(features, greedy_state, epsilon=0.0)
+        assert action == expected
+    assert durations.draws == 1 and backbone.longest_option == 1
+
+
+def test_the_window_advances_during_a_repeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every decision of an option still runs the forward pass the window rides on."""
+    backbone, _ = _ez(monkeypatch, 6)
+    greedy = _backbone()
+    state, greedy_state = backbone.initial_state(), greedy.initial_state()
+    for index in range(6):
+        features = _features(seed=0.1 * (index + 1))
+        _, state = backbone.act(features, state, epsilon=1.0)
+        _, greedy_state = greedy.act(features, greedy_state, epsilon=0.0)
+        assert torch.equal(state, greedy_state)
+    assert backbone.longest_option == 6

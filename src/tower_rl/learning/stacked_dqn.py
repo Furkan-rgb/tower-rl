@@ -20,7 +20,9 @@ from typing import Any
 import torch
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, StateFeatures
+from tower_rl.environment.run_actions import WAIT, action_index
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
+from tower_rl.learning.exploration import zeta_duration
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork, StackedState
 from tower_rl.learning.value_learning import (
     n_step_targets,
@@ -34,6 +36,10 @@ from tower_rl.learning.value_learning import (
 #: evaluation lasted 34.88-35.20 s (docs/solution.md 9.4e). It only sets the
 #: scale - a positive scale on the whole reward leaves the optimum unchanged.
 WAVE_SECONDS = 35.0
+
+#: What a running ez-greedy option takes while its own action is masked: the
+#: environment's no-op, always legal in an active run (docs/solution.md 7.2).
+WAIT_INDEX = action_index(WAIT)
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,10 @@ class StackedDqnConfig:
     #: periodic hard copy moves the target in large infrequent jumps, which is
     #: what the data-efficient recipe replaces.
     target_ema_decay: float = 0.995
+    #: Explore with ez-greedy (docs/solution.md 9.5): an exploratory action,
+    #: once drawn, is repeated for a zeta-distributed number of decisions
+    #: rather than for one. Acting only; off acts exactly as before.
+    ez_greedy: bool = False
     gradient_clip: float = 10.0
     huber_delta: float = 1.0
     seed: int | None = None
@@ -165,6 +175,16 @@ class StackedDqnBackbone:
     optimizer: torch.optim.Optimizer = field(init=False)
     _steps: int = field(default=0, init=False)
     _random: random.Random = field(init=False)
+    #: The ez-greedy option running in this episode: its action, and how many
+    #: more decisions it takes after the ones already taken (0 when none runs).
+    _option_action: int = field(default=0, init=False)
+    _option_remaining: int = field(default=0, init=False)
+    _option_length: int = field(default=0, init=False)
+    #: This episode's ez-greedy options, for the collected-episode record: how
+    #: many started (n = 1 included) and the most decisions one ran for before
+    #: it ended or the episode did. Both stay 0 with ez-greedy off.
+    options_started: int = field(default=0, init=False)
+    longest_option: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if self.config.seed is not None:
@@ -190,6 +210,9 @@ class StackedDqnBackbone:
         return self._steps
 
     def initial_state(self) -> StackedState:
+        # An episode boundary ends any option, and its counts start over.
+        self._option_remaining = self._option_length = 0
+        self.options_started = self.longest_option = 0
         return self.online.initial_state(1, self.device)
 
     def act(
@@ -207,14 +230,42 @@ class StackedDqnBackbone:
         ).view(1, 1, ROW_COUNT, ROW_WIDTH)
         mask = torch.tensor([[list(features.mask)]], dtype=torch.bool, device=self.device)
 
+        # The forward pass runs even inside an ez-greedy option: the window
+        # must advance by this decision whatever acts on it.
         with torch.no_grad():
             q, next_state = self.online(scalars, rows, mask, state)
+        if self.config.ez_greedy:
+            return self._ez_greedy_action(q, valid, epsilon), next_state
         # Exploration still respects the mask: an epsilon action is drawn from the
         # valid set, never from the whole space, so exploration cannot waste a
         # step on something the game would refuse anyway.
         if epsilon > 0.0 and self._random.random() < epsilon:
             return self._random.choice(valid), next_state
         return int(q[0, 0].argmax().item()), next_state
+
+    def _ez_greedy_action(self, q: torch.Tensor, valid: list[int], epsilon: float) -> int:
+        """Algorithm 1 of Dabney et al. 2021, counted in decisions.
+
+        No coin is flipped while an option runs. A new option draws its length
+        n, then its action from the valid set, and this decision is the first
+        of its n - so n = 1 is one epsilon-greedy step. A running option whose
+        action is masked takes WAIT for that decision and still counts it down,
+        resuming the action once it is legal again. At epsilon 0 nothing
+        explores, a running option included.
+        """
+        if epsilon > 0.0 and self._option_remaining > 0:
+            self._option_remaining -= 1
+            self._option_length += 1
+            self.longest_option = max(self.longest_option, self._option_length)
+            return self._option_action if self._option_action in valid else WAIT_INDEX
+        if epsilon > 0.0 and self._random.random() < epsilon:
+            self._option_remaining = zeta_duration(self._random) - 1
+            self._option_action = self._random.choice(valid)
+            self._option_length = 1
+            self.options_started += 1
+            self.longest_option = max(self.longest_option, 1)
+            return self._option_action
+        return int(q[0, 0].argmax().item())
 
     # -- learning ----------------------------------------------------------
 

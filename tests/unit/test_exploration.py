@@ -9,13 +9,18 @@ the first test here is a regression against the arithmetic it used.
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from tower_rl.learning.exploration import (
     EXPLORATION_OPTIONS,
+    EZ_GREEDY_MAX_DURATION,
+    EZ_GREEDY_MU,
     NEAR_GREEDY_EPSILON,
     ExplorationSchedule,
     ape_x_floors,
+    zeta_duration,
 )
 
 #: The ladder the analysis of run 1 priced, for the seven-instance fleet:
@@ -130,3 +135,46 @@ def test_the_schedule_says_which_option_it_is() -> None:
 
     with pytest.raises(ValueError, match="unknown exploration option"):
         ExplorationSchedule.for_option("greedy", actors=4, **ANNEAL)
+
+
+# -- ez-greedy durations (board #83) -----------------------------------------
+
+
+def test_ez_greedy_keeps_the_paper_s_constants() -> None:
+    assert (EZ_GREEDY_MU, EZ_GREEDY_MAX_DURATION) == (2.0, 10_000)
+
+
+def test_zeta_durations_are_deterministic_per_seed() -> None:
+    first, second = random.Random(7), random.Random(7)
+    assert [zeta_duration(first) for _ in range(100)] == [
+        zeta_duration(second) for _ in range(100)
+    ]
+
+
+def test_a_zeta_duration_is_one_uniform_at_either_end_of_the_range() -> None:
+    """One draw per duration, and the truncation's two ends are reachable."""
+
+    class Fixed(random.Random):
+        def __init__(self, value: float) -> None:
+            super().__init__(0)
+            self.value = value
+            self.draws = 0
+
+        def random(self) -> float:
+            self.draws += 1
+            return self.value
+
+    lowest, highest = Fixed(0.0), Fixed(1.0 - 2.0**-53)
+    assert zeta_duration(lowest) == 1 and lowest.draws == 1
+    assert zeta_duration(highest) == EZ_GREEDY_MAX_DURATION and highest.draws == 1
+
+
+def test_zeta_durations_follow_the_truncated_zeta() -> None:
+    """P(n = 1) = 0.608 and P(n >= 10) = 0.064 for mu 2 capped at 10,000."""
+    stream = random.Random(0)
+    durations = [zeta_duration(stream) for _ in range(200_000)]
+
+    assert all(1 <= n <= EZ_GREEDY_MAX_DURATION for n in durations)
+    # Binomial standard errors at 2e5 draws are 0.0011 and 0.00055.
+    assert sum(n == 1 for n in durations) / len(durations) == pytest.approx(0.608, abs=0.005)
+    assert sum(n >= 10 for n in durations) / len(durations) == pytest.approx(0.064, abs=0.003)

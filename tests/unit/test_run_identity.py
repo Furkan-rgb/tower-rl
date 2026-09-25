@@ -33,7 +33,7 @@ from tower_rl.experiment.run_identity import (
 from tower_rl.learning.checkpoint import identity_hash
 
 
-def _arm(run_dir: Path, **overrides: str) -> Any:
+def _arm(run_dir: Path, **overrides: str | None) -> Any:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
         arm, _ = train.build_arm(
@@ -279,3 +279,13 @@ def test_the_resolved_configuration_says_which_rows_the_run_could_buy(
 
     assert unlocked.resolved["upgrade_availability"] == "all"
     assert unlocked.identity.upgrade_availability == UpgradeAvailability.ALL
+
+
+def test_the_resolved_configuration_says_whether_exploration_was_ez_greedy(
+    tmp_path: Path,
+) -> None:
+    """False is every run before board #83."""
+    assert _arm(tmp_path / "off").resolved["ez_greedy"] is False
+    arm = _arm(tmp_path / "on", **{"--ez-greedy": None})
+    assert arm.backbone.config.ez_greedy is True
+    assert arm.resolved["ez_greedy"] is True

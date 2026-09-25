@@ -174,7 +174,10 @@ def test_collected_episodes_are_persisted_with_the_evaluator_shape(
     records = arm["collected_episodes"]
 
     assert len(records) == arm["episodes"] - arm["failed_episodes"]
-    assert all(EPISODE_RECORD_KEYS | {"actor_id"} == set(record) for record in records)
+    collected_keys = {"actor_id", "options_started", "longest_option"}
+    assert all(EPISODE_RECORD_KEYS | collected_keys == set(record) for record in records)
+    # Without --ez-greedy no option ever starts, and the counts say so.
+    assert all(record["options_started"] == record["longest_option"] == 0 for record in records)
     assert [record["episode_index"] for record in records] == list(range(len(records)))
     assert any(record["valid"] for record in records)
     actor_id = arm["resolved_config"]["actor_ids"][0]

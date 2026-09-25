@@ -967,7 +967,7 @@ def test_resolved_config_carries_the_frame_rate(tmp_path: Path) -> None:
 RESUME_PERIOD = 100
 
 
-def numbered(run_dir: Path, budget: int, **overrides: str) -> dict[str, Any]:
+def numbered(run_dir: Path, budget: int, **overrides: str | None) -> dict[str, Any]:
     """One segment of a run, leaving a numbered checkpoint on every crossing."""
     return session(
         run_dir,
@@ -1611,6 +1611,60 @@ def test_a_checkpoint_from_before_the_survival_time_reward_resumes_with_it_off(
     older = tmp_path / "older.pt"
     settings = dict(parent.resolved_config)
     del settings["survival_time_reward"]
+    save(replace(parent, resolved_config=settings), older)
+
+    assert resume_from(tmp_path / "second", older, 400).decisions > 0
+
+
+# -- ez-greedy (board #83) ---------------------------------------------------
+
+
+def test_ez_greedy_is_off_by_default(trained: dict[str, Any]) -> None:
+    """Off, the run explores one decision at a time as every run before it."""
+    assert trained["arm"]["resolved_config"]["ez_greedy"] is False
+
+
+def test_ez_greedy_is_refused_under_dreamerv3(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="stacked-dqn setting"):
+        dreamer_arguments(tmp_path, "--ez-greedy")
+
+
+def test_an_ez_greedy_run_records_its_options_and_resumes_only_under_it(
+    tmp_path: Path,
+) -> None:
+    """The flag is in the run's identity, its episodes count their options, and a
+    resume must ask for the same exploration."""
+    report = numbered(tmp_path / "first", 50, **{"--ez-greedy": None})
+    arm = report["arm"]
+    assert arm["resolved_config"]["ez_greedy"] is True
+    records = arm["collected_episodes"]
+    # The anneal starts at epsilon 1, so every early decision is exploratory.
+    assert sum(record["options_started"] for record in records) > 0
+    assert all(
+        record["longest_option"] >= (1 if record["options_started"] else 0)
+        for record in records
+    )
+    checkpoint = latest_checkpoint(report)
+
+    resumed = survival_resume(tmp_path / "second", checkpoint, **{"--ez-greedy": None})
+    assert resumed is not None and resumed.decisions > 0
+    with pytest.raises(SystemExit, match="a different exploration"):
+        survival_resume(tmp_path / "third", checkpoint)
+
+
+def test_a_one_step_checkpoint_is_not_resumed_under_ez_greedy(tmp_path: Path) -> None:
+    checkpoint = latest_checkpoint(numbered(tmp_path / "first", 50))
+
+    with pytest.raises(SystemExit, match="a different exploration"):
+        survival_resume(tmp_path / "second", checkpoint, **{"--ez-greedy": None})
+
+
+def test_a_checkpoint_from_before_ez_greedy_resumes_with_it_off(tmp_path: Path) -> None:
+    """A resolved config without the key reads as the exploration it collected under."""
+    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
+    older = tmp_path / "older.pt"
+    settings = dict(parent.resolved_config)
+    del settings["ez_greedy"]
     save(replace(parent, resolved_config=settings), older)
 
     assert resume_from(tmp_path / "second", older, 400).decisions > 0

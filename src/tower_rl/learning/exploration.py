@@ -17,10 +17,18 @@ A uniform schedule has no per-actor floors at all: every actor draws the one
 annealed rate, which is what every run before this one collected under, and the
 whole fleet is therefore near-greedy in the only sense the curve cares about -
 the episodes are all of one policy at one exploration rate.
+
+How long an exploratory action lasts is a separate question from how often one
+starts. Under `--ez-greedy` (Dabney, Ostrovski & Barreto 2021, arXiv:2006.01782)
+the rate above still decides when to explore, and `zeta_duration` decides for
+how many decisions the one uniformly drawn action is then repeated.
 """
 
 from __future__ import annotations
 
+import bisect
+import itertools
+import random
 from dataclasses import dataclass
 
 #: The rate at or under which an actor's episodes are read as the policy's own
@@ -35,6 +43,31 @@ APE_X_ALPHA = 7.0
 UNIFORM = "uniform"
 LADDER = "ladder"
 EXPLORATION_OPTIONS = (UNIFORM, LADDER)
+
+#: The ez-greedy duration distribution, verbatim from the paper: z(n) is
+#: proportional to n ** -mu with mu = 2 (section 4.2, used for every Atari
+#: result), capped at n <= 10000 (Appendix B; the R2D2-based agents' cap, which
+#: this recurrent-replay, Ape-X-laddered stack is shaped like).
+EZ_GREEDY_MU = 2.0
+EZ_GREEDY_MAX_DURATION = 10_000
+
+_ZETA_RUNNING_TOTALS = tuple(
+    itertools.accumulate(n**-EZ_GREEDY_MU for n in range(1, EZ_GREEDY_MAX_DURATION + 1))
+)
+#: z's cumulative distribution over 1..EZ_GREEDY_MAX_DURATION. Computed once: a
+#: draw is then one uniform and one bisection. The last entry is exactly 1.0
+#: (a total divided by itself), so every uniform in [0, 1) falls under it.
+_ZETA_CUMULATIVE = tuple(weight / _ZETA_RUNNING_TOTALS[-1] for weight in _ZETA_RUNNING_TOTALS)
+
+
+def zeta_duration(stream: random.Random) -> int:
+    """How many decisions one exploratory action lasts, drawn from truncated zeta.
+
+    An exact inverse-CDF draw over 1..EZ_GREEDY_MAX_DURATION from one uniform of
+    `stream`: P(n = 1) = 0.608, P(n >= 10) = 0.064. The decision that draws it
+    is the first of the n, so n = 1 is plain epsilon-greedy.
+    """
+    return bisect.bisect_right(_ZETA_CUMULATIVE, stream.random()) + 1
 
 
 def ape_x_floors(actors: int) -> tuple[float, ...]:

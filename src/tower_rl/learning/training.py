@@ -359,6 +359,9 @@ class CollectedEpisode:
     #: Which actor played it. The episodes of a fleet are one series in
     #: completion order, and this is how a per-actor account is taken of it.
     actor_id: str = "actor-0"
+    #: Its ez-greedy options, as `EpisodeResult` carries them; 0 when off.
+    options_started: int = 0
+    longest_option: int = 0
 
     @property
     def wait_fraction(self) -> float:
@@ -1161,7 +1164,11 @@ class TrainingRun:
         # span of collection rather than of one instance's history.
         report.collected.append(
             CollectedEpisode(
-                summary, wait_decisions=result.wait_decisions, actor_id=progress.actor_id
+                summary,
+                wait_decisions=result.wait_decisions,
+                actor_id=progress.actor_id,
+                options_started=result.options_started,
+                longest_option=result.longest_option,
             )
         )
         progress.episodes += 1

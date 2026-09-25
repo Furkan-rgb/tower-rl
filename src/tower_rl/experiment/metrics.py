@@ -334,10 +334,16 @@ def collected_episode_records(report: TrainingProgressReport) -> list[dict[str, 
     `episode_record` is what `run_episodes.py` already serialises per-episode
     records with; this is that same shape, plus the actor id, since a fleet's
     episodes are one series and a health problem must be traceable back to the
-    instance that produced it.
+    instance that produced it, and the episode's ez-greedy options - always
+    present, 0 when the run explored without them.
     """
     return [
-        {**episode_record(index, episode.summary), "actor_id": episode.actor_id}
+        {
+            **episode_record(index, episode.summary),
+            "actor_id": episode.actor_id,
+            "options_started": episode.options_started,
+            "longest_option": episode.longest_option,
+        }
         for index, episode in enumerate(report.collected)
     ]
 

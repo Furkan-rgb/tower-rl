@@ -199,6 +199,9 @@ def resolved_config(
         "discount_per_game_second": learner.discount_per_game_second,
         # False learns from the wave reward, which is every run before board #82.
         "survival_time_reward": learner.survival_time_reward,
+        # False explores one decision at a time, which is every run before
+        # board #83.
+        "ez_greedy": learner.ez_greedy,
         "learning_rate": learner.learning_rate,
         "target_ema_decay": (
             arguments.target_ema_decay if name == "stacked-dqn" else None

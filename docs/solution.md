@@ -1713,6 +1713,42 @@ near-greedy actors alone, which is the series a run's curve and its early
 stopping are read from. `docs/architecture.md` states where it lives.
 Evaluation always uses epsilon zero.
 
+`--ez-greedy` (stacked-dqn only, off by default) changes how long an
+exploratory action lasts, not how often one starts: εz-greedy (Dabney,
+Ostrovski & Barreto 2021, arXiv:2006.01782, §4.2, App. B, Algorithm 1). With
+no option running, the actor's own ε coin is flipped as before; on heads it
+draws a duration n from z(n) ∝ n^−μ and an action, and repeats that action for
+n decisions, flipping no coin meanwhile. The paper's values are kept and are
+constants, not flags: μ = 2 (§4.2, every Atari result) and n ≤ 10,000 (App. B,
+the cap of its R2D2-based agents, which this recurrent-replay, laddered stack is
+shaped like; its Rainbow agents used 100). Every actor keeps its ladder ε, as
+the paper did not retune ε, so the share of decisions spent inside an option
+rises well above ε on every rung (about 0.73 for 0.4, 0.06 for 0.016). The
+episode records carry each episode's `options_started` and `longest_option`.
+Five deviations, each forced by this environment or chosen for a reason:
+
+- n counts the drawing decision, so n = 1 is plain ε-greedy as §4.2 states.
+  Algorithm 1 read literally takes the action n + 1 times, an off-by-one against
+  its own text.
+- The unit is the decision (choice point), as the paper's is the agent step. A
+  game-time duration would need a seconds-per-unit constant the paper does not
+  have, and a purchase takes 0 s, so repeating one for T seconds never ends.
+  An option's game-time length therefore depends on how many choice points the
+  run offers.
+- A running option whose action is masked takes `WAIT` for that decision, still
+  counts it, and resumes its action once legal. The paper's options never end
+  early, and in Atari an ineffective action is a no-op that still takes the
+  step; `WAIT` is this environment's no-op (§7.2). A purchase option is then
+  "for the next n choice points, spend only on this row, save otherwise".
+- The action is drawn uniformly from the valid actions, as ε-greedy here always
+  has; the paper draws from all of A because Atari has no mask.
+- ε = 0 never repeats an action, so evaluation stays exploration-free, and an
+  episode boundary ends any option.
+
+The duration is one exact inverse-CDF draw from the actor's own exploration
+stream, which the flag off never touches: off, every action and the stream
+itself are what they were.
+
 ### 9.6 Learner-to-actor weight flow
 
 The learner increments `model_version` after each publication interval. It publishes:

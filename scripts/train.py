@@ -97,6 +97,7 @@ from tower_rl.experiment.run_identity import (  # noqa: E402
     REFERENCE_FINAL_WAVES,
     RunIdentity,
     checkpoint_identity,
+    dreamer_resolved_config,
     resolved_config,
     source_revision,
     tracked_params,
@@ -117,6 +118,7 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     resume_state,
     write_manifest,
 )
+from tower_rl.learning.dreamer import DREAMERV3, DreamerBackbone, DreamerConfig  # noqa: E402
 from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.learning.exploration import (  # noqa: E402
     EXPLORATION_OPTIONS,
@@ -161,8 +163,10 @@ from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
 )
 from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
-#: The one backbone this project trains.
+#: The default backbone, and the one every run before DreamerV3 trained.
 BACKBONE = "stacked-dqn"
+#: What `--backbone` chooses from.
+BACKBONES = (BACKBONE, DREAMERV3)
 
 #: What a uniform schedule anneals to when `--epsilon-end` is not given. Held
 #: here rather than as the flag's default so that a value the ladder would
@@ -269,7 +273,15 @@ def build_arm(
     run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    backbone, learner, network = build_backbone(arguments, device)
+    if arguments.backbone == DREAMERV3:
+        backbone: Backbone = DreamerBackbone(
+            config=DreamerConfig(seed=arguments.seed), device=device
+        )
+        # Only for `resolved_config`'s signature: `dreamer_resolved_config`
+        # records every stacked-dqn setting of a DreamerV3 run as None.
+        learner, network = StackedDqnConfig(), NetworkConfig()
+    else:
+        backbone, learner, network = build_backbone(arguments, device)
     if resume is not None:
         # The weights, the target network and the optimizer moments together:
         # they are one `state_dict`, and a resume that took only the weights
@@ -337,6 +349,8 @@ def build_arm(
         device=device,
         parent_checkpoint=None if resume is None else resume.parent_checkpoint,
     )
+    if isinstance(backbone, DreamerBackbone):
+        resolved = dreamer_resolved_config(resolved, backbone.config)
     if resume is not None and resume.tracking_run_id is not None:
         # The same run, not a second one beside it: the curve of a run trained
         # in two sittings is one series, on the one decision axis both
@@ -509,6 +523,75 @@ def build_arm(
     return arm, run_evaluation
 
 
+#: Replay sequences before DreamerV3's first update. The official loop trains
+#: once replay holds one batch of steps (16 x 64 = 1,024; `embodied/run/train.py`);
+#: at a stride of 32, less the window each episode's edge costs, that is about 25.
+DREAMER_WARMUP_SEQUENCES = 25
+
+#: Flags only stacked-dqn reads. Given with `--backbone dreamerv3` they would be
+#: silently unused, so they are refused.
+STACKED_ONLY_FLAGS = (
+    "history_length",
+    "n_step",
+    "n_step_final",
+    "n_step_anneal_steps",
+    "discount",
+    "learning_rate",
+    "target_ema_decay",
+    # An epsilon anneal: DreamerV3 adds no exploration noise to anneal.
+    "epsilon_anneal_decisions",
+)
+
+
+def dreamer_loop_settings() -> dict[str, object]:
+    """The training-loop settings DreamerV3 fixes, by argument name (solution.md 9.4c)."""
+    config = DreamerConfig()
+    return {
+        "sequence_length": config.batch_length,
+        # Every window starts from the zero state (`replay_context: 0`).
+        "stacked_burn_in": 0,
+        "batch_size": config.batch_size,
+        "gradient_steps_per_decision": config.gradient_steps_per_decision,
+        "warmup_sequences": DREAMER_WARMUP_SEQUENCES,
+        # It samples its own policy and adds no exploration noise.
+        "exploration": "uniform",
+        "epsilon_start": 0.0,
+        "epsilon_end": 0.0,
+        # Uniform replay, as the official loop samples.
+        "priority_alpha": 0.0,
+    }
+
+
+def settle_dreamer_settings(
+    parser: argparse.ArgumentParser, argv: list[str] | None, arguments: argparse.Namespace
+) -> None:
+    """Under `--backbone dreamerv3`, fix its loop settings and refuse any flag against them.
+
+    A flag that repeats a fixed value is accepted; one that contradicts it, or
+    one only stacked-dqn reads, is refused rather than silently overridden.
+    """
+    if arguments.backbone != DREAMERV3:
+        return
+    fixed = dreamer_loop_settings()
+    # Parsed again with nothing defaulted, so a flag that was given can be told
+    # from one that was left alone.
+    parser.set_defaults(**{dest: None for dest in (*fixed, *STACKED_ONLY_FLAGS)})
+    given = vars(parser.parse_args(argv))
+    for dest in STACKED_ONLY_FLAGS:
+        if given[dest] is not None:
+            raise SystemExit(
+                f"--{dest.replace('_', '-')} is a stacked-dqn setting; "
+                "--backbone dreamerv3 does not read it"
+            )
+    for dest, value in fixed.items():
+        if given[dest] is not None and given[dest] != value:
+            raise SystemExit(
+                f"--{dest.replace('_', '-')} {given[dest]} contradicts DreamerV3's "
+                f"fixed {value} (docs/solution.md 9.4c)"
+            )
+        setattr(arguments, dest, value)
+
+
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Everything the run is configured by, validated before a device is touched."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -531,6 +614,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--backbone",
+        choices=BACKBONES,
+        default=BACKBONE,
+        help=(
+            "the learner: stacked-dqn, or dreamerv3 at its published settings "
+            "(docs/solution.md 9.4c), which fix the sequence, batch, replay "
+            "ratio and exploration flags and refuse a value that contradicts them"
+        ),
+    )
     parser.add_argument("--replay-capacity", type=int, default=4096)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
@@ -826,7 +919,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if arguments.n_step_anneal_steps < 0:
         raise SystemExit("--n-step-anneal-steps cannot be negative")
-    if arguments.stacked_burn_in < arguments.history_length - 1:
+    settle_dreamer_settings(parser, argv, arguments)
+    if (
+        arguments.backbone == BACKBONE
+        and arguments.stacked_burn_in < arguments.history_length - 1
+    ):
         # Checked here rather than at the first optimisation step, which is an
         # hour of collection later.
         raise SystemExit(
@@ -864,7 +961,7 @@ def resume_point(
     # revision in it are deliberately not compared.
     expected = checkpoint_identity(
         RunIdentity.started_now(
-            BACKBONE,
+            arguments.backbone,
             profile_id=profile_id,
             source_revision=revision,
             # The cadence this run will collect under: a checkpoint collected
@@ -951,7 +1048,7 @@ def train_session(
     if bridge_version is not None:
         tags["bridge_version"] = bridge_version
     arm, run_evaluation = build_arm(
-        BACKBONE,
+        arguments.backbone,
         arguments,
         instances=instances,
         device=device,

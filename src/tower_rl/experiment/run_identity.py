@@ -18,7 +18,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 
 import torch
 
@@ -31,6 +31,7 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.checkpoint import CheckpointIdentity
+from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.learning.training import TrainingConfig
@@ -248,6 +249,23 @@ def resolved_config(
         # brought their instance up at, so a run's identity carries the rate
         # its curve was measured under rather than leaving it to be inferred.
         "frame_rate_hz": arguments.frame_rate_hz,
+    }
+
+
+def dreamer_resolved_config(
+    resolved: dict[str, object], config: DreamerConfig
+) -> dict[str, object]:
+    """A DreamerV3 run's snapshot: `resolved_config`'s, with DreamerV3's own settings.
+
+    The stacked-dqn learner and network settings do not describe this run and
+    are recorded as None. Every `DreamerConfig` value is recorded under
+    `dreamer_<field>`, which is what `checkpoint_policy` rebuilds the policy from.
+    """
+    stacked = {item.name for item in fields(StackedDqnConfig)} - {"seed"}
+    stacked |= {f"network_{item.name}" for item in fields(NetworkConfig)}
+    return {
+        **{key: None if key in stacked else value for key, value in resolved.items()},
+        **{f"dreamer_{key}": value for key, value in asdict(config).items()},
     }
 
 

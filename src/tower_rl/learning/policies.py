@@ -13,7 +13,7 @@ nothing but which policy is asked for an action.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -21,7 +21,8 @@ import torch
 
 from tower_rl.environment.features import ROW_FEATURES, ROW_WIDTH, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.checkpoint import CheckpointIdentity, load
+from tower_rl.learning.checkpoint import Checkpoint, CheckpointIdentity, load
+from tower_rl.learning.dreamer import DREAMERV3, DreamerBackbone, DreamerConfig
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
@@ -118,7 +119,8 @@ def checkpoint_policy(
     decision_cadence: str,
     upgrade_availability: str,
     device: torch.device | None = None,
-) -> tuple[StackedDqnBackbone, CheckpointIdentity]:
+    sampling_seed: str | None = None,
+) -> tuple[StackedDqnBackbone | DreamerBackbone, CheckpointIdentity]:
     """Rebuild the backbone a checkpoint holds, as a policy to evaluate.
 
     Everything needed to reconstruct it is in the checkpoint: its identity says
@@ -158,6 +160,9 @@ def checkpoint_policy(
     refusals = checkpoint.identity.incompatibilities(played)
     if refusals:
         raise ValueError(f"{path} cannot be played here: {'; '.join(refusals)}")
+    if checkpoint.identity.backbone == DREAMERV3:
+        return _dreamer_policy(checkpoint, device, sampling_seed), checkpoint.identity
+
     settings = checkpoint.resolved_config
     if checkpoint.identity.backbone != "stacked-dqn":
         raise ValueError(
@@ -198,6 +203,30 @@ def checkpoint_policy(
     backbone.online.eval()
     backbone.online.requires_grad_(False)
     return backbone, checkpoint.identity
+
+
+def _dreamer_policy(
+    checkpoint: Checkpoint, device: torch.device | None, sampling_seed: str | None
+) -> DreamerBackbone:
+    """A DreamerV3 checkpoint as a policy: its config is the `dreamer_*` keys it recorded.
+
+    DreamerV3 samples its policy, so every evaluating instance needs a stream of
+    its own (`sampling_seed`, e.g. its serial). Left None, every instance would
+    draw the same uniforms from the run's seed.
+    """
+    settings = checkpoint.resolved_config
+    config = DreamerConfig(
+        **{name.name: settings[f"dreamer_{name.name}"] for name in fields(DreamerConfig)}
+    )
+    backbone = DreamerBackbone(config=config, device=device or torch.device("cpu"))
+    backbone.load_state_dict(dict(checkpoint.backbone_state))
+    for value in vars(backbone).values():
+        if isinstance(value, torch.nn.Module):
+            value.eval()
+            value.requires_grad_(False)
+    if sampling_seed is not None:
+        backbone._random.seed(sampling_seed)
+    return backbone
 
 
 def describe(policy: Policy) -> str:

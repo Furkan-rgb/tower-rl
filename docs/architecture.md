@@ -189,7 +189,12 @@ environment and nothing that observes or drives it.
 - `network.py` — `TowerTrunk`, `DuelingHeads`, `StackedPolicyNetwork`.
 - `backbone.py` — the `Backbone` protocol, `SequenceBatch`, `LearnMetrics`,
   `collate`, `acting_copy`.
-- `stacked_dqn.py` — `StackedDqnBackbone`, the one backbone the project runs.
+- `stacked_dqn.py` — `StackedDqnBackbone`, the default backbone.
+- `dreamer.py` — `DreamerBackbone` and `DreamerConfig`: DreamerV3 (world model,
+  imagination actor-critic) behind the same `Backbone` protocol, chosen with
+  `scripts/train.py --backbone dreamerv3` (`docs/solution.md` §9.4c).
+- `dreamer_math.py` — DreamerV3's network-free parts: symlog, twohot, the
+  masked categorical, λ-returns, the percentile return normaliser, LaProp.
 - `value_learning.py` — n-step targets, the weighted sequence loss, TD errors.
 - `replay.py` — `PrioritizedSequenceReplay` over `ReplaySequence`.
 - `actor.py` — `Actor`, which plays one episode against one

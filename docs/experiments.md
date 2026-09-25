@@ -26,6 +26,161 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## M3-P005: stacked-dqn with ε-z-greedy exploration, 120,712 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-25. Board `#83`. Developer-approved (≈2h training plus
+eval).
+
+**Change.** `--ez-greedy` (`docs/solution.md` §9.5, landed `4413961`) added
+to `M3-P004`'s exact training command, which already has
+`--discount-per-game-second 0.997 --survival-time-reward`. The stage name
+is `m3-p005-dqn-ezgreedy-train`. One change per run.
+
+**Control: `M3-P004`** (eval mean **18.270**, SD **3.213**, n=100 valid,
+P(final ≥ 20) = **0.54**, P(final ≥ 21) = **0.02**, P(final ≥ 22) =
+**0.000**, `state/records/m3-p004/eval-arm`). Training: 0 of 815 episodes
+reached wave ≥ 22.
+
+**Hypothesis.** Passing the wall (`#75`) needs sustained multi-step
+investment that per-decision dithering cannot find (Dabney, Ostrovski &
+Barreto 2021; Osband, Blundell, Pritzel & Van Roy 2016). ε-z-greedy's
+repeated exploratory actions produce such commitments, rather than
+independent one-step coin flips. Falsifier: no training or eval episode
+reaches wave 22, and no rise in how far exploring actors 2–4 reach.
+
+**What n=1 per arm can and cannot conclude — stated honestly.**
+Seed-to-seed SD across the three stacked-dqn/DreamerV3 draws so far (18.14,
+15.59, 13.48) is ≈2.3 waves (very uncertain: 2 degrees of freedom, and the
+runs differ in code/budget too). The difference between two single runs has
+an SD of ≈3.3 waves, so it would need to exceed ≈6.5 waves to clear 95%
+noise; a +2-wave effect is **undetectable**, and so is non-inferiority at
+any margin smaller than ≈6.5 waves. The 105-episode bootstrap CIs measure
+only within-run episode noise (SE≈0.25) — read as a treatment-effect CI
+this would be **pseudo-replication** (Henderson et al. 2018; Agarwal et al.
+2021's IQM/stratified bootstrap need multiple runs, and with n=1 the IQM is
+just the run). What n=1 can do: catch breakage (divergence, value-fit
+collapse, a kill bar, a score below the 6.1 scripted floor), show the
+mechanism operates, and flag a qualitative regime change as *suggestive*
+only.
+
+**Command.** Exactly `M3-P004`'s command (seed 0, ladder,
+`--early-stop-patience-periods 0`, `--budget-decisions 120712`,
+`--checkpoint-every-decisions 5000`, `--selection-period-decisions 15000`,
+`--kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1`,
+`--gradient-steps-per-decision 1.0`, `--n-step 10 --n-step-final 3
+--n-step-anneal-steps 10000`, `--actors 7 --renderer host --frame-rate-hz
+120 --decision-cadence choice-points --upgrade-availability all
+--frame-game-ms 100`, `--discount-per-game-second 0.997
+--survival-time-reward`), plus `--ez-greedy`.
+
+Verified against `main` @ `438a923` (the `#83` land commit): `train.py
+--help` lists `--ez-greedy`; dry-parsed the exact command through
+`train.parse_arguments`, no `SystemExit`, `ez_greedy=True` resolved
+alongside every other field unchanged from `M3-P004`
+(`discount_per_game_second=0.997`, `survival_time_reward=True`, `seed=0`,
+`early_stop_patience_periods=0`, `budget_decisions=120712`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]`,
+`exploration=ladder`, `gradient_steps_per_decision=1.0`, `n_step=10`,
+`n_step_final=3`, `n_step_anneal_steps=10000`).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p005-dqn-ezgreedy-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 120712 --checkpoint-every-decisions 5000 \
+      --selection-period-decisions 15000 --epsilon-anneal-decisions 8000 \
+      --early-stop-patience-periods 0 --seed 0 --gradient-steps-per-decision 1.0 \
+      --n-step 10 --n-step-final 3 --n-step-anneal-steps 10000 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100 \
+      --discount-per-game-second 0.997 --survival-time-reward --ez-greedy
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed,
+`TOWER_BRIDGE_BUILD_DIR` unset).
+
+**Health (a prospective change, decided before this run and justified).**
+
+- The health gate is: the budget completes, no kill bar fires, the loss is
+  finite.
+- Value-fit correlation is reported descriptively and does **not** gate.
+- Reason: the 0.8 threshold has no literature basis. `M3-P003` and
+  `M3-P004` both measured about 0.796 while producing the best eval results
+  so far, so the gate discriminated nothing. This applies from `M3-P005`
+  onward only; earlier verdicts stand as recorded.
+
+**Decision rule.**
+
+- **ADOPT** (keep the flag) if healthy **AND** the eval mean final wave is
+  ≥ **15.97** (control 18.27 − 2.3, one seed SD).
+- **"Wall crossed (suggestive, not a verdict)"** if ADOPT **AND** eval
+  P(final ≥ 22) ≥ 0.05.
+- **DO NOT ADOPT** otherwise.
+- **Pre-stated reading of a null result.** If nothing reaches 22, the cause
+  cannot be told apart between too little exploration or experience,
+  learner instability (post-peak decline), and an account-level limit
+  (`#80`). The next item is then learner stability (replay ratio and
+  eviction), followed by a longer run.
+
+**Selection.** The §9.2b arm rule is unchanged. Noted in advance: ε-z-greedy
+puts about 6% exploratory decisions into actor 3 (ε ≈ 0.016, which counts
+as "near-greedy" under the ladder split). That depresses the near-greedy
+selection curve, so the curve is descriptive only and not comparable with
+`M3-P004`'s.
+
+**Mechanism signals, from training records** (`summary.json`
+`collected_episodes`, which now carry `options_started` and
+`longest_option`).
+
+- M1. Training episodes with final ≥ 22 (control 0/815) and the maximum
+  training final wave.
+- M2. Per-actor P(final ≥ 12) and P(final ≥ 18) for actors 2–4, vs
+  `M3-P004`
+  (`state/runs/session-20260925-160836/stacked-dqn-20260925-160836-b34ca1/summary.json`).
+- M3. Per-actor mean `options_started` and the distribution of
+  `longest_option` (share of episodes with longest ≥ 5, ≥ 10), plus the
+  mean final wave of episodes with longest ≥ 10 against those without.
+- M4. Per-actor purchases per decision vs `M3-P004`.
+
+**Eval secondary signals.**
+
+- S1. P(final ≥ 20), P(final ≥ 21), P(final ≥ 22).
+- S2. In-wave seconds at death in wave 20 vs `M3-P004`.
+- S3. P(final ≥ 13).
+- S5. Median cash at wave entry for waves 7–10 and 17–20.
+- S6. Loss, TD error and value-fit correlation, all descriptive. Also: the
+  production learner step time.
+
+**Statistics.** `bootstrap_difference` (seed 0, 10,000 resamples) vs
+`M3-P004` (18.270, n=100), `M3-P003` (17.076, n=105), `M3-P001` (13.476,
+n=105), scripted-`all` (6.105, n=105) and random-`all` (3.556, n=90) —
+descriptive only, per the n=1 honesty above.
+
+**Operations, unchanged from `M3-P004`.** Kill bars, fleet bring-up, the
+one-retry rule for bring-up and for evaluation, partial-attempt handling,
+the default-build evaluation command (output to
+`state/records/m3-p005/eval-arm`) and the resume guard (all three flags:
+`--discount-per-game-second`, `--survival-time-reward`, `--ez-greedy` all
+must match a resumed checkpoint's recorded values) are as in `M3-P004`.
+
+**Evaluation.** The arm, greedy, on the default build,
+`--upgrade-availability all --frame-game-ms 100`, n=105:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p005 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p005/eval-arm
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
+
 ## M3-P004: stacked-dqn with the survival-time reward, 120,712 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-25. Board `#82`. Developer-approved (≈2h training plus

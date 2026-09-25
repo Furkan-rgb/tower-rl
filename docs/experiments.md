@@ -179,6 +179,160 @@ after. Stop after three consecutive unexplained failures.
 `state/bridge/current` is never repointed. One device stage at a time; no
 polling loops.
 
+### Results, as run
+
+**Verdict: DO NOT ADOPT, per the pre-registered rule exactly as written.**
+The health check's value-fit correlation condition fails: **0.79597 < 0.8**
+— the same failure mode as `M3-P003` (0.7968 < 0.8), at a nearly identical
+shortfall. Budget completed, no kill bar fired, no fleet shortfall on
+training (7/7 actors throughout) — but the health check requires all four
+conditions, and this one does not hold, so the rule does not adopt,
+regardless of how far the eval mean itself clears the eval-mean condition
+(details below).
+
+**Deviation from the pre-registration.** Two training bring-up attempts
+failed identically before this one: 5/7 emulators came up, then
+`emulator-5566` crashed with `writev: Disk quota exceeded (122)`. Diagnosis:
+`/tmp` is a tmpfs with a per-user quota, and this session's own scratchpad
+held ~23GB of stale scratch copies (four abandoned repo clones/worktrees
+from earlier subagent work, none holding unique uncommitted or unpushed
+work). These were removed (`scratchpad` `du -sh`: 23G → 1.1G; `df -h /tmp`:
+47G used/17G avail → 25G used/38G avail), and training was relaunched fresh
+as `m3-p004-dqn-survival-train-r2` — a new attempt after a diagnosed and
+fixed host cause, not a blind retry.
+
+Evaluation itself also needed its one allowed retry: the first eval attempt
+(`m3-p004-eval-arm`) had actor 1 (`emulator-5558`) fail at bring-up
+(`CloneError: emulator-5558 never became ready: the game is not running`,
+6/7 actors, 90/105 episodes) — an actor/instance bring-up failure, not an
+ordinary per-episode invalid classification, so the one-retry rule applied
+(`M3-P001`'s statement of the rule). Host was verified clean (no qemu, no
+adb devices) before the retry; the partial first attempt's records were
+moved aside (`state/records/m3-p004/eval-arm-attempt1-partial-shortfall`,
+not pooled) before relaunching into the same output directory as
+`m3-p004-eval-arm-retry1`, which completed 7/7 actors, exit 0, cleanup
+verified.
+
+**Training.**
+`state/runs/session-20260925-160836/stacked-dqn-20260925-160836-b34ca1/`.
+Stage wall `01:50:34`, exit 0, "verified: no qemu process, no adb device".
+Manifest confirmed `actors=7` (all 7 serials, `bring_up_failures: []`,
+`actors_withdrawn: 0`), `backbone=stacked-dqn`, `seed=0`,
+`early_stop_patience_periods=0`, `kill_bars=[[12000,8000,6.1],
+[26262,8000,6.1]]`, `budget_decisions=120712`, `discount=None`,
+`discount_per_game_second=0.997`, `survival_time_reward=True` — both flags
+resolved as intended. `decisions`: 122,351 (past the 120,712 budget by the
+expected at-most-one-episode-per-actor overshoot). `optimisation_steps`:
+120,083. `episodes`: 815 (805 valid). Neither kill bar fired: K1
+(`12000:8000:6.1`) read a near-greedy mean of **10.333** over 36 episodes
+at 12,078 decisions; K2 (`26262:8000:6.1`) read **12.070** over 86 episodes
+at 26,359 decisions — both clear of the 6.1 floor. Not early-stopped
+(`early_stopped: false`, patience 0 by design). 8 selection periods closed.
+
+**Selection-period curve** (`mean_final_wave` at each period's own close,
+decisions at close in parentheses):
+
+| period | decisions | mean final wave |
+| --- | --- | --- |
+| 1 | 15,052 | 6.763 |
+| 2 | 30,004 | 14.854 |
+| **3** | **45,017** | **18.192 (max, arm)** |
+| 4 | 60,143 | 17.500 |
+| 5 | 75,122 | 17.222 |
+| 6 | 90,125 | 16.267 |
+| 7 | 105,004 | 14.188 |
+| 8 | 120,363 | 15.636 |
+
+Periods 3-8 (S4): the curve peaks early, at period 3, then falls with one
+partial rebound (period 4) before drifting down through period 8 — unlike
+`M3-P003`'s curve, which rose to period 6 before falling. The run's own
+early-stop tracker agrees (`best_period_near_greedy_mean_final_wave:
+18.192307692307693`, `closing_period_near_greedy_mean_final_wave:
+15.636363636363637`, `periods_without_improvement: 5`).
+
+**Arm** (`docs/solution.md` §9.2b): counting periods 2-8, the best
+near-greedy mean is period 3 at 45,017 decisions, **18.192** waves —
+`checkpoints/checkpoint-d0045017.pt`, sha256
+`a53e86cb3a956638adbf554be4e00bc0296fdf91499239713365b030795c1e8`, verified
+against its `.sha256` sidecar before evaluation (the sidecar file itself
+lacks a trailing newline, so `sha256sum -c` reports a formatting error, but
+the digest value matches byte-for-byte).
+
+**Evaluation.** `state/records/m3-p004/eval-arm/` (after the retry
+described above), default build, all 7 actors completed with no
+actor-level failures (`failure: null` on all 7) — 100/105 episodes valid
+(5 invalid: `observation_invalid` ×3, `action_pipeline_failed` ×2, the same
+noise categories the training run itself records; none from actor
+withdrawal). Mean final wave **18.270**, SD **3.213**, n=**100**, 95% CI
+(normal approx.) **[17.640, 18.900]**.
+
+**Statistics** (`bootstrap_difference`, seed 0, 10,000 resamples), reported
+descriptively per this entry's own n=1 honesty section, not as a
+BETTER/WORSE verdict: vs `M3-P003` (17.076, n=105): **+1.194 [+0.221,
++2.123]**. vs `M3-P001` (13.476, n=105): **+4.794 [+3.987, +5.538]**. vs
+scripted-`all` (6.105, n=105, `state/records/m2-run3/eval-scripted`):
+**+12.165 [+11.505, +12.754]**. vs random-`all` (3.556, n=90,
+`state/records/m2-run3/eval-random` + `eval-random-topup2` pooled, 90
+episodes): **+14.714 [+13.990, +15.393]**. Per the pre-registration, none of
+these differences is read as evidence of improvement from the treatment by
+itself.
+
+**Secondary signals, against `M3-P003`.**
+
+- S1. P(final ≥ 21): **0.020** (2/100) vs control **0.000** (0/105) — the
+  first eval episodes ever to advance past wave 20 (both completed wave 20
+  and died partway through wave 21; `termination_detail` is empty on both,
+  `waves[-1] = {"wave": 21, "completed": false, ...}`). P(final ≥ 22):
+  **0.000** (0/100) vs control **0.000** (0/105) — no episode reached wave
+  22, so the pre-registration's "wall crossed" tier condition
+  (P(final ≥ 22) ≥ 0.05) is not met, and would not have been read as a
+  verdict in any case since the health check already fails ADOPT.
+- S2 (the mechanism check). Mean game-seconds survived inside the final
+  wave, for episodes dying in wave 20: **16.785s** (n=52) vs control
+  **18.747s** (n=43, `state/records/m3-p003/eval-arm`) — a **decrease**,
+  not the hypothesised rise. The hypothesis's stated falsifier
+  ("no rise in wave-20 in-wave survival time, and no episode passing wave
+  21") is **partially triggered**: in-wave survival time at the fatal wave
+  did not rise (it fell), even though 2/100 episodes did progress one wave
+  further overall (to a wave-21 death) than any prior run has reached.
+  These are two different observations and neither one cancels the other:
+  the graded, within-wave signal the reward was designed to supply did not
+  show up in this metric, while the run's best individual episodes went
+  slightly further than before.
+- S3. P(final ≥ 13): **0.850** (85/100) vs control **0.867** (91/105).
+  P(final ≥ 20): **0.540** (54/100) vs control **0.410** (43/105).
+- S4. Selection-period curve: reported above — peaks at period 3, falls
+  with one partial rebound through period 8.
+- S5. Median cash at entry (log-space `cash_log`). Waves 7-10: **3.341**
+  (n=396) vs control **2.944** (n=412) — higher. Waves 17-20: **3.683**
+  (n=296) vs control **3.083** (n=228) — higher. Purchase-count half
+  remains not computable from the recorded schema, per `M3-P003`'s own
+  finding — unassessed, as pre-registered.
+- S6. Loss and TD error, reported descriptively since their scale changes
+  under the new reward and is not comparable with `M3-P003`'s:
+  `mean_recent_weighted_loss` **0.03893** (`M3-P003`: 0.0359, both finite),
+  `mean_recent_unweighted_absolute_td_error` **0.14678** (`M3-P003`:
+  0.1481), `mean_recent_gradient_norm` **7.145**. `mean_recent_value_fit_
+  correlation` **0.79597** (`M3-P003`: 0.7968) — the health-check figure
+  itself, reported again here for the S6 comparison.
+- Production learner step time:
+  `decision_time.fleet.buckets.learner_step.wall_seconds` (3,447.746s) /
+  `optimisation_steps` (120,083) = **28.71 ms/step**, in the same range as
+  `M3-P003`'s 28.16 ms/step and `M3-P001`'s 31.62 ms/step.
+
+**Secondary — `#75` wall check.** Max final wave in the eval set: **21**
+(2/100 episodes, both dying partway through wave 21 after completing wave
+20 — see S1/S2 above). 54/100 reached wave 20. Zero of 100 reached wave 22.
+The wall is **not falsified**: no episode completed wave 21 or reached
+wave 22, consistent with every prior eval and training run.
+
+Host cleanup verified after training and both eval attempts: zero qemu
+processes (`/proc/*/exe`), empty `adb devices`, `run_stage.sh`'s own
+teardown reported `cleanup ok` for the training stage (0/7 required active
+cleanup, all already torn down) and for both eval stages (0/7 required
+active cleanup each, one instance exited during teardown in each case
+while already offline).
+
 ## M3-P003: stacked-dqn with the game-time discount, 120,712 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-25. Board `#81`. Developer-approved (≈3.3h training plus

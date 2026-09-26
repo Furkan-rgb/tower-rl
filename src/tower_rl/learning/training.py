@@ -857,6 +857,11 @@ class TrainingRun:
     _segment_start_decisions: int = field(default=0, init=False)
     #: Kill bars still to be reached, by index into `config.kill_bars`.
     _bars_pending: list[int] = field(default_factory=list, init=False)
+    #: Set once the run's end has been written (`held_still`). Every actor
+    #: thread checks it each time it takes `_lock` and returns there, so an
+    #: actor still collecting after an interrupt can count, learn and
+    #: checkpoint nothing more over the resume point just written.
+    _halted: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if not self.actors:
@@ -1010,12 +1015,15 @@ class TrainingRun:
         count and every gradient step, and the buffer's lock every insertion,
         taken in the one order locks are ever taken in. Normally the fleet has
         already joined; after an interrupt its actors may still be collecting,
-        and they wait here until the snapshot is written. An actor that has
-        added its episode to replay but not yet counted it can still be caught
-        between the two, so after an interrupt the snapshot may hold up to one
-        episode per actor ahead of the count.
+        and they wait here until the snapshot is written. The run is halted
+        for good from here: each actor returns the next time it takes `_lock`,
+        so nothing is counted, learned or checkpointed after the snapshot. An
+        actor that has added its episode to replay but not yet counted it can
+        still be caught between the two, so after an interrupt the snapshot may
+        hold up to one episode per actor ahead of the count.
         """
         with self._lock, self.replay.lock:
+            self._halted = True
             yield
 
     def _refuse_evaluation_during_collection(self, collecting: int) -> None:
@@ -1074,6 +1082,8 @@ class TrainingRun:
         actor_id = actor.config.actor_id
         while True:
             with profile.acquiring(self._lock):
+                if self._halted:
+                    return
                 if self.report.decisions >= target or self.stopped_early:
                     # The budget, or the run's own decision to stop: a plateau
                     # is answered at the episode boundary after the crossing
@@ -1117,6 +1127,8 @@ class TrainingRun:
                 # invalid by the environment already continues, and an episode
                 # the port refused outright must not be treated more harshly.
                 with profile.acquiring(self._lock):
+                    if self._halted:
+                        return
                     self._record_failure(progress, failure)
                     progress.decision_time = profile.snapshot()
                     withdrawn = progress.withdrawn is not None
@@ -1129,6 +1141,8 @@ class TrainingRun:
                     raise
                 continue
             with profile.acquiring(self._lock):
+                if self._halted:
+                    return
                 self._record_episode(progress, result)
                 with profile.span(LEARNER_STEP):
                     self._learn(result.summary.decisions)

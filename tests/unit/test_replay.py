@@ -457,17 +457,31 @@ def test_an_empty_buffer_saves_and_reloads_empty(tmp_path: Path) -> None:
     assert len(loaded) == 0 and loaded.compatibility is None
 
 
-def test_a_second_save_replaces_the_first_whole(tmp_path: Path) -> None:
+def test_a_save_never_overwrites_an_existing_dump(tmp_path: Path) -> None:
     replay = _filled(_prioritized())
     replay.save_to(tmp_path / "replay", run={"decisions": 1})
     replay.add(_episode_windows("episode-9", cash=500.0)[0])
-    replay.save_to(tmp_path / "replay", run={"decisions": 2})
+    with pytest.raises(ReplayDumpError, match="already exists"):
+        replay.save_to(tmp_path / "replay", run={"decisions": 2})
 
-    loaded = _prioritized()
-    loaded.load_from(tmp_path / "replay")
-    assert list(loaded._items) == list(replay._items)
-    assert read_replay_metadata(tmp_path / "replay")["run"] == {"decisions": 2}
+    assert read_replay_metadata(tmp_path / "replay")["run"] == {"decisions": 1}
     assert sorted(path.name for path in tmp_path.iterdir()) == ["replay"]
+
+
+@pytest.mark.parametrize(
+    ("array", "value", "reason"),
+    [("sequence_episode", 99, "index episodes"), ("sequence_burn_in", 99, "invalid sequence")],
+)
+def test_a_dump_with_an_impossible_sequence_is_refused(
+    tmp_path: Path, array: str, value: int, reason: str
+) -> None:
+    _filled(_prioritized()).save_to(tmp_path / "replay", run={})
+    path = tmp_path / "replay" / f"{array}.npy"
+    values = numpy.load(path)
+    values[0] = value
+    numpy.save(path, values)
+    with pytest.raises(ReplayDumpError, match=reason):
+        _prioritized().load_from(tmp_path / "replay")
 
 
 @pytest.mark.parametrize(

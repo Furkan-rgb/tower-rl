@@ -365,6 +365,10 @@ class PrioritizedSequenceReplay:
         into place only once all of them are on disk, so a dump that exists is
         a complete one.
         """
+        if directory.exists():
+            # A run saves once, into a directory of its own, so an existing
+            # dump is some other save's and is not overwritten.
+            raise ReplayDumpError(f"a replay dump already exists at {directory}")
         steps: dict[int, int] = {}
         distinct_steps: list[ReplayStep] = []
         episodes: dict[int, int] = {}
@@ -425,7 +429,7 @@ class PrioritizedSequenceReplay:
                 with path.open("rb") as stream:
                     os.fsync(stream.fileno())
                 size += path.stat().st_size
-            _replace_directory(temporary, directory)
+            _move_into_place(temporary, directory)
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -461,13 +465,32 @@ class PrioritizedSequenceReplay:
         step_index = _read_array(directory, "sequence_step_index", (metadata["step_slots"],))
         if int(arrays["sequence_steps"].sum()) != len(step_index):
             raise ReplayDumpError("replay dump's sequence lengths do not add up to its steps")
-        if len(step_index) and not 0 <= int(step_index.min()) <= int(step_index.max()) < (
-            metadata["steps"]
-        ):
+        if not _indices_within(step_index, metadata["steps"]):
             raise ReplayDumpError("replay dump's sequences index steps it does not hold")
+        if not _indices_within(arrays["sequence_episode"], metadata["episodes"]):
+            raise ReplayDumpError("replay dump's sequences index episodes it does not hold")
         if sequences > self.capacity:
             raise ReplayDumpError(f"replay dump holds {sequences} sequences, over capacity")
 
+        try:
+            items = self._sequences_from(arrays, step_index, metadata)
+        except ReplayRejected as refused:
+            # A burn-in, an action or a game time the buffer would never have
+            # accepted: the dump is not one `save_to` wrote.
+            raise ReplayDumpError(f"replay dump holds an invalid sequence: {refused}") from refused
+        self._items = items
+        self._priorities = deque(arrays["sequence_priority"].tolist())
+        compatibility = metadata["compatibility"]
+        self._compatibility = None if compatibility is None else tuple(compatibility)
+        self.stats = ReplayStats(**metadata["stats"])
+        # No batch is outstanding: the next update follows the next sample.
+        self._evictions_at_sample = self.stats.evicted
+
+    @staticmethod
+    def _sequences_from(
+        arrays: Mapping[str, Any], step_index: Any, metadata: Mapping[str, Any]
+    ) -> deque[ReplaySequence]:
+        """The stored sequences, rebuilt from a dump's checked arrays."""
         episodes = [
             SequenceMetadata(
                 **{
@@ -480,7 +503,7 @@ class PrioritizedSequenceReplay:
         steps = [_step_from(arrays, row) for row in range(metadata["steps"])]
         items: deque[ReplaySequence] = deque()
         start = 0
-        for row in range(sequences):
+        for row in range(metadata["sequences"]):
             end = start + int(arrays["sequence_steps"][row])
             items.append(
                 ReplaySequence(
@@ -490,13 +513,7 @@ class PrioritizedSequenceReplay:
                 )
             )
             start = end
-        self._items = items
-        self._priorities = deque(arrays["sequence_priority"].tolist())
-        compatibility = metadata["compatibility"]
-        self._compatibility = None if compatibility is None else tuple(compatibility)
-        self.stats = ReplayStats(**metadata["stats"])
-        # No batch is outstanding: the next update follows the next sample.
-        self._evictions_at_sample = self.stats.evicted
+        return items
 
 
 def read_replay_metadata(directory: Path) -> dict[str, Any]:
@@ -571,6 +588,11 @@ def _read_array(directory: Path, name: str, shape: tuple[int, ...]) -> Any:
     return array
 
 
+def _indices_within(indices: Any, bound: int) -> bool:
+    """Whether every index of an array lies in [0, bound)."""
+    return not len(indices) or 0 <= int(indices.min()) <= int(indices.max()) < bound
+
+
 def _step_from(arrays: Mapping[str, Any], row: int) -> ReplayStep:
     return ReplayStep(
         features=StateFeatures(
@@ -587,14 +609,9 @@ def _step_from(arrays: Mapping[str, Any], row: int) -> ReplayStep:
     )
 
 
-def _replace_directory(source: Path, target: Path) -> None:
-    """Rename `source` over `target`; a directory cannot simply be replaced."""
-    previous = target.with_name(target.name + ".previous")
-    shutil.rmtree(previous, ignore_errors=True)
-    if target.exists():
-        os.replace(target, previous)
-    os.replace(source, target)
-    shutil.rmtree(previous, ignore_errors=True)
+def _move_into_place(source: Path, target: Path) -> None:
+    """Rename the finished dump to its name, and make the rename durable."""
+    os.rename(source, target)
     descriptor = os.open(target.parent, os.O_RDONLY)
     try:
         os.fsync(descriptor)

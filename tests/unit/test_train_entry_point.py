@@ -14,6 +14,8 @@ import argparse
 import json
 import shutil
 import sys
+import threading
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1599,6 +1601,42 @@ def test_a_run_that_fails_still_writes_its_resume_point_and_replay(
     decisions = checkpoint.progress.environment_decisions
     assert 100 <= decisions < 400
     assert read_replay_metadata(dump)["run"]["decisions"] == decisions
+
+
+def test_an_interrupt_while_the_fleet_collects_leaves_a_matching_resume_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C reaches the main thread while the actor threads are mid-collection.
+
+    They are not joined by the interrupt, so once the resume point is written
+    they must stop rather than go on counting and checkpointing over it.
+    """
+    collecting: list[threading.Thread] = []
+
+    def interrupted(self: TrainingRun) -> Any:
+        # The fleet runs off the main thread, as the pool's actors do when the
+        # interrupt leaves the main thread's join.
+        fleet = threading.Thread(target=self.advance, args=(self.config.budget_decisions,))
+        collecting.append(fleet)
+        fleet.start()
+        while self.report.decisions < 100:
+            time.sleep(0.005)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(TrainingRun, "run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        # A budget far past what the test waits for, so only the halt stops it;
+        # two actors, and a checkpoint every other episode to overwrite with.
+        session(tmp_path, budget="1000000", actors=2)
+    (fleet,) = collecting
+    fleet.join(timeout=60)
+    assert not fleet.is_alive(), "the actors stopped at the halt"
+
+    dump = saved_replay(tmp_path)
+    checkpoint = load(dump.parent / "checkpoints" / "latest.pt")
+    assert read_replay_metadata(dump)["run"]["decisions"] == (
+        checkpoint.progress.environment_decisions
+    )
 
 
 def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_point(

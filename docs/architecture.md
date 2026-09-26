@@ -443,7 +443,8 @@ exception or an interrupt, anything that runs Python cleanup —
 `TrainingReport.save_resume_point` holds the fleet still
 (`TrainingRun.held_still`: the progress lock, then the buffer's) and writes
 `latest.pt` and `PrioritizedSequenceReplay.save_to(<run_dir>/replay/)` at one
-decision count. The dump is `.npy` arrays (a shared step table, the sequences
+decision count, and halts the run: actors still collecting after an interrupt
+return at their next lock, counting and checkpointing nothing more. The dump is `.npy` arrays (a shared step table, the sequences
 as indices into it, their priorities, in FIFO order) plus `replay.json` with
 the capacity, the sampling exponents, the counters, and the run's decision
 count and `CheckpointIdentity`; it is written to a sibling and renamed into

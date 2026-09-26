@@ -1149,7 +1149,9 @@ def with_parent_replay(
     is experience the weights never saw at that point. No saved buffer is the
     ordinary case of a run that has none, and it re-warms.
     """
-    dump = arguments.resume.parent.parent / REPLAY_DIRECTORY
+    # Resolved first: a bare `latest.pt` given from inside `checkpoints/` has
+    # no parent of its parent to find the run directory by.
+    dump = arguments.resume.resolve().parent.parent / REPLAY_DIRECTORY
     if not dump.exists():
         return state
     refusal = f"--resume {arguments.resume}: the parent's replay saved at {dump}"

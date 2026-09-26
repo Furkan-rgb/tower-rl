@@ -51,7 +51,7 @@ from tower_rl.learning.checkpoint import (
     write_checkpoint,
 )
 from tower_rl.learning.evaluator import EvaluationReport, to_record
-from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayDumpError
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.training import (
     CollectionWindow,
     TrainingProgressReport,
@@ -222,13 +222,18 @@ class TrainingReport:
                     )
                     return
             self.checkpoint(report)
+            print(
+                f"[{self.name}] saving replay ({len(self.replay)} sequences) to "
+                f"{self.replay_path}; this can take a minute or two",
+                flush=True,
+            )
             started = time.monotonic()
             try:
                 size = self.replay.save_to(
                     self.replay_path,
                     run={"decisions": report.decisions, "identity": asdict(self.identity)},
                 )
-            except (OSError, ValueError, ReplayDumpError) as failure:
+            except Exception as failure:  # noqa: BLE001 - best effort; see above
                 print(
                     f"[{self.name}] replay not saved ({failure}); a resume re-warms it",
                     flush=True,

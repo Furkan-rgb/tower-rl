@@ -220,8 +220,8 @@ What actually runs, as of run 2 (`docs/experiments.md` M2-E007; audit #53):
 - EMA target network: implemented, decay 0.995 per gradient step.
 - Prioritized replay: from the 2026-09-17 retune until 2026-09-26,
   `priority_alpha` ran at **0**, which made sampling uniform and importance
-  weights exactly 1 (D4, #53). Since 2026-09-26 (#85) it is always on at R2D2's α 0.9, β 0.6, η 0.9
-  and is no longer an option (`solution.md` 9.4).
+  weights exactly 1 (D4, #53). Since 2026-09-26 (#85) it is always on at
+  R2D2's α 0.9, β 0.6, η 0.9 and is no longer an option (`solution.md` 9.4).
 - Huber loss (δ=1): implemented.
 - Weight decay: implemented, at `1e-5`; this document does not specify a
   value, so the magnitude is not marked as a deviation.
@@ -1150,9 +1150,11 @@ scripted 6.429):
 5. **Adam ε.** 1e-8 → 1e-3 (R2D2's, matching the lr already used). Expected
    effect: cheap; targets the smallest gradients, which sit in the advantage
    heads (D5, #53).
-6. **PER.** `priority_alpha` 0 → 0.6 with the existing β anneal. Expected
-   effect: moderate; oversamples the high-|TD| terminal/death transitions
-   currently sampled at the background rate (D4, #53).
+6. **PER.** *Superseded by #85 (2026-09-26: PER on at R2D2's values, α 0.9,
+   β 0.6 fixed; `solution.md` 9.4).* `priority_alpha` 0 → 0.6 with the
+   existing β anneal. Expected effect: moderate; oversamples the high-|TD|
+   terminal/death transitions currently sampled at the background rate (D4,
+   #53).
 7. **History length.** k ∈ {1, 4} against 8 — the ablation section 3.1
    already names and that has never been run. Expected effect: settles
    whether the stacked window buys anything at this near-fully-observed

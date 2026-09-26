@@ -1413,7 +1413,7 @@ window is padded at the front up to a full window. Padding is flagged, and a
 flagged step is never a training target and never contributes a TD error to a
 priority.
 
-For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Configure and record prioritization alpha, importance-sampling beta, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
+For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Record prioritization alpha, importance-sampling beta, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
 
 Replay sampling is not an option (decided 2026-09-26, board #85). `stacked-dqn`
 always samples by R2D2's published values (Kapturowski et al. 2019, as DeepMind's
@@ -1429,8 +1429,10 @@ official loop does (9.4c). Three details are this project's choices, not
 R2D2's: a new sequence enters at the buffer's current maximum priority
 (Schaul et al. 2016, Algorithm 1; Ape-X's actors compute initial priorities
 instead), a priority never falls below 1e-6, and importance-sampling weights
-are divided by the largest weight in the batch, as Acme's R2D2 learner does, so
-a single near-zero-priority sequence cannot shrink every weight. A checkpoint
+are divided by the largest weight in the batch, as the R2D2 reference learners
+(Acme, SEED RL) do, rather than by the buffer-wide largest of the baselines /
+literal-Schaul convention the code used before, which was harmless at α 0; under
+it a single near-zero-priority sequence would shrink every weight. A checkpoint
 recorded under other replay exponents is refused on `--resume`, as one under
 another exploration is.
 

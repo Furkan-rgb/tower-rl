@@ -444,12 +444,6 @@ def test_a_numbered_checkpoint_is_written_at_every_crossing_of_the_cadence_or_a_
         settings={
             "--checkpoint-every-decisions": str(CHECKPOINT_CADENCE),
             "--selection-period-decisions": str(SELECTION_PERIOD),
-            # Evaluation is not under test here. At this seed the greedy policy
-            # can play an evaluation episode to the 20,000-decision cap, about
-            # twelve seconds each, which mid-run evaluation after every
-            # episode would repeat past the per-test timeout.
-            "--evaluate-every-episodes": "0",
-            "--evaluation-episodes": "1",
         },
     )
     arm, directory, written = numbered_checkpoints(report)

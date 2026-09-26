@@ -400,8 +400,9 @@ neither is part of a run:
    each actor crossed the budget in — past it by at most one episode per
    actor. Every decision-counted schedule reads the same counter: the replay
    ratio (`--gradient-steps-per-decision`), the exploration anneal
-   (`--epsilon-anneal-decisions`), the importance exponent (annealed over the
-   budget), the kill bars and the selection periods. The n-step anneal alone
+   (`--epsilon-anneal-decisions`), the kill bars and the selection periods.
+   The importance exponent is not scheduled: replay holds it fixed (β 0.6
+   under stacked-dqn, board #85). The n-step anneal alone
    counts gradient steps. Game time is still measured and reported, as a
    statistic. Actors collect concurrently into the one buffer;
    the `Learner` takes gradient steps against the configured replay ratio;

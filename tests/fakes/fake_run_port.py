@@ -362,7 +362,10 @@ class FakeRunPort:
         if expected_sequence != self.sequence:
             return FakeCommandResult("rejected", "stale_or_duplicate", state=self._observe())
         slot = self.slots[(family, slot_index)]
-        if not slot.unlocked or slot.maxed or slot.cost <= 0 or slot.cost > self.cash:
+        # Affordability is judged on the cash this double reports and masks
+        # with, rounded as `_observe` and `_affordable` round it: comparing the
+        # unrounded float refused purchases the mask had just offered.
+        if not slot.unlocked or slot.maxed or slot.cost <= 0 or slot.cost > round(self.cash, 3):
             return FakeCommandResult("rejected", "precondition_failed", state=self._observe())
         self.cash -= slot.cost
         slot.level += 1

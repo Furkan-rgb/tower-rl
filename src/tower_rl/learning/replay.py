@@ -231,8 +231,10 @@ class PrioritizedSequenceReplay:
         divided by the largest weight in the batch, so the rarest sequence drawn
         weighs exactly one and none weighs more (Schaul 2016, section 3.4).
 
-        The normaliser is the batch's, as in the R2D2 reference learner (Acme
-        `r2d2/learning.py`), not the whole buffer's. The buffer's largest weight
+        The normaliser is the batch's, as in the R2D2 reference learners (Acme
+        `r2d2/learning.py`, SEED RL), not the whole buffer's as in the baselines
+        convention this buffer used while it only ever ran at alpha 0, where the
+        choice made no difference. The buffer's largest weight
         belongs to its single lowest-priority sequence, so one sequence the
         learner fits almost exactly - down at `PRIORITY_FLOOR` - would shrink
         every weight of every batch by orders of magnitude, and with it the

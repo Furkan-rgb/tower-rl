@@ -491,7 +491,7 @@ def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
     """The keys are `experiment.wave_statistics.wave_observations` reads, exactly."""
     wave = WaveRecord(
         wave=2, completed=True, game_ms=30_000.0, decisions=9, advances=14,
-        health_fraction=0.8, cash_log=4.1,
+        health_fraction=0.8, cash_log=4.1, upgrades_bought=("attack:0", "defense:1"),
     )
 
     record = episode_record(0, _summary(waves=(wave,)))
@@ -505,8 +505,34 @@ def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
             "advances": 14,
             "health_fraction": 0.8,
             "cash_log": 4.1,
+            "upgrades_bought": ["attack:0", "defense:1"],
         }
     ]
+
+
+def test_the_episode_record_carries_what_the_episode_ended_holding() -> None:
+    """`final_upgrade_levels` and `final_cash`, beside the per-wave purchases.
+
+    This is what lets one episode's build be compared against another's, or
+    against a known strategy, without carrying every purchase decision.
+    """
+    summary = _summary(final_upgrade_levels={"attack:0": 3, "defense:1": 1}, final_cash=42.5)
+
+    record = episode_record(0, summary)
+
+    assert record["final_upgrade_levels"] == {"attack:0": 3, "defense:1": 1}
+    assert record["final_cash"] == 42.5
+
+
+def test_an_old_record_with_no_upgrade_fields_still_reads() -> None:
+    """A summary built without the new fields - an old record's shape - still
+    produces a record: the fields default to empty rather than being required."""
+    summary = _summary()
+
+    record = episode_record(0, summary)
+
+    assert record["final_upgrade_levels"] == {}
+    assert record["final_cash"] == 0.0
 
 
 def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:

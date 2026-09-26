@@ -163,6 +163,8 @@ EPISODE_RECORD_KEYS = {
     "recovered_transients",
     "starting_wave",
     "waves",
+    "final_upgrade_levels",
+    "final_cash",
 }
 
 

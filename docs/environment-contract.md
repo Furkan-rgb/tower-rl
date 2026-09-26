@@ -264,6 +264,17 @@ episode's own - and exist so behavioural equivalence between two arms can be
 judged per wave index rather than on a final wave, whose variance is dominated
 by how many waves an episode survived.
 
+Each wave row also carries `upgrades_bought`: the upgrades purchased while that
+wave was current, in purchase order, each named the way the action pipeline
+already names a row (`attack:3`) rather than by a new label. Purchase counts and
+cash spent say *how much* a wave cost; this says *what it went to*, which is
+what tells one episode's build apart from another's without carrying every
+purchase decision as its own record. The episode record separately carries
+`final_upgrade_levels` - the levels the episode ended holding, keyed the same
+way, omitting anything still at level 0 - and `final_cash`, the earned cash the
+final observation carried. Both are absent from any record written before these
+fields existed; a reader wanting them reads with a default.
+
 V1 reward is aligned to the objective of maximizing final Tier-1 wave. The
 environment may emit wave-progress and terminal survival reward according to the
 versioned reward configuration; any shaping must be separately identified in

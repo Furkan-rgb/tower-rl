@@ -48,6 +48,7 @@ evaluation set.
 | `M3-P004` | Does a graded survival-time reward (vs the wave reward's flat within-wave signal) pass the wall? | `--survival-time-reward` on top of `M3-P003`'s game-time discount | `M3-P003` 17.076, n=105 | 18.270, SD 3.213, n=100, P(≥20)=0.540 (54/100) | DO NOT ADOPT — health gate fails (value-fit correlation 0.79597 < 0.8, the same failure mode as `M3-P003`), despite the eval mean clearing its own bar by a wide margin | 2/100 episodes reached wave 21 — the first `M3`-series episodes to do so, not the first ever (M2 run 4 already reached wave 21 in 32/105); in-wave survival time at wave-20 death fell (16.785s vs control 18.747s), opposite the hypothesised direction | `ae3c3fa`/`610045e` (land), `5b76b42` (results correction) |
 | `M3-P005` | Does ε-z-greedy's temporally-extended exploration produce the sustained investment needed to pass the wall? | `--ez-greedy` on top of `M3-P004`'s flags (game-time discount + survival-time reward) | `M3-P004` 18.270, SD 3.213, n=100 | 16.346, SD 4.368, n=104, P(≥20)=0.481 (50/104) | ADOPT, per the pre-registered rule (healthy AND eval mean ≥15.97); "wall crossed" tier not met (P(≥22)=0.000 < 0.05) | P(≥21) rose to 0.154 (16/104) vs control 0.020, but not a new ceiling (M2 run 4 already reached wave 21 in 32/105); all 16 wave-21 deaths were incomplete; no consistent rise across exploring actors 2-4; long-option episodes (`longest_option`≥10) had a lower, not higher, mean final wave | `438a923` (land), `90def22` (pre-registration), `93ff866` (results) |
 | `M3-P006` | Does ~8× more training (1,000,000 decisions vs 120,712) with the adopted `M3-P005` recipe cross the wave 20-21 wall? | `--budget-decisions 1000000` (plus `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--replay-capacity 4096` explicit, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2`) on top of `M3-P005`'s exact recipe | `M3-P005` 16.346, SD 4.368, n=104 | 17.010, SD 4.163, n=104, P(≥20)=0.500 (52/104) | "More training did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule; run early-stopped at 752,118 decisions (period 15/20) | Eval mean indistinguishable from `M3-P005` (bootstrap +0.663 [-0.490,+1.808]); arm from period 10 (500,143 decisions), curve peaked there then declined; one training episode (near-greedy actor, index 1791/3650) completed wave 21 and reached wave 22 — the project's first, not reproduced elsewhere in training or in eval | `f6ad3d1` (pre-registration) |
+| `M3-P007` | At the same 1,000,000-decision budget and early-stop rule as `M3-P006`, does DreamerV3 (a model-based learner) cross the wave 20-21 wall that stacked-dqn did not? | `--backbone dreamerv3`, `--budget-decisions 1000000`, `--replay-capacity 40000` (scaled from `M3-P002`'s default 4096, which would FIFO at ≈13% of this budget), `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` — identical periods/early-stop to `M3-P006`; `train_ratio=512` (0.5 gradient steps/decision) per `DreamerConfig`'s default | `M3-P002` 12.676, SD 2.392, n=105; context: `M3-P006` 17.010, SD 4.163, n=104 | pending | pending | pending | pending |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -67,6 +68,234 @@ The move renames each entry as it stood, so a past run's directory keeps its
 name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
+
+## M3-P007: DreamerV3 at 1,000,000 decisions, `M3-P006`'s twin run (pre-registered, written before the run)
+
+**Date:** 2026-09-26. Board `#84`. Developer-approved (~34 h training wall
+plus eval; the developer explicitly approved this 1M-decision DreamerV3 run
+and its ~22 h+ learner-bound duration).
+
+**Question.** At the same 1,000,000-decision budget and the same
+early-stop rule as `M3-P006`, does DreamerV3 — a model-based learner —
+cross the wave 20-21 wall (`#75`) that stacked-dqn did not?
+
+**Control: `M3-P002`** (eval mean **12.676**, SD **2.392**, n=105,
+P(final ≥ 20) = **0.000**, `state/records/m3-p002/eval-arm`). Context:
+`M3-P006` (stacked-dqn at the same 1,000,000-decision budget) scored eval
+mean **17.010**, SD 4.163, n=104, P(final ≥ 20) = 0.500, P(final ≥ 22) =
+0.000, and its training data produced the project's only wave-22+ episode
+to date (episode 1791, not reproduced in evaluation or anywhere else).
+
+**Stated difference from `M3-P006`.** The two arms optimise different
+objectives: DreamerV3 learns from the wave reward with its per-decision
+discount (`docs/task.md` §1.1 default), while stacked-dqn (`M3-P005`'s
+recipe, which `M3-P006` used unchanged) uses the semi-MDP game-time
+discount, the survival-time reward, and ε-z-greedy exploration. This run
+therefore compares learner *systems* under one shared budget and protocol,
+not algorithms in isolation with everything else held equal.
+
+**Code facts confirmed before pre-registering** (read, not assumed):
+
+- **The Dreamer loop enforces its train ratio synchronously: collection
+  does wait for the learner.** `TrainingRun._learn` (
+  `src/tower_rl/learning/training.py:1217-1246`) is called after each
+  batch of collected decisions; it adds `decisions *
+  config.gradient_steps_per_decision` to an owed-steps counter and then
+  runs `while self._owed >= 1.0 and self._warm(): self._optimise(...)`
+  before returning. One counter is shared by the whole fleet ("every
+  actor's decisions credit the one counter, so four actors buy four times
+  the gradient steps in an hour and the configured replay ratio is what
+  the run actually trains at" — the method's own docstring). There is no
+  path for an actor to keep collecting decisions ahead of an unpaid
+  learner debt.
+- **`--replay-capacity`, `--early-stop-patience-periods`,
+  `--early-stop-min-improvement`, `--checkpoint-every-decisions`, and
+  `--selection-period-decisions` are honoured for the `dreamerv3` backbone,
+  not stacked-dqn-only.** `scripts/train.py:298`
+  (`capacity=arguments.replay_capacity`) and the argument definitions at
+  `scripts/train.py:637,783,793,804,814` apply unconditionally, regardless
+  of `--backbone`. None of these five names appears in
+  `STACKED_ONLY_FLAGS` (`scripts/train.py:540-553`, which lists
+  `history_length, n_step, n_step_final, n_step_anneal_steps, discount,
+  discount_per_game_second, survival_time_reward, ez_greedy,
+  learning_rate, target_ema_decay, epsilon_anneal_decisions`) or in
+  `dreamer_loop_settings()`'s fixed dict (`scripts/train.py:556-572`,
+  which fixes only `sequence_length, stacked_burn_in, batch_size,
+  gradient_steps_per_decision, warmup_sequences, exploration,
+  epsilon_start, epsilon_end, priority_alpha`).
+- **`train.py` refuses no flag in this run's command for `--backbone
+  dreamerv3`.** `settle_dreamer_settings` (`scripts/train.py:575-602`)
+  raises `SystemExit` only for a name in `STACKED_ONLY_FLAGS` or for a
+  fixed-loop-setting flag given a contradicting value; this run's command
+  contains none of the former and none of the latter. Confirmed by
+  dry-parsing the exact command below through `train.parse_arguments`,
+  no `SystemExit`.
+- **`DreamerConfig.train_ratio` defaults to 512** (`src/tower_rl/learning/
+  dreamer.py:104`, landed `3fc67ef`/`1c95210`, per paper Table 2), giving
+  `gradient_steps_per_decision = train_ratio / (batch_size * batch_length)
+  = 512 / (16 * 64) = 0.5` (`dreamer.py:143-145`), confirmed by the
+  dry-parse below (`gradient_steps_per_decision=0.5`). No flag sets this;
+  it is a `DreamerConfig` constant, unchanged from `M3-P006`'s pre-registration
+  note that this would need only a one-line config change plus a doc row —
+  that change already landed before this run.
+- **`run_actors.py` (via `run_episodes.py`'s `checkpoint_policy`,
+  `src/tower_rl/learning/checkpoint.py`) rebuilds the backbone from the
+  checkpoint's own metadata**, the same mechanism `M3-P002`'s evaluation
+  used — no Dreamer-specific eval-command change is needed; the command
+  form is copied verbatim from `M3-P002`'s evaluation section below.
+
+None of these facts contradicts the plan; nothing needed to stop before
+pre-registering.
+
+**Recipe.** `M3-P002`'s DreamerV3 command taken verbatim (`--backbone
+dreamerv3 --actors 7 --renderer host --frame-rate-hz 120
+--decision-cadence choice-points --upgrade-availability all
+--frame-game-ms 100 --seed 0`; official defaults as ported: `size12m`,
+batch 16×64, warm-up 25 windows, uniform replay, `--exploration uniform
+--epsilon-start 0 --epsilon-end 0`), changing ONLY:
+
+- `--budget-decisions 1000000` (the change under test, matching `M3-P006`).
+- `--checkpoint-every-decisions 25000`, `--selection-period-decisions
+  50000`, `--early-stop-patience-periods 5 --early-stop-min-improvement
+  0.2` — identical to `M3-P006`, for the same reasons (`scratchpad/
+  fundamentals-audit.md`, item P2 and the early-stop rationale in
+  `M3-P006`'s own pre-registration).
+- `--replay-capacity 40000`. The default 4,096 windows hold only
+  ≈131,000 decisions (`M3-P002`'s own run reached 121,413 decisions on a
+  buffer that had not yet filled); at a 1,000,000-decision budget the
+  default would run FIFO from ≈13% of the way through, discarding ≈87% of
+  the run's data, contrary to the ported official setting
+  (`replay.size 5e6`, which holds the whole run). `docs/solution.md` §9.4c
+  as updated in `1c95210` gives 40,000 windows as the capacity that holds
+  the full 1,000,000-decision budget with margin (`scratchpad/
+  fundamentals-audit.md`, item D4/(e): "≈40,000 windows (holds ≈1M
+  decisions at ≈4 windows per 148-decision episode + margin for short
+  early episodes)").
+- Kill bars: **unchanged from `M3-P002`, which had them** —
+  `--kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1`, the same values
+  used in every M3 run to date ("Kill, cap and arm — unchanged from
+  `M3-P001`" in `M3-P002`'s own pre-registration).
+
+**Verified against `main` @ `1af730c`**: `train.py --help` lists every
+flag above; dry-parsed the exact command through `train.parse_arguments`,
+no `SystemExit`, all fields resolved as intended: `backbone=dreamerv3`,
+`budget_decisions=1000000`, `checkpoint_every_decisions=25000`,
+`selection_period_decisions=50000`, `early_stop_patience_periods=5`,
+`early_stop_min_improvement=0.2`, `replay_capacity=40000`, `seed=0`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]`,
+`exploration=uniform`, `epsilon_start=0.0`, `epsilon_end=0.0`,
+`priority_alpha=0.0`, `gradient_steps_per_decision=0.5`, `batch_size=16`,
+`sequence_length=64`, `stacked_burn_in=0`, `warmup_sequences=25`,
+`frame_game_ms=100.0`, `upgrade_availability=all`.
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p007-dreamer-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --backbone dreamerv3 \
+      --actors 7 --renderer host --frame-rate-hz 120 --decision-cadence choice-points \
+      --upgrade-availability all --budget-decisions 1000000 \
+      --checkpoint-every-decisions 25000 --selection-period-decisions 50000 \
+      --early-stop-patience-periods 5 --early-stop-min-improvement 0.2 --seed 0 \
+      --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 --frame-game-ms 100 \
+      --replay-capacity 40000
+
+**Builds.** `render-interval-16` for training collection only
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed,
+`TOWER_BRIDGE_BUILD_DIR` unset).
+
+**Disk.** DreamerV3 checkpoints are ≈120 MB each (`M3-P002`); at
+25,000-decision cadence over up to 1,000,000 decisions, up to 40
+checkpoint files, ≈4.8 GB — no concern given 941 GB free measured for
+`M3-P002`.
+
+**Memory.** ≈19.5 KB per stored step (`scratchpad/fundamentals-audit.md`,
+measured for the replay implementation); a 40,000-window capacity is
+estimated at ≈20 GB of replay at capacity. Checked once, ≈1 h after
+launch, against `free -g`'s trajectory (see Launch below); if the
+projected replay memory would exhaust RAM, the stage is stopped cleanly.
+
+**Arm rule.** `docs/solution.md` §9.2b, unchanged: the best near-greedy
+selection-period mean, counting periods 2 and later, ties broken to the
+earlier period.
+
+**Evaluation.** The arm, on the default build,
+`--upgrade-availability all --frame-game-ms 100`, n=105 (7×15), the same
+command form `M3-P002`'s evaluation used:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p007 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p007/eval-arm
+
+The one-retry rule applies exactly as in `M3-P002`/`M3-P006`: an
+actor/instance bring-up failure permits one fresh retry after full
+cleanup and host verification; statistics use only the retry's records if
+a retry is needed, and partial episodes are never pooled. After one
+retry, stop and report with crash lines and logcat.
+
+**Reading (pre-registered).**
+
+- **"Wall crossed"** if eval P(final ≥ 22) ≥ 0.05.
+- Otherwise, **"DreamerV3 did not cross the wall under this recipe."**
+- Report descriptively against `M3-P006` (17.010, SD 4.163, n=104) and
+  `M3-P002` (12.676, SD 2.392, n=105): mean final wave with 95% CI, P(final
+  ≥ 20), P(final ≥ 21), P(final ≥ 22), max final wave, `bootstrap_difference`
+  against both, the arm's selection-period index, and the full
+  selection-period curve with its shape stated plainly (rising, plateau, or
+  peak-then-decline).
+- Context fact to record regardless of outcome: one `M3-P006` training
+  episode (index 1791) reached wave 22 and completed wave 21 — the only
+  wave-22+ episode recorded in this project so far, in training or
+  evaluation, under any backbone.
+
+**Health.** The budget completes or the early stop fires, no kill bar
+fires, and the losses are finite. Value-fit correlation, if computed for
+this backbone, is reported descriptively only, per `M3-P005`'s and
+`M3-P006`'s health-gate rationale.
+
+**Known confounds, stated in advance.**
+
+- One seed (0), as with `M3-P002` and `M3-P006`.
+- Replay is not saved in checkpoints; a resume re-warms it empty (see
+  Resume policy below) — for Dreamer this also discards the deterministic
+  and stochastic latent history the replay windows would otherwise carry
+  (`replay_context=0` means none is stored regardless, so a resume changes
+  nothing beyond restarting the buffer's contents).
+
+**Resume policy.** Identical to `M3-P006`: one continuous training stage.
+If it crashes, ONE resume from the latest checkpoint is allowed, after
+cleanup and host verification. Because the replay buffer restarts empty on
+a resume, the post-resume segment is labelled and reported separately from
+the pre-crash segment, and the resume itself is recorded as a deviation
+from the pre-registration. A second crash means stop and report, not a
+second resume.
+
+**Timebox.** 34 h training wall (developer-approved). Estimated expected
+duration: `M3-P002` measured **238.59 ms/learner step** under real 7-actor
+device load (`decision_time.fleet.buckets.learner_step.wall_seconds` /
+`optimisation_steps`); at `gradient_steps_per_decision=0.5` (train_ratio
+512), 1,000,000 decisions buy 500,000 optimisation steps, so
+500,000 × 0.23859 s ≈ **119,295 s ≈ 33.1 h** of learner time — inside the
+34 h wall, but with only ≈0.9 h of headroom if the measured step time
+holds. (The lead's earlier idle-host estimate in `scratchpad/
+fundamentals-audit.md`, "512 → ≈22 h", used the idle-host step time of
+≈158 ms rather than `M3-P002`'s real-device-load figure of 238.59 ms; the
+real-device figure is used here because it is what this stage will
+actually run under.)
+
+**Operations, unchanged from `M3-P006`/`M3-P002`.** Fleet bring-up, the
+one-retry rule for bring-up and for evaluation, partial-attempt handling,
+and the default-build evaluation protocol are as in those runs.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
 
 ## M3-P006: stacked-dqn with the adopted `M3-P005` recipe, 1,000,000 decisions (pre-registered, written before the run)
 

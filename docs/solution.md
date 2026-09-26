@@ -1582,7 +1582,7 @@ every loss is a mean over the steps its weight keeps.
 | reward/continue loss at the window's first step | trained. `_annotate_batch` forces `is_first` on a sampled window's first step but keeps its stored reward and `is_terminal` (`embodied/core/replay.py:283-286`) | **masked** | Under the shift, the reward and termination at that step are the previous stored step's, which lies outside the window. Masking is simpler than carrying one extra step. |
 | actor unimix | the paper's 1%; the code lists 0.01, but its categorical head never applies it | **1% uniform over the valid actions** | The paper is followed here. |
 | optimizer | LaProp, lr 4e-5, β1 0.9, **β2 0.999**, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from a rate of 0 | same | The paper's text says β2 0.99. The code is followed. |
-| precision | bfloat16 compute | **float32** | Simplest faithful port. The step time is measured below. |
+| precision | bfloat16 compute (configs.yaml `jax.compute_dtype: bfloat16`); float32 parameters and optimiser state (`embodied/jax/opt.py` 129, 149), norms computed in float32 (`nets.py` `Norm`, `x = f32(x)`), every output distribution and loss in float32 (`outs.py`: `f32(logits)`, `f32(mean)`; `opt.py` 37 asserts a float32 loss), return normaliser in float32 (`utils.py` 45) | same, on CUDA: `torch.autocast` bfloat16 over the loss; every head's output is taken to float32 before a distribution or loss; `_RMSNorm` computes in float32; the recurrent deterministic state is carried in float32 (the official carry is bfloat16). On the CPU (tests), float32. The manifest records it as `dreamer_compute_dtype`. | 2026-09-26: matches the official code and, with compilation, is what makes the learner fast enough for a 1M-decision run (below). Until then the port computed in float32. |
 | RSSM, KL, heads, twohot, return normaliser, imagination horizon 15, λ 0.95, horizon 333, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | none |
 | prioritised replay signal | not used | `td_errors` are \|replay-value return − value\| over the replay-value steps, and are unused at α 0 | The protocol requires one. |
 
@@ -1593,10 +1593,26 @@ Recorded minor differences, not in the table:
 - Every loss is a mean over the steps its weight keeps, not over all B·T steps.
 - The actor's entropy is taken over the valid actions only.
 
-The deviations, the rows in bold, and these differences are the whole list. Measured step time at
-production shapes on an idle 4090: 141 ms per update, plus 16.7 ms to collate.
-At 0.25 per decision that is ≈40 ms per decision, ≈1.3 h over 120,712
-decisions (`docs/experiments.md`, "DreamerV3 learner step time").
+The deviations, the rows in bold, and these differences are the whole list.
+
+**Step time.** At batch 16 the learner was bound by launching kernels, not by
+arithmetic: an update launched about 14,800 kernels, and the GPU was busy for
+less than half of it. So on CUDA the two recurrent loops of `learn` - the
+posterior over the window (`_observe`) and the 15-step imagination
+(`_imagine_rollout`) - are compiled whole with `torch.compile` and replayed as
+CUDA graphs, and LaProp updates every parameter with `_foreach` kernels.
+Compiling changes no sample: every draw is made outside the compiled code,
+from torch's stream. Functions are compiled, not modules, so checkpoints keep
+their keys. The first update of a process compiles for about 4 minutes; with
+inductor's on-disk cache warm it takes about 10 s.
+
+Measured 2026-09-26 at production shapes on an idle 4090, the median of 30
+updates: 101 ms per update before (141 ms when first measured), 29.5 ms after
+(bfloat16 alone: 114 ms; compilation alone, in float32: 41 ms). Collating a
+batch took 16.7 ms when first measured and is unchanged. At 0.5 updates per
+decision that is ≈23 ms per decision, ≈6.4 h of learner time over 1M
+decisions on an idle host; fleet load inflated the old step time ≈1.7×
+(`docs/experiments.md`, "DreamerV3 learner step time").
 
 ### 9.4d Discounting by game time (stacked-dqn, behind a flag)
 

@@ -208,6 +208,56 @@ def test_a_reloaded_backbone_resumes_exactly() -> None:
     ]
 
 
+def test_bfloat16_compute_changes_rounding_not_the_update() -> None:
+    """The first update's loss within bfloat16 tolerance of float32's; state stays float32.
+
+    On the CPU the learner defaults to float32 and no compilation; mixed
+    precision is forced here to exercise the bfloat16 path (the CPU's autocast).
+    """
+    reference = _backbone()
+    assert reference.mixed_precision is False and reference.compiled is False
+    mixed = DreamerBackbone(config=SMALL, mixed_precision=True)
+    mixed.load_state_dict(reference.state_dict())
+    batch = _batch(padding=2)
+    expected = _learn(reference, batch, seed=0)
+    assert _learn(mixed, batch, seed=0) == pytest.approx(expected, rel=1e-2)
+    for name in ("world_model", "actor", "critic", "slow_critic"):
+        for parameter in getattr(mixed, name).parameters():
+            assert parameter.dtype == torch.float32, name
+    for state in mixed.optimizer.state.values():
+        assert state["nu"].dtype == state["mu"].dtype == torch.float32
+    assert all(math.isfinite(_learn(mixed, batch, seed=seed)) for seed in (1, 2))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_the_cuda_learner_is_compiled_bfloat16_and_saves_a_plain_checkpoint() -> None:
+    """On CUDA both are on by default; the update and the checkpoint are float32's."""
+    cuda = torch.device("cuda")
+    reference = DreamerBackbone(config=SMALL, device=cuda, mixed_precision=False, compiled=False)
+    optimised = DreamerBackbone(config=SMALL, device=cuda)
+    assert optimised.mixed_precision is True and optimised.compiled is True
+    optimised.load_state_dict(reference.state_dict())
+    batch = collate(
+        (_sequence(padding=2), _sequence(done=False)), (1.0, 1.0), device=cuda
+    )
+    expected = _learn(reference, batch, seed=0)
+    assert _learn(optimised, batch, seed=0) == pytest.approx(expected, rel=1e-2)
+    assert all(math.isfinite(_learn(optimised, batch, seed=seed)) for seed in (1, 2))
+
+    # Compiled functions, not compiled modules: no `_orig_mod.` in any key, and
+    # the checkpoint loads into a CPU backbone, which acts from it.
+    state = optimised.state_dict()
+    assert state["world_model"].keys() == reference.state_dict()["world_model"].keys()
+    buffer = io.BytesIO()
+    torch.save(state, buffer)
+    buffer.seek(0)
+    evaluating = _backbone()
+    evaluating.load_state_dict(torch.load(buffer, map_location="cpu", weights_only=False))
+    assert evaluating.model_version == 3
+    action, _ = evaluating.act(_features(), evaluating.initial_state(), epsilon=0.0)
+    assert action in (0, 1, 2)
+
+
 def _actions(backbone: DreamerBackbone, count: int = 40) -> list[int]:
     state = backbone.initial_state()
     chosen = []

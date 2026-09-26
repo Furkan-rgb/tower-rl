@@ -372,6 +372,8 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     resolved = arm["resolved_config"]
     assert (resolved["sequence_length"], resolved["burn_in"], resolved["stride"]) == (6, 0, 3)
     assert resolved["dreamer_deter"] == 16 and resolved["dreamer_train_ratio"] == 3.0
+    # On the CPU the learner computes in float32; on CUDA, in bfloat16.
+    assert resolved["dreamer_compute_dtype"] == "float32"
     for stacked in ("history_length", "n_step", "discount", "learning_rate", "network_hidden"):
         assert resolved[stacked] is None, stacked
 

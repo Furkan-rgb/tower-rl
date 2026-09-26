@@ -6,6 +6,10 @@ from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, en
 from tower_rl.environment.run_actions import RUN_ACTIONS, WAIT, action_index, upgrade_action
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.replay import (
+    PRIORITY_FLOOR,
+    R2D2_IMPORTANCE_SAMPLING_EXPONENT,
+    R2D2_PRIORITY_EXPONENT,
+    R2D2_PRIORITY_MIX,
     PrioritizedSequenceReplay,
     ReplayRejected,
     ReplaySequence,
@@ -158,7 +162,7 @@ def test_importance_weights_are_normalized_and_favour_rare_samples() -> None:
         replay.add(_sequence(episode_id=f"episode-{index}"))
     replay.update_priorities((0, 1), ((0.01,), (10.0,)))
 
-    indices, _, weights = replay.sample(50, beta=1.0)
+    indices, _, weights = replay.sample(50)
 
     assert all(0.0 < weight <= 1.0 for weight in weights)
     rare = [weight for index, weight in zip(indices, weights, strict=True) if index == 0]
@@ -168,13 +172,124 @@ def test_importance_weights_are_normalized_and_favour_rare_samples() -> None:
 
 
 def test_priority_mixes_maximum_and_mean_error() -> None:
-    replay = PrioritizedSequenceReplay(capacity=2, priority_exponent=0.9, seed=1)
+    replay = PrioritizedSequenceReplay(capacity=2, seed=1)
     replay.add(_sequence())
 
-    replay.update_priorities((0,), ((10.0, 0.0, 0.0, 0.0),))
+    replay.update_priorities((0,), ((10.0, 0.0, -0.0, 0.0),))
 
     expected = 0.9 * 10.0 + 0.1 * 2.5
     assert replay._priorities[0] == pytest.approx(expected)
+    # Absolute errors: a negative TD error is as surprising as a positive one.
+    replay.update_priorities((0,), ((-10.0, 0.0, 0.0, 0.0),))
+    assert replay._priorities[0] == pytest.approx(expected)
+
+
+def test_the_published_r2d2_constants_are_what_stacked_dqn_samples_by() -> None:
+    """Kapturowski et al. 2019 (R2D2), as Acme's `r2d2/config.py` states them.
+
+    alpha 0.9 (`priority_exponent`), beta 0.6 (`importance_sampling_exponent`),
+    eta 0.9 (`max_priority_weight`). A buffer built without arguments is the
+    one stacked-dqn trains from, so these are its values.
+    """
+    assert (R2D2_PRIORITY_EXPONENT, R2D2_IMPORTANCE_SAMPLING_EXPONENT) == (0.9, 0.6)
+    assert R2D2_PRIORITY_MIX == 0.9
+    replay = PrioritizedSequenceReplay(capacity=4)
+    assert (replay.alpha, replay.beta) == (0.9, 0.6)
+
+
+def test_uniform_replay_samples_evenly_and_weighs_every_sequence_as_one() -> None:
+    """DreamerV3's replay: priorities are kept, but never read."""
+    replay = PrioritizedSequenceReplay.uniform(4, seed=5)
+    assert (replay.alpha, replay.beta) == (0.0, 0.0)
+    for index in range(4):
+        replay.add(_sequence(episode_id=f"episode-{index}"))
+    replay.update_priorities((0, 1, 2, 3), ((0.001,), (0.001,), (0.001,), (1000.0,)))
+
+    indices, _, weights = replay.sample(4000)
+
+    assert set(weights) == {1.0}
+    for index in range(4):
+        assert indices.count(index) / 4000 == pytest.approx(0.25, abs=0.03)
+
+
+def test_sampling_is_proportional_to_priority_to_the_alpha() -> None:
+    """P(i) = p_i ** 0.9 / sum_k p_k ** 0.9, drawn with replacement."""
+    replay = PrioritizedSequenceReplay(capacity=3, seed=11)
+    for index in range(3):
+        replay.add(_sequence(episode_id=f"episode-{index}"))
+    # A single error gives priority exactly |error|: max and mean agree.
+    replay.update_priorities((0, 1, 2), ((1.0,), (4.0,), (10.0,)))
+
+    draws = 30_000
+    indices, _, _ = replay.sample(draws)
+
+    powered = [priority**0.9 for priority in (1.0, 4.0, 10.0)]
+    for index, weight in enumerate(powered):
+        expected = weight / sum(powered)
+        assert indices.count(index) / draws == pytest.approx(expected, abs=0.01)
+
+
+def test_importance_weights_are_the_published_formula_normalised_by_the_batch() -> None:
+    """w_i = (N P(i)) ** -beta over the batch's largest, so the rarest weighs one."""
+    replay = PrioritizedSequenceReplay(capacity=3, seed=2)
+    for index in range(3):
+        replay.add(_sequence(episode_id=f"episode-{index}"))
+    replay.update_priorities((0, 1, 2), ((1.0,), (4.0,), (10.0,)))
+
+    indices, _, weights = replay.sample(64)
+
+    powered = [priority**0.9 for priority in (1.0, 4.0, 10.0)]
+    probabilities = [weight / sum(powered) for weight in powered]
+    raw = [(3 * probabilities[index]) ** -0.6 for index in indices]
+    expected = [weight / max(raw) for weight in raw]
+    assert weights == pytest.approx(expected)
+    assert max(weights) == pytest.approx(1.0)
+
+
+def test_one_sequence_at_the_floor_does_not_shrink_every_other_weight() -> None:
+    """The normaliser is the batch's: a buffer-wide one would be the floor's."""
+    replay = PrioritizedSequenceReplay(capacity=64, seed=4)
+    for index in range(64):
+        replay.add(_sequence(episode_id=f"episode-{index}"))
+    replay.update_priorities(
+        tuple(range(64)), ((0.0,),) + tuple((1.0,) for _ in range(63))
+    )
+    assert replay._priorities[0] == PRIORITY_FLOOR
+
+    indices, _, weights = replay.sample(8)
+
+    assert 0 not in indices, "the floor is sampled almost never"
+    assert weights == (1.0,) * 8, "equal priorities weigh equally, at one"
+
+
+def test_learner_feedback_reaches_the_sequence_it_was_sampled_from_in_a_full_buffer() -> None:
+    """Sample, update, add: the update lands before eviction shifts anything.
+
+    End to end at capacity, as a production buffer spends almost all of its
+    life: every add evicts the oldest sequence, and the priority learned for
+    a sampled sequence must stay with that sequence while it lives.
+    """
+    replay = PrioritizedSequenceReplay(capacity=4, seed=9)
+    for index in range(4):
+        replay.add(_sequence(episode_id=f"episode-{index}"))
+
+    for step in range(4, 12):
+        indices, sequences, _ = replay.sample(2)
+        replay.update_priorities(indices, tuple((float(step),) for _ in indices))
+        for index, sequence in zip(indices, sequences, strict=True):
+            assert replay._items[index] is sequence
+            assert replay._priorities[index] == pytest.approx(float(step))
+        # The next add evicts the oldest and shifts every index down by one;
+        # a priority travels with its sequence rather than with its position.
+        kept = {id(item): priority for item, priority in zip(
+            replay._items, replay._priorities, strict=True
+        )}
+        replay.add(_sequence(episode_id=f"episode-{step}"))
+        assert len(replay) == 4 and replay.stats.evicted == step - 3
+        for item, priority in list(zip(replay._items, replay._priorities, strict=True))[:-1]:
+            assert kept[id(item)] == priority
+        # A new sequence enters at the current maximum.
+        assert replay._priorities[-1] == max(replay._priorities)
 
 
 def test_updates_for_indices_the_buffer_never_held_are_dropped() -> None:

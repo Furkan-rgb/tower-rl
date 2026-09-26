@@ -137,11 +137,12 @@ class TrainingProgress:
     The counters are what a resume reads: the budget position
     (`environment_decisions`), and the game time, episodes and optimisation
     steps beside it. `epsilon` and `importance_beta` are not restored from here
-    and must not be - both are functions of `environment_decisions`, and a run
-    derives them again, so a stored value would silently outrank a changed
-    anneal horizon or a changed budget. They are recorded because a checkpoint
-    should say what the run was actually acting and sampling at when it was
-    written.
+    and must not be: epsilon is a function of `environment_decisions`, which a
+    run derives again, so a stored value would silently outrank a changed
+    anneal horizon or a changed budget; beta is replay's fixed exponent (it was
+    annealed over the budget before board #85). They are recorded because a
+    checkpoint should say what the run was actually acting and sampling at when
+    it was written.
     """
 
     optimisation_steps: int = 0

@@ -303,9 +303,20 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
                 "advances": wave.advances,
                 "health_fraction": wave.health_fraction,
                 "cash_log": wave.cash_log,
+                # What was bought while this wave was current, in purchase
+                # order, named the way `PurchaseView.action` already names a
+                # row - `attack:3`. Absent from any record written before this
+                # field existed; a reader that wants it reads `.get` with `()`.
+                "upgrades_bought": list(wave.upgrades_bought),
             }
             for wave in summary.waves
         ],
+        # What the episode ended holding: upgrade levels above 0, and cash.
+        # Together with `waves[*].upgrades_bought` this is what tells a run
+        # apart from another that reached the same final wave by a different
+        # build, without carrying every purchase decision as its own record.
+        "final_upgrade_levels": dict(summary.final_upgrade_levels),
+        "final_cash": summary.final_cash,
     }
 
 

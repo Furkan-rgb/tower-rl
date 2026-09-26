@@ -126,7 +126,11 @@ from tower_rl.learning.exploration import (  # noqa: E402
     ExplorationSchedule,
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
-from tower_rl.learning.replay import PrioritizedSequenceReplay  # noqa: E402
+from tower_rl.learning.replay import (  # noqa: E402
+    R2D2_IMPORTANCE_SAMPLING_EXPONENT,
+    R2D2_PRIORITY_EXPONENT,
+    PrioritizedSequenceReplay,
+)
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
@@ -294,10 +298,12 @@ def build_arm(
         # they are one `state_dict`, and a resume that took only the weights
         # would restart Adam's moments silently mid-run.
         backbone.load_state_dict(dict(resume.backbone_state))
-    replay = PrioritizedSequenceReplay(
-        capacity=arguments.replay_capacity,
-        alpha=arguments.priority_alpha,
-        seed=arguments.seed,
+    # Each backbone samples as its own recipe does, and neither is an option:
+    # DreamerV3 uniformly (solution.md 9.4c), stacked-dqn by R2D2's priorities.
+    replay = (
+        PrioritizedSequenceReplay.uniform(arguments.replay_capacity, seed=arguments.seed)
+        if arguments.backbone == DREAMERV3
+        else PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
     )
     config = TrainingConfig(
         budget_decisions=arguments.budget_decisions,
@@ -348,6 +354,7 @@ def build_arm(
         config=config,
         learner=learner,
         network=network,
+        replay=replay,
         cadence=instances[0].environment.cadence,
         decision_cadence=decision_cadence,
         upgrade_availability=upgrade_availability,
@@ -569,8 +576,6 @@ def dreamer_loop_settings() -> dict[str, object]:
         "exploration": "uniform",
         "epsilon_start": 0.0,
         "epsilon_end": 0.0,
-        # Uniform replay, as the official loop samples.
-        "priority_alpha": 0.0,
     }
 
 
@@ -753,15 +758,6 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=10_000,
         help="decisions to anneal exploration over; held at the end value afterwards",
-    )
-    parser.add_argument(
-        "--priority-alpha",
-        type=float,
-        default=0.0,
-        help=(
-            "prioritized replay exponent; 0 samples uniformly and makes every "
-            "importance-sampling weight exactly one, so the loss is readable"
-        ),
     )
     parser.add_argument(
         "--collection-window-episodes",
@@ -1079,6 +1075,24 @@ def resume_point(
             f"{state.resolved_config.get('ez_greedy', False)}; this run asks for "
             f"{arguments.ez_greedy}, a different exploration"
         )
+    if arguments.backbone == BACKBONE and state.resolved_config:
+        # Likewise the replay the learner drew from: weights trained on uniform
+        # samples and continued on prioritized ones are neither arm. Every
+        # stacked-dqn file before board #85 recorded priority_alpha 0.0 (or,
+        # before the first retune, nothing: it sampled at 0.6) and no
+        # importance_beta, so each of them is refused here. A file that
+        # recorded no settings at all has nothing to compare, as above.
+        recorded_replay = (
+            state.resolved_config.get("priority_alpha"),
+            state.resolved_config.get("importance_beta"),
+        )
+        if recorded_replay != (R2D2_PRIORITY_EXPONENT, R2D2_IMPORTANCE_SAMPLING_EXPONENT):
+            raise SystemExit(
+                f"--resume {arguments.resume} was sampled with priority exponent "
+                f"{recorded_replay[0]} and importance exponent {recorded_replay[1]}; "
+                f"stacked-dqn now samples at R2D2's {R2D2_PRIORITY_EXPONENT} and "
+                f"{R2D2_IMPORTANCE_SAMPLING_EXPONENT}, a different replay"
+            )
     if state.decisions >= arguments.budget_decisions:
         raise SystemExit(
             f"--resume {arguments.resume} is already at {state.decisions} "

@@ -456,6 +456,54 @@ def test_episode_summary_counts_purchases_and_invalid_transitions() -> None:
     assert not summary.valid, "only a game over counts as a valid episode"
 
 
+def test_a_waves_upgrades_bought_names_what_was_purchased_while_it_was_current() -> None:
+    """A wave's rows say how much was spent; this says what it went to.
+
+    Without this, the one training episode that reached wave 22 cannot be told
+    apart from an ordinary one by anything more than its cost.
+    """
+    environment, _ = _environment()
+    state = environment.reset()
+    first = next(row for row in state.rows if row.action == upgrade_action("attack", 0))
+
+    environment.step(first.action)
+    environment.step(upgrade_action("utility", 0))  # masked: bought nothing
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.waves[0].upgrades_bought == ("attack:0",)
+
+
+def test_the_episode_summary_carries_what_it_ended_holding() -> None:
+    """`final_upgrade_levels` and `final_cash` describe the build at the end.
+
+    Only upgrades above level 0 are kept, so a summary of little activity stays
+    small.
+    """
+    environment, _ = _environment()
+    state = environment.reset()
+    target = next(row for row in state.rows if row.action == upgrade_action("attack", 0))
+
+    transition = environment.step(target.action)
+    assert transition.next_state is not None
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.final_upgrade_levels == {"attack:0": target.level + 1}
+    assert summary.final_cash == pytest.approx(math.expm1(transition.next_state.cash_log))
+
+
+def test_an_episode_with_nothing_bought_reports_no_upgrade_levels() -> None:
+    environment, _ = _environment()
+    environment.reset()
+
+    environment.step(WAIT)
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    assert summary.final_upgrade_levels == {}
+    assert summary.waves[0].upgrades_bought == ()
+
+
 def test_the_summary_records_the_wave_the_episode_actually_started_at() -> None:
     """A fresh run starts at wave 1; anything higher continued a leftover run."""
     environment, _ = _environment()

@@ -1,8 +1,8 @@
 """The training loop that ties actor, replay, learner and checkpointing together.
 
 Progress has one unit: decisions, cumulative across the fleet.  The budget, the
-checkpoint cadence, the selection periods, the exploration anneal, the
-importance-sampling beta and the kill bars are all positions on that one axis.
+checkpoint cadence, the selection periods, the exploration anneal and the kill
+bars are all positions on that one axis.
 Learning happens per decision - the replay ratio is gradient steps per
 decision - so a budget in decisions fixes the amount of learning, where a
 budget in game time did not: the game time a policy spends per decision moves
@@ -271,9 +271,6 @@ class TrainingConfig:
     #: extra device time, and 100 episodes put the standard error near 0.2
     #: waves where a 5-episode evaluation point sits near 0.9.
     collection_window_episodes: int = 100
-    #: Importance-sampling correction anneals the other way, as is conventional.
-    beta_start: float = 0.4
-    beta_end: float = 1.0
     #: Zero disables the periodic hook entirely; a positive value is a period in
     #: episodes. Evaluation is exploration-free and never writes to replay.
     evaluate_every_episodes: int = 0
@@ -338,11 +335,6 @@ class TrainingConfig:
             raise ValueError("a selection period must be positive")
         if self.early_stop_patience_periods < 0:
             raise ValueError("early-stopping patience cannot be negative")
-
-    def beta(self, decisions: int) -> float:
-        """The importance exponent at this point of the budget: `beta_end` at its end."""
-        fraction = min(1.0, decisions / self.budget_decisions)
-        return self.beta_start + (self.beta_end - self.beta_start) * fraction
 
 
 @dataclass(frozen=True)
@@ -670,7 +662,7 @@ class TrainingProgressReport:
     #: is read from this; evaluation is the headline, not the curve.
     collected: list[CollectedEpisode] = field(default_factory=list)
     #: The optimised quantity, which carries the importance-sampling weights in
-    #: it and therefore moves with the beta schedule whether or not the learner
+    #: it and therefore moves with the priorities whether or not the learner
     #: improves. Named for that, and never reported without the unweighted TD
     #: error beside it.
     recent_weighted_losses: list[float] = field(default_factory=list)
@@ -682,9 +674,9 @@ class TrainingProgressReport:
     recent_value_fits: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
-    #: Where the exploration schedule had reached and the importance-sampling
-    #: exponent the run last sampled at. Published here by the run that draws
-    #: them from its schedules, so a checkpoint or a report carries the value
+    #: Where the exploration schedule had reached, and the importance-sampling
+    #: exponent replay samples at (fixed; `PrioritizedSequenceReplay.beta`).
+    #: Published here by the run, so a checkpoint or a report carries the value
     #: the run actually used rather than re-evaluating a schedule of its own.
     #: Under a ladder the actors are at rates of their own and this is
     #: `ExplorationSchedule.reported_epsilon` - informational, and never what a
@@ -739,9 +731,10 @@ class TrainingProgressReport:
         Reported beside the outcome because section 9.7 asks for it: a loss that
         stops moving while episodes keep arriving is a learner problem, and it is
         invisible in the final-wave distribution alone. It is weighted, so it
-        falls as beta anneals even when nothing is learned; that is what made the
-        first run's apparent progress an artefact, and why it is never reported
-        without `mean_recent_unweighted_absolute_td_error`.
+        moves with the importance-sampling weights even when nothing is learned;
+        the first run's beta anneal made its apparent progress an artefact, and
+        that is why it is never reported without
+        `mean_recent_unweighted_absolute_td_error`.
         """
         return _mean(self.recent_weighted_losses)
 
@@ -901,7 +894,7 @@ class TrainingRun:
         self.report.epsilon = self.config.exploration.reported_epsilon(
             self.report.decisions
         )
-        self.report.importance_beta = self.config.beta(self.report.decisions)
+        self.report.importance_beta = self.replay.beta
         self.acting = {}
         for index, actor in enumerate(self.actors):
             actor_id = actor.config.actor_id
@@ -1224,7 +1217,7 @@ class TrainingRun:
         report = self.report
         self._owed += decisions * self.config.gradient_steps_per_decision
         while self._owed >= 1.0 and self._warm():
-            metrics = self._optimise(report.decisions)
+            metrics = self._optimise()
             report.optimisation_steps += 1
             report.recent_weighted_losses.append(metrics.weighted_loss)
             report.recent_unweighted_td_errors.append(
@@ -1369,17 +1362,13 @@ class TrainingRun:
         if plateau.plateaued(self.config.early_stop_patience_periods):
             plateau.stopped_at_period = plateau.periods_closed
 
-    def _optimise(self, decisions: int) -> LearnMetrics:
+    def _optimise(self) -> LearnMetrics:
         # The buffer's lock is held across sampling, learning and the priority
         # update together: an actor adding to a full buffer in between would
         # evict a sequence and shift every index this batch was sampled at,
         # which replay refuses outright rather than applying to the wrong one.
-        beta = self.config.beta(decisions)
-        self.report.importance_beta = beta
         with self.replay.lock:
-            indices, sequences, weights = self.replay.sample(
-                self.config.batch_size, beta=beta
-            )
+            indices, sequences, weights = self.replay.sample(self.config.batch_size)
             # Built where the parameters are: a CPU batch handed to a CUDA model
             # fails on the first optimisation step, which is the worst place to
             # discover it after an hour of collection.

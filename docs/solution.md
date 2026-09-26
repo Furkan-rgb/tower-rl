@@ -954,8 +954,7 @@ budget buys a stronger policy fewer updates. The budget is accounted at episode
 granularity — an episode in progress is played to its classified end — so a run
 stops past its budget by at most one episode per actor. Every schedule counted
 in decisions reads the same counter: epsilon, the replay ratio, the
-importance-sampling beta (annealed over the decision budget), the kill bars
-and the selection periods. The n-step anneal alone counts gradient steps.
+kill bars and the selection periods. The n-step anneal alone counts gradient steps.
 Game time and wall time are still measured and reported, as
 statistics. `TrainingRun.advance(decisions)` can spend the budget in blocks
 and carries every schedule across them, so a run advanced in ten blocks is the
@@ -1393,7 +1392,7 @@ Use configurable defaults close to established R2D2 practice:
   `stacked-dqn` may instead discount by game time (section 9.4d);
 - Double Q-learning;
 - dueling head;
-- prioritized replay;
+- prioritized sequence replay at R2D2's published values (below), always on;
 - Huber TD loss;
 - gradient norm clipping;
 - target network;
@@ -1414,7 +1413,28 @@ window is padded at the front up to a full window. Padding is flagged, and a
 flagged step is never a training target and never contributes a TD error to a
 priority.
 
-For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Configure and record prioritization alpha, importance-sampling beta schedule, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
+For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Record prioritization alpha, importance-sampling beta, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
+
+Replay sampling is not an option (decided 2026-09-26, board #85). `stacked-dqn`
+always samples by R2D2's published values (Kapturowski et al. 2019, as DeepMind's
+Acme reference `agents/jax/r2d2/config.py` states them): priority exponent
+α = 0.9, importance-sampling exponent β = 0.6, held fixed rather than annealed,
+and priority mix η = 0.9, so a sequence's priority is
+η·max|δ| + (1−η)·mean|δ| over its real learning steps. R2D2 rather than Ape-X
+(α 0.6, β 0.4) or Schaul et al. 2016 (β annealed to 1) because replay stores
+sequences. The constants live in `learning/replay.py`; `--priority-alpha`,
+which defaulted to 0 and made every run from the 2026-09-17 retune until this
+decision sample uniformly, is gone, and DreamerV3 samples uniformly as its
+official loop does (9.4c). Three details are this project's choices, not
+R2D2's: a new sequence enters at the buffer's current maximum priority
+(Schaul et al. 2016, Algorithm 1; Ape-X's actors compute initial priorities
+instead), a priority never falls below 1e-6, and importance-sampling weights
+are divided by the largest weight in the batch, as the R2D2 reference learners
+(Acme, SEED RL) do, rather than by the buffer-wide largest of the baselines /
+literal-Schaul convention the code used before, which was harmless at α 0; under
+it a single near-zero-priority sequence would shrink every weight. A checkpoint
+recorded under other replay exponents is refused on `--resume`, as one under
+another exploration is.
 
 What matters about the replay ratio is transitions replayed per transition
 generated, not gradient steps per decision: a gradient step here replays a whole
@@ -1450,8 +1470,8 @@ evaluated is the pre-registration's decision (section 9.2b).
 
 Every point carries the learner diagnostics that separate a broken learner from
 a slow one: the weighted loss and the unweighted mean absolute TD error under
-names that cannot be confused (the weighted one falls as beta anneals whether or
-not anything is learned), the gradient norm, the correlation between V(s_t) and
+names that cannot be confused (the weighted one moves with the
+importance-sampling weights whether or not anything is learned), the gradient norm, the correlation between V(s_t) and
 the realised discounted return over steps whose episode ended inside the stored
 sequence, and what the collecting policy did - WAIT fraction and purchases per
 episode against the random baseline's 18.7.
@@ -1534,8 +1554,9 @@ disagree unless a row says otherwise. Its network-free parts are in
 checkpoint format and the evaluator are the ones every backbone uses.
 
 Every DreamerV3 value lives in `DreamerConfig`. The loop settings it fixes —
-sequence length, burn-in, batch, replay ratio, warm-up, exploration and
-priority exponent — are set by `dreamer_loop_settings` in `scripts/train.py`.
+sequence length, burn-in, batch, replay ratio, warm-up and exploration — are
+set by `dreamer_loop_settings` in `scripts/train.py`. Its uniform replay is not
+a flag at all: `build_arm` builds `PrioritizedSequenceReplay.uniform` for it.
 A flag that repeats one of them is accepted. A flag that contradicts one is
 refused, and so is a flag only stacked-dqn reads. The manifest records every
 `DreamerConfig` value as `dreamer_<field>` and records the stacked-dqn learner
@@ -1575,7 +1596,7 @@ every loss is a mean over the steps its weight keeps.
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`) | same; stride 32, burn-in 0 | none |
 | train ratio | 512, Table 2's setting for the 500K-1M-step, vector-observation, 12M-model budget (Proprio Control 500K and Visual Control 1M rows; dv3.txt lines 869-870), matching the code's `crafter` preset (configs.yaml: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`, its only 1.1M-step single-environment preset) | 512, which is train_ratio/(batch_size·batch_length) = 512/(16·64) = 0.5 gradient steps per decision (`dreamer.py:143`). No flag overrides it. | 2026-09-25: this budget and model size is what the paper's own Table 2 specifies, and it is the code's own preset for a matching 1.1M-step, single-environment run. (Supersedes the earlier claim that the `atari100k` preset's 256 was "the published preset for the matching low-data, one-environment regime"; `atari100k` is a 400K-step, 100 discrete-action benchmark, not this one.) |
 | warm-up | trains once replay holds B·T steps (`embodied/run/train.py:71`), about 1,088 agent steps once the official replay's chunking is counted | 25 windows, about 1,008 decisions at stride 32 | A window count is what `TrainingConfig` expresses. 25 windows is the nearest to the official figure. |
-| replay | uniform, 5e6 steps, plus an online queue | uniform (`--priority-alpha` 0), 4,096 windows by default, **no online queue** | 2026-09-25: the default 4,096 windows hold about 131k decisions (roughly 4 windows per 148-decision episode); it no longer holds a full 1M-decision run. 1M-decision runs pass `--replay-capacity 40000` so the buffer still holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows is about 20 GB. An online queue would need a replay change. |
+| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 4,096 windows by default, **no online queue** | 2026-09-25: the default 4,096 windows hold about 131k decisions (roughly 4 windows per 148-decision episode); it no longer holds a full 1M-decision run. 1M-decision runs pass `--replay-capacity 40000` so the buffer still holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows is about 20 GB. An online queue would need a replay change. |
 | replay context | 1, with stored latents | **0**, the official code's own zero-context path | Replay stores no latents, and writing them back into replay would change replay. |
 | action mask | none | **the mask is an observation key.** It is encoded and decoded (binary cross-entropy). Acting samples under the true mask. Imagination samples under the decoded mask (logit > 0, WAIT always valid). | Invalid actions must never be chosen. In imagination the true mask is unknown, so the model's own belief of it is used. |
 | terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
@@ -1947,7 +1968,7 @@ M2 arm rule.
 
 `--resume <checkpoint.pt>` continues a run's budget in a second sitting (`#32`):
 the weights, the optimizer moments and the counters come back, and epsilon,
-beta, the selection periods and the checkpoint cadence are derived from them,
+the selection periods and the checkpoint cadence are derived from them,
 so the segment carries on where a run that never stopped would have been.
 Replay is not persisted and re-warms under the loaded policy.
 `--budget-decisions` stays the whole run's total; a checkpoint whose identity
@@ -2138,7 +2159,8 @@ a finite sentinel; dueling centring over valid actions only; n-step
 discounting with no off-by-one and per-element `alive` handling; truncation
 treated conservatively (`terminated` is GAME_OVER-only); EMA direction and
 cadence; importance-sampling weights equal to `w_i / max_j w_j` with β
-annealed 0.4→1.0; the R2D2 priority mixture with η=0.9; and stacked window
+annealed 0.4→1.0 (since board #85, β is fixed at 0.6 and the maximum is the
+batch's; see 9.4); the R2D2 priority mixture with η=0.9; and stacked window
 ordering consistent between `act` and `learn`.
 
 The review found four defects, all now fixed (commits `3c51af6` and

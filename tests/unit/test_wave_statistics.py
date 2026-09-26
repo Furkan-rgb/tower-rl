@@ -216,6 +216,7 @@ def test_every_rendered_and_recorded_result_carries_its_blind_spot() -> None:
 #: drop the analysis back onto the `uncaptured` path.
 WAVE_RECORD_KEYS = {
     "wave", "completed", "game_ms", "decisions", "advances", "health_fraction", "cash_log",
+    "upgrades_bought",
 }
 
 

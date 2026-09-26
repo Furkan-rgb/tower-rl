@@ -23,7 +23,7 @@ from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import PrioritizedSequenceReplay
+from tower_rl.learning.replay import R2D2_IMPORTANCE_SAMPLING_EXPONENT, PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 from tower_rl.learning.training import (
     STALE_OR_DUPLICATE,
@@ -156,23 +156,11 @@ def test_a_horizon_of_no_decisions_is_refused() -> None:
         )
 
 
-def test_importance_sampling_correction_anneals_the_other_way() -> None:
-    """Over the decision budget: beta_end where the budget is spent."""
-    config = TrainingConfig(
-        budget_decisions=100, exploration=SCHEDULE, beta_start=0.4, beta_end=1.0
-    )
-
-    assert config.beta(0) == pytest.approx(0.4)
-    assert config.beta(50) == pytest.approx(0.7)
-    assert config.beta(100) == pytest.approx(1.0)
-    assert config.beta(150) == pytest.approx(1.0)
-
-
 def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> None:
     """The schedules are the run's, so the values it drew are on its report.
 
     Whatever records a run - a checkpoint, a curve point - needs the epsilon the
-    fleet actually acted at and the beta the learner actually sampled at. Read
+    fleet actually acted at and the beta replay actually sampled at. Read
     from the report, so nothing outside `learning` has to evaluate a schedule of
     its own and arrive at a value the run never used.
     """
@@ -185,7 +173,7 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
 
     # Before a decision is spent: exactly where the schedules start.
     assert training.report.epsilon == pytest.approx(1.0)
-    assert training.report.importance_beta == pytest.approx(training.config.beta_start)
+    assert training.report.importance_beta == training.replay.beta
 
     report = training.run()
     annealed = functools.partial(training.config.exploration.epsilon_for, 0)
@@ -197,8 +185,8 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
     assert report.epsilon == pytest.approx(
         annealed(report.decisions - report.collected[-1].summary.decisions)
     )
-    assert training.config.beta_start <= report.importance_beta <= training.config.beta_end
-    assert report.importance_beta > training.config.beta_start
+    # Fixed rather than scheduled: R2D2's exponent from the first step to the last.
+    assert report.importance_beta == R2D2_IMPORTANCE_SAMPLING_EXPONENT
 
 
 def test_no_optimisation_happens_before_the_buffer_is_warm() -> None:

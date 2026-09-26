@@ -17,9 +17,30 @@ from dataclasses import dataclass, field
 from tower_rl.environment.features import StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
 
-DEFAULT_PRIORITY_EXPONENT = 0.9
-"""R2D2 mixes the maximum and mean absolute TD error of a sequence, so one
-surprising step matters without a single outlier dominating the whole sequence."""
+#: R2D2's prioritized sequence replay (Kapturowski et al. 2019, ICLR; the values
+#: of DeepMind's Acme reference `r2d2/config.py`: `priority_exponent`,
+#: `importance_sampling_exponent`, `max_priority_weight`). R2D2 rather than
+#: Ape-X or Schaul 2016 because what is stored here is a sequence, not a
+#: transition. Fixed, not options: stacked-dqn always samples by them, and
+#: DreamerV3 always samples uniformly (`uniform`), so neither can be silently
+#: run without the replay its recipe names. Decided 2026-09-26 (board #85).
+#:
+#: Priority exponent alpha: a sequence is sampled with probability p ** alpha
+#: over the buffer's total.
+R2D2_PRIORITY_EXPONENT = 0.9
+#: Importance-sampling exponent beta, held fixed as R2D2 and Ape-X hold it
+#: rather than annealed to 1 as Schaul 2016 does: an anneal over the budget
+#: moves the weighted loss on its own, which is what made the first run's loss
+#: unreadable.
+R2D2_IMPORTANCE_SAMPLING_EXPONENT = 0.6
+#: Priority mix eta: a sequence's priority is eta * max |TD| + (1 - eta) *
+#: mean |TD| over its steps, so one surprising step matters without a single
+#: outlier dominating the whole sequence.
+R2D2_PRIORITY_MIX = 0.9
+#: The smallest priority a sequence can hold, so one the learner currently
+#: fits exactly is still sampled now and then (the role of Schaul 2016's
+#: epsilon in p = |delta| + epsilon; here a floor, a project choice).
+PRIORITY_FLOOR = 1e-6
 
 
 class ReplayRejected(ValueError):
@@ -120,10 +141,13 @@ class PrioritizedSequenceReplay:
     """
 
     capacity: int
-    priority_exponent: float = DEFAULT_PRIORITY_EXPONENT
-    #: Sampling exponent. 0 is uniform; 1 is fully proportional to priority.
-    alpha: float = 0.6
     seed: int | None = None
+    #: Sampling exponent. 0 is uniform; 1 is fully proportional to priority.
+    alpha: float = R2D2_PRIORITY_EXPONENT
+    #: Importance-sampling exponent: how much of the bias prioritization
+    #: introduces the weights correct. Irrelevant under uniform sampling, where
+    #: every weight is exactly one.
+    beta: float = R2D2_IMPORTANCE_SAMPLING_EXPONENT
 
     #: Held by every caller that adds, samples or updates priorities, because
     #: several actors write into one buffer while the learner reads it. It is
@@ -148,7 +172,19 @@ class PrioritizedSequenceReplay:
             raise ValueError("replay capacity must be positive")
         if not 0.0 <= self.alpha <= 1.0:
             raise ValueError("alpha must be within [0, 1]")
+        if not 0.0 <= self.beta <= 1.0:
+            raise ValueError("beta must be within [0, 1]")
         self._random = random.Random(self.seed)
+
+    @classmethod
+    def uniform(cls, capacity: int, *, seed: int | None = None) -> PrioritizedSequenceReplay:
+        """A buffer that samples every live sequence equally: DreamerV3's replay.
+
+        The official DreamerV3 loop samples uniformly (docs/solution.md 9.4c).
+        Priorities are still kept and updated, but at alpha 0 they are never
+        read, and every importance-sampling weight is exactly one.
+        """
+        return cls(capacity=capacity, seed=seed, alpha=0.0, beta=0.0)
 
     def __len__(self) -> int:
         return len(self._items)
@@ -180,37 +216,46 @@ class PrioritizedSequenceReplay:
         # large early error would otherwise pin insertion priority forever and
         # sampling would degenerate towards recency. The scan is over live
         # sequences only and happens once per stored sequence, which is far
-        # rarer than the identical scan `sample` already does every batch.
+        # rarer than the pass over every priority `sample` makes every batch.
         self._priorities.append(max(self._priorities, default=1.0))
         self.stats.added += 1
         return True
 
     def sample(
-        self, batch_size: int, *, beta: float = 0.4
+        self, batch_size: int
     ) -> tuple[tuple[int, ...], tuple[ReplaySequence, ...], tuple[float, ...]]:
-        """Sample sequences by priority with importance-sampling weights."""
+        """Sample sequences by priority with importance-sampling weights.
+
+        Sequence i is drawn with probability P(i) = p_i ** alpha / sum_k p_k ** alpha,
+        with replacement. Its importance-sampling weight is (N * P(i)) ** -beta
+        divided by the largest weight in the batch, so the rarest sequence drawn
+        weighs exactly one and none weighs more (Schaul 2016, section 3.4).
+
+        The normaliser is the batch's, as in the R2D2 reference learners (Acme
+        `r2d2/learning.py`, SEED RL), not the whole buffer's as in the baselines
+        convention this buffer used while it only ever ran at alpha 0, where the
+        choice made no difference. The buffer's largest weight
+        belongs to its single lowest-priority sequence, so one sequence the
+        learner fits almost exactly - down at `PRIORITY_FLOOR` - would shrink
+        every weight of every batch by orders of magnitude, and with it the
+        gradient that clipping and the optimizer see.
+        """
         if batch_size < 1:
             raise ValueError("batch size must be positive")
         if not self._items:
             raise ReplayRejected("replay is empty")
-        if not 0.0 <= beta <= 1.0:
-            raise ValueError("beta must be within [0, 1]")
 
         weights = [priority**self.alpha for priority in self._priorities]
-        total = sum(weights)
         indices = tuple(
             self._random.choices(range(len(self._items)), weights=weights, k=batch_size)
         )
-        smallest = min(weights) / total
-        # Importance sampling corrects the bias that prioritization introduces,
-        # normalized by the largest correction so weights never exceed one.
-        corrections = []
-        for index in indices:
-            probability = weights[index] / total
-            corrections.append((smallest / probability) ** beta)
+        # (N * P(i)) ** -beta over (N * P(rarest)) ** -beta: N and the total
+        # cancel, leaving the ratio of the two sampling weights.
+        rarest = min(weights[index] for index in indices)
+        corrections = tuple((rarest / weights[index]) ** self.beta for index in indices)
         self.stats.sampled += batch_size
         self._evictions_at_sample = self.stats.evicted
-        return indices, tuple(self._items[index] for index in indices), tuple(corrections)
+        return indices, tuple(self._items[index] for index in indices), corrections
 
     def update_priorities(
         self, indices: tuple[int, ...], td_errors: tuple[tuple[float, ...], ...]
@@ -240,12 +285,10 @@ class PrioritizedSequenceReplay:
                 # sequence, is refused above rather than tolerated here.
                 continue
             magnitudes = [abs(error) for error in errors]
-            priority = (
-                self.priority_exponent * max(magnitudes)
-                + (1.0 - self.priority_exponent) * (sum(magnitudes) / len(magnitudes))
+            priority = R2D2_PRIORITY_MIX * max(magnitudes) + (1.0 - R2D2_PRIORITY_MIX) * (
+                sum(magnitudes) / len(magnitudes)
             )
-            priority = max(priority, 1e-6)
-            self._priorities[index] = priority
+            self._priorities[index] = max(priority, PRIORITY_FLOOR)
 
     def snapshot(self) -> dict[str, object]:
         """Metadata a checkpoint needs to state what replay it resumed with."""

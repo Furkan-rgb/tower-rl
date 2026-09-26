@@ -364,7 +364,9 @@ def build_arm(
         parent_checkpoint=None if resume is None else resume.parent_checkpoint,
     )
     if isinstance(backbone, DreamerBackbone):
-        resolved = dreamer_resolved_config(resolved, backbone.config)
+        resolved = dreamer_resolved_config(
+            resolved, backbone.config, mixed_precision=bool(backbone.mixed_precision)
+        )
     if resume is not None and resume.tracking_run_id is not None:
         # The same run, not a second one beside it: the curve of a run trained
         # in two sittings is one series, on the one decision axis both

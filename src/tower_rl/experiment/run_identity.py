@@ -270,19 +270,23 @@ def resolved_config(
 
 
 def dreamer_resolved_config(
-    resolved: dict[str, object], config: DreamerConfig
+    resolved: dict[str, object], config: DreamerConfig, *, mixed_precision: bool
 ) -> dict[str, object]:
     """A DreamerV3 run's snapshot: `resolved_config`'s, with DreamerV3's own settings.
 
     The stacked-dqn learner and network settings do not describe this run and
     are recorded as None. Every `DreamerConfig` value is recorded under
     `dreamer_<field>`, which is what `checkpoint_policy` rebuilds the policy from.
+    `dreamer_compute_dtype` is the learner's compute precision (bfloat16 on
+    CUDA, `DreamerBackbone.mixed_precision`); it is no `DreamerConfig` field,
+    so the rebuild never reads it.
     """
     stacked = {item.name for item in fields(StackedDqnConfig)} - {"seed"}
     stacked |= {f"network_{item.name}" for item in fields(NetworkConfig)}
     return {
         **{key: None if key in stacked else value for key, value in resolved.items()},
         **{f"dreamer_{key}": value for key, value in asdict(config).items()},
+        "dreamer_compute_dtype": "bfloat16" if mixed_precision else "float32",
     }
 
 

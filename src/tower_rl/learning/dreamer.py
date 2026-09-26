@@ -3,8 +3,11 @@
 A world model - an RSSM over the encoded observation - learned from replayed
 sequences, and an actor and critic learned in the world model's imagination.
 It is a port of the official code (danijar/dreamerv3 at e3f02248: `agent.py`,
-`rssm.py`, `embodied/jax/*`) at its `size12m` preset, in PyTorch and in
-float32. Every value, and every place this differs from the official code, is
+`rssm.py`, `embodied/jax/*`) at its `size12m` preset, in PyTorch. On CUDA it
+learns in bfloat16 compute, the official `compute_dtype`, with float32
+parameters, optimiser state, distributions and losses, and its recurrent steps
+compiled; on the CPU, in float32 and eager. Every value, and every place this
+differs from the official code, is
 in `docs/solution.md` 9.4c; the differences are the ones this project's replay,
 action mask and acting path require.
 
@@ -167,11 +170,18 @@ def _linear(inputs: int, outputs: int, *, outscale: float = 1.0) -> nn.Linear:
     return layer
 
 
+class _RMSNorm(nn.RMSNorm):
+    """`nets.Norm('rms')`: computed in float32 and returned in the input's dtype."""
+
+    def forward(self, x: Tensor) -> Tensor:
+        return super().forward(x.float()).to(x.dtype)
+
+
 def _mlp(inputs: int, units: int, layers: int) -> nn.Sequential:
     """`nets.MLP`: linear, RMS norm, SiLU, per layer."""
     modules: list[nn.Module] = []
     for _ in range(layers):
-        modules += [_linear(inputs, units), nn.RMSNorm(units, eps=1e-4), nn.SiLU()]
+        modules += [_linear(inputs, units), _RMSNorm(units, eps=1e-4), nn.SiLU()]
         inputs = units
     return nn.Sequential(*modules)
 
@@ -192,7 +202,9 @@ class _BlockLinear(nn.Module):
         _initialise(self.weight, inputs, 1.0)
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.einsum("...gi,gio->...go", x, self.weight) + self.bias
+        # The bias in the product's dtype, as `nets.BlockLinear` casts it.
+        product = torch.einsum("...gi,gio->...go", x, self.weight)
+        return product + self.bias.to(product.dtype)
 
 
 class _Dynamics(nn.Module):
@@ -210,7 +222,7 @@ class _Dynamics(nn.Module):
             [_BlockLinear(group * c.blocks, c.deter, c.blocks) for _ in range(c.dynamics_layers)]
         )
         self.hidden_norms = nn.ModuleList(
-            [nn.RMSNorm(c.deter, eps=1e-4) for _ in range(c.dynamics_layers)]
+            [_RMSNorm(c.deter, eps=1e-4) for _ in range(c.dynamics_layers)]
         )
         self.gru = _BlockLinear(c.deter, 3 * c.deter, c.blocks)
         self.prior = _head(c.deter, c.hidden, c.prior_layers, c.stoch * c.classes, 1.0)
@@ -235,12 +247,13 @@ class _Dynamics(nn.Module):
         update = torch.sigmoid(update.flatten(-2) - 1.0)
         return update * candidate + (1.0 - update) * deter
 
+    # Logits leave in float32, as `outs.Categorical` takes them.
     def prior_logits(self, deter: Tensor) -> Tensor:
-        logits: Tensor = self.prior(deter)
+        logits: Tensor = self.prior(deter).float()
         return logits.reshape(*logits.shape[:-1], self.config.stoch, self.config.classes)
 
     def posterior_logits(self, deter: Tensor, tokens: Tensor) -> Tensor:
-        logits: Tensor = self.posterior(torch.cat((deter, tokens), -1))
+        logits: Tensor = self.posterior(torch.cat((deter, tokens), -1)).float()
         return logits.reshape(*logits.shape[:-1], self.config.stoch, self.config.classes)
 
 
@@ -285,6 +298,13 @@ class DreamerBackbone:
 
     config: DreamerConfig = field(default_factory=DreamerConfig)
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
+    #: Learn in bfloat16 compute, the official `compute_dtype`: parameters,
+    #: optimiser state, distributions, losses and the return normaliser stay
+    #: float32. None: on CUDA only.
+    mixed_precision: bool | None = None
+    #: Compile the two recurrent loops of `learn` and replay them as CUDA
+    #: graphs (`_compiled_observe`, `_compiled_imagine_rollout`). None: on CUDA only.
+    compiled: bool | None = None
 
     world_model: WorldModel = field(init=False)
     actor: nn.Sequential = field(init=False)
@@ -300,6 +320,11 @@ class DreamerBackbone:
 
     def __post_init__(self) -> None:
         c = self.config
+        on_cuda = self.device.type == "cuda"
+        if self.mixed_precision is None:
+            self.mixed_precision = on_cuda
+        if self.compiled is None:
+            self.compiled = on_cuda
         if c.seed is not None:
             torch.manual_seed(c.seed)
         feature = c.deter + c.stoch * c.classes
@@ -401,158 +426,13 @@ class DreamerBackbone:
                 f"DreamerV3 trains on {c.batch_size} x {c.batch_length} batches, "
                 f"not {batch.batch_size} x {length}"
             )
-        world = self.world_model
-        dynamics = world.dynamics
-        size, device = batch.batch_size, self.device
-        real = ~batch.padding
-        ends = batch.dones[:, -1] & real[:, -1]
-
-        # Dreamer's layout, one step longer than the window: step t carries the
-        # action, reward and termination of the transition into t, and step
-        # `length` is the phantom after the window's last step.
-        zero = torch.zeros(size, 1, device=device)
-        previous = torch.cat(
-            (
-                torch.zeros(size, 1, ACTIONS, device=device),
-                functional.one_hot(batch.actions, ACTIONS).to(torch.float32),
-            ),
-            1,
-        )
-        reward_in = torch.cat((zero, batch.rewards), 1)
-        terminal_in = torch.cat((zero, batch.dones.to(torch.float32)), 1)
-        # is_first: the window's first step, and the first real step after padding.
-        reset = torch.cat(
-            (torch.ones(size, 1, dtype=torch.bool, device=device), batch.padding[:, :-1]), 1
-        )
-
-        # -- world model --
-        tokens = world.encode(batch.scalars, batch.rows, batch.mask)
-        deter = torch.zeros(size, c.deter, device=device)
-        stoch = torch.zeros(size, c.stoch * c.classes, device=device)
-        uniform = torch.rand(length + 1, size, c.stoch, device=device)
-        deters, stochs, posteriors = [], [], []
-        for step in range(length):
-            keep = (~reset[:, step]).to(torch.float32)[:, None]
-            deter = dynamics.core(deter * keep, stoch * keep, previous[:, step] * keep)
-            logits = dynamics.posterior_logits(deter, tokens[:, step])
-            posteriors.append(unimix_probs(logits, c.latent_unimix))
-            stoch = self._latent(logits, uniform[step])
-            deters.append(deter)
-            stochs.append(stoch)
-        # The phantom: the prior's prediction of the state the last action led to.
-        deter = dynamics.core(deter, stoch, previous[:, length])
-        deters.append(deter)
-        stochs.append(self._latent(dynamics.prior_logits(deter), uniform[length]))
-        deter_all = torch.stack(deters, 1)
-        stoch_all = torch.stack(stochs, 1)
-        feature = torch.cat((deter_all, stoch_all), -1)
-
-        posterior = torch.stack(posteriors, 1)
-        prior = unimix_probs(dynamics.prior_logits(deter_all[:, :length]), c.latent_unimix)
-        dynamics_loss = categorical_kl(posterior.detach(), prior).sum(-1).clamp(min=c.free_nats)
-        representation_loss = (
-            categorical_kl(posterior, prior.detach()).sum(-1).clamp(min=c.free_nats)
-        )
-        decoded = world.decoder(feature[:, :length])
-        scalars_loss = (
-            (world.decode_scalars(decoded) - symlog(batch.scalars)).square().sum(-1)
-        )
-        rows_loss = (world.decode_rows(decoded) - symlog(batch.rows.flatten(-2))).square().sum(-1)
-        mask_loss = functional.binary_cross_entropy_with_logits(
-            world.decode_mask(decoded), batch.mask.to(torch.float32), reduction="none"
-        ).sum(-1)
-        reward_loss = twohot_loss(world.reward(feature), reward_in, self._bins)
-        continue_target = (1.0 - terminal_in) * c.discount
-        continue_loss = functional.binary_cross_entropy_with_logits(
-            world.cont(feature).squeeze(-1), continue_target, reduction="none"
-        )
-        observed = real.to(torch.float32)
-        # Reward and continue: not at the window's first step, whose stored
-        # reward and termination belong to a step outside the window; at the
-        # phantom only where it is a terminal. An episode's first step after
-        # padding is trained on the filler's reward 0 and no termination, which
-        # is the official `is_first` target.
-        transition = torch.cat(
-            (zero, observed[:, 1:], ends.to(torch.float32)[:, None]), 1
-        )
-
-        # -- imagination, from every real posterior state --
-        starts = size * length
-        starting = real.reshape(starts).to(torch.float32)
-        with torch.no_grad():
-            imagined, actions, masks = self._imagine(
-                deter_all[:, :length].reshape(starts, -1),
-                stoch_all[:, :length].reshape(starts, -1),
-            )
-            imagined_reward = twohot_mean(world.reward(imagined), self._bins)
-            imagined_continue = torch.sigmoid(world.cont(imagined)).squeeze(-1)
-            slow_value = twohot_mean(self.slow_critic(imagined), self._bins)
-        log_probs = masked_policy_log_probs(
-            self.actor(imagined[:, :-1]), masks, c.actor_unimix
-        )
-        value_logits = self.critic(imagined)
-        value = twohot_mean(value_logits, self._bins).detach()
-        # contdisc: the continue head already carries the discount.
-        returns = lambda_return(
-            torch.zeros_like(imagined_continue),
-            1.0 - imagined_continue,
-            imagined_reward,
-            value,
-            1.0,
-            c.return_lambda,
-        )
-        self.return_normaliser.update(returns[real.reshape(starts)])
-        _, scale = self.return_normaliser.stats()
-        advantage = (returns - value[:, :-1]) / scale
-        weight = torch.cumprod(imagined_continue, 1)[:, :-1]
-        chosen = log_probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
-        entropy = masked_entropy(log_probs, masks)
-        policy_loss = (weight * -(chosen * advantage + c.entropy_scale * entropy)).mean(1)
-        value_loss = (
-            weight
-            * (
-                twohot_loss(value_logits[:, :-1], returns, self._bins)
-                + c.slow_regulariser
-                * twohot_loss(value_logits[:, :-1], slow_value[:, :-1], self._bins)
-            )
-        ).mean(1)
-
-        # -- the critic on replayed states, bootstrapped by imagined returns --
-        replay_logits = self.critic(feature)
-        replay_value = twohot_mean(replay_logits, self._bins).detach()
-        with torch.no_grad():
-            replay_slow = twohot_mean(self.slow_critic(feature), self._bins)
-        boot = torch.cat((returns[:, 0].reshape(size, length), replay_value[:, length:]), 1)
-        # The phantom is always last; a window that does not end its episode is
-        # cut after its own last step instead, which then has no target.
-        last = torch.zeros(size, length + 1, dtype=torch.bool, device=device)
-        last[:, length] = True
-        last[:, length - 1] = ~ends
-        replay_returns = lambda_return(
-            last, terminal_in, reward_in, boot, c.discount, c.return_lambda
-        )
-        replay_weight = (real & ~last[:, :length]).to(torch.float32)
-        replay_loss = twohot_loss(
-            replay_logits[:, :length], replay_returns, self._bins
-        ) + c.slow_regulariser * twohot_loss(
-            replay_logits[:, :length], replay_slow[:, :length], self._bins
-        )
-
-        loss = (
-            c.dynamics_scale * _mean(dynamics_loss, observed)
-            + c.representation_scale * _mean(representation_loss, observed)
-            + c.reconstruction_scale
-            * (
-                _mean(scalars_loss, observed)
-                + _mean(rows_loss, observed)
-                + _mean(mask_loss, observed)
-            )
-            + c.reward_scale * _mean(reward_loss, transition)
-            + c.continue_scale * _mean(continue_loss, transition)
-            + c.policy_scale * _mean(policy_loss, starting)
-            + c.value_scale * _mean(value_loss, starting)
-            + c.replay_value_scale * _mean(replay_loss, replay_weight)
-        )
+        if self.compiled:
+            # A new iteration for the CUDA graphs: the last update's graph
+            # outputs are no longer read.
+            torch.compiler.cudagraph_mark_step_begin()  # type: ignore[no-untyped-call]
+        with torch.autocast(self.device.type, torch.bfloat16, enabled=bool(self.mixed_precision)):
+            loss, replay_returns, replay_value, replay_weight = self._loss(batch)
+        observed = (~batch.padding).to(torch.float32)
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()  # type: ignore[no-untyped-call]
@@ -591,6 +471,187 @@ class DreamerBackbone:
             value_fit_correlation=fit,
         )
 
+    def _loss(self, batch: SequenceBatch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """The whole loss of one update: Dreamer's layout, the world model, imagination, critics.
+
+        Every head's output is taken to float32 before it enters a
+        distribution or a loss, as the official `outs.py` does, so under
+        bfloat16 compute only the networks' own layers run in bfloat16.
+        Returns the loss and what `learn` reports from: the replay-value
+        returns, values and weights.
+        """
+        c = self.config
+        length = c.batch_length
+        world = self.world_model
+        dynamics = world.dynamics
+        size, device = batch.batch_size, self.device
+        real = ~batch.padding
+        ends = batch.dones[:, -1] & real[:, -1]
+
+        # Dreamer's layout, one step longer than the window: step t carries the
+        # action, reward and termination of the transition into t, and step
+        # `length` is the phantom after the window's last step.
+        zero = torch.zeros(size, 1, device=device)
+        previous = torch.cat(
+            (
+                torch.zeros(size, 1, ACTIONS, device=device),
+                functional.one_hot(batch.actions, ACTIONS).to(torch.float32),
+            ),
+            1,
+        )
+        reward_in = torch.cat((zero, batch.rewards), 1)
+        terminal_in = torch.cat((zero, batch.dones.to(torch.float32)), 1)
+        # is_first: the window's first step, and the first real step after padding.
+        reset = torch.cat(
+            (torch.ones(size, 1, dtype=torch.bool, device=device), batch.padding[:, :-1]), 1
+        )
+
+        # -- world model --
+        tokens = world.encode(batch.scalars, batch.rows, batch.mask)
+        uniform = torch.rand(length + 1, size, c.stoch, device=device)
+        observe = _compiled_observe if self.compiled else DreamerBackbone._observe
+        deter_all, stoch_all, posterior = observe(self, tokens, previous, reset, uniform)
+        feature = torch.cat((deter_all, stoch_all), -1)
+
+        prior = unimix_probs(dynamics.prior_logits(deter_all[:, :length]), c.latent_unimix)
+        dynamics_loss = categorical_kl(posterior.detach(), prior).sum(-1).clamp(min=c.free_nats)
+        representation_loss = (
+            categorical_kl(posterior, prior.detach()).sum(-1).clamp(min=c.free_nats)
+        )
+        decoded = world.decoder(feature[:, :length])
+        scalars_loss = (
+            (world.decode_scalars(decoded).float() - symlog(batch.scalars)).square().sum(-1)
+        )
+        rows_loss = (
+            (world.decode_rows(decoded).float() - symlog(batch.rows.flatten(-2))).square().sum(-1)
+        )
+        mask_loss = functional.binary_cross_entropy_with_logits(
+            world.decode_mask(decoded).float(), batch.mask.to(torch.float32), reduction="none"
+        ).sum(-1)
+        reward_loss = twohot_loss(world.reward(feature).float(), reward_in, self._bins)
+        continue_target = (1.0 - terminal_in) * c.discount
+        continue_loss = functional.binary_cross_entropy_with_logits(
+            world.cont(feature).float().squeeze(-1), continue_target, reduction="none"
+        )
+        observed = real.to(torch.float32)
+        # Reward and continue: not at the window's first step, whose stored
+        # reward and termination belong to a step outside the window; at the
+        # phantom only where it is a terminal. An episode's first step after
+        # padding is trained on the filler's reward 0 and no termination, which
+        # is the official `is_first` target.
+        transition = torch.cat(
+            (zero, observed[:, 1:], ends.to(torch.float32)[:, None]), 1
+        )
+
+        # -- imagination, from every real posterior state --
+        starts = size * length
+        starting = real.reshape(starts).to(torch.float32)
+        with torch.no_grad():
+            imagined, actions, masks = self._imagine(
+                deter_all[:, :length].reshape(starts, -1),
+                stoch_all[:, :length].reshape(starts, -1),
+            )
+            imagined_reward = twohot_mean(world.reward(imagined).float(), self._bins)
+            imagined_continue = torch.sigmoid(world.cont(imagined).float()).squeeze(-1)
+            slow_value = twohot_mean(self.slow_critic(imagined).float(), self._bins)
+        log_probs = masked_policy_log_probs(
+            self.actor(imagined[:, :-1]).float(), masks, c.actor_unimix
+        )
+        value_logits = self.critic(imagined).float()
+        value = twohot_mean(value_logits, self._bins).detach()
+        # contdisc: the continue head already carries the discount.
+        returns = lambda_return(
+            torch.zeros_like(imagined_continue),
+            1.0 - imagined_continue,
+            imagined_reward,
+            value,
+            1.0,
+            c.return_lambda,
+        )
+        self.return_normaliser.update(returns[real.reshape(starts)])
+        _, scale = self.return_normaliser.stats()
+        advantage = (returns - value[:, :-1]) / scale
+        weight = torch.cumprod(imagined_continue, 1)[:, :-1]
+        chosen = log_probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+        entropy = masked_entropy(log_probs, masks)
+        policy_loss = (weight * -(chosen * advantage + c.entropy_scale * entropy)).mean(1)
+        value_loss = (
+            weight
+            * (
+                twohot_loss(value_logits[:, :-1], returns, self._bins)
+                + c.slow_regulariser
+                * twohot_loss(value_logits[:, :-1], slow_value[:, :-1], self._bins)
+            )
+        ).mean(1)
+
+        # -- the critic on replayed states, bootstrapped by imagined returns --
+        replay_logits = self.critic(feature).float()
+        replay_value = twohot_mean(replay_logits, self._bins).detach()
+        with torch.no_grad():
+            replay_slow = twohot_mean(self.slow_critic(feature).float(), self._bins)
+        boot = torch.cat((returns[:, 0].reshape(size, length), replay_value[:, length:]), 1)
+        # The phantom is always last; a window that does not end its episode is
+        # cut after its own last step instead, which then has no target.
+        last = torch.zeros(size, length + 1, dtype=torch.bool, device=device)
+        last[:, length] = True
+        last[:, length - 1] = ~ends
+        replay_returns = lambda_return(
+            last, terminal_in, reward_in, boot, c.discount, c.return_lambda
+        )
+        replay_weight = (real & ~last[:, :length]).to(torch.float32)
+        replay_loss = twohot_loss(
+            replay_logits[:, :length], replay_returns, self._bins
+        ) + c.slow_regulariser * twohot_loss(
+            replay_logits[:, :length], replay_slow[:, :length], self._bins
+        )
+
+        loss = (
+            c.dynamics_scale * _mean(dynamics_loss, observed)
+            + c.representation_scale * _mean(representation_loss, observed)
+            + c.reconstruction_scale
+            * (
+                _mean(scalars_loss, observed)
+                + _mean(rows_loss, observed)
+                + _mean(mask_loss, observed)
+            )
+            + c.reward_scale * _mean(reward_loss, transition)
+            + c.continue_scale * _mean(continue_loss, transition)
+            + c.policy_scale * _mean(policy_loss, starting)
+            + c.value_scale * _mean(value_loss, starting)
+            + c.replay_value_scale * _mean(replay_loss, replay_weight)
+        )
+        return loss, replay_returns, replay_value, replay_weight
+
+    def _observe(
+        self, tokens: Tensor, previous: Tensor, reset: Tensor, uniform: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """The posterior states over the window, then the phantom: `RSSM.observe`.
+
+        Every draw comes in as `uniform` [T + 1, B, stoch], from torch's stream.
+
+        Returns the deterministic and stochastic states [B, T + 1, *], the last
+        the phantom's, and the posterior probabilities [B, T, stoch, classes].
+        """
+        c = self.config
+        dynamics = self.world_model.dynamics
+        size, length = tokens.shape[0], tokens.shape[1]
+        deter = torch.zeros(size, c.deter, device=self.device)
+        stoch = torch.zeros(size, c.stoch * c.classes, device=self.device)
+        deters, stochs, posteriors = [], [], []
+        for step in range(length):
+            keep = (~reset[:, step]).to(torch.float32)[:, None]
+            deter = dynamics.core(deter * keep, stoch * keep, previous[:, step] * keep)
+            logits = dynamics.posterior_logits(deter, tokens[:, step])
+            posteriors.append(unimix_probs(logits, c.latent_unimix))
+            stoch = self._latent(logits, uniform[step])
+            deters.append(deter)
+            stochs.append(stoch)
+        # The phantom: the prior's prediction of the state the last action led to.
+        deter = dynamics.core(deter, stoch, previous[:, length])
+        deters.append(deter)
+        stochs.append(self._latent(dynamics.prior_logits(deter), uniform[length]))
+        return torch.stack(deters, 1), torch.stack(stochs, 1), torch.stack(posteriors, 1)
+
     def _imagine(self, deter: Tensor, stoch: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Roll the prior forward under the policy: `RSSM.imagine` with `policyfn`.
 
@@ -601,21 +662,35 @@ class DreamerBackbone:
         """
         c = self.config
         count = deter.shape[0]
+        # Every step's draws up front, in the order a step takes them: the
+        # action's, then the latent's.
+        draws = [
+            (torch.rand(count, device=self.device), torch.rand(count, c.stoch, device=self.device))
+            for _ in range(c.imagination_horizon)
+        ]
+        action_uniform = torch.stack([action for action, _ in draws])
+        latent_uniform = torch.stack([latent for _, latent in draws])
+        rollout = _compiled_imagine_rollout if self.compiled else DreamerBackbone._imagine_rollout
+        return rollout(self, deter, stoch, action_uniform, latent_uniform)
+
+    def _imagine_rollout(
+        self, deter: Tensor, stoch: Tensor, action_uniform: Tensor, latent_uniform: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """`_imagine` given its uniforms [horizon, n] and [horizon, n, stoch]."""
+        c = self.config
         features = [torch.cat((deter, stoch), -1)]
         actions, masks = [], []
-        for _ in range(c.imagination_horizon):
+        for step in range(c.imagination_horizon):
             mask = self.world_model.decoded_mask(features[-1])
             probs = masked_policy_log_probs(
-                self.actor(features[-1]), mask, c.actor_unimix
+                self.actor(features[-1]).float(), mask, c.actor_unimix
             ).exp()
-            action = sample_index(probs, torch.rand(count, device=self.device))
+            action = sample_index(probs, action_uniform[step])
             deter = self.world_model.dynamics.core(
                 deter, stoch, functional.one_hot(action, ACTIONS).to(torch.float32)
             )
-            stoch = self._latent(
-                self.world_model.dynamics.prior_logits(deter),
-                torch.rand(count, c.stoch, device=self.device),
-            )
+            logits = self.world_model.dynamics.prior_logits(deter)
+            stoch = self._latent(logits, latent_uniform[step])
             features.append(torch.cat((deter, stoch), -1))
             actions.append(action)
             masks.append(mask)
@@ -650,6 +725,22 @@ class DreamerBackbone:
         self.optimizer.load_state_dict(state["optimizer"])
         self.return_normaliser.load_state_dict(state["return_normaliser"])
         self._steps = int(state["steps"])
+
+
+# The two recurrent loops of `learn`, compiled whole on their first call (on
+# CUDA, by default) and replayed as CUDA graphs ("reduce-overhead"). At batch 16
+# the learner is bound by launching thousands of small kernels, not by
+# arithmetic; fused and graphed, the loops launch a few. Every draw is made
+# outside them, from torch's stream, so compiling changes no sample. Functions
+# are compiled, not modules, so every state_dict key stays the module's own.
+# The first call compiles for minutes; inductor's on-disk cache makes a later
+# process's first call take seconds.
+_compiled_observe = torch.compile(
+    DreamerBackbone._observe, fullgraph=True, dynamic=False, mode="reduce-overhead"
+)
+_compiled_imagine_rollout = torch.compile(
+    DreamerBackbone._imagine_rollout, fullgraph=True, dynamic=False, mode="reduce-overhead"
+)
 
 
 def _mean(values: Tensor, weight: Tensor) -> Tensor:

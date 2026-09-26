@@ -13,7 +13,7 @@ does not have is the action mask; `docs/solution.md` 9.4c records why.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor
@@ -122,16 +122,21 @@ def sample_index(probs: Tensor, uniform: Tensor) -> Tensor:
 
     The caller supplies the uniforms, so the stream they come from - the
     acting copy's own `random.Random`, or torch's - is the caller's choice. A
-    zero-probability entry leaves the running sum exactly unchanged and so is
-    never the first entry above the draw; the clamp to the last entry with
-    positive probability covers a draw that rounds up to the total.
+    zero-probability entry leaves an exact running sum unchanged and so is
+    never the first entry above the draw. A parallel scan need not be exact (a
+    compiled one, under bfloat16 compute, was seen to land on one), so the draw
+    moves on to the next entry with positive probability, and a draw past the
+    last such entry - one that rounds up to the total - takes that last one.
     """
     cdf = probs.cumsum(-1)
     point = (uniform * cdf[..., -1]).unsqueeze(-1)
-    index = torch.searchsorted(cdf.contiguous(), point.contiguous(), right=True).squeeze(-1)
-    positions = torch.arange(probs.shape[-1], device=probs.device)
-    last = torch.where(probs > 0, positions, torch.zeros_like(positions)).amax(-1)
-    return torch.minimum(index, last)
+    index = torch.searchsorted(cdf.contiguous(), point.contiguous(), right=True)
+    count = probs.shape[-1]
+    positions = torch.arange(count, device=probs.device)
+    positive = probs > 0
+    after = torch.where(positive & (positions >= index), positions, count).amin(-1)
+    last = torch.where(positive, positions, 0).amax(-1)
+    return torch.minimum(after, last)
 
 
 def lambda_return(
@@ -238,10 +243,16 @@ class LaProp(torch.optim.Optimizer):
 
     @torch.no_grad()
     def step(self, closure: Any = None) -> None:  # type: ignore[override]
+        """One update of every parameter with a gradient, as `_foreach` kernels.
+
+        The arithmetic is the per-parameter chain's, applied to all parameters
+        at the same step count at once: a few multi-tensor kernels in place of
+        a dozen per parameter.
+        """
         if closure is not None:
             raise ValueError("LaProp takes no closure")
         for group in self.param_groups:
-            beta1, beta2, eps = group["beta1"], group["beta2"], group["eps"]
+            by_step: dict[int, list[torch.Tensor]] = {}
             for parameter in group["params"]:
                 if parameter.grad is None:
                     continue
@@ -250,22 +261,38 @@ class LaProp(torch.optim.Optimizer):
                     state["step"] = 0
                     state["nu"] = torch.zeros_like(parameter)
                     state["mu"] = torch.zeros_like(parameter)
-                # optax counts schedule steps from zero, so the first update
-                # is taken at a learning rate of exactly zero.
-                count = state["step"]
-                warmup = group["warmup"]
-                rate = group["lr"] * (min(count, warmup) / warmup if warmup else 1.0)
-                update = parameter.grad
-                if group["agc"]:
-                    upper = group["agc"] * torch.clamp(
-                        torch.linalg.vector_norm(parameter), min=group["agc_floor"]
-                    )
-                    ratio = torch.linalg.vector_norm(update) / upper
-                    update = update / torch.clamp(ratio, min=1.0)
-                step = count + 1
-                nu, mu = state["nu"], state["mu"]
-                nu.mul_(beta2).add_(update * update, alpha=1.0 - beta2)
-                update = update / ((nu / (1.0 - beta2**step)).sqrt() + eps)
-                mu.mul_(beta1).add_(update, alpha=1.0 - beta1)
-                parameter.add_(mu / (1.0 - beta1**step), alpha=-rate)
-                state["step"] = step
+                by_step.setdefault(state["step"], []).append(parameter)
+            for count, parameters in by_step.items():
+                self._update(group, parameters, count)
+
+    def _update(self, group: dict[str, Any], parameters: list[torch.Tensor], count: int) -> None:
+        beta1, beta2, eps = group["beta1"], group["beta2"], group["eps"]
+        # optax counts schedule steps from zero, so the first update is taken
+        # at a learning rate of exactly zero.
+        warmup = group["warmup"]
+        rate = group["lr"] * (min(count, warmup) / warmup if warmup else 1.0)
+        # `step` passes only parameters with a gradient.
+        updates = [cast(torch.Tensor, parameter.grad) for parameter in parameters]
+        if group["agc"]:
+            upper = list(torch._foreach_norm(parameters))
+            torch._foreach_clamp_min_(upper, group["agc_floor"])
+            torch._foreach_mul_(upper, group["agc"])
+            ratio = list(torch._foreach_div(list(torch._foreach_norm(updates)), upper))
+            torch._foreach_clamp_min_(ratio, 1.0)
+            updates = list(torch._foreach_div(updates, ratio))
+        step = count + 1
+        nus = [self.state[parameter]["nu"] for parameter in parameters]
+        mus = [self.state[parameter]["mu"] for parameter in parameters]
+        torch._foreach_mul_(nus, beta2)
+        torch._foreach_add_(nus, torch._foreach_mul(updates, updates), alpha=1.0 - beta2)
+        scale = list(torch._foreach_div(nus, 1.0 - beta2**step))
+        torch._foreach_sqrt_(scale)
+        torch._foreach_add_(scale, eps)
+        updates = list(torch._foreach_div(updates, scale))
+        torch._foreach_mul_(mus, beta1)
+        torch._foreach_add_(mus, updates, alpha=1.0 - beta1)
+        torch._foreach_add_(
+            parameters, torch._foreach_div(mus, 1.0 - beta1**step), alpha=-rate
+        )
+        for parameter in parameters:
+            self.state[parameter]["step"] = step

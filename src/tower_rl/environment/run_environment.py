@@ -243,6 +243,9 @@ class _WaveTally:
     #: Advances made while this wave was current, decided or not.
     advances: int = 0
     completed: bool = False
+    #: Upgrades bought while this wave was current, in purchase order, each
+    #: named as the action pipeline already names a row (`str(action)`).
+    upgrades_bought: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -316,6 +319,11 @@ class _EpisodeTally:
     def charge_decision(self) -> None:
         if self.waves:
             self.waves[-1].decisions += 1
+
+    def charge_purchase(self, label: str) -> None:
+        """Record one executed purchase against the wave that is current."""
+        if self.waves:
+            self.waves[-1].upgrades_bought.append(label)
 
     def charge_span_advance(self) -> None:
         """Count one advance of a decision span against the episode and its wave.
@@ -486,9 +494,14 @@ class InstrumentedRunEnvironment:
                     advances=wave.advances,
                     health_fraction=wave.health_fraction,
                     cash_log=wave.cash_log,
+                    upgrades_bought=tuple(wave.upgrades_bought),
                 )
                 for wave in self._tally.waves
             ),
+            final_upgrade_levels={
+                str(row.action): row.level for row in state.rows if row.level > 0
+            },
+            final_cash=round(math.expm1(state.cash_log), 3),
         )
 
     # -- stepping ----------------------------------------------------------
@@ -531,6 +544,7 @@ class InstrumentedRunEnvironment:
                 outcome = _purchase_outcome(purchase_result.outcome)
                 if outcome is ActionOutcome.EXECUTED:
                     self._tally.purchases += 1
+                    self._tally.charge_purchase(str(action))
                 if outcome in (ActionOutcome.AMBIGUOUS, ActionOutcome.FAILED):
                     # An unconfirmed purchase leaves the game in a state the record
                     # cannot describe, so the episode is classified, not continued.

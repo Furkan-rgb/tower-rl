@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from tower_rl.environment.run_actions import RunActionId
@@ -218,6 +218,12 @@ class WaveRecord:
     #: cash exists only log-scaled in `observation-v2` and is recorded as such.
     health_fraction: float
     cash_log: float
+    #: Upgrades bought while this wave was current, in purchase order, each
+    #: named the way `PurchaseView.action` and `DecisionView.action` already
+    #: name a row: `attack:3`. Without this a wave's cost (`cash_log`) says how
+    #: much was spent but never what it went to, which is what tells the one
+    #: episode that reached wave 22 apart from an ordinary one.
+    upgrades_bought: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,6 +300,17 @@ class EpisodeSummary:
     #: own configuration, and the defaults here are only what a summary
     #: assembled without one reads as.
     decision_cadence: str = "choice-points"
+    #: Upgrade levels the episode ended holding, keyed the way `WaveRecord`
+    #: names a row, and omitting anything still at level 0 so an episode that
+    #: bought little stays a small record. Read from the final state alone -
+    #: this is where an episode's build is compared against another's or
+    #: against a known strategy, without carrying every purchase decision that
+    #: led there.
+    final_upgrade_levels: Mapping[str, int] = field(default_factory=dict)
+    #: Earned cash the final observation carried, in the unit the player reads
+    #: it in. Beside `final_upgrade_levels`, since what an episode ended
+    #: holding is as much a description of it as what it bought.
+    final_cash: float = 0.0
 
     @property
     def valid(self) -> bool:

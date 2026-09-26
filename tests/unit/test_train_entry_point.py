@@ -239,7 +239,6 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     assert (defaults.epsilon_start, defaults.epsilon_end) == (1.0, 0.05)
     assert defaults.epsilon_anneal_decisions == 10_000
     assert defaults.exploration == "uniform", "run 1's schedule is the default"
-    assert defaults.priority_alpha == 0.0, "importance weights of exactly one"
     assert defaults.replay_capacity == 4096
     assert defaults.collection_window_episodes == 100
     assert defaults.evaluate_every_episodes == 0, "no frequent mid-run evaluation"
@@ -285,7 +284,6 @@ def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     assert parsed.warmup_sequences == 25
     assert parsed.exploration == "uniform"
     assert (parsed.epsilon_start, parsed.epsilon_end) == (0.0, 0.0)
-    assert parsed.priority_alpha == 0.0
 
 
 def test_the_default_backbone_is_stacked_dqn(tmp_path: Path) -> None:
@@ -309,7 +307,6 @@ def test_a_flag_that_repeats_a_dreamerv3_value_is_accepted(tmp_path: Path) -> No
         ("--epsilon-start", "1.0"),
         ("--epsilon-end", "0.05"),
         ("--exploration", "ladder"),
-        ("--priority-alpha", "0.6"),
     ],
 )
 def test_a_flag_that_contradicts_a_dreamerv3_value_is_refused(
@@ -372,6 +369,8 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     resolved = arm["resolved_config"]
     assert (resolved["sequence_length"], resolved["burn_in"], resolved["stride"]) == (6, 0, 3)
     assert resolved["dreamer_deter"] == 16 and resolved["dreamer_train_ratio"] == 3.0
+    # Uniform replay, as the official loop samples; not an option (board #85).
+    assert (resolved["priority_alpha"], resolved["importance_beta"]) == (0.0, 0.0)
     for stacked in ("history_length", "n_step", "discount", "learning_rate", "network_hidden"):
         assert resolved[stacked] is None, stacked
 
@@ -1120,15 +1119,14 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
     assert progress.episodes == parent.progress.episodes
     assert progress.optimisation_steps == parent.progress.optimisation_steps
     assert not arm.training.finished, "the budget was raised, so there is more to spend"
-    # Exploration and the importance exponent are derived from the counter
-    # rather than restored, so they are where a run that never stopped would
-    # have them - and not at the start of their schedules.
+    # Exploration is derived from the counter rather than restored, so it is
+    # where a run that never stopped would have it - and not at the start of
+    # its schedule.
     assert (
         progress.epsilon
         == config.exploration.epsilon_for(0, spent)
         != config.exploration.epsilon_for(0, 0)
     )
-    assert progress.importance_beta == config.beta(spent) != config.beta(0)
     # The optimizer's moments come back with the weights: one state dict, and a
     # resume that took only the weights would restart Adam silently mid-run.
     moments = parent.backbone_state["optimizer"]["state"]
@@ -1669,3 +1667,43 @@ def test_a_checkpoint_from_before_ez_greedy_resumes_with_it_off(tmp_path: Path) 
     save(replace(parent, resolved_config=settings), older)
 
     assert resume_from(tmp_path / "second", older, 400).decisions > 0
+
+
+# -- prioritized replay (board #85) ------------------------------------------
+
+
+def test_stacked_dqn_samples_by_r2d2_priorities_and_records_them(
+    trained: dict[str, Any],
+) -> None:
+    resolved = trained["arm"]["resolved_config"]
+    assert (resolved["priority_alpha"], resolved["importance_beta"]) == (0.9, 0.6)
+
+
+@pytest.mark.parametrize("backbone", ["stacked-dqn", "dreamerv3"])
+def test_no_flag_can_change_how_replay_is_sampled(
+    tmp_path: Path, backbone: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Prioritization cannot silently be off again: there is no option for it."""
+    with pytest.raises(SystemExit):
+        train.parse_arguments(
+            [
+                "--budget-decisions", "1000", "--run-dir", str(tmp_path),
+                "--backbone", backbone, "--priority-alpha", "0",
+            ]
+        )
+    assert "unrecognized arguments: --priority-alpha" in capsys.readouterr().err
+
+
+def test_a_checkpoint_sampled_uniformly_is_not_resumed_under_prioritized_replay(
+    tmp_path: Path,
+) -> None:
+    """Every stacked-dqn file before #85 recorded alpha 0 and a beta anneal."""
+    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
+    older = tmp_path / "uniform.pt"
+    settings = dict(parent.resolved_config)
+    del settings["importance_beta"]
+    settings.update(priority_alpha=0.0, beta_start=0.4, beta_end=1.0)
+    save(replace(parent, resolved_config=settings), older)
+
+    with pytest.raises(SystemExit, match="a different replay"):
+        resume_from(tmp_path / "second", older, 400)

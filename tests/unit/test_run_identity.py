@@ -64,7 +64,6 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
             "--epsilon-start": "0.8",
             "--epsilon-end": "0.02",
             "--epsilon-anneal-decisions": "77",
-            "--priority-alpha": "0.3",
             "--collection-window-episodes": "5",
             "--gradient-steps-per-decision": "0.25",
             "--batch-size": "4",
@@ -75,7 +74,6 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
     learner = arm.backbone.config
     assert (learner.n_step, learner.discount, learner.learning_rate) == (3, 0.9, 0.002)
     assert learner.target_ema_decay == 0.9
-    assert arm.replay.alpha == 0.3
     config = arm.training.config
     assert config.warmup_sequences == 7
     assert (config.exploration.epsilon_start, config.exploration.epsilon_end) == (0.8, 0.02)
@@ -87,7 +85,6 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
     # And the run records what it was actually built with.
     resolved = arm.resolved
     assert resolved["n_step"] == 3 and resolved["discount"] == 0.9
-    assert resolved["priority_alpha"] == 0.3
     assert resolved["epsilon_anneal_decisions"] == 77
     assert resolved["target_ema_decay"] == 0.9
     assert resolved["parameter_sync_episodes"] == 4

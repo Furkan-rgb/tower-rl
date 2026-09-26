@@ -400,8 +400,9 @@ neither is part of a run:
    each actor crossed the budget in — past it by at most one episode per
    actor. Every decision-counted schedule reads the same counter: the replay
    ratio (`--gradient-steps-per-decision`), the exploration anneal
-   (`--epsilon-anneal-decisions`), the importance exponent (annealed over the
-   budget), the kill bars and the selection periods. The n-step anneal alone
+   (`--epsilon-anneal-decisions`), the kill bars and the selection periods.
+   The importance exponent is not scheduled: replay holds it fixed (β 0.6
+   under stacked-dqn, board #85). The n-step anneal alone
    counts gradient steps. Game time is still measured and reported, as a
    statistic. Actors collect concurrently into the one buffer;
    the `Learner` takes gradient steps against the configured replay ratio;
@@ -428,7 +429,7 @@ command's (`docs/solution.md` §9.4d), and one that has already spent
 `--budget-decisions`, which stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the
 `TrainingProgressReport` at the parent's counters — decisions and game time
-both — so epsilon, beta, the selection periods and the numbered-checkpoint
+both — so epsilon, the selection periods and the numbered-checkpoint
 cadence are derived where a run that never stopped would have them. A
 checkpoint before format 4 (`DECISION_BUDGET_FORMAT_VERSION`) is from the
 game-time budget era: `load` still reads it for evaluation, but `resume_point`

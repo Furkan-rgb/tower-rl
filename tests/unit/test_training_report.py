@@ -367,7 +367,7 @@ def test_a_checkpoint_carries_the_schedules_the_run_actually_used(
     assert resolved["epsilon_end"] <= stored.progress.epsilon <= resolved["epsilon_start"]
     # Annealed away from where it started: the run drew it per episode.
     assert stored.progress.epsilon < resolved["epsilon_start"]
-    assert resolved["beta_start"] <= stored.progress.importance_beta <= resolved["beta_end"]
+    assert stored.progress.importance_beta == resolved["importance_beta"]
 
 
 def test_the_learner_diagnostics_travel_with_every_point(trained: dict[str, Any]) -> None:
@@ -378,7 +378,7 @@ def test_the_learner_diagnostics_travel_with_every_point(trained: dict[str, Any]
     assert point["weighted_loss"] is not None
     assert point["unweighted_mean_absolute_td_error"] is not None
     # Two names, because they are two quantities: the loss carries the
-    # importance-sampling weights and moves with the beta schedule.
+    # importance-sampling weights and moves with the priorities.
     assert point["weighted_loss"] != point["unweighted_mean_absolute_td_error"]
     assert point["gradient_norm"] is not None
     fit = point["value_fit_correlation"]

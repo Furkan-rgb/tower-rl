@@ -271,8 +271,8 @@ def test_a_seeded_sample_collates_to_the_same_tensors_as_before(seed: int, devic
     """Same replay, same seed, same sample: the packed batch is the listed one."""
     replay, twin = _seeded_replay(seed), _seeded_replay(seed)
 
-    indices, sequences, weights = replay.sample(8, beta=0.5)
-    twin_indices, twin_sequences, twin_weights = twin.sample(8, beta=0.5)
+    indices, sequences, weights = replay.sample(8)
+    twin_indices, twin_sequences, twin_weights = twin.sample(8)
     assert (indices, weights) == (twin_indices, twin_weights)
 
     _assert_same_batch(
@@ -296,7 +296,7 @@ def test_gradient_steps_on_a_packed_batch_equal_those_on_a_listed_one(device: st
     packed, listed = backbone(), backbone()
     replay = _seeded_replay(7)
     for _ in range(3):
-        _, sequences, weights = replay.sample(8, beta=0.5)
+        _, sequences, weights = replay.sample(8)
         ours = packed.learn(collate(sequences, weights, device=packed.device))
         theirs = listed.learn(_list_collate(sequences, weights, device=listed.device))
         assert ours == theirs

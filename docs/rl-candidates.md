@@ -218,9 +218,10 @@ What actually runs, as of run 2 (`docs/experiments.md` M2-E007; audit #53):
 - n-step **fixed at 10**, never annealed (`StackedDqnConfig.n_step`,
   `stacked_dqn.py:45`) — specified, not implemented — see #53.
 - EMA target network: implemented, decay 0.995 per gradient step.
-- Prioritized replay: the machinery is built (`replay.py`), but
-  `priority_alpha` runs at **0**, which makes sampling uniform and importance
-  weights exactly 1 — specified, not implemented — see #53.
+- Prioritized replay: from the 2026-09-17 retune until 2026-09-26,
+  `priority_alpha` ran at **0**, which made sampling uniform and importance
+  weights exactly 1 (D4, #53). Since 2026-09-26 (#85) it is always on at R2D2's α 0.9, β 0.6, η 0.9
+  and is no longer an option (`solution.md` 9.4).
 - Huber loss (δ=1): implemented.
 - Weight decay: implemented, at `1e-5`; this document does not specify a
   value, so the magnitude is not marked as a deviation.

@@ -33,6 +33,7 @@ from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.learning.training import TrainingConfig
 
@@ -140,6 +141,7 @@ def resolved_config(
     config: TrainingConfig,
     learner: StackedDqnConfig,
     network: NetworkConfig,
+    replay: PrioritizedSequenceReplay,
     cadence: CadenceConfig,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
@@ -216,9 +218,12 @@ def resolved_config(
         # no per-actor floor at all.
         "exploration": config.exploration.option,
         "exploration_epsilon_floors": list(config.exploration.floors),
-        "beta_start": config.beta_start,
-        "beta_end": config.beta_end,
-        "priority_alpha": arguments.priority_alpha,
+        # How replay was sampled: R2D2's fixed exponents under stacked-dqn,
+        # uniform (0 and 0) under DreamerV3. Every stacked-dqn run before board
+        # #85 recorded priority_alpha 0.0 beside a beta_start/beta_end anneal
+        # that uniform sampling never read.
+        "priority_alpha": replay.alpha,
+        "importance_beta": replay.beta,
         "replay_capacity": arguments.replay_capacity,
         "collection_window_episodes": config.collection_window_episodes,
         "evaluate_every_episodes": arguments.evaluate_every_episodes,

@@ -428,7 +428,7 @@ command's (`docs/solution.md` §9.4d), and one that has already spent
 `--budget-decisions`, which stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the
 `TrainingProgressReport` at the parent's counters — decisions and game time
-both — so epsilon, beta, the selection periods and the numbered-checkpoint
+both — so epsilon, the selection periods and the numbered-checkpoint
 cadence are derived where a run that never stopped would have them. A
 checkpoint before format 4 (`DECISION_BUDGET_FORMAT_VERSION`) is from the
 game-time budget era: `load` still reads it for evaluation, but `resume_point`

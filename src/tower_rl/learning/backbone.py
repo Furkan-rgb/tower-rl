@@ -33,8 +33,8 @@ class LearnMetrics:
     """
 
     #: The optimised quantity: Huber loss scaled by the per-sequence
-    #: importance-sampling weights, and therefore confounded with the beta
-    #: schedule and the priority exponent.
+    #: importance-sampling weights, and therefore confounded with the
+    #: priorities the batch was sampled by.
     weighted_loss: float
     #: The same batch's mean absolute TD error with no weighting of any kind.
     #: This is the one to read a learning curve against.

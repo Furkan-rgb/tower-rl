@@ -34,7 +34,11 @@ from tower_rl.environment.run_environment import (
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.metrics import per_hour
 from tower_rl.experiment.tracking import NoExperimentTracker
-from tower_rl.experiment.training_report import REPLAY_DIRECTORY, numbered_checkpoint_name
+from tower_rl.experiment.training_report import (
+    REPLAY_DIRECTORY,
+    non_finite_tensors,
+    numbered_checkpoint_name,
+)
 from tower_rl.learning.actor import ActorConfig
 from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
 from tower_rl.learning.evaluator import evaluate
@@ -1595,6 +1599,26 @@ def test_a_run_that_fails_still_writes_its_resume_point_and_replay(
     decisions = checkpoint.progress.environment_decisions
     assert 100 <= decisions < 400
     assert read_replay_metadata(dump)["run"]["decisions"] == decisions
+
+
+def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure mid-update must not overwrite the last good latest.pt with a broken one."""
+
+    def run_then_break(self: TrainingRun) -> Any:
+        self.advance(100)
+        # In place, as a diverged update would leave it.
+        next(iter(self.backbone.state_dict()["online"].values())).fill_(float("nan"))
+        raise RuntimeError("the run failed")
+
+    monkeypatch.setattr(TrainingRun, "run", run_then_break)
+    with pytest.raises(RuntimeError, match="the run failed"):
+        session(tmp_path, budget="400")
+
+    (checkpoint,) = tmp_path.glob("session-*/*/checkpoints/latest.pt")
+    assert not non_finite_tensors(dict(load(checkpoint).backbone_state))
+    assert not list(tmp_path.glob(f"session-*/*/{REPLAY_DIRECTORY}"))
 
 
 def test_a_failed_replay_save_neither_masks_the_error_nor_stops_the_checkpoint(

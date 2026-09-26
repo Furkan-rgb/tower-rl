@@ -15,8 +15,12 @@ behind.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
+
+import torch
 
 from tower_rl.environment.decision_time import EMPTY_BREAKDOWN, DecisionTimeBreakdown
 from tower_rl.experiment.metrics import (
@@ -60,6 +64,24 @@ from tower_rl.learning.training import (
 #: Where in a run's directory its replay buffer is saved as the run ends,
 #: beside `checkpoints/`: `<run_dir>/replay/`.
 REPLAY_DIRECTORY = "replay"
+
+
+def non_finite_tensors(state: Any, name: str = "") -> list[str]:
+    """The keys of every tensor in a nested state dict holding a NaN or an infinity."""
+    if isinstance(state, torch.Tensor):
+        is_float = state.is_floating_point() or state.is_complex()
+        return [name] if is_float and not bool(torch.isfinite(state).all()) else []
+    if isinstance(state, Mapping):
+        items: Iterable[tuple[Any, Any]] = state.items()
+    elif isinstance(state, (list, tuple)):
+        items = enumerate(state)
+    else:
+        return []
+    return [
+        broken
+        for key, value in items
+        for broken in non_finite_tensors(value, f"{name}.{key}" if name else str(key))
+    ]
 
 
 def numbered_checkpoint_name(decisions: int) -> str:
@@ -171,7 +193,7 @@ class TrainingReport:
     def replay_path(self) -> Path:
         return self.run_dir / REPLAY_DIRECTORY
 
-    def save_resume_point(self) -> None:
+    def save_resume_point(self, *, after_failure: bool = False) -> None:
         """Write `latest.pt` and the replay buffer beside it, at one decision count.
 
         Called once, as the run ends, however it ends: the buffer is gigabytes,
@@ -182,9 +204,23 @@ class TrainingReport:
         A failed replay save is reported and not raised: the checkpoint is
         already written, and a resume from it re-warms replay exactly as it did
         before replay was saved at all.
+
+        `after_failure` is the run ending on an exception or an interrupt, which
+        may have struck mid-update. Then a backbone holding a non-finite weight
+        or optimizer moment writes neither file: the last periodic `latest.pt`
+        is a better resume point than a broken one written over it.
         """
         with self.training.held_still():
             report = self.training.report
+            if after_failure:
+                broken = non_finite_tensors(self.backbone.state_dict())
+                if broken:
+                    print(
+                        f"[{self.name}] resume point not written: non-finite values "
+                        f"in {', '.join(broken[:5])}; the last periodic latest.pt stands",
+                        flush=True,
+                    )
+                    return
             self.checkpoint(report)
             started = time.monotonic()
             try:

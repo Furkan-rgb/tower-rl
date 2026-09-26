@@ -1972,8 +1972,8 @@ the selection periods and the checkpoint cadence are derived from them,
 so the segment carries on where a run that never stopped would have been.
 Replay is saved once as the run ends, however it ends short of a hard kill,
 beside a final `latest.pt` at the same decision count, in `<run_dir>/replay/`
-(`.npy` arrays and a JSON header, as the official DreamerV3 persists its
-replay). A resume from that `latest.pt` reloads it and learns on without
+(`.npy` arrays and a JSON header), so a resumed run continues on the replay it
+had. A resume from that `latest.pt` reloads it and learns on without
 re-warming; a resume from another checkpoint of the run is refused while the
 dump is there (move it aside to re-warm instead); with no dump, replay
 re-warms under the loaded policy.

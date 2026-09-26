@@ -1335,7 +1335,7 @@ def train_session(
                 # a failure to write it is reported rather than raised, so it
                 # cannot replace the error that ended the run.
                 try:
-                    arm.save_resume_point()
+                    arm.save_resume_point(after_failure=True)
                 except Exception as failure:  # noqa: BLE001 - must not mask the original
                     print(f"[{arm.name}] resume point not written: {failure}", flush=True)
         finally:

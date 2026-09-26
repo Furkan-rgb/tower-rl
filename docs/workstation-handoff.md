@@ -56,8 +56,9 @@ that fails to add `--early-stop-min-improvement` waves for that many periods in
 a row stops after writing that crossing's checkpoint (`#45`; the default of 0
 spends the whole budget). An interrupted run **resumes**: `train.py --resume
 <checkpoint.pt>` restores the weights, the optimizer, the game-time and decision
-counters and every schedule derived from them, re-warms replay under the loaded
-policy, and continues the same whole-run budget (`#32`).
+counters and every schedule derived from them, reloads the replay the run saved
+as it ended (or, with none saved, re-warms it under the loaded policy), and
+continues the same whole-run budget (`#32`, `#87`).
 
 ### Watching, recording, and where state lives
 

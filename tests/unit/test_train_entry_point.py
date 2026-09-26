@@ -11,8 +11,10 @@ on several instances, its per-actor account, and its staggered bring-up.
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,14 +34,20 @@ from tower_rl.environment.run_environment import (
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.metrics import per_hour
 from tower_rl.experiment.tracking import NoExperimentTracker
-from tower_rl.experiment.training_report import numbered_checkpoint_name
+from tower_rl.experiment.training_report import REPLAY_DIRECTORY, numbered_checkpoint_name
 from tower_rl.learning.actor import ActorConfig
 from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import checkpoint_policy
+from tower_rl.learning.replay import (
+    R2D2_PRIORITY_EXPONENT,
+    PrioritizedSequenceReplay,
+    read_replay_metadata,
+)
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone
+from tower_rl.learning.training import TrainingRun
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -960,10 +968,10 @@ def test_resolved_config_carries_the_frame_rate(tmp_path: Path) -> None:
 # -- resume ----------------------------------------------------------------
 #
 # A run trained in two sittings is one run: the second segment continues the
-# first's budget, its schedules, its checkpoint cadence and its tracked curve.
-# What it does not continue is the replay buffer, which is not persisted - it
-# re-warms under the loaded policy, which is the ordinary warm-up rule applied
-# again from the resume point.
+# first's budget, its schedules, its checkpoint cadence and its tracked curve,
+# and - resumed from the `latest.pt` the first wrote as it ended - the replay
+# buffer the first saved beside it. With no saved buffer it re-warms under the
+# loaded policy, which is the ordinary warm-up rule applied again.
 
 #: The checkpoint cadence of a resumed run, in decisions.
 RESUME_PERIOD = 100
@@ -1340,8 +1348,8 @@ def test_a_tracked_run_is_continued_rather_than_started_again(tmp_path: Path) ->
     assert [point.decisions for point in episodes] == sorted(
         point.decisions for point in episodes
     )
-    # Where the segment picked up, and where its re-warmed buffer let learning
-    # restart, both on the same axis.
+    # Where the segment picked up, and where learning restarted on the buffer
+    # it reloaded, both on the same axis.
     resumed = [point for point in run.points if "resumed_from_decisions" in point.metrics]
     assert [point.decisions for point in resumed] == [spent]
     warmed = [point for point in run.points if "warmup_finished_decisions" in point.metrics]
@@ -1381,6 +1389,9 @@ def test_an_untracked_resume_does_not_announce_a_tracked_run(
             str(checkpoint),
             "--budget-decisions",
             "100000",
+            # The parent's, so the replay it saved is reloaded rather than refused.
+            "--replay-capacity",
+            "64",
             "--run-dir",
             str(tmp_path / "second"),
         ],
@@ -1394,10 +1405,10 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
     """The end-to-end claim: 300 in one sitting, or 150 and 150, is one run.
 
     The two are not decision-for-decision identical and cannot be. Episode
-    length here depends on what the policy does, and the second segment learns
-    from a buffer it re-warmed rather than from the one the first ended with,
-    so its episodes are not the episodes a single sitting would have played and
-    its counter lands past the period's multiples in different places. What is
+    length here depends on what the policy does, and the second segment samples
+    the buffer it reloaded from its own seed, so its episodes are not the
+    episodes a single sitting would have played and its counter lands past the
+    period's multiples in different places. What is
     the same is what the budget bought: the whole budget spent, and one
     numbered checkpoint per crossing of the period, in order, continuing
     through the resume rather than restarting at it.
@@ -1438,6 +1449,172 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
     for answered in (once, split):
         assert answered == sorted(set(answered)) and answered
     assert min(crossings(second)) > max(crossings(first))
+
+
+# -- replay saved as a run ends, reloaded on resume -------------------------
+
+
+def saved_replay(run_dir: Path) -> Path:
+    """The one run directory's saved buffer under `run_dir`, found as an operator would."""
+    (dump,) = run_dir.glob(f"session-*/*/{REPLAY_DIRECTORY}")
+    return dump
+
+
+def test_a_run_saves_its_replay_beside_the_latest_checkpoint_it_ends_with(
+    tmp_path: Path,
+) -> None:
+    first = numbered(tmp_path, 200)
+    dump = saved_replay(tmp_path)
+
+    assert dump.parent == latest_checkpoint(first).parent.parent
+    metadata = read_replay_metadata(dump)
+    checkpoint = load(latest_checkpoint(first))
+    assert metadata["run"]["decisions"] == checkpoint.progress.environment_decisions
+    assert metadata["run"]["identity"] == asdict(checkpoint.identity)
+    assert metadata["sequences"] == first["arm"]["replay"]["sequences"] > 0
+    assert (metadata["capacity"], metadata["alpha"]) == (64, R2D2_PRIORITY_EXPONENT)
+
+
+def test_a_resume_from_that_checkpoint_reloads_the_replay_and_says_so(tmp_path: Path) -> None:
+    first = numbered(tmp_path / "first", 200)
+    dump = saved_replay(tmp_path / "first")
+    expected = PrioritizedSequenceReplay(capacity=64)
+    expected.load_from(dump)
+
+    arm, resume = resumed_arm(tmp_path / "second", latest_checkpoint(first), budget=400)
+
+    assert resume.replay_dump == dump
+    assert list(arm.replay._items) == list(expected._items)
+    assert list(arm.replay._priorities) == list(expected._priorities)
+    assert arm.resolved["replay_restored_from"] == str(dump)
+    manifest = json.loads((arm.run_dir / "manifest.json").read_text())
+    assert manifest["replay_restored_from"] == str(dump)
+    # Warm already: the gate reads what the buffer holds, not how it got it.
+    assert arm.training._warm()
+
+
+def test_a_resume_with_no_saved_replay_re_warms_as_before(tmp_path: Path) -> None:
+    first = numbered(tmp_path / "first", 200)
+    shutil.rmtree(saved_replay(tmp_path / "first"))
+
+    arm, resume = resumed_arm(tmp_path / "second", latest_checkpoint(first), budget=400)
+
+    assert resume.replay_dump is None
+    assert len(arm.replay) == 0
+    assert arm.resolved["replay_restored_from"] is None
+
+
+def test_a_resume_from_an_earlier_checkpoint_is_refused_while_the_replay_is_there(
+    tmp_path: Path,
+) -> None:
+    """Replay from the run's end must not be mixed into a resume from its middle."""
+    first = numbered(tmp_path / "first", 300)
+    _, directory, written = numbered_checkpoints(first)
+    earlier = directory / numbered_checkpoint_name(written[0])
+
+    with pytest.raises(SystemExit, match="decisions, not this checkpoint's"):
+        resume_from(tmp_path / "second", earlier, 600)
+
+    # Moved aside by hand, it is the ordinary resume with an empty buffer.
+    dump = saved_replay(tmp_path / "first")
+    dump.rename(dump.with_name("replay-set-aside"))
+    assert resume_from(tmp_path / "second", earlier, 600).replay_dump is None
+
+
+def test_a_saved_replay_of_another_capacity_is_refused_before_bring_up(tmp_path: Path) -> None:
+    first = numbered(tmp_path / "first", 200)
+    with pytest.raises(SystemExit, match="capacity 64"):
+        train.resume_point(
+            arguments(
+                tmp_path / "second",
+                **{
+                    "--budget-decisions": "400",
+                    "--resume": str(latest_checkpoint(first)),
+                    "--replay-capacity": "128",
+                },
+            ),
+            profile_id=PROFILE,
+            revision="test",
+        )
+
+
+def test_a_resumed_run_learns_from_the_reloaded_replay_without_re_warming(
+    tmp_path: Path,
+) -> None:
+    """End to end: a warm-up the new segment alone could not reach is already met."""
+    first = numbered(tmp_path / "first", 200)
+    parent_steps = first["arm"]["optimisation_steps"]
+    budget = first["arm"]["decisions"] + 60
+    # More sequences than 60 decisions can collect, but fewer than were saved.
+    settings = {"--warmup-sequences": "50"}
+
+    second = session(
+        tmp_path / "second",
+        budget=str(budget),
+        settings=settings,
+        resume=resume_from(tmp_path / "second", latest_checkpoint(first), budget),
+    )
+    assert second["arm"]["optimisation_steps"] > parent_steps
+
+    shutil.rmtree(saved_replay(tmp_path / "first"))
+    third = session(
+        tmp_path / "third",
+        budget=str(budget),
+        settings=settings,
+        resume=resume_from(tmp_path / "third", latest_checkpoint(first), budget),
+    )
+    assert third["arm"]["optimisation_steps"] == parent_steps, "re-warming, it could not learn"
+
+
+def interrupted_session(
+    run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException | None = None,
+) -> None:
+    """A session whose run fails partway, after collecting some of its budget."""
+
+    def run_then_fail(self: TrainingRun) -> Any:
+        self.advance(100)
+        raise failure or RuntimeError("the run failed")
+
+    monkeypatch.setattr(TrainingRun, "run", run_then_fail)
+    session(run_dir, budget="400")
+
+
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("the run failed"), KeyboardInterrupt()], ids=["error", "interrupt"]
+)
+def test_a_run_that_fails_still_writes_its_resume_point_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    with pytest.raises(type(failure)):
+        interrupted_session(tmp_path, monkeypatch, failure)
+
+    dump = saved_replay(tmp_path)
+    checkpoint = load(dump.parent / "checkpoints" / "latest.pt")
+    decisions = checkpoint.progress.environment_decisions
+    assert 100 <= decisions < 400
+    assert read_replay_metadata(dump)["run"]["decisions"] == decisions
+
+
+def test_a_failed_replay_save_neither_masks_the_error_nor_stops_the_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: PrioritizedSequenceReplay, directory: Path, **kwargs: Any) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", refuse)
+    with pytest.raises(RuntimeError, match="the run failed"):
+        interrupted_session(tmp_path / "failed", monkeypatch)
+    (checkpoint,) = (tmp_path / "failed").glob("session-*/*/checkpoints/latest.pt")
+    assert load(checkpoint).progress.environment_decisions >= 100
+
+    # A run that spends its budget is not failed by it either.
+    monkeypatch.undo()
+    monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", refuse)
+    report = session(tmp_path / "finished", budget="200")
+    assert report["arm"]["decisions"] >= 200
+    assert not list((tmp_path / "finished").glob(f"session-*/*/{REPLAY_DIRECTORY}"))
 
 
 # -- discounting by game time (board #81) ------------------------------------

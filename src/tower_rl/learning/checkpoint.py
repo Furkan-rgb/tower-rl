@@ -312,8 +312,9 @@ class ResumeState:
     narrowed to what a second segment of one run has to continue - the weights
     and optimizer moments to go on learning from, the decision counter every
     schedule and every cadence is derived from, and the tracking run its curve
-    belongs on. The replay buffer is deliberately absent: it is not persisted,
-    and the run re-warms it under the loaded policy.
+    belongs on. The replay buffer is not in the checkpoint: it is saved beside
+    it as a run ends, and `replay_dump` names that save once the caller has
+    found it matches this checkpoint.
     """
 
     #: The parent, as a measurement cites it: the file it was read from and the
@@ -345,6 +346,10 @@ class ResumeState:
     #: The settings the parent was written with, so a resume can refuse one
     #: it could not continue under - a different discount is a different target.
     resolved_config: Mapping[str, Any] = field(default_factory=dict)
+    #: The parent run's saved replay buffer, when it was saved at exactly this
+    #: checkpoint's decision count; None when there is none and the run
+    #: re-warms replay. Set by the caller that checked it, not read from here.
+    replay_dump: Path | None = None
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:

@@ -1002,6 +1002,22 @@ class TrainingRun:
             raise withdrawals[-1]
         return report
 
+    @contextmanager
+    def held_still(self) -> Iterator[None]:
+        """Hold the fleet still: no episode counted, no step taken, nothing added.
+
+        For a resume point written as a run ends. The progress lock stops every
+        count and every gradient step, and the buffer's lock every insertion,
+        taken in the one order locks are ever taken in. Normally the fleet has
+        already joined; after an interrupt its actors may still be collecting,
+        and they wait here until the snapshot is written. An actor that has
+        added its episode to replay but not yet counted it can still be caught
+        between the two, so after an interrupt the snapshot may hold up to one
+        episode per actor ahead of the count.
+        """
+        with self._lock, self.replay.lock:
+            yield
+
     def _refuse_evaluation_during_collection(self, collecting: int) -> None:
         """Refuse a periodic evaluation that would share an instance with an actor.
 

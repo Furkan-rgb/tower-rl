@@ -54,9 +54,15 @@ window with no such episode measures nothing and does not stop the run.
 
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
 budget. The weights, the optimizer moments, the decision and game-time counters
-and every schedule and cadence derived from them come back from the file; the
-replay buffer does not, so the run re-warms it under the loaded policy before
-learning restarts. `--budget-decisions` stays the whole run's total.
+and every schedule and cadence derived from them come back from the file.
+However a run ends - budget, early stop, kill bar, interrupt or error - it
+writes `latest.pt` and saves its replay buffer beside it in `<run_dir>/replay/`
+at the same decision count. A resume from that `latest.pt` reloads the buffer
+and learns on without re-warming; a resume from any other checkpoint of that
+run is refused while the saved buffer is there, rather than continued on
+replay from another point in time (move `replay/` aside to re-warm instead).
+A run with no saved buffer re-warms it under the loaded policy before learning
+restarts. `--budget-decisions` stays the whole run's total.
 
     uv run --extra tracking python scripts/train.py \\
         --resume state/runs/<session>/<run>/checkpoints/latest.pt \\
@@ -74,7 +80,7 @@ import json
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -108,12 +114,16 @@ from tower_rl.experiment.tracking import (  # noqa: E402
     artifact_root,
     tracking_uri,
 )
-from tower_rl.experiment.training_report import TrainingReport  # noqa: E402
+from tower_rl.experiment.training_report import (  # noqa: E402
+    REPLAY_DIRECTORY,
+    TrainingReport,
+)
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
     DECISION_BUDGET_FORMAT_VERSION,
     CheckpointError,
+    CheckpointIdentity,
     ResumeState,
     resume_state,
     write_manifest,
@@ -130,6 +140,8 @@ from tower_rl.learning.replay import (  # noqa: E402
     R2D2_IMPORTANCE_SAMPLING_EXPONENT,
     R2D2_PRIORITY_EXPONENT,
     PrioritizedSequenceReplay,
+    ReplayDumpError,
+    read_replay_metadata,
 )
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
@@ -245,6 +257,17 @@ def build_backbone(
     )
 
 
+def build_replay(arguments: argparse.Namespace) -> PrioritizedSequenceReplay:
+    """The empty buffer the arm collects into.
+
+    Each backbone samples as its own recipe does, and neither is an option:
+    DreamerV3 uniformly (solution.md 9.4c), stacked-dqn by R2D2's priorities.
+    """
+    if arguments.backbone == DREAMERV3:
+        return PrioritizedSequenceReplay.uniform(arguments.replay_capacity, seed=arguments.seed)
+    return PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
+
+
 def build_arm(
     name: str,
     arguments: argparse.Namespace,
@@ -298,13 +321,17 @@ def build_arm(
         # they are one `state_dict`, and a resume that took only the weights
         # would restart Adam's moments silently mid-run.
         backbone.load_state_dict(dict(resume.backbone_state))
-    # Each backbone samples as its own recipe does, and neither is an option:
-    # DreamerV3 uniformly (solution.md 9.4c), stacked-dqn by R2D2's priorities.
-    replay = (
-        PrioritizedSequenceReplay.uniform(arguments.replay_capacity, seed=arguments.seed)
-        if arguments.backbone == DREAMERV3
-        else PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
-    )
+    replay = build_replay(arguments)
+    restored_from = None
+    if resume is not None and resume.replay_dump is not None:
+        restored_from = str(resume.replay_dump)
+        loading = time.monotonic()
+        replay.load_from(resume.replay_dump)
+        print(
+            f"[{name}] replay restored: {len(replay)} sequences from "
+            f"{resume.replay_dump} in {time.monotonic() - loading:.1f} s",
+            flush=True,
+        )
     config = TrainingConfig(
         budget_decisions=arguments.budget_decisions,
         warmup_sequences=arguments.warmup_sequences,
@@ -362,6 +389,7 @@ def build_arm(
         stride=stride,
         device=device,
         parent_checkpoint=None if resume is None else resume.parent_checkpoint,
+        replay_restored_from=restored_from,
     )
     if isinstance(backbone, DreamerBackbone):
         resolved = dreamer_resolved_config(
@@ -429,6 +457,7 @@ def build_arm(
         resumed_episodes=progress.episodes,
         resumed_game_ms=progress.game_ms,
         tracking_run_id=tracked_run_id,
+        replay_restored_from=restored_from,
     )
 
     def run_evaluation(pre_registered_final: bool = False) -> EvaluationReport:
@@ -458,12 +487,14 @@ def build_arm(
             flush=True,
         )
 
-    # Learning is refused until the buffer holds `--warmup-sequences` again:
-    # replay is not persisted, so a resumed run re-warms it under the loaded
-    # policy at the epsilon its schedule has reached. That is the ordinary
-    # warm-up rule, not a mode, but where its boundary fell is the one thing a
-    # reading of the resumed segment cannot recover afterwards, so the first
-    # optimisation step past the resume point is reported when it happens.
+    # Learning is refused until the buffer holds `--warmup-sequences`. A
+    # resumed run that reloaded its parent's buffer already does, so it learns
+    # from its first episode on; one with no saved buffer re-warms it under the
+    # loaded policy at the epsilon its schedule has reached. That is the
+    # ordinary warm-up rule read against the buffer's contents, not a mode, but
+    # where its boundary fell is the one thing a reading of the resumed segment
+    # cannot recover afterwards, so the first optimisation step past the resume
+    # point is reported when it happens.
     warmed = resume is None
 
     def on_episode(report: TrainingProgressReport) -> None:
@@ -479,8 +510,8 @@ def build_arm(
                 decisions=report.decisions,
             )
             print(
-                f"[{name}] replay re-warmed; learning restarted at "
-                f"{report.decisions} decisions",
+                f"[{name}] replay {'restored' if restored_from else 're-warmed'}; "
+                f"learning restarted at {report.decisions} decisions",
                 flush=True,
             )
         # The episode first: it is the tracked unit, and the window below it is
@@ -625,9 +656,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "a checkpoint to continue a run's budget from: the weights, the "
             "optimizer, the decision and game-time counters and every schedule "
-            "and cadence derived from them come back, and the replay buffer is "
-            "re-warmed under the loaded policy. --budget-decisions stays the "
-            "whole run's total, so a checkpoint at or past it is refused"
+            "and cadence derived from them come back, and the replay buffer the "
+            "parent saved at this checkpoint's decision count is reloaded (with "
+            "none saved, it is re-warmed under the loaded policy). "
+            "--budget-decisions stays the whole run's total, so a checkpoint at "
+            "or past it is refused"
         ),
     )
     parser.add_argument("--seed", type=int, default=0)
@@ -1099,7 +1132,44 @@ def resume_point(
             f"decisions, which --budget-decisions {arguments.budget_decisions} "
             "does not extend; raise the budget above it to continue the run"
         )
-    return state
+    return with_parent_replay(arguments, state, expected)
+
+
+def with_parent_replay(
+    arguments: argparse.Namespace, state: ResumeState, expected: CheckpointIdentity
+) -> ResumeState:
+    """Name the parent's saved replay buffer on `state`, when it may be reloaded.
+
+    The parent saves its buffer once, as it ends, in `<run_dir>/replay/` beside
+    the `checkpoints/` this checkpoint was read from, at the decision count its
+    last `latest.pt` holds. It is reloaded only into a resume from exactly that
+    point, and only into the buffer this run builds - the same capacity and
+    sampling - on the same identity. Anything else is refused rather than
+    skipped: replay from another point in time, mixed silently into a resume,
+    is experience the weights never saw at that point. No saved buffer is the
+    ordinary case of a run that has none, and it re-warms.
+    """
+    dump = arguments.resume.parent.parent / REPLAY_DIRECTORY
+    if not dump.exists():
+        return state
+    refusal = f"--resume {arguments.resume}: the parent's replay saved at {dump}"
+    remedy = f"move {dump} aside to resume with an empty, re-warmed buffer instead"
+    try:
+        metadata = read_replay_metadata(dump)
+        build_replay(arguments).check_dump(metadata)
+        run = metadata["run"]
+        saved = CheckpointIdentity(**run["identity"])
+    except (ReplayDumpError, KeyError, TypeError) as failure:
+        raise SystemExit(f"{refusal} cannot be reloaded: {failure!r}; {remedy}") from failure
+    if run.get("decisions") != state.decisions:
+        raise SystemExit(
+            f"{refusal} is at {run.get('decisions')} decisions, not this checkpoint's "
+            f"{state.decisions}: resume from the latest.pt it was saved with, or {remedy}"
+        )
+    reasons = saved.incompatibilities(expected)
+    if reasons:
+        raise SystemExit(f"{refusal} is another run's: {'; '.join(reasons)}; {remedy}")
+    return replace(state, replay_dump=dump)
 
 
 def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
@@ -1172,6 +1242,9 @@ def train_session(
         resume=resume,
     )
 
+    # Whether the run's end has written its resume point, so that however it
+    # ends - here, or through an exception or an interrupt - it is written once.
+    resume_point_written = False
     try:
         # To the whole run's budget: a resumed run starts with part of it spent.
         arm.training.run()
@@ -1200,7 +1273,11 @@ def train_session(
                 flush=True,
             )
 
-        arm.checkpoint(arm.training.report)
+        # Before the final evaluation, which takes hours and changes neither
+        # the weights nor replay: the resume point is on disk the moment the
+        # budget is spent.
+        resume_point_written = True
+        arm.save_resume_point()
         # The one pre-registered measurement of the run: exploration-free, on
         # the final weights, sized so its standard error can resolve a real
         # difference against the scripted floor. Taken after the budget is
@@ -1251,9 +1328,20 @@ def train_session(
         arm.run.log_artifact(path)
         return report
     finally:
-        # A run that ended badly is still a run that has to be closed, or it
-        # would sit open in the store forever.
-        arm.run.finish()
+        try:
+            if not resume_point_written:
+                # The run ended on an exception or an interrupt, which is on
+                # its way out of here: the resume point is written first, and
+                # a failure to write it is reported rather than raised, so it
+                # cannot replace the error that ended the run.
+                try:
+                    arm.save_resume_point()
+                except Exception as failure:  # noqa: BLE001 - must not mask the original
+                    print(f"[{arm.name}] resume point not written: {failure}", flush=True)
+        finally:
+            # A run that ended badly is still a run that has to be closed, or
+            # it would sit open in the store forever.
+            arm.run.finish()
 
 
 def connect(

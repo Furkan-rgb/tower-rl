@@ -297,6 +297,32 @@ after. Stop after three consecutive unexplained failures.
 `state/bridge/current` is never repointed. One device stage at a time; no
 polling loops.
 
+**Amendment, 2026-09-26.**
+
+- **Attempt 1 disregarded.** Attempt 1
+  (`state/runs/session-20260926-080023/dreamerv3-20260926-080023-3dfc9b/`)
+  was stopped deliberately at 29,847 decisions at 09:11, on the
+  developer's direction, so the learner could be optimised. It is
+  disregarded, in full.
+- **Stray resume disregarded.** A stray automatic resume of attempt 1
+  started at 09:15 and was stopped at about 35.5k decisions (exit 130,
+  cleanup ok). It is disregarded, in full. Its logs are
+  `state/logs/m3-p007-dreamer-train-resume-*.log`.
+- **Learner change.** The learner now runs bf16 autocast plus
+  `torch.compile`/CUDA graphs (`DreamerBackbone.mixed_precision`,
+  `DreamerBackbone.compiled`), landed at merge `da7a7bd` ("Merge Dreamer
+  learner bf16 + torch.compile speed-up (3.4x per update)"): 29.5 ms/update
+  measured against 101 ms/update idle before the change. The algorithm and
+  hyperparameters are unchanged; `dreamer_compute_dtype` is recorded in the
+  resolved config (`src/tower_rl/experiment/run_identity.py:280-289`).
+- **Relaunch.** The run below is a FRESH start with the identical recipe
+  pre-registered above (no resume flags), with a new timebox of 20 h wall
+  for training (superseding the 34 h estimate above, which assumed the
+  pre-speed-up learner step time).
+- **Known risk, accepted.** A cold `torch.compile` of ≈4 min on the first
+  update blocks actors. The inductor cache (`/tmp/torchinductor_furkan`)
+  is expected warm for the relaunch.
+
 ## M3-P006: stacked-dqn with the adopted `M3-P005` recipe, 1,000,000 decisions (pre-registered, written before the run)
 
 **Date:** 2026-09-25. Board `#84`. Developer-approved (~16 h training plus

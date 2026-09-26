@@ -1616,11 +1616,21 @@ def test_an_interrupt_while_the_fleet_collects_leaves_a_matching_resume_point(
     def interrupted(self: TrainingRun) -> Any:
         # The fleet runs off the main thread, as the pool's actors do when the
         # interrupt leaves the main thread's join.
-        fleet = threading.Thread(target=self.advance, args=(self.config.budget_decisions,))
+        # A daemon, so a regression that never halts cannot hang the suite.
+        fleet = threading.Thread(
+            target=self.advance, args=(self.config.budget_decisions,), daemon=True
+        )
         collecting.append(fleet)
         fleet.start()
-        while self.report.decisions < 100:
+        deadline = time.monotonic() + 60
+        while (
+            self.report.decisions < 100
+            and fleet.is_alive()
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.005)
+        assert fleet.is_alive(), "the fleet stopped before it was interrupted"
+        assert self.report.decisions >= 100, "the fleet collected too slowly to interrupt"
         raise KeyboardInterrupt
 
     monkeypatch.setattr(TrainingRun, "run", interrupted)

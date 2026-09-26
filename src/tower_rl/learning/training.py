@@ -972,6 +972,8 @@ class TrainingRun:
         """
         if decisions < 1:
             raise ValueError("a block must be at least one decision")
+        if self._halted:
+            raise RuntimeError("the run is halted: its resume point is already written")
         report = self.report
         target = min(report.decisions + decisions, self.config.budget_decisions)
         collecting = [

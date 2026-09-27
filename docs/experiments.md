@@ -46,7 +46,11 @@ resume restarted replay empty (a discontinuity predating replay
 persistence, `#87`), its evaluation set also did not cross the wall
 (P(final ≥ 22) = 0.000) and scored below `M3-P006` on this single-run
 comparison (-1.32, Welch 95% CI ≈ [-2.36, -0.27]); no eval or training
-episode in this run reached wave 22.
+episode in this run reached wave 22. `M3-P008` (`#85`) then reruns
+`M3-P006`'s exact stacked-dqn recipe with always-on R2D2 prioritized
+replay (`#87`, `aadf8f4`) and no early stop, trained to the full
+1,000,000-decision budget with replay persistence (`#87`) active across
+any resume.
 
 | ID | question | change vs control | control | result (eval mean final wave, n, P(≥20)) | verdict | what was learned | commit(s) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -57,6 +61,7 @@ episode in this run reached wave 22.
 | `M3-P005` | Does ε-z-greedy's temporally-extended exploration produce the sustained investment needed to pass the wall? | `--ez-greedy` on top of `M3-P004`'s flags (game-time discount + survival-time reward) | `M3-P004` 18.270, SD 3.213, n=100 | 16.346, SD 4.368, n=104, P(≥20)=0.481 (50/104) | ADOPT, per the pre-registered rule (healthy AND eval mean ≥15.97); "wall crossed" tier not met (P(≥22)=0.000 < 0.05) | P(≥21) rose to 0.154 (16/104) vs control 0.020, but not a new ceiling (M2 run 4 already reached wave 21 in 32/105); all 16 wave-21 deaths were incomplete; no consistent rise across exploring actors 2-4; long-option episodes (`longest_option`≥10) had a lower, not higher, mean final wave | `438a923` (land), `90def22` (pre-registration), `93ff866` (results) |
 | `M3-P006` | Does ~8× more training (1,000,000 decisions vs 120,712) with the adopted `M3-P005` recipe cross the wave 20-21 wall? | `--budget-decisions 1000000` (plus `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--replay-capacity 4096` explicit, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2`) on top of `M3-P005`'s exact recipe | `M3-P005` 16.346, SD 4.368, n=104 | 17.010, SD 4.163, n=104, P(≥20)=0.500 (52/104) | "More training did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule; run early-stopped at 752,118 decisions (period 15/20) | Eval mean indistinguishable from `M3-P005` (bootstrap +0.663 [-0.490,+1.808]); arm from period 10 (500,143 decisions), curve peaked there then declined; one training episode (near-greedy actor, index 1791/3650) completed wave 21 and reached wave 22 — the project's first, not reproduced elsewhere in training or in eval | `f6ad3d1` (pre-registration) |
 | `M3-P007` | At the same 1,000,000-decision budget and early-stop rule as `M3-P006`, does DreamerV3 (a model-based learner) cross the wave 20-21 wall that stacked-dqn did not? | `--backbone dreamerv3`, `--budget-decisions 1000000`, `--replay-capacity 40000` (scaled from `M3-P002`'s default 4096, which would FIFO at ≈13% of this budget), `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` — identical periods/early-stop to `M3-P006`; `train_ratio=512` (0.5 gradient steps/decision) per `DreamerConfig`'s default | `M3-P002` 12.676, SD 2.392, n=105; context: `M3-P006` 17.010, SD 4.163, n=104 | 15.695, SD 3.533, n=105, P(≥20)=0.181 (19/105) | "DreamerV3 did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule | Deviation: early stopping was dropped mid-run by developer decision, training to the full 1,000,000-decision budget instead of stopping at period 16 (800,124 decisions); a resume (r3-cont) restarted replay empty, predating `#87`; arm from period 11 (550,069 decisions, predates the resume); vs `M3-P006` (single run each): -1.32, Welch 95% CI ≈ [-2.36, -0.27]; bimodal eval distribution (35/105 die at waves 11-12, 19/105 reach 20); no wave ≥22 episode anywhere in training or eval | `ce9c2e0` (pre-registration), `f263b7b` (amendment), this commit (results) |
+| `M3-P008` | With `M3-P006`'s exact recipe unchanged, does always-on R2D2 prioritized replay (α=0.9, β=0.6, η=0.9) plus no early stop move the eval mean or the P(≥22) wall-crossed reading? | `M3-P006`'s command verbatim minus `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` (full `--budget-decisions 1000000`); PER always-on (`aadf8f4`) and replay persistence across resume (`#87`) are both active with no flag | `M3-P006` 17.010, SD 4.163, n=104 | pending | pending | pending | pending |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -76,6 +81,144 @@ The move renames each entry as it stood, so a past run's directory keeps its
 name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
+
+## M3-P008: stacked-dqn with R2D2 prioritized replay, 1,000,000 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-27. Board `#85`. Developer pre-approved (standing
+approval for pre-registered runs).
+
+**Question.** With `M3-P006`'s exact adopted recipe unchanged, does
+always-on R2D2 prioritized replay (`#87`'s replay persistence also
+active) move the eval mean or the P(final ≥ 22) wall-crossed reading?
+
+**Control: `M3-P006`** (stacked-dqn, same 1,000,000-decision budget, eval
+mean **17.010**, SD 4.163, n=104, P(≥20)=0.500, P(≥21)=0.202,
+`state/records/m3-p006/eval-arm`).
+
+**Recipe: `M3-P006`'s exact training command, taken verbatim from its
+stage log** (`state/logs/m3-p006-train-seed0-20260925-232110.log:12`;
+manifest confirms every value at
+`state/runs/session-20260925-232552/stacked-dqn-20260925-232552-60d486/manifest.json`),
+with exactly three changes:
+
+1. **Prioritized replay is now always on**, at the R2D2 values α=0.9,
+   β=0.6, η=0.9 (`R2D2_PRIORITY_EXPONENT`, `R2D2_IMPORTANCE_SAMPLING_EXPONENT`,
+   `R2D2_PRIORITY_MIX` in `src/tower_rl/learning/replay.py:38,43,47`,
+   merged `aadf8f4`). There is no CLI flag for this, and `M3-P006`'s
+   command contained no replay-priority flag either (`scripts/train.py`
+   has never exposed one; the only replay-related flag is
+   `--replay-capacity`) — so nothing is dropped from the command for this
+   change; it takes effect automatically now that it is on `main`.
+2. **No early stop.** `--early-stop-patience-periods 5
+   --early-stop-min-improvement 0.2` are removed. Confirmed by dry-parsing
+   the command below through `train.parse_arguments`:
+   `early_stop_patience_periods` resolves to its default, `0`, and
+   `training.PlateauTracker.plateaued` returns `bool(patience_periods) and
+   ...` (`src/tower_rl/learning/training.py:505`) — `0` is falsy, so the
+   plateau check never fires and the run trains to the full
+   `--budget-decisions 1000000` (present in `M3-P006`'s command already,
+   unchanged).
+3. **Replay persistence (`#87`) is active**, merged in this session
+   (`78d6329`): the run saves its replay buffer beside `latest.pt` on exit
+   and reloads it on `--resume`, with no flag to set (`scripts/train.py:59-63`).
+
+Everything else is identical to `M3-P006`'s command: `seed 0`, `--actors
+7`, both kill bars (`12000:8000:6.1`, `26262:8000:6.1`),
+`--selection-period-decisions 50000`, `--checkpoint-every-decisions
+25000`, `--replay-capacity 4096` (explicit, unchanged), `--exploration
+ladder`, `--epsilon-anneal-decisions 8000`, `--gradient-steps-per-decision
+1.0`, `--n-step 10 --n-step-final 3 --n-step-anneal-steps 10000`,
+`--frame-game-ms 100`, `--discount-per-game-second 0.997`,
+`--survival-time-reward`, `--ez-greedy`, `--upgrade-availability all`,
+`--decision-cadence choice-points`, `--frame-rate-hz 120`, `--renderer
+host`. No flag `M3-P006` used is missing or changed beyond the three
+listed above — checked directly against its logged command, not
+reconstructed from memory.
+
+**Verified against `main` @ `78d6329`**: dry-parsed the exact command
+through `train.parse_arguments`, no `SystemExit`; every frozen field
+matches `M3-P006`'s manifest value (`backbone=stacked-dqn`, `actors=7`,
+`seed=0`, `budget_decisions=1000000`, `checkpoint_every_decisions=25000`,
+`selection_period_decisions=50000`, `epsilon_anneal_decisions=8000`,
+`gradient_steps_per_decision=1.0`, `n_step=10`, `n_step_final=3`,
+`n_step_anneal_steps=10000`, `frame_game_ms=100.0`,
+`discount_per_game_second=0.997`, `survival_time_reward=True`,
+`ez_greedy=True`, `replay_capacity=4096`, `exploration=ladder`,
+`kill_bars=[KillBar(12000, 8000, 6.1), KillBar(26262, 8000, 6.1)]`); the
+two changed fields resolve as intended (`early_stop_patience_periods=0`,
+budget unchanged at `1000000`).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/render-interval-16
+    scripts/run_stage.sh --name m3-p008-stackeddqn-per-train --instances 7 -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 1000000 --checkpoint-every-decisions 25000 \
+      --selection-period-decisions 50000 --epsilon-anneal-decisions 8000 --seed 0 \
+      --gradient-steps-per-decision 1.0 --n-step 10 --n-step-final 3 \
+      --n-step-anneal-steps 10000 --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 \
+      --frame-game-ms 100 --discount-per-game-second 0.997 --survival-time-reward \
+      --ez-greedy --replay-capacity 4096
+
+**Diff against `M3-P006`'s exact command:**
+
+    - --early-stop-patience-periods 5 --early-stop-min-improvement 0.2
+    (all other flags unchanged; PER always-on and replay persistence are
+    not flags — they are recipe/infrastructure changes already on `main`)
+
+**Builds.** `render-interval-16` for training collection
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228`).
+Evaluation on the default build (`state/bridge/current`, never repointed).
+
+**Arm rule.** `docs/solution.md` §9.2b, unchanged: the best near-greedy
+selection-period mean, counting periods 2 and later, ties broken to the
+earlier period.
+
+**Evaluation.** The arm, on the default build, n=105 (7×15), as in
+`M3-P006`:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p008 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 \
+        --output-directory state/records/m3-p008/eval-arm
+
+**Primary comparison.** Eval mean vs `M3-P006` (17.010, n=104), reported
+as the difference with a Welch 95% CI; plus P(final ≥ 20) and P(final ≥
+21). Descriptive only: a single run each, and PER stays on regardless of
+the result.
+
+**"Wall crossed."** Eval P(final ≥ 22) ≥ 0.05, the same tier as
+`M3-P006`/`M3-P007`. Otherwise: "prioritized replay did not cross the
+wall under this recipe."
+
+**Timebox.** Derived from `M3-P006`'s own measured training rate: stage
+wall `07:50:35` (28,235 s) over 752,118 decisions = 26.638
+decisions/second. At that rate, 1,000,000 decisions would take ≈37,541 s
+(≈10.43 h); ×1.5 = ≈15.64 h, rounded up to **16 h**.
+
+**Resume policy.** Only a genuine crash (a non-zero exit other than 130)
+gets one resume from `latest.pt`, which now reloads its saved replay
+buffer (`#87`). A second crash means stop and report, not a second
+resume.
+
+**Health.** No kill bar fires and the loss is finite. Value-fit
+correlation, if computed, is reported descriptively only, per `M3-P005`'s
+and `M3-P006`'s health-gate rationale (it does not gate this run; there is
+no early-stop or health gate to fail since early stopping is removed).
+
+**Known confounds, stated in advance.** One seed (0), as with every prior
+`M3` run. PER's own effect and the removal of early stopping are both
+changed in this run at once relative to `M3-P006`; a null or positive
+result cannot be attributed to either alone.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
 
 ## M3-P007: DreamerV3 at 1,000,000 decisions, `M3-P006`'s twin run (pre-registered, written before the run)
 

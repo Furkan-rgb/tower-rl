@@ -84,12 +84,14 @@ class StackedDqnConfig:
     learning_rate: float = 1e-4
     #: Decoupled weight decay, hence AdamW rather than Adam.
     weight_decay: float = 1e-5
-    #: AdamW's epsilon, 1.5e-4 as Rainbow, DER, SPR and BBF use rather than
-    #: torch's 1e-8: it bounds the step on a parameter whose second moment is
-    #: near zero, which a TD target that moves as the value does keeps
-    #: producing. Every checkpoint written before this field ran at 1e-8, and
-    #: a resume keeps the epsilon its optimizer state holds.
-    adam_epsilon: float = 1.5e-4
+    #: AdamW's epsilon. Rainbow, DER, SPR and BBF use 1.5e-4, but that value
+    #: pairs with rewards clipped to +-1; this run's rewards are ~1/35 per
+    #: game-second, so 1.5e-4 dominates rather than bounds the second moment:
+    #: at M3-P010 300k, 41% of parameters had sqrt(v_hat) below it, and its
+    #: mean update per step was 0.044x the learning rate against M3-P009's
+    #: 0.102x at 1e-8 (M3-P010, docs/experiments.md). Reverted to torch's
+    #: default 1e-8. A resume keeps the epsilon its optimizer state holds.
+    adam_epsilon: float = 1e-8
     #: A target that follows the online network smoothly. At this replay ratio a
     #: periodic hard copy moves the target in large infrequent jumps, which is
     #: what the data-efficient recipe replaces.

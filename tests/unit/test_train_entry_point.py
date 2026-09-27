@@ -244,9 +244,9 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     """
     defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
 
-    # About 64 transitions replayed per decision: 0.114 x 8 sequences x 70
-    # learnable steps at the final n of 3 (solution.md 9.4).
-    assert defaults.gradient_steps_per_decision == 0.114
+    # M3-P009's replay ratio, reverted from M3-P010's 0.114 (board #85,
+    # solution.md 9.4).
+    assert defaults.gradient_steps_per_decision == 1.0
     assert defaults.batch_size == 8
     assert defaults.warmup_sequences == 100
     assert defaults.sequence_length == 80
@@ -258,8 +258,8 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     assert (defaults.epsilon_start, defaults.epsilon_end) == (1.0, 0.05)
     assert defaults.epsilon_anneal_decisions == 10_000
     assert defaults.exploration == "uniform", "run 1's schedule is the default"
-    # The whole budget: about a million decisions at a stride of 40.
-    assert defaults.replay_capacity == 25_000
+    # M3-P009's known-good capacity, reverted from M3-P010's 25,000 (board #85).
+    assert defaults.replay_capacity == 4096
     assert defaults.collection_window_episodes == 100
     assert defaults.evaluate_every_episodes == 0, "no frequent mid-run evaluation"
     assert defaults.evaluation_episodes == 30
@@ -1974,17 +1974,19 @@ def test_a_checkpoint_sampled_uniformly_is_not_resumed_under_prioritized_replay(
         resume_from(tmp_path / "second", older, 400)
 
 
-# -- The replay ratio, the buffer and what a resume keeps (boards #92, #93) ----
+# -- The replay ratio, the buffer and what a resume keeps (boards #92, #93, #85)
 
 
-def test_the_default_replay_ratio_replays_about_64_transitions_per_decision(
+def test_the_default_replay_ratio_replays_about_560_transitions_per_decision(
     tmp_path: Path,
 ) -> None:
     """Gradient steps per decision x sequences per step x learnable steps each.
 
     The learnable steps are counted by the target itself: a window of 80 with
     burn-in 7 leaves 73 steps, and the last n of them have no bootstrap state
-    inside the window.
+    inside the window. The default reverted to M3-P009's 1.0 gradient steps
+    per decision (board #85); at that ratio a batch of 8 replays about 560
+    transitions per decision at the final n of 3.
     """
     defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
     unroll = defaults.sequence_length - defaults.stacked_burn_in
@@ -2007,12 +2009,19 @@ def test_the_default_replay_ratio_replays_about_64_transitions_per_decision(
         )
 
     # At the final n of the anneal the recipe runs, and while n is at its start.
-    assert replayed_per_decision(3) == pytest.approx(64.0, abs=0.5)
-    assert replayed_per_decision(defaults.n_step) == pytest.approx(57.5, abs=0.5)
+    assert replayed_per_decision(3) == pytest.approx(560.0, abs=1.0)
+    assert replayed_per_decision(defaults.n_step) == pytest.approx(504.0, abs=1.0)
 
 
-def test_the_default_buffer_holds_a_million_decisions(tmp_path: Path) -> None:
-    """Nothing within the budget is discarded, at baseline v2's 550-decision episodes."""
+def test_the_default_buffer_holds_about_170k_decisions(tmp_path: Path) -> None:
+    """M3-P009's known-good capacity, deliberately short of the whole budget.
+
+    25,000 windows would have held the whole ~1M-decision budget, but kept the
+    early heavily-explored data forever and cost ~19 GiB with swap already
+    full, with no evidence for it beyond covering the budget (M3-P010,
+    docs/experiments.md, board #85). 4096 windows at baseline v2's
+    550-decision episodes evict long before the budget is spent.
+    """
     defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
     actor = Actor(
         environment=cast(InstrumentedRunEnvironment, None),
@@ -2040,7 +2049,9 @@ def test_the_default_buffer_holds_a_million_decisions(tmp_path: Path) -> None:
     windows = len(actor._windows([step] * decisions))
 
     assert windows == 13
-    assert defaults.replay_capacity * decisions / windows >= 1_000_000
+    covered_decisions = defaults.replay_capacity * decisions / windows
+    assert covered_decisions == pytest.approx(173_292, abs=1000)
+    assert covered_decisions < 200_000, "capacity is deliberately short of the ~1M budget"
 
 
 def test_a_resume_under_another_loop_setting_is_refused(tmp_path: Path) -> None:

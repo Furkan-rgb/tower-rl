@@ -564,11 +564,13 @@ refresh at an episode's start restarts the count, so no episode opens on
 parameters older than the previous one's last. 100 is Ape-X's: its actors copy
 the learner's parameters every 400 frames (Horgan et al. 2018, §4.1), which at
 an action repeat of 4 is 100 agent steps. A fleet of seven at the default
-0.114 gradient steps per decision then acts on parameters at most about
-7 × 100 × 0.114 ≈ 80 gradient steps old, where refreshing once per
-~550-decision episode leaves them about 7 × 550 × 0.114 ≈ 440 behind (3,850 at
-M3-P009's 1.0 gradient steps per decision), a lag that grows with episode
-length. A mid-episode swap is safe for `stacked-dqn` because what it carries
+1.0 gradient steps per decision (M3-P009's value, reverted from M3-P010's
+0.114 — board #85) then acts on parameters at most about
+7 × 100 × 1.0 ≈ 700 gradient steps old, where refreshing once per
+~550-decision episode instead would leave them about 7 × 550 × 1.0 ≈ 3,850
+behind, a lag that grows with episode length. M3-P009 won under that
+3,850-step staleness, so staleness is not first-order at or below it (M3-P010,
+docs/experiments.md); it is not measurable offline. A mid-episode swap is safe for `stacked-dqn` because what it carries
 through an episode is a window of its own inputs, not a state its parameters
 produced; a swap changes how the window is read, never what is in it.
 DreamerV3's carried latent is produced by its parameters, so it is fixed at
@@ -1514,29 +1516,43 @@ generated, not gradient steps per decision: a gradient step here replays a whole
 batch of unrolled sequences. At 80-step sequences, burn-in 7 and batch 8 a
 sequence has 73 − n learnable steps (the last n have no bootstrap state inside
 the window), so one step replays 8 × 70 = 560 transitions at the final n of 3.
-The default, 0.114 gradient steps per decision, is therefore 63.8:1 (57.5:1
-while n is still 10) — SPR's 64:1, and 114k gradient steps over a 1M-decision
-budget, comparable to SPR's 100k. Not higher: without network resets the gain
-from a higher replay ratio fails beyond about 1-2 updates per step at batch 32,
-32-64:1 (D'Oro et al. 2023), and BBF's 256:1 depends on the resets this learner
-does not have. M3-P009 ran 1.0 (560:1); the first training run's 2.0 was
-1087:1, against 8 for DQN and about 1 for Ape-X and R2D2.
+The default, reverted to M3-P009's 1.0 gradient steps per decision (from
+M3-P010's 0.114 — board #85), is therefore 560:1 (504:1 while n is still 10),
+against 8 for DQN and about 1 for Ape-X and R2D2; the first training run's 2.0
+was 1087:1. M3-P010 ran the data-efficient literature's 32-64:1 band instead
+(SPR's 64:1: without network resets the gain from a higher replay ratio fails
+beyond about 1-2 updates per step at batch 32, D'Oro et al. 2023, and BBF's
+256:1 depends on the resets this learner does not have). At matched gradient
+steps M3-P010 tracked M3-P009 within 2.5-4 waves, but 0.114 gradient steps per
+decision reaches a given step count 9x slower in decisions than 1.0 does, and
+M3-P009's climb to ~37 happened between 35k and 100k gradient steps — which
+M3-P010 would only reach at 300k-900k decisions. D'Oro et al.'s bound was
+derived in the Atari-100k batch-32 regime and is contradicted here: it is not
+evidence for running below 1.0 on this project's geometry and reward scale
+(M3-P010, docs/experiments.md).
 
-Replay holds the whole run: `--replay-capacity` defaults to 25,000 windows,
-1M decisions at the asymptotic 40 decisions per window of a stride of 40 (about
-1.06M at 550-decision episodes). The data-efficient methods this learner
-follows (DER, SPR, BBF) never discard data within their budget, and Ape-X keeps
-2M transitions. A stored decision costs about 19.5 KB in memory (582 Python
-floats of features; measured 2026-09-27 on synthetic episodes cut by
-`Actor._windows`), so 25,000 windows are about 19.2 GiB against 4096's 3.2 GiB.
-The host has 125 GiB, of which about 33 GB were available with M3-P009's seven
-emulators and its 4096-window buffer running.
+Replay does not need to hold the whole run: `--replay-capacity` defaults to
+4096 windows, M3-P009's known-good value (about 164k decisions at the
+asymptotic 40 decisions per window of a stride of 40, evicting well before a
+~1M-decision budget is spent). 25,000 windows, tried at M3-P010, would keep the
+early heavily-explored data forever within the budget and cost about 19.2 GiB
+against 4096's 3.2 GiB, with swap already full under M3-P009's seven emulators
+(about 33 GB available) — and there is no evidence it helps: capacity's effect
+is untested and is a candidate for its own arm, not a default backed by a
+result. A stored decision costs about 19.5 KB in memory (582 Python floats of
+features; measured 2026-09-27 on synthetic episodes cut by `Actor._windows`).
 
-The optimiser is AdamW at lr 1e-4 with weight decay 1e-5 and ε 1.5e-4, the ε of
-Rainbow, DER, SPR and BBF, rather than torch's 1e-8: ε bounds the step on a
-parameter whose second moment is near zero. A resume keeps the ε its
-optimizer state carries — torch restores it with the state — so a checkpoint
-from before this goes on at 1e-8, and its record says so.
+The optimiser is AdamW at lr 1e-4 with weight decay 1e-5 and ε reverted to
+torch's default 1e-8 (from M3-P010's 1.5e-4, the ε of Rainbow, DER, SPR and
+BBF — board #93, reverted board #85). 1.5e-4 pairs with those recipes' rewards
+clipped to ±1; this project's rewards are about 1/35 per game-second, so 1.5e-4
+does not merely bound the step on a near-zero second moment, it dominates it:
+at M3-P010 300k decisions, 41% of parameters had sqrt(v̂) below 1.5e-4, and its
+mean per-step update was 0.044× the learning rate against M3-P009's 0.102× at
+1e-8; applying 1.5e-4 to M3-P009's own moments would have cut its step by 36%
+(M3-P010, docs/experiments.md). A resume keeps the ε its optimizer state
+carries — torch restores it with the state — so a checkpoint from before board
+#93 goes on at 1e-8 already, and its record says so.
 
 None of the replay ratio, the capacity or the refresh cadence is in a
 checkpoint's identity, and each now defaults to a different value than the runs

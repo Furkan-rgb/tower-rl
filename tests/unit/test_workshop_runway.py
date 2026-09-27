@@ -188,22 +188,40 @@ def test_a_held_check_that_cannot_read_refuses_the_episode() -> None:
     assert [command[0] for command in port.workshop_commands] == ["set", "begin", "read"]
 
 
-def _proc(root: Path, command_line: str) -> Path:
-    """A `/proc` holding one process with this argv, the shape the check reads."""
-    (root / "4242").mkdir(parents=True)
-    (root / "4242" / "cmdline").write_bytes(command_line.replace(" ", "\0").encode() + b"\0")
-    (root / "self").mkdir()
+_QEMU = "/opt/android-sdk/emulator/qemu/linux-x86_64/qemu-system-x86_64"
+
+
+def _proc(root: Path, *processes: tuple[str, str]) -> Path:
+    """A `/proc` holding these (executable, argv) processes, the shape the check reads."""
+    for pid, (executable, command_line) in enumerate(processes, start=4242):
+        entry = root / str(pid)
+        entry.mkdir(parents=True)
+        (entry / "exe").symlink_to(executable)
+        (entry / "cmdline").write_bytes(command_line.replace(" ", "\0").encode() + b"\0")
+    (root / "self").mkdir(parents=True)
     return root
 
 
 def test_a_workshop_write_is_refused_unless_the_instance_is_read_only(tmp_path: Path) -> None:
-    writable = _proc(tmp_path / "a", "qemu-system-x86_64 -avd clone -port 5556 -no-window")
-    confined = _proc(tmp_path / "b", "qemu-system-x86_64 -avd clone -port 5556 -read-only")
+    writable = _proc(tmp_path / "a", (_QEMU, "qemu-system-x86_64 -avd clone -port 5556 -no-window"))
+    confined = _proc(tmp_path / "b", (_QEMU, "qemu-system-x86_64 -avd clone -port 5556 -read-only"))
+    # A shell quoting a read-only argv is not an emulator, so it confines nothing.
+    quoted = _proc(tmp_path / "c", ("/usr/bin/bash", "bash -c emulator -port 5556 -read-only"))
+    # One of two emulators on the port is writable: the write is refused.
+    mixed = _proc(
+        tmp_path / "d",
+        (_QEMU, "qemu-system-x86_64 -avd clone -port 5556 -read-only"),
+        (_QEMU, "qemu-system-x86_64 -avd clone -port 5556 -no-window"),
+    )
 
     with pytest.raises(SystemExit, match="WORKSHOP_NOT_CONFINED.*not launched -read-only"):
         run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 5, writable)
     with pytest.raises(SystemExit, match="WORKSHOP_NOT_CONFINED.*no emulator process"):
         run_episodes.refuse_an_unconfined_workshop_write("emulator-5558", 5, confined)
+    with pytest.raises(SystemExit, match="WORKSHOP_NOT_CONFINED.*no emulator process"):
+        run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 5, quoted)
+    with pytest.raises(SystemExit, match="WORKSHOP_NOT_CONFINED.*not launched -read-only"):
+        run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 5, mixed)
     run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 5, confined)
     # Level 0 writes nothing, so it needs no confinement.
     run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 0, writable)

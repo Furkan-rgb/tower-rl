@@ -164,8 +164,10 @@ configuration** ([ADR 0012](adr/0012-workshop-runway-profile-is-controller-owned
   Level Skips, Death Defy, Recovery, Wall) are not touched. N is bounded to
   9999, the bridge's own limit.
 
-A level above 0 is refused before anything connects unless the target emulator
-was launched `-read-only` (`WORKSHOP_NOT_CONFINED`). At N = 0 nothing is read
+A level above 0 is refused before anything connects unless an emulator process
+holds the target's console port and every such process was launched
+`-read-only` (`WORKSHOP_NOT_CONFINED`). Only a process whose executable is the
+emulator or `qemu-system-*` counts. At N = 0 nothing is read
 or reset, so an instance that has taken a Workshop write must be torn down
 before any N = 0 run.
 

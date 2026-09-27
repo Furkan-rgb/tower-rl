@@ -232,7 +232,7 @@ def window_metrics(
     window: CollectionWindow,
     *,
     actor_index: Mapping[str, int],
-    scripted_floor: float | None = SCRIPTED_REFERENCE,
+    scripted_floor: float | None,
 ) -> dict[str, float]:
     """One point of the collection curve, which is what the run is read from.
 

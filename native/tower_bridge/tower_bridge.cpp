@@ -1210,7 +1210,8 @@ bool ResolveWorkshopArrays(const Il2CppApi& api, Il2CppObject* main,
 
 bool SameWorkshopArrays(const WorkshopArrays& left, const WorkshopArrays& right) {
   return left.names == right.names && left.levels == right.levels &&
-         left.max_levels == right.max_levels && left.length == right.length;
+         left.max_levels == right.max_levels && left.implemented == right.implemented &&
+         left.length == right.length;
 }
 
 // The Workshop runway profile (ADR 0012). With `command.workshop_write` it

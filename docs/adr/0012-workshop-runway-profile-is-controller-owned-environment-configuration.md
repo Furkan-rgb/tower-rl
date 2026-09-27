@@ -8,7 +8,7 @@ target has not been exercised on device yet.
 ## Context
 
 Every run so far was played on the v1 account: highest wave 2, no Workshop
-("Enhancement") levels at all. On that account the tower hits a wall around
+levels at all. On that account the tower hits a wall around
 wave 20 whatever the policy does, so the episodes stop exercising the in-run
 decisions that matter later in a round. That wall is a property of the account,
 not of the policy.
@@ -54,8 +54,10 @@ action, and it is never persisted.**
   Critical Chance, Critical Factor, Health, Health Regen, Defense %, Defense
   Absolute, Thorns, Cash Bonus and Cash / Wave. These are the levers that let a
   tower survive and earn in a normal round. The names in
-  `environment/workshop.WORKSHOP_RUNWAY_ROWS` are the exact in-run labels,
-  confirmed on the device. Thorns is "Thorn Damage" and cash per wave is
+  `environment/workshop.WORKSHOP_RUNWAY_ROWS` are the exact in-run labels, as
+  read on the device. Each is resolved by its in-run name at a shared index,
+  which stays device-unconfirmed until the per-row gate below passes. Thorns is
+  "Thorn Damage" and cash per wave is
   "Cash / Wave".
 - **Rows held at 0, and why.** Each would change what a round *is* rather than
   how long the tower lasts in it:
@@ -77,8 +79,10 @@ action, and it is never persisted.**
   families, then write; read everything back. It reports each family's
   implemented count and every row's Workshop level before and after.
 - **Confinement.** The host refuses a level above 0
-  (`WORKSHOP_NOT_CONFINED`) unless the target emulator's process was launched
-  `-read-only`.
+  (`WORKSHOP_NOT_CONFINED`) unless an emulator process holds the target's
+  console port and every such process was launched `-read-only`. Only a process
+  whose executable is the emulator or `qemu-system-*` counts; any other process
+  can quote an emulator's argv.
 - **Placement and enforcement.** `InstrumentedRunEnvironment.reset` writes the
   profile *before* `begin_episode`, and checks it once the round has started.
   - If the write does not land, the episode is refused with
@@ -107,12 +111,21 @@ action, and it is never persisted.**
 - **Floors per profile.** A v2 arm's curve can only be read against floors
   measured under the same Workshop level. Until those exist, a run at N > 0
   reports `reference_final_waves` and `versus_scripted_reference` as null.
-- **A gate before any v2 measurement.** A device check must first show that
-  play at N differs from play at N = 0: in wave-1 tower stats or in-run row
-  values (the observation's `damage`, `attackSpeed`, `thornDamage`, tower max
-  health and so on), and in final waves. The bridge reports only the levels it
-  wrote. That the game acts on them is a separate claim, and this check is
-  what establishes it.
+- **A per-row gate before any v2 measurement.** Each row is resolved by its
+  in-run name, at an index it is assumed to share with its Workshop row. That
+  assumption is unconfirmed on the device until this gate passes. The bridge
+  reports only the levels it wrote; this check establishes that the game acts
+  on them, and on the right rows. A device check must show, at N against
+  N = 0 and at wave 1:
+  - **Each targeted stat moves.** `damage`, `attackSpeed`, `criticalChance`,
+    `criticalMult`, tower max health, `towerHealthRegen`, `defenseRel`,
+    `defenseAbs`, `thornDamage`, and the cash bonus / `cashPerWave`.
+  - **The mechanics held at 0 do not appear.** No orbs (`orbCount`), no Death
+    Defy, no wall (`wallHealth`), no recovery, no interest, no enemy level
+    skips.
+  - **Final waves** at N are compared against N = 0.
+  A row that does not move, or a held mechanic that does appear, means the
+  index alignment is wrong for that row, and no v2 measurement is taken.
 - **Tear down after a write.** At N = 0 nothing is read or reset. An instance
   that has taken a Workshop write must therefore be torn down before any
   N = 0 run, or that run would play the levels left behind.
@@ -123,7 +136,7 @@ action, and it is never persisted.**
   fields at initialisation, even when the level is 0. A build of the game
   without them fails closed at bridge start.
 - **Unconfirmed until the device check:**
-  - that a Workshop row shares its in-run row's index;
+  - that a Workshop row shares its in-run row's index (the per-row gate);
   - that `implemented*Workshops` bounds the valid rows;
   - whether a round start reloads the levels from the save (this is what
     `WORKSHOP_REVERTED` would catch);

@@ -293,31 +293,38 @@ def decision_cadence_from(arguments: argparse.Namespace) -> DecisionCadence:
     return DecisionCadence(arguments.decision_cadence)
 
 
-def emulator_command_line(serial: str, proc: Path = Path("/proc")) -> str | None:
-    """The command line of the emulator process that holds `serial`'s console port.
+def emulator_command_lines(serial: str, proc: Path = Path("/proc")) -> list[str]:
+    """The command line of every emulator process that holds `serial`'s console port.
 
-    The same reading `run_stage.sh`'s `emulator_command_line` takes: the process
-    whose argv carries `-port <console port>`, read from `/proc/<pid>/cmdline`.
-    `None` when the serial is not an emulator's or no process holds the port.
+    Only a process whose `/proc/<pid>/exe` is the emulator or a `qemu-system-*`
+    binary counts, as in `spectate.running_emulators`: any other process can
+    quote an emulator's argv (a shell, an editor, this script's own caller). Of
+    those, the ones whose `/proc/<pid>/cmdline` carries `-port <console port>`,
+    the reading `run_stage.sh` takes. Empty when the serial is not an
+    emulator's or no emulator holds the port.
     """
     port = serial.removeprefix("emulator-")
     if port == serial or not port.isdigit():
-        return None
+        return []
     try:
         entries = sorted(proc.iterdir())
     except OSError:
-        return None
+        return []
+    found: list[str] = []
     for entry in entries:
         if not entry.name.isdigit():
             continue
         try:
+            executable = Path(os.readlink(entry / "exe")).name
             raw = (entry / "cmdline").read_bytes()
         except OSError:  # gone, or not ours to look at
             continue
+        if not (executable.startswith("qemu-system") or executable == "emulator"):
+            continue
         text = " " + raw.replace(b"\0", b" ").decode("utf-8", "replace")
         if f" -port {port} " in text:
-            return text
-    return None
+            found.append(text)
+    return found
 
 
 def refuse_an_unconfined_workshop_write(
@@ -331,13 +338,13 @@ def refuse_an_unconfined_workshop_write(
     """
     if level == WORKSHOP_OFF:
         return
-    command_line = emulator_command_line(serial, proc)
-    if command_line is None:
+    command_lines = emulator_command_lines(serial, proc)
+    if not command_lines:
         raise SystemExit(
             f"WORKSHOP_NOT_CONFINED: no emulator process holds {serial}'s port, so it "
             "cannot be shown to be read-only; refusing a Workshop write"
         )
-    if " -read-only " not in command_line:
+    if any(" -read-only " not in command_line for command_line in command_lines):
         raise SystemExit(
             f"WORKSHOP_NOT_CONFINED: {serial} was not launched -read-only; refusing a "
             "Workshop write"

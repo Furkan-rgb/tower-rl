@@ -101,6 +101,7 @@ from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
+from tower_rl.environment.upgrade_setup import UpgradeSetupReference  # noqa: E402
 from tower_rl.experiment.run_identity import (  # noqa: E402
     RunIdentity,
     checkpoint_identity,
@@ -418,6 +419,16 @@ def build_arm(
     # untracked run has no such series, and must not write the untracked
     # handle's placeholder into a file a later resume would try to attach to.
     tracked_run_id = None if isinstance(tracker, NoExperimentTracker) else run.run_id
+    # The upgrade setup every actor's episodes are held to: the run's first, as
+    # the game read it back, and the parent's when this continues a checkpoint
+    # that recorded one. The final evaluation borrows instance 0, so it is held
+    # to the same one.
+    setup = UpgradeSetupReference(
+        expected=None if resume is None else resume.upgrade_setup_digest,
+        expected_from="the checkpoint" if resume is None else resume.parent_checkpoint,
+    )
+    for instance in instances:
+        instance.environment.setup_reference = setup
     progress = TrainingProgressReport()
     if resume is not None:
         # The counters the budget, the schedules and the cadences are all read
@@ -505,6 +516,20 @@ def build_arm(
 
     def on_episode(report: TrainingProgressReport) -> None:
         nonlocal warmed
+        if arm.identity.upgrade_setup_digest is None and setup.first is not None:
+            # The run's first episode has said which setup the game held: every
+            # checkpoint from here on is keyed on it, and the manifest records it.
+            arm.identity = replace(arm.identity, upgrade_setup_digest=setup.first.digest)
+            write_manifest(
+                manifest,
+                {
+                    "run_id": run_id,
+                    **resolved,
+                    "upgrade_setup": setup.first.to_record(),
+                    "upgrade_setup_digest": setup.first.digest,
+                },
+            )
+            run.log_artifact(manifest)
         if (
             not warmed
             and resume is not None

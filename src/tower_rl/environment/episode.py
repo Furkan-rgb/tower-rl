@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from tower_rl.environment.run_actions import RunActionId
 from tower_rl.environment.run_state import RunState
+from tower_rl.environment.upgrade_setup import UpgradeSetup
 
 REWARD_SCHEMA_VERSION = "reward-v1"
 
@@ -316,6 +317,12 @@ class EpisodeSummary:
     #: played on another profile is not comparable, so it says which it was.
     workshop_level: int = 0
     workshop_rows: tuple[str, ...] = ()
+    #: The upgrade setup the game actually held for this episode: every in-run
+    #: row, whether it was purchasable at the first observation, and the
+    #: Workshop level read back after the round began. The two fields above say
+    #: what was asked for; this says what was played on. None only for a
+    #: summary assembled without an environment.
+    upgrade_setup: UpgradeSetup | None = None
     #: Which cadence stops the policy was asked at (ADR 0009), for the same
     #: reason: a decision means a different thing under each. Both are strings
     #: rather than the environment's own enums because this module is below
@@ -338,3 +345,7 @@ class EpisodeSummary:
     @property
     def valid(self) -> bool:
         return self.termination in VALID_TERMINATIONS
+
+    @property
+    def upgrade_setup_digest(self) -> str | None:
+        return None if self.upgrade_setup is None else self.upgrade_setup.digest

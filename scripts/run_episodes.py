@@ -51,6 +51,10 @@ from tower_rl.environment.run_environment import (  # noqa: E402
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.environment.upgrade_setup import (  # noqa: E402
+    UpgradeSetupReference,
+    UpgradeSetupRefused,
+)
 from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows  # noqa: E402
 from tower_rl.learning.actor import ActorConfig  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, identity_hash  # noqa: E402
@@ -137,6 +141,10 @@ def policy_from(
         # The path is where the file is today; this is what it holds.
         "checkpoint_identity": identity_hash(identity),
         "run_id": identity.run_id,
+        # The upgrade setup the checkpoint's run was played on, which this
+        # session's first episode must reproduce; None for a checkpoint written
+        # before the setup was recorded.
+        "upgrade_setup_digest": identity.upgrade_setup_digest,
     }
 
 
@@ -474,6 +482,13 @@ def main() -> int:
             client.close()
         return 0
 
+    # A checkpoint is played only on the setup its run was played on; its first
+    # episode here must reproduce the digest it recorded.
+    expected_setup = identity.get("upgrade_setup_digest")
+    environment.setup_reference = UpgradeSetupReference(
+        expected=expected_setup if isinstance(expected_setup, str) else None,
+        expected_from=str(identity.get("checkpoint_path", identity["name"])),
+    )
     started = time.monotonic()
     try:
         report = evaluate(
@@ -483,6 +498,8 @@ def main() -> int:
             profile_id=expected.profile_id,
             actor_config=ActorConfig(actor_id=f"{arguments.serial}:{identity['name']}"),
         )
+    except UpgradeSetupRefused as refused:
+        raise SystemExit(f"cannot play {identity['name']} here: {refused}") from refused
     finally:
         adapter.release()
         client.close()

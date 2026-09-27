@@ -74,6 +74,13 @@ class CheckpointIdentity:
     #: existed, and those were all collected on the bare account - so 0 is the
     #: honest reading of a file that does not say.
     workshop_level: int = 0
+    #: The digest of the upgrade setup the game actually held for the run's
+    #: first episode (`environment/upgrade_setup.py`): which rows were
+    #: purchasable in-run and the Workshop level each stood at. None until the
+    #: run's first episode has been played, and in every checkpoint written
+    #: before the setup was recorded; a None on either side is not a refusal,
+    #: because it says nothing either way.
+    upgrade_setup_digest: str | None = None
 
     def incompatibilities(self, other: CheckpointIdentity) -> tuple[str, ...]:
         """Differences that make a resume unsafe. The run id may legitimately differ."""
@@ -106,6 +113,17 @@ class CheckpointIdentity:
             theirs = str(getattr(other, field_name))
             if mine != theirs:
                 reasons.append(f"{field_name} differs: {mine!r} vs {theirs!r}")
+        # Nor did one whose game held another upgrade setup than the one asked
+        # for under the same names. Only when both sides say which they were.
+        if (
+            self.upgrade_setup_digest is not None
+            and other.upgrade_setup_digest is not None
+            and self.upgrade_setup_digest != other.upgrade_setup_digest
+        ):
+            reasons.append(
+                "upgrade_setup_digest differs: "
+                f"{self.upgrade_setup_digest[:12]!r} vs {other.upgrade_setup_digest[:12]!r}"
+            )
         return tuple(reasons)
 
 
@@ -118,14 +136,17 @@ def identity_hash(identity: CheckpointIdentity) -> str:
     record that only carried a path would stop meaning anything the moment the
     file was copied.
 
-    `decision_cadence`, `upgrade_availability` and `workshop_level` are
-    deliberately not hashed. This token names a run, and a run collects under
-    one cadence, one availability and one Workshop level from beginning to end,
-    so none of the three can distinguish two identities that share a run id -
-    while hashing any of them would re-key every checkpoint and record written
-    before it existed, and the tokens already cited in selection records and
-    reports would stop resolving. Using a checkpoint under the wrong cadence,
-    availability or Workshop level is refused by `incompatibilities`, which
+    `decision_cadence`, `upgrade_availability`, `workshop_level` and
+    `upgrade_setup_digest` are deliberately not hashed. This token names a
+    run, and a run collects under one cadence, one availability, one Workshop
+    level and one upgrade setup from beginning to end, so none of the four can
+    distinguish two identities that share a run id - while hashing any of them
+    would re-key every checkpoint and record written before it existed, and the
+    tokens already cited in selection records and reports would stop
+    resolving. The setup digest is also unknown until a run's first episode,
+    so hashing it would give one run two names. Using a checkpoint under the
+    wrong cadence, availability, Workshop level or setup is refused by
+    `incompatibilities`, which
     says which field differs; that is the instrument for the refusal, and this
     is the instrument for naming the run.
     """
@@ -138,6 +159,7 @@ def _hashed_fields(identity: CheckpointIdentity) -> dict[str, Any]:
     del fields["decision_cadence"]
     del fields["upgrade_availability"]
     del fields["workshop_level"]
+    del fields["upgrade_setup_digest"]
     return fields
 
 
@@ -361,6 +383,9 @@ class ResumeState:
     #: checkpoint's decision count; None when there is none and the run
     #: re-warms replay. Set by the caller that checked it, not read from here.
     replay_dump: Path | None = None
+    #: The parent's upgrade setup digest, which the resumed run's first episode
+    #: must reproduce; None for a parent written before it was recorded.
+    upgrade_setup_digest: str | None = None
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:
@@ -379,6 +404,7 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
         best_period_near_greedy_mean=checkpoint.progress.best_period_near_greedy_mean,
         periods_without_improvement=checkpoint.progress.periods_without_improvement or 0,
         resolved_config=checkpoint.resolved_config,
+        upgrade_setup_digest=checkpoint.identity.upgrade_setup_digest,
     )
 
 

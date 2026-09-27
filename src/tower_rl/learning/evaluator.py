@@ -270,6 +270,12 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         # evaluation can be matched to the training it is read against.
         "workshop_level": summary.workshop_level,
         "workshop_rows": list(summary.workshop_rows),
+        # And the setup the game actually held, as it read it back: what the
+        # three fields above asked for is not always what was played on.
+        "upgrade_setup": (
+            None if summary.upgrade_setup is None else summary.upgrade_setup.to_record()
+        ),
+        "upgrade_setup_digest": summary.upgrade_setup_digest,
         "decisions": summary.decisions,
         # Decisions are choice points and advances are cadence slices, so both
         # units are recorded: a run collected under either cadence can be read

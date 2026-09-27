@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -495,3 +496,84 @@ def test_the_window_advances_during_a_repeat(monkeypatch: pytest.MonkeyPatch) ->
         _, greedy_state = greedy.act(features, greedy_state, epsilon=0.0)
         assert torch.equal(state, greedy_state)
     assert backbone.longest_option == 6
+
+
+# --- The optimiser's epsilon and the recipe's discount (board #93)
+
+
+def test_the_first_step_is_taken_at_an_adam_epsilon_of_1_5e_4() -> None:
+    """Read off the step itself, not the setting.
+
+    AdamW's first step moves a parameter p with (clipped) gradient g by
+    -lr * wd * p - lr * g / (|g| + eps): the bias-corrected moments are g and
+    g squared. Where |g| is far below eps, 1.5e-4 and torch's 1e-8 differ by
+    orders of magnitude - about lr itself, far above float32's rounding of
+    the step - so the step says which one it was taken at.
+    """
+    backbone = _backbone()
+    config = backbone.config
+    before = [parameter.detach().clone() for parameter in backbone.online.parameters()]
+
+    backbone.learn(collate((_sequence(), _sequence()), (1.0, 1.0)))
+
+    def expected(epsilon: float) -> list[torch.Tensor]:
+        return [
+            old
+            - config.learning_rate * config.weight_decay * old
+            - config.learning_rate * parameter.grad / (parameter.grad.abs() + epsilon)
+            for old, parameter in zip(before, backbone.online.parameters(), strict=True)
+            if parameter.grad is not None
+        ]
+
+    after = [
+        parameter.detach()
+        for parameter in backbone.online.parameters()
+        if parameter.grad is not None
+    ]
+    small = torch.cat(
+        [
+            parameter.grad.abs().flatten()
+            for parameter in backbone.online.parameters()
+            if parameter.grad is not None
+        ]
+    )
+    assert (small < 1.5e-5).any(), "no gradient small enough to tell the two apart"
+    assert all(
+        torch.allclose(actual, predicted, rtol=0.0, atol=1e-6)
+        for actual, predicted in zip(after, expected(1.5e-4), strict=True)
+    )
+    assert not all(
+        torch.allclose(actual, predicted, rtol=0.0, atol=1e-6)
+        for actual, predicted in zip(after, expected(1e-8), strict=True)
+    )
+
+
+def test_a_game_time_discount_of_0_999_reaches_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The discounts and rewards the n-step target is built from, at the recipe's value.
+
+    0.999 ** seconds per transition, and under the survival-time reward
+    (1 - d) / (beta * 35) with beta = -ln 0.999: a policy that never dies is
+    worth 1 / (beta * 35), about 28.6 waves, where 0.997 made it 9.5.
+    """
+    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
+    batch = collate((_timed_sequence(spans),), (1.0,))
+    backbone = _backbone(discount_per_game_second=0.999, survival_time_reward=True)
+    captured: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def capturing(rewards: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        captured.append((rewards.clone(), kwargs["discounts"].clone()))
+        return n_step_targets(rewards, *args, **kwargs)
+
+    monkeypatch.setattr(stacked_dqn, "n_step_targets", capturing)
+    backbone.learn(batch)
+
+    ((rewards, discounts),) = captured
+    seconds = torch.tensor(spans[batch.burn_in :], dtype=torch.float64) / 1000.0
+    beta = -math.log(0.999)
+    assert torch.allclose(discounts[0], 0.999**seconds)
+    assert torch.allclose(
+        rewards[0].double(), (1.0 - 0.999**seconds) / (beta * 35.0), atol=1e-7
+    )
+    assert 1.0 / (beta * 35.0) == pytest.approx(28.56, abs=0.01)

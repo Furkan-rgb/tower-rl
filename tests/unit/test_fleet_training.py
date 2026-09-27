@@ -659,9 +659,9 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     """`--actors 1` must be the run it always was, or the references move.
 
     A single actor used to act from the learner's own network, which only ever
-    moved between its episodes. At the default cadence of one episode its copy
-    is refreshed at exactly those moments, so what it acts from at every episode
-    is what it would have acted from before.
+    moved between its episodes. At a cadence of zero its copy is refreshed at
+    exactly those moments, so what it acts from at every episode is what it
+    would have acted from before.
     """
     watched = WatchedBackbone(
         StackedDqnBackbone(
@@ -670,7 +670,9 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     )
     matched: list[bool] = []
     instance = environment()
-    training = fleet([instance], backbone=watched, budget_decisions=250)
+    training = fleet(
+        [instance], backbone=watched, budget_decisions=250, parameter_sync_decisions=0
+    )
     acting = copies(training)[0]
     opened = instance.reset
 
@@ -690,14 +692,14 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
 
 
 def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
-    """The single-actor path is the loop it always was: collect, then learn.
+    """At a cadence of zero, a single actor is the loop it always was: collect, then learn.
 
     One actor takes its own gradient steps between its own episodes, so the
     parameters it acts from never move inside an episode. That is not true of a
-    fleet, where another actor's learning lands mid-episode, and it is what
-    keeps a run configured with `--actors 1` reproducible.
+    fleet, where another actor's learning lands mid-episode, nor under a cadence
+    in decisions; it is what DreamerV3's recurrent latent needs.
     """
-    training, watched = watched_fleet(1, budget_decisions=250)
+    training, watched = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=0)
     acting = copies(training)[0]
     boundaries: list[int] = []
     training.on_episode = lambda _: boundaries.append(acting.acts)
@@ -717,16 +719,133 @@ def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
     assert set(acting.publish_positions) <= {0, *boundaries}
 
 
-def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_episodes() -> None:
-    """A bounded lag, set explicitly: one refresh every three episodes, not more."""
-    training, _ = watched_fleet(1, budget_decisions=400, parameter_sync_episodes=3)
+def episode_boundaries(training: TrainingRun, actor_id: str) -> set[int]:
+    """Where in an actor's own series of decisions each of its episodes began."""
+    starts, taken = {0}, 0
+    for episode in training.report.episodes_of(actor_id):
+        taken += episode.summary.decisions
+        starts.add(taken)
+    return starts
+
+
+def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_decisions() -> None:
+    """Ape-X's lag: one refresh every so many decisions, across episode boundaries."""
+    training, _ = watched_fleet(1, budget_decisions=400, parameter_sync_decisions=7)
     acting = copies(training)[0]
 
     report = training.run()
 
     assert report.episodes >= 4
-    assert acting.publications == 1 + (report.episodes - 1) // 3
-    assert acting.publications < report.episodes
+    # Before the first decision, then after every seventh, wherever it falls.
+    assert acting.publish_positions == list(range(0, acting.acts, 7))
+    inside = set(acting.publish_positions) - episode_boundaries(
+        training, training.actors[0].config.actor_id
+    )
+    assert inside, "no refresh landed inside an episode"
+
+
+def test_an_episode_is_stamped_with_the_version_its_first_decision_was_taken_with() -> None:
+    training, _ = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=5)
+    actor = training.actors[0]
+    acting = copies(training)[0]
+    first_versions: list[tuple[int, int]] = []
+    opened = actor.environment.reset
+
+    def reset_and_witness() -> Any:
+        state = opened()
+        first_versions.append((actor.model_version, acting.acts))
+        return state
+
+    actor.environment.reset = reset_and_witness  # type: ignore[method-assign]
+
+    training.run()
+
+    assert len(first_versions) > 1
+    for stamped, position in first_versions:
+        assert stamped == acting.versions[position]
+
+
+class Ledger(dict[int, dict[str, torch.Tensor]]):
+    """Every complete version the learner reached, shared by it and every copy."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Ledger:
+        # An acting copy is a deepcopy of the learner; it must read this ledger,
+        # not a snapshot of it taken when the copy was made.
+        return self
+
+
+@dataclass
+class LedgeredBackbone(WatchedBackbone):
+    """A watched backbone that checks every decision against a complete version.
+
+    The learner records its parameters after each step, still under the lock a
+    publication takes. Every copy then checks, before each decision, that the
+    parameters it is about to act on are exactly those of the version it
+    reports: a torn copy - half of one step and half of another - matches none.
+    """
+
+    ledger: Ledger = field(default_factory=Ledger)
+    mismatches: list[int] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._record()
+
+    def _record(self) -> None:
+        self.ledger[self.inner.model_version] = {
+            key: value.clone() for key, value in self.inner.online.state_dict().items()
+        }
+
+    def learn(self, batch: SequenceBatch) -> LearnMetrics:
+        metrics = super().learn(batch)
+        self._record()
+        return metrics
+
+    def act(self, features: Any, state: Any, *, epsilon: float) -> tuple[int, Any]:
+        expected = self.ledger.get(self.inner.model_version)
+        actual = self.inner.online.state_dict()
+        if expected is None or not all(
+            torch.equal(actual[key], value) for key, value in expected.items()
+        ):
+            self.mismatches.append(self.inner.model_version)
+        return super().act(features, state, epsilon=epsilon)
+
+
+def test_a_refresh_inside_an_episode_never_gives_an_actor_a_torn_copy() -> None:
+    """Every decision is taken on one complete version, while the fleet learns around it.
+
+    Three actors refresh every three decisions, so their copies are swapped
+    inside episodes while other actors' episodes drive the learner. The
+    learner's step and a publication are both slow enough here that an
+    unguarded copy would land inside a step.
+    """
+    watched = LedgeredBackbone(
+        StackedDqnBackbone(
+            config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
+        )
+    )
+    training = fleet(
+        [environment() for _ in range(3)],
+        backbone=watched,
+        budget_decisions=300,
+        parameter_sync_decisions=3,
+    )
+
+    report = training.run()
+
+    acting = cast(list[LedgeredBackbone], copies(training))
+    assert report.optimisation_steps > 0
+    assert watched.torn == []
+    assert all(copy.mismatches == [] for copy in acting), "a decision saw a torn copy"
+    # And the swaps really were inside episodes, onto versions the learner had
+    # moved to while those episodes were being played.
+    inside = [
+        position
+        for actor, copy in zip(training.actors, acting, strict=True)
+        for position in set(copy.publish_positions)
+        - episode_boundaries(training, actor.config.actor_id)
+    ]
+    assert inside
+    assert len({version for copy in acting for version in copy.versions}) > 1
 
 
 def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alone() -> None:
@@ -958,6 +1077,10 @@ def test_a_period_is_measured_over_the_near_greedy_actors_alone() -> None:
         budget_decisions=100 * EPISODE_DECISIONS,
         selection_period_decisions=PERIOD_DECISIONS,
         early_stop_patience_periods=2,
+        # A scripted episode takes no decision through the actor, so only a
+        # refresh between episodes applies to it. That refresh is also what
+        # interleaves the racing threads, as it always has.
+        parameter_sync_decisions=0,
     )
     # The bottom two rungs of a ladder of three are near-greedy; actor 0, at
     # 0.4, is searching.

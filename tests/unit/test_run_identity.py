@@ -67,7 +67,7 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
             "--collection-window-episodes": "5",
             "--gradient-steps-per-decision": "0.25",
             "--batch-size": "4",
-            "--parameter-sync-episodes": "4",
+            "--parameter-sync-decisions": "40",
         },
     )
 
@@ -81,13 +81,13 @@ def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
     assert config.exploration.option == "uniform" and config.exploration.floors == ()
     assert config.collection_window_episodes == 5
     assert (config.batch_size, config.gradient_steps_per_decision) == (4, 0.25)
-    assert config.parameter_sync_episodes == 4
+    assert config.parameter_sync_decisions == 40
     # And the run records what it was actually built with.
     resolved = arm.resolved
     assert resolved["n_step"] == 3 and resolved["discount"] == 0.9
     assert resolved["epsilon_anneal_decisions"] == 77
     assert resolved["target_ema_decay"] == 0.9
-    assert resolved["parameter_sync_episodes"] == 4
+    assert resolved["parameter_sync_decisions"] == 40
 
 
 def test_the_burn_in_the_arm_is_built_with_is_the_one_that_fills_the_window(

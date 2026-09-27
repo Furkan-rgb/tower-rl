@@ -79,7 +79,7 @@ import argparse
 import json
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -326,6 +326,13 @@ def build_arm(
         # they are one `state_dict`, and a resume that took only the weights
         # would restart Adam's moments silently mid-run.
         backbone.load_state_dict(dict(resume.backbone_state))
+        if isinstance(backbone, StackedDqnBackbone):
+            # The optimizer state carries its own epsilon, which torch restores
+            # with it, so a checkpoint from before `adam_epsilon` goes on at
+            # 1e-8. Recorded as the value it runs at, not the default.
+            learner = replace(
+                learner, adam_epsilon=backbone.optimizer.param_groups[0]["eps"]
+            )
     replay = build_replay(arguments)
     restored_from = None
     if resume is not None and resume.replay_dump is not None:
@@ -356,7 +363,7 @@ def build_arm(
         selection_period_decisions=arguments.selection_period_decisions,
         early_stop_patience_periods=arguments.early_stop_patience_periods,
         early_stop_min_improvement=arguments.early_stop_min_improvement,
-        parameter_sync_episodes=arguments.parameter_sync_episodes,
+        parameter_sync_decisions=arguments.parameter_sync_decisions,
         kill_bars=tuple(arguments.kill_bars),
     )
     stride = max(1, arguments.sequence_length // 2)
@@ -613,6 +620,9 @@ def dreamer_loop_settings() -> dict[str, object]:
         "exploration": "uniform",
         "epsilon_start": 0.0,
         "epsilon_end": 0.0,
+        # Its latent is recurrent state the parameters produced, so its acting
+        # copy is refreshed only between episodes.
+        "parameter_sync_decisions": 0,
     }
 
 
@@ -680,13 +690,21 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "ratio and exploration flags and refuse a value that contradicts them"
         ),
     )
-    parser.add_argument("--replay-capacity", type=int, default=4096)
+    parser.add_argument(
+        "--replay-capacity",
+        type=int,
+        default=25_000,
+        help=(
+            "replay windows held; 25,000 at a stride of 40 is about a million "
+            "decisions, the whole budget (docs/solution.md 9.4)"
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
         "--gradient-steps-per-decision",
         type=float,
-        default=0.25,
-        help="the replay ratio; 0.25 is about 126 transitions replayed per generated",
+        default=0.114,
+        help="the replay ratio; 0.114 is about 64 transitions replayed per generated",
     )
     parser.add_argument("--warmup-sequences", type=int, default=100)
     parser.add_argument("--sequence-length", type=int, default=80)
@@ -871,13 +889,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--parameter-sync-episodes",
+        "--parameter-sync-decisions",
         type=int,
-        default=1,
+        default=100,
         help=(
-            "episodes one actor plays between refreshes of the copy of the "
-            "network it acts from; 1 starts every episode from the learner's "
-            "current parameters, which is what a single actor has always done"
+            "decisions one actor takes between refreshes of the copy of the "
+            "network it acts from, inside an episode included (Ape-X's 400 "
+            "frames); 0 refreshes at every episode start instead, which is what "
+            "every run before it did and what DreamerV3 is fixed to"
         ),
     )
     parser.add_argument("--serial", default="emulator-5556")
@@ -996,6 +1015,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if arguments.budget_decisions < 1:
         raise SystemExit("--budget-decisions must be positive")
+    if arguments.parameter_sync_decisions < 0:
+        raise SystemExit("--parameter-sync-decisions cannot be negative")
     if arguments.checkpoint_every_decisions < 0:
         raise SystemExit("--checkpoint-every-decisions cannot be negative")
     if arguments.selection_period_decisions < 1:
@@ -1135,6 +1156,7 @@ def resume_point(
                 f"stacked-dqn now samples at R2D2's {R2D2_PRIORITY_EXPONENT} and "
                 f"{R2D2_IMPORTANCE_SAMPLING_EXPONENT}, a different replay"
             )
+    refuse_changed_loop_settings(arguments, state)
     if state.decisions >= arguments.budget_decisions:
         raise SystemExit(
             f"--resume {arguments.resume} is already at {state.decisions} "
@@ -1142,6 +1164,49 @@ def resume_point(
             "does not extend; raise the budget above it to continue the run"
         )
     return with_parent_replay(arguments, state, expected)
+
+
+def recorded_loop_settings(resolved: Mapping[str, object]) -> dict[str, object]:
+    """The loop settings a checkpoint's run trained under, by argument name.
+
+    Only what it recorded: a key it never wrote has nothing to compare. A file
+    from before `parameter_sync_decisions` recorded `parameter_sync_episodes`,
+    and its 1 - every run's - is a cadence of 0, a refresh at every episode
+    start; any other count of episodes has no cadence in decisions, and reads
+    as None, which nothing asked for matches.
+    """
+    recorded = {
+        name: resolved[name]
+        for name in ("gradient_steps_per_decision", "replay_capacity")
+        if name in resolved
+    }
+    if "parameter_sync_decisions" in resolved:
+        recorded["parameter_sync_decisions"] = resolved["parameter_sync_decisions"]
+    elif "parameter_sync_episodes" in resolved:
+        recorded["parameter_sync_decisions"] = (
+            0 if resolved["parameter_sync_episodes"] == 1 else None
+        )
+    return recorded
+
+
+def refuse_changed_loop_settings(arguments: argparse.Namespace, state: ResumeState) -> None:
+    """Refuse a resume whose replay ratio, buffer or parameter lag is not its parent's.
+
+    None of them is in the checkpoint's identity, and each defaults to what
+    the current recipe uses, so a resume of an older run that did not repeat
+    them would otherwise continue at other values without a word. Passing the
+    recorded values continues it as it was.
+    """
+    differing = [
+        f"--{name.replace('_', '-')} {value} (this run asks for {getattr(arguments, name)})"
+        for name, value in recorded_loop_settings(state.resolved_config).items()
+        if value != getattr(arguments, name)
+    ]
+    if differing:
+        raise SystemExit(
+            f"--resume {arguments.resume} was trained with {', '.join(differing)}; "
+            "pass the recorded values to continue it"
+        )
 
 
 def with_parent_replay(

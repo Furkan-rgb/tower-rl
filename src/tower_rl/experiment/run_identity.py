@@ -233,6 +233,9 @@ def resolved_config(
         # board #83.
         "ez_greedy": learner.ez_greedy,
         "learning_rate": learner.learning_rate,
+        # Absent from every file written before it existed, all of which ran
+        # at torch's 1e-8.
+        "adam_epsilon": learner.adam_epsilon,
         "target_ema_decay": (
             arguments.target_ema_decay if name == "stacked-dqn" else None
         ),
@@ -272,8 +275,10 @@ def resolved_config(
             for bar in config.kill_bars
         ],
         # The parameter lag the fleet acted under, which a later reading of the
-        # collection curve needs as much as the replay ratio.
-        "parameter_sync_episodes": config.parameter_sync_episodes,
+        # collection curve needs as much as the replay ratio: decisions per
+        # refresh, 0 for once per episode. Every file written before it
+        # recorded `parameter_sync_episodes` instead, always 1 in practice.
+        "parameter_sync_decisions": config.parameter_sync_decisions,
         # The cadence the environment was actually built with, not what was
         # asked for on the command line.
         "frame_game_ms": cadence.frame_game_ms,

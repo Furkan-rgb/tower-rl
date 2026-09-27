@@ -547,8 +547,9 @@ Only the learner mutates model and optimizer state. Weight publication is atomic
 
 In the single-process fleet this is realised by giving every actor its own copy
 of the network to act from, as Ape-X and R2D2 do, and publishing the learner's
-parameters into that copy every `--parameter-sync-decisions` of the actor's own
-decisions (default 100). A forward pass then contends with nothing: at the fleet
+parameters into that copy at the start of every episode and then every
+`--parameter-sync-decisions` of the actor's own decisions within it (default
+100). A forward pass then contends with nothing: at the fleet
 sizes a shrunken render target allows, every actor reading the one live network
 would have put tens of decisions and a dozen gradient steps a second through a
 single lock. A publication is the only shared moment left. It is taken under the
@@ -558,21 +559,29 @@ it is performed on the actor's own thread before a decision's forward pass
 taken on one complete version (`tests/unit/test_fleet_training.py`, a torn-copy
 check against a ledger of every version the learner reached).
 
-The cadence is counted in decisions, across episode boundaries, so a refresh
-lands inside an episode. 100 is Ape-X's: its actors copy the learner's
-parameters every 400 frames (Horgan et al. 2018, §4.1), which at an action
-repeat of 4 is 100 agent steps. At the default replay ratio a fleet of seven
-then acts on parameters about 7 × 100 × 0.114 ≈ 80 gradient steps old, where
-refreshing once per ~550-decision episode left them about 3,850 behind (at M3-P009's
-1.0 gradient steps per decision) and the lag grew with episode length. A
-mid-episode swap is safe for `stacked-dqn` because what it carries through an
-episode is a window of its own inputs, not a state its parameters produced; a
-swap changes how the window is read, never what is in it. DreamerV3's carried
-latent is produced by its parameters, so it is fixed at
-`--parameter-sync-decisions 0`, which refreshes at every episode start and
-never inside one — the behaviour every run before this used. A sequence's
+The cadence is counted in decisions, so a refresh lands inside an episode; the
+refresh at an episode's start restarts the count, so no episode opens on
+parameters older than the previous one's last. 100 is Ape-X's: its actors copy
+the learner's parameters every 400 frames (Horgan et al. 2018, §4.1), which at
+an action repeat of 4 is 100 agent steps. A fleet of seven at the default
+0.114 gradient steps per decision then acts on parameters at most about
+7 × 100 × 0.114 ≈ 80 gradient steps old, where refreshing once per
+~550-decision episode leaves them about 7 × 550 × 0.114 ≈ 440 behind (3,850 at
+M3-P009's 1.0 gradient steps per decision), a lag that grows with episode
+length. A mid-episode swap is safe for `stacked-dqn` because what it carries
+through an episode is a window of its own inputs, not a state its parameters
+produced; a swap changes how the window is read, never what is in it.
+DreamerV3's carried latent is produced by its parameters, so it is fixed at
+`--parameter-sync-decisions 0`, which refreshes at every episode start and never
+inside one — the behaviour every run before this used. A sequence's
 `model_version` is the version its episode's first decision was taken with, so
 under a cadence in decisions it is the oldest version in the episode.
+
+`--actors 1` is unchanged against the runs already measured. A single actor
+takes its gradient steps between its own episodes, so its copy is fresh at
+every episode start, as its acting network was before the fleet existed, and a
+refresh inside an episode copies the version it already holds
+(`tests/unit/test_fleet_training.py`, the fleet-of-one tests).
 
 **Learner step profile.** At production shapes (batch 8 × 80 steps, burn-in 7,
 n = 10, 197,379 parameters) on the RTX 4090, one gradient step — `collate` plus
@@ -1674,7 +1683,7 @@ every loss is a mean over the steps its weight keeps.
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`) | same; stride 32, burn-in 0 | none |
 | train ratio | 512, Table 2's setting for the 500K-1M-step, vector-observation, 12M-model budget (Proprio Control 500K and Visual Control 1M rows; dv3.txt lines 869-870), matching the code's `crafter` preset (configs.yaml: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`, its only 1.1M-step single-environment preset) | 512, which is train_ratio/(batch_size·batch_length) = 512/(16·64) = 0.5 gradient steps per decision (`dreamer.py:143`). No flag overrides it. | 2026-09-25: this budget and model size is what the paper's own Table 2 specifies, and it is the code's own preset for a matching 1.1M-step, single-environment run. (Supersedes the earlier claim that the `atari100k` preset's 256 was "the published preset for the matching low-data, one-environment regime"; `atari100k` is a 400K-step, 100 discrete-action benchmark, not this one.) |
 | warm-up | trains once replay holds B·T steps (`embodied/run/train.py:71`), about 1,088 agent steps once the official replay's chunking is counted | 25 windows, about 1,008 decisions at stride 32 | A window count is what `TrainingConfig` expresses. 25 windows is the nearest to the official figure. |
-| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 25,000 windows by default, **no online queue** | 2026-09-27: the shared default is 25,000 windows, sized for `stacked-dqn`'s ~550-decision episodes (§9.4); at DreamerV3's shorter episodes (roughly 4 windows per 148-decision episode) that holds about 0.9M decisions, so 1M-decision runs still pass `--replay-capacity 40000` so the buffer holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows is about 20 GB. DreamerV3's parameter refresh is fixed at every episode start (`--parameter-sync-decisions 0`, §6.10). An online queue would need a replay change. |
+| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 25,000 windows by default, **no online queue** | 2026-09-27: the shared default is 25,000 windows, sized for `stacked-dqn`'s ~550-decision episodes (§9.4); at DreamerV3's shorter episodes (roughly 4 windows per 148-decision episode) that holds about 0.9M decisions, so 1M-decision runs still pass `--replay-capacity 40000` so the buffer holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows at those ~37 decisions each is about 29 GB. DreamerV3's parameter refresh is fixed at every episode start (`--parameter-sync-decisions 0`, §6.10). An online queue would need a replay change. |
 | replay context | 1, with stored latents | **0**, the official code's own zero-context path | Replay stores no latents, and writing them back into replay would change replay. |
 | action mask | none | **the mask is an observation key.** It is encoded and decoded (binary cross-entropy). Acting samples under the true mask. Imagination samples under the decoded mask (logit > 0, WAIT always valid). | Invalid actions must never be chosen. In imagination the true mask is unknown, so the model's own belief of it is used. |
 | terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
@@ -1892,7 +1901,7 @@ The learner increments `model_version` after each publication interval. It publi
 
 Actors poll or receive notification between inference steps and swap weights atomically at a safe boundary. They record the active version in every sequence. Reject incompatible weights loudly.
 
-As built (§6.10), each actor copies the learner's parameters into its own acting network every `--parameter-sync-decisions` of its own decisions (100, Ape-X's 400 frames), on its own thread before a decision's forward pass and under the learner's lock, so a swap can land inside an episode but never inside a decision or an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode. DreamerV3 refreshes at episode starts only (`0`).
+As built (§6.10), each actor copies the learner's parameters into its own acting network at every episode start and every `--parameter-sync-decisions` of its own decisions after it (100, Ape-X's 400 frames), on its own thread before a decision's forward pass and under the learner's lock, so a swap can land inside an episode but never inside a decision or an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode. DreamerV3 refreshes at episode starts only (`0`).
 
 ### 9.7 Training stability checks
 

@@ -1172,8 +1172,8 @@ def recorded_loop_settings(resolved: Mapping[str, object]) -> dict[str, object]:
     Only what it recorded: a key it never wrote has nothing to compare. A file
     from before `parameter_sync_decisions` recorded `parameter_sync_episodes`,
     and its 1 - every run's - is a cadence of 0, a refresh at every episode
-    start; any other count of episodes has no cadence in decisions, and reads
-    as None, which nothing asked for matches.
+    start. Any other count of episodes has no cadence in decisions to continue
+    at, so such a checkpoint is refused outright.
     """
     recorded = {
         name: resolved[name]
@@ -1183,9 +1183,13 @@ def recorded_loop_settings(resolved: Mapping[str, object]) -> dict[str, object]:
     if "parameter_sync_decisions" in resolved:
         recorded["parameter_sync_decisions"] = resolved["parameter_sync_decisions"]
     elif "parameter_sync_episodes" in resolved:
-        recorded["parameter_sync_decisions"] = (
-            0 if resolved["parameter_sync_episodes"] == 1 else None
-        )
+        episodes = resolved["parameter_sync_episodes"]
+        if episodes != 1:
+            raise SystemExit(
+                f"the checkpoint was trained with --parameter-sync-episodes {episodes}, "
+                "which has no equivalent --parameter-sync-decisions; it cannot be resumed"
+            )
+        recorded["parameter_sync_decisions"] = 0
     return recorded
 
 

@@ -659,9 +659,9 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     """`--actors 1` must be the run it always was, or the references move.
 
     A single actor used to act from the learner's own network, which only ever
-    moved between its episodes. At a cadence of zero its copy is refreshed at
-    exactly those moments, so what it acts from at every episode is what it
-    would have acted from before.
+    moved between its episodes. Its copy is refreshed at every episode start,
+    so what it acts from at every episode is what it would have acted from
+    before.
     """
     watched = WatchedBackbone(
         StackedDqnBackbone(
@@ -670,9 +670,7 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     )
     matched: list[bool] = []
     instance = environment()
-    training = fleet(
-        [instance], backbone=watched, budget_decisions=250, parameter_sync_decisions=0
-    )
+    training = fleet([instance], backbone=watched, budget_decisions=250)
     acting = copies(training)[0]
     opened = instance.reset
 
@@ -692,14 +690,16 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
 
 
 def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
-    """At a cadence of zero, a single actor is the loop it always was: collect, then learn.
+    """The single-actor path is the loop it always was: collect, then learn.
 
     One actor takes its own gradient steps between its own episodes, so the
-    parameters it acts from never move inside an episode. That is not true of a
-    fleet, where another actor's learning lands mid-episode, nor under a cadence
-    in decisions; it is what DreamerV3's recurrent latent needs.
+    parameters it acts from never move inside an episode, even though its copy
+    is refreshed there: a refresh inside one copies the version it already
+    holds. That is not true of a fleet, where another actor's learning lands
+    mid-episode, and it is what keeps a run configured with `--actors 1`
+    reproducible.
     """
-    training, watched = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=0)
+    training, watched = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=7)
     acting = copies(training)[0]
     boundaries: list[int] = []
     training.on_episode = lambda _: boundaries.append(acting.acts)
@@ -713,10 +713,22 @@ def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
         assert len(within) <= 1, "the parameters moved inside a single episode"
         start = end
     assert len(set(acting.versions)) > 1, "and they did move between episodes"
-    # And no refresh ever landed inside an episode, so the history window the
-    # actor carries through one was produced by the parameters it still holds.
-    assert acting.publish_positions
-    assert set(acting.publish_positions) <= {0, *boundaries}
+    # Refreshes did land inside episodes, and changed nothing there.
+    assert set(acting.publish_positions) - {0, *boundaries}
+
+
+def test_at_a_cadence_of_zero_no_refresh_lands_inside_an_episode() -> None:
+    """DreamerV3's setting: its recurrent latent must come from the parameters it holds."""
+    training, _ = watched_fleet(2, budget_decisions=300, parameter_sync_decisions=0)
+
+    training.run()
+
+    for actor, acting in zip(training.actors, copies(training), strict=True):
+        assert actor.before_decision is None
+        assert acting.publish_positions
+        assert set(acting.publish_positions) <= episode_boundaries(
+            training, actor.config.actor_id
+        )
 
 
 def episode_boundaries(training: TrainingRun, actor_id: str) -> set[int]:
@@ -729,15 +741,19 @@ def episode_boundaries(training: TrainingRun, actor_id: str) -> set[int]:
 
 
 def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_decisions() -> None:
-    """Ape-X's lag: one refresh every so many decisions, across episode boundaries."""
+    """Ape-X's lag: a refresh every so many decisions, restarted at every episode."""
     training, _ = watched_fleet(1, budget_decisions=400, parameter_sync_decisions=7)
     acting = copies(training)[0]
 
     report = training.run()
 
     assert report.episodes >= 4
-    # Before the first decision, then after every seventh, wherever it falls.
-    assert acting.publish_positions == list(range(0, acting.acts, 7))
+    # Before an episode's first decision, then after every seventh of it.
+    expected, start = [], 0
+    for episode in training.report.episodes_of(training.actors[0].config.actor_id):
+        expected += range(start, start + max(episode.summary.decisions, 1), 7)
+        start += episode.summary.decisions
+    assert acting.publish_positions == expected
     inside = set(acting.publish_positions) - episode_boundaries(
         training, training.actors[0].config.actor_id
     )

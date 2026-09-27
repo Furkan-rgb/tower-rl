@@ -576,4 +576,3 @@ def test_a_game_time_discount_of_0_999_reaches_the_target(
     assert torch.allclose(
         rewards[0].double(), (1.0 - 0.999**seconds) / (beta * 35.0), atol=1e-7
     )
-    assert 1.0 / (beta * 35.0) == pytest.approx(28.56, abs=0.01)

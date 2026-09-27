@@ -2068,10 +2068,12 @@ def test_a_parameter_sync_of_one_episode_reads_as_a_cadence_of_zero() -> None:
     assert train.recorded_loop_settings({"parameter_sync_episodes": 1}) == {
         "parameter_sync_decisions": 0
     }
-    assert train.recorded_loop_settings({"parameter_sync_episodes": 3}) == {
-        "parameter_sync_decisions": None
-    }
     assert train.recorded_loop_settings({}) == {}
+
+
+def test_a_parameter_sync_of_several_episodes_is_refused_as_having_no_equivalent() -> None:
+    with pytest.raises(SystemExit, match="--parameter-sync-episodes 3, which has no equivalent"):
+        train.recorded_loop_settings({"parameter_sync_episodes": 3})
 
 
 def test_a_checkpoint_from_before_the_adam_epsilon_resumes_at_its_own(tmp_path: Path) -> None:

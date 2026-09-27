@@ -406,9 +406,10 @@ neither is part of a run:
    counts gradient steps. Game time is still measured and reported, as a
    statistic. Actors collect concurrently into the one buffer;
    the `Learner` takes gradient steps against the configured replay ratio;
-   each actor refreshes its acting copy every `parameter_sync_decisions` of
-   its own decisions, before a decision's forward pass and so possibly inside
-   an episode (0, DreamerV3's setting, refreshes at every episode start only).
+   each actor refreshes its acting copy at every episode start and then every
+   `parameter_sync_decisions` of its own decisions, before a decision's
+   forward pass and so inside an episode (0, DreamerV3's setting, refreshes at
+   episode starts only).
 5. `arm.checkpoint` writes the checkpoint, then one pre-registered
    exploration-free evaluation runs on the final weights — after the budget, so
    it costs none of it and cannot be chosen after the fact.

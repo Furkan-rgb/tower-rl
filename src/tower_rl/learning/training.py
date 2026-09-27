@@ -308,14 +308,16 @@ class TrainingConfig:
     #: environment, and the run ends only when every actor has withdrawn.
     max_consecutive_episode_failures: int = 5
     #: Decisions one actor takes between refreshes of the copy it acts from,
-    #: counted across its episode boundaries, so a refresh may land between two
-    #: decisions of one episode. 100 is Ape-X's 400 frames at an action repeat
-    #: of 4 (Horgan et al. 2018); at the
-    #: default replay ratio a fleet of seven then acts on parameters about
-    #: 7 x 100 x 0.114 = 80 gradient steps old, where once per 550-decision
-    #: episode was about 3,850. Safe for a backbone whose carried state is its
+    #: inside an episode. Every episode also starts on a fresh copy, and that
+    #: refresh restarts the count, so an episode never opens on parameters
+    #: older than the previous one's last. 100 is Ape-X's 400 frames at an
+    #: action repeat of 4 (Horgan et al. 2018). A fleet of seven at the
+    #: default 0.114 gradient steps per decision then acts on parameters at
+    #: most about 7 x 100 x 0.114 = 80 gradient steps old; refreshing once per
+    #: 550-decision episode instead would be about 7 x 550 x 0.114 = 440 (and
+    #: 3,850 at M3-P009's 1.0). Safe for a backbone whose carried state is its
     #: own input history, as stacked-dqn's is. Zero refreshes at the start of
-    #: every episode instead, never inside one: what a backbone whose carried
+    #: every episode only, never inside one: what a backbone whose carried
     #: state the parameters themselves produced needs, which is DreamerV3's
     #: recurrent latent (`scripts/train.py` fixes it there).
     parameter_sync_decisions: int = 100
@@ -925,13 +927,14 @@ class TrainingRun:
             # in the same buckets. Wired here like the acting copy above, for
             # the same reason: the run owns what an actor is attached to.
             actor.environment.profile = actor.profile
-            self._since_sync[actor_id] = self.config.parameter_sync_decisions
-            if self.config.parameter_sync_decisions:
-                # Handed to the actor rather than run between its episodes:
-                # a refresh at this cadence lands inside them.
-                actor.before_decision = partial(
-                    self._before_decision, actor_id, copy, actor.profile
-                )
+            self._since_sync[actor_id] = 0
+            # Handed to the actor rather than run between its episodes: a
+            # refresh at a cadence in decisions lands inside them.
+            actor.before_decision = (
+                partial(self._before_decision, actor_id, copy, actor.profile)
+                if self.config.parameter_sync_decisions
+                else None
+            )
             self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
     @property
@@ -1117,16 +1120,13 @@ class TrainingRun:
                 self.report.epsilon = exploration.reported_epsilon(
                     self.report.decisions
                 )
-            # At a cadence of zero the copy is refreshed here, between
-            # episodes, and holds still through the whole of the next one; at
-            # a cadence in decisions here too if one is due, so the version
-            # stamped below is the one the first decision is taken with. The
-            # refreshes inside an episode are `_before_decision`'s. `_lock` is
-            # released first, so the only order locks are ever taken in is
-            # progress, then replay, then learner.
-            every = self.config.parameter_sync_decisions
-            if not every or self._since_sync[actor_id] >= every:
-                self._refresh(actor_id, acting, profile)
+            # Every episode starts on a fresh copy, and the count of decisions
+            # to the next refresh restarts here. At a cadence of zero the copy
+            # then holds still through the whole episode; otherwise the
+            # refreshes inside it are `_before_decision`'s. `_lock` is released
+            # first, so the only order locks are ever taken in is progress,
+            # then replay, then learner.
+            self._refresh(actor_id, acting, profile)
             # Exploration is set per episode rather than per step, so a stored
             # sequence has one epsilon and its provenance stays meaningful.
             actor.config = replace(actor.config, epsilon=epsilon)

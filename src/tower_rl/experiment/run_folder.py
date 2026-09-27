@@ -33,7 +33,6 @@ MANIFEST = "manifest.json"
 CHECKPOINTS = "checkpoints"
 LATEST_CHECKPOINT = "latest.pt"
 SEGMENTS = "segments"
-LOGS = "logs"
 EVALUATIONS = "evaluations"
 #: A segment's own files, inside `segments/<n>/`.
 SEGMENT_SUMMARY = "summary.json"

@@ -65,6 +65,9 @@ from tower_rl.learning.training import (
 #: Where in a run's directory its replay buffer is saved as the run ends,
 #: beside `checkpoints/`: `<run_dir>/replay/`.
 REPLAY_DIRECTORY = "replay"
+#: Where the dump being replaced waits while its successor is written. Left
+#: behind only by a process killed mid-save; a resume refuses to guess past it.
+REPLAY_BACKUP_DIRECTORY = "replay.previous"
 
 
 def non_finite_tensors(state: Any, name: str = "") -> list[str]:
@@ -204,6 +207,8 @@ class TrainingReport:
 
         A dump already in the run folder is an earlier segment's, which this
         segment resumed from; it is replaced, since `latest.pt` has moved past it.
+        It is renamed aside to `replay.previous/` first and deleted only once the
+        new dump is written, so a failed save leaves it where it was.
 
         A failed replay save is reported and not raised: the checkpoint is
         already written, and a resume from it re-warms replay exactly as it did
@@ -233,15 +238,7 @@ class TrainingReport:
             )
             started = time.monotonic()
             try:
-                if self.replay_path.exists():
-                    # The dump an earlier segment of this run folder saved and
-                    # this one resumed from: `latest.pt` was just written past
-                    # it, so it no longer describes the resume point.
-                    shutil.rmtree(self.replay_path)
-                size = self.replay.save_to(
-                    self.replay_path,
-                    run={"decisions": report.decisions, "identity": asdict(self.identity)},
-                )
+                size = self._replace_replay_dump(report.decisions)
             except Exception as failure:  # noqa: BLE001 - best effort; see above
                 print(
                     f"[{self.name}] replay not saved ({failure}); a resume re-warms it",
@@ -254,6 +251,27 @@ class TrainingReport:
                 f"to {self.replay_path}",
                 flush=True,
             )
+
+    def _replace_replay_dump(self, decisions: int) -> int:
+        """Save the buffer over the dump an earlier segment left, keeping that
+        dump until the new one is written; return the bytes written."""
+        backup = self.run_dir / REPLAY_BACKUP_DIRECTORY
+        replacing = self.replay_path.exists()
+        if replacing:
+            self.replay_path.rename(backup)
+        try:
+            size = self.replay.save_to(
+                self.replay_path,
+                run={"decisions": decisions, "identity": asdict(self.identity)},
+            )
+        except BaseException:
+            if replacing:
+                shutil.rmtree(self.replay_path, ignore_errors=True)
+                backup.rename(self.replay_path)
+            raise
+        if replacing:
+            shutil.rmtree(backup)
+        return size
 
     def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
         """One candidate model of the run, named by the decisions behind it.

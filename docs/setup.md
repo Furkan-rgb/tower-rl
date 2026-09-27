@@ -86,8 +86,10 @@ folder naming its parent. `run_episodes.py` and `run_actors.py` with
 `--policy checkpoint:<path>` write to the checkpoint's run folder under
 `evaluations/<--evaluation-name>/` (default `<checkpoint>-<UTC time>`) unless an
 output is given. Runs from before this layout stay where they are, in
-`state/runs/session-*/<run id>/` with the evaluations under `state/records/`;
-their checkpoints load, evaluate and resume as before.
+`state/runs/session-*/<run id>/`, and their checkpoints load and resume as
+before; a new evaluation of one is filed the same way, under
+`<old run folder>/evaluations/<name>/`, while the evaluations made before this
+layout stay in `state/records/`.
 
 `state/` is git-ignored in full — the artifacts in it are far above GitHub's
 file limit and this repository is public — and no project state is kept anywhere

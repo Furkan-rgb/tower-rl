@@ -24,9 +24,9 @@ from test_train_entry_point import (
 )
 
 from tower_rl.experiment.run_folder import run_ids
-from tower_rl.experiment.training_report import REPLAY_DIRECTORY
+from tower_rl.experiment.training_report import REPLAY_BACKUP_DIRECTORY, REPLAY_DIRECTORY
 from tower_rl.learning.checkpoint import load
-from tower_rl.learning.replay import read_replay_metadata
+from tower_rl.learning.replay import PrioritizedSequenceReplay, read_replay_metadata
 
 
 def manifest_of(folder: Path) -> dict[str, Any]:
@@ -203,3 +203,36 @@ def test_a_checkpoint_of_the_old_layout_still_resumes_into_a_new_folder(
         if path.is_file()
     } == untouched
     assert run_ids(old) == [first["arm"]["run_id"]]
+
+
+def dump_bytes(dump: Path) -> dict[Path, bytes]:
+    return {path.relative_to(dump): path.read_bytes() for path in dump.rglob("*") if path.is_file()}
+
+
+def test_a_replay_save_that_fails_leaves_the_earlier_dump_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = numbered(tmp_path, 200)
+    folder = Path(first["run_folder"])
+    dump = folder / REPLAY_DIRECTORY
+    before = dump_bytes(dump)
+
+    def fails(self: PrioritizedSequenceReplay, directory: Path, **_: Any) -> int:
+        directory.mkdir()
+        (directory / "partial").write_bytes(b"half a dump")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", fails)
+    resumed(tmp_path, latest_checkpoint(first), 400)
+
+    assert dump_bytes(dump) == before
+    assert not (folder / REPLAY_BACKUP_DIRECTORY).exists()
+
+
+def test_a_dump_left_aside_by_an_interrupted_save_refuses_the_resume(tmp_path: Path) -> None:
+    first = numbered(tmp_path, 200)
+    folder = Path(first["run_folder"])
+    shutil.copytree(folder / REPLAY_DIRECTORY, folder / REPLAY_BACKUP_DIRECTORY)
+
+    with pytest.raises(SystemExit, match="interrupted save"):
+        resumed(tmp_path, latest_checkpoint(first), 400)

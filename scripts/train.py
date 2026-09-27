@@ -94,6 +94,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable, Iterator, Sequence
@@ -151,6 +152,7 @@ from tower_rl.experiment.tracking import (  # noqa: E402
     tracking_uri,
 )
 from tower_rl.experiment.training_report import (  # noqa: E402
+    REPLAY_BACKUP_DIRECTORY,
     REPLAY_DIRECTORY,
     TrainingReport,
 )
@@ -1302,6 +1304,15 @@ def with_parent_replay(
     # Resolved first: a bare `latest.pt` given from inside `checkpoints/` has
     # no parent of its parent to find the run directory by.
     dump = arguments.resume.resolve().parent.parent / REPLAY_DIRECTORY
+    backup = dump.with_name(REPLAY_BACKUP_DIRECTORY)
+    if backup.exists():
+        # A process killed while replacing its dump: which of the two, if
+        # either, matches this checkpoint is not guessed at.
+        raise SystemExit(
+            f"--resume {arguments.resume}: {backup} is the replay dump an "
+            f"interrupted save was replacing. Delete it, and move {dump} aside too "
+            "if the resume then refuses it, to resume with a re-warmed buffer"
+        )
     if not dump.exists():
         return state
     refusal = f"--resume {arguments.resume}: the parent's replay saved at {dump}"
@@ -1351,13 +1362,17 @@ def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
 class _Tee:
     """A text stream that writes through to another and to a log file."""
 
-    def __init__(self, stream: TextIO, log: TextIO) -> None:
+    def __init__(self, stream: TextIO, log: TextIO, lock: threading.Lock) -> None:
         self.stream = stream
         self.log = log
+        # Shared by the stdout and stderr tees, so actor threads printing at
+        # once reach the console and the log in the same order.
+        self.lock = lock
 
     def write(self, text: str) -> int:
-        self.log.write(text)
-        return self.stream.write(text)
+        with self.lock:
+            self.log.write(text)
+            return self.stream.write(text)
 
     def flush(self) -> None:
         self.log.flush()
@@ -1380,8 +1395,9 @@ def segment_log(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as log:
         streams = sys.stdout, sys.stderr
-        sys.stdout = _Tee(sys.stdout, log)
-        sys.stderr = _Tee(sys.stderr, log)
+        lock = threading.Lock()
+        sys.stdout = _Tee(sys.stdout, log, lock)
+        sys.stderr = _Tee(sys.stderr, log, lock)
         try:
             yield
         except BaseException:

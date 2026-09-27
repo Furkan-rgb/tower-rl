@@ -17,7 +17,18 @@ class TerminationOutcome(StrEnum):
 
     GAME_OVER = "game_over"
     OPERATOR_STOP = "operator_stop"
-    MAX_EPISODE_DURATION = "max_episode_duration"
+    #: The game clock stopped advancing for the stall window
+    #: (`run_environment.STALL_WINDOW_WALL_SECONDS`) with no length cap behind
+    #: it: a game that is still dying on its own schedule may run any number of
+    #: waves or decisions, but one that has stopped making progress at all is a
+    #: hung pipeline, not a long episode (`#88`).
+    STALLED = "stalled"
+    #: The bridge rejected a purchase the action mask said was legal. The mask
+    #: and the bridge precondition are supposed to agree exactly; a rejection
+    #: here means they have not, and repeating the same action would only spin
+    #: rather than reveal anything further, so the episode ends on the first
+    #: disagreement rather than looping (`#86`).
+    MASK_LEGAL_REJECTED = "mask_legal_rejected"
     OBSERVATION_INVALID = "observation_invalid"
     ACTION_PIPELINE_FAILED = "action_pipeline_failed"
     UI_STATE_LOST = "ui_state_lost"
@@ -224,6 +235,12 @@ class WaveRecord:
     #: much was spent but never what it went to, which is what tells the one
     #: episode that reached wave 22 apart from an ordinary one.
     upgrades_bought: tuple[str, ...] = ()
+    #: Every row's raw upgrade cost at the moment this wave began, keyed the way
+    #: `upgrades_bought` names a row (`attack:3`). Cash spent and what was bought
+    #: say what a wave cost and what it went to; this says what everything else
+    #: on offer would have cost that wave, which is what a cost curve above
+    #: level 8 has to be read against.
+    upgrade_costs: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

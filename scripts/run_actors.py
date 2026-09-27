@@ -384,7 +384,6 @@ def collect_episodes(
             "--port", str(instance.bridge_host_port),
             "--frame-game-ms", str(arguments.frame_game_ms),
             "--max-quiet-game-ms", str(arguments.max_quiet_game_ms),
-            "--max-episode-wall-seconds", str(arguments.max_episode_wall_seconds),
             "--decision-cadence", str(arguments.decision_cadence),
             "--upgrade-availability", str(arguments.upgrade_availability),
             "--output", str(output),

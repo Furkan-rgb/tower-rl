@@ -168,7 +168,6 @@ def evaluate(
         burn_in=base.burn_in,
         stride=base.stride,
         epsilon=0.0,
-        max_decisions_per_episode=base.max_decisions_per_episode,
     )
     actor = Actor(environment=environment, policy=policy, config=config, replay=None)
     # Evaluation borrows an instance a collecting actor owns, and most of a
@@ -308,6 +307,12 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
                 # row - `attack:3`. Absent from any record written before this
                 # field existed; a reader that wants it reads `.get` with `()`.
                 "upgrades_bought": list(wave.upgrades_bought),
+                # Every row's raw cost the instant this wave began, keyed the
+                # same way. Beside `cash_log` and `upgrades_bought`, this is
+                # what lets a later analysis read the in-run cost curve per
+                # row, above level 8 included (`#80`). Absent from any record
+                # written before this field existed.
+                "upgrade_costs": dict(wave.upgrade_costs),
             }
             for wave in summary.waves
         ],

@@ -184,11 +184,16 @@ def actor_record(
 
 
 def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
-    """The cadence is game time throughout; the only wall clock is a hang deadline.
+    """The cadence is game time throughout.
 
     There is no speed argument. The game's own multiplier is pinned at 1x inside
     the adapter, and speed comes from the bridge stepping frames, so a speed knob
     here could only reintroduce the coarsening it was removed for (M1B-E012).
+
+    There is also no episode-length argument: an episode ends only on the game
+    dying or on the environment's own liveness guard finding the game clock has
+    stopped advancing (`STALLED`, `#88`), never on a fixed decision count or wall
+    time - so nothing here needs to configure one.
     """
     parser.add_argument(
         "--frame-game-ms",
@@ -202,12 +207,6 @@ def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=2000,
         help="game time one advance may spend before returning a decision anyway",
-    )
-    parser.add_argument(
-        "--max-episode-wall-seconds",
-        type=float,
-        default=600.0,
-        help="hang deadline in wall seconds; wall time is not bounded by game time",
     )
     parser.add_argument(
         "--decision-cadence",
@@ -243,7 +242,6 @@ def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
     return CadenceConfig(
         frame_game_ms=arguments.frame_game_ms,
         max_quiet_game_ms=arguments.max_quiet_game_ms,
-        max_episode_wall_seconds=arguments.max_episode_wall_seconds,
     )
 
 

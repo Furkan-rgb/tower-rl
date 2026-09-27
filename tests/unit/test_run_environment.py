@@ -4,8 +4,9 @@ import math
 from pathlib import Path
 
 import pytest
-from fakes.fake_run_port import DEVICE_REAL_ROWS, FakeCommandResult, FakeRunPort
+from fakes.fake_run_port import DEVICE_REAL_ROWS, FAMILIES, FakeCommandResult, FakeRunPort
 
+from tower_rl.environment import run_environment
 from tower_rl.environment.episode import (
     ActionOutcome,
     DecisionEvent,
@@ -18,7 +19,12 @@ from tower_rl.environment.features import (
     SCALAR_FEATURES,
     encode_state,
 )
-from tower_rl.environment.run_actions import WAIT, upgrade_action
+from tower_rl.environment.run_actions import (
+    SLOTS_PER_FAMILY,
+    WAIT,
+    action_index,
+    upgrade_action,
+)
 from tower_rl.environment.run_environment import (
     ADVANCE_TRUNCATED_BY_WALL,
     BRIDGE_EVENT_DIVERGENCE,
@@ -474,6 +480,33 @@ def test_a_waves_upgrades_bought_names_what_was_purchased_while_it_was_current()
     assert summary.waves[0].upgrades_bought == ("attack:0",)
 
 
+def test_a_waves_upgrade_costs_snapshot_every_rows_price_at_wave_entry() -> None:
+    """Cash spent and what was bought say what a wave cost; this says the price
+    every row carried when the wave began, which is what a cost curve above
+    level 8 has to be read against (`#80`).
+
+    The expectation is `FakeRunPort`'s own slot-cost formula
+    (`5.0 + 5.0 * index` for a real row), not a value recomputed from
+    `cost_log` on the state the environment already returned - a bug that
+    wrote the wrong raw cost into `cost_log` would pass a recomputation-based
+    check while still failing this one.
+    """
+    environment, _ = _environment()
+    state = environment.reset()
+    first = next(row for row in state.rows if row.action == upgrade_action("attack", 0))
+
+    environment.step(first.action)
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    expected = {
+        str(upgrade_action(family, index)): 5.0 + 5.0 * index
+        for family in FAMILIES
+        for index in range(SLOTS_PER_FAMILY)
+    }
+    assert summary.waves[0].upgrade_costs == pytest.approx(expected)
+
+
 def test_the_episode_summary_carries_what_it_ended_holding() -> None:
     """`final_upgrade_levels` and `final_cash` describe the build at the end.
 
@@ -528,22 +561,153 @@ def test_a_leftover_run_is_recorded_rather_than_started_fresh() -> None:
     assert summary.starting_wave == 3
 
 
-def test_a_stalled_run_truncates_rather_than_running_forever() -> None:
+def test_a_stalled_run_ends_invalid_rather_than_running_forever() -> None:
+    """`STALLED` is a liveness check, not a length cap (`#88`).
+
+    No fixed decision count or wall-clock ceiling applies to a progressing
+    episode; only the absence of any game-clock progress for the stall window
+    ends one. A window of `0.0` is met the instant any wall time at all has
+    passed since `reset`, without needing to fake the clock.
+    """
     environment, port = _environment(damage_per_second=0.0, seconds_per_wave=10_000.0)
-    environment.cadence = CadenceConfig(
-        max_quiet_game_ms=500, max_episode_wall_seconds=0.0
-    )
+    environment.cadence = CadenceConfig(max_quiet_game_ms=500, stall_window_wall_seconds=0.0)
     environment.reset()
 
     transition = environment.step(WAIT)
 
     assert transition.truncated
-    assert transition.termination is TerminationOutcome.MAX_EPISODE_DURATION
+    assert transition.termination is TerminationOutcome.STALLED
     assert not transition.admissible
-    assert port.active, "truncation is an environment decision, not a game over"
-    # The deadline is met before the world is touched, so nothing was advanced.
+    assert port.active, "the stall guard is an environment decision, not a game over"
+    # The window is met before the world is touched, so nothing was advanced.
     assert transition.advances == 0 and transition.game_ms == 0.0
     assert environment.summarize(transition.termination).advances == port.advances == 0
+
+
+def test_the_stall_guard_ignores_a_long_streak_of_zero_game_time_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that only ever buys, never waiting, must not be mistaken for a hang.
+
+    Purchase settles never touch the game clock (`_advance_to_decision`'s
+    purchase branch), so a policy that spends a while buying rather than
+    waiting is ordinary play up to the stall window, and only a genuine absence
+    of progress across that whole window ends the episode.
+    """
+    environment, _ = _environment(start_cash=1_000_000.0)
+    clock = [1_000.0]
+    monkeypatch.setattr(run_environment.time, "monotonic", lambda: clock[0])
+    environment.reset()
+
+    action = upgrade_action("attack", 0)
+    for _ in range(20):
+        clock[0] += 5.0  # 20 x 5s = 100s of wall time, under the 120s window
+        transition = environment.step(action)
+        assert transition.termination is None
+        assert transition.outcome is ActionOutcome.EXECUTED
+
+    clock[0] += 25.0  # cumulative 125s since reset with no game-clock progress
+    transition = environment.step(WAIT)
+
+    assert transition.termination is TerminationOutcome.STALLED
+
+
+def test_the_stall_guard_fires_inside_the_choice_points_loop_not_only_once_per_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The internal WAIT-advance loop must hear the guard on every advance.
+
+    `_advance_to_choice_point` folds forced-WAIT advances together whenever the
+    settled state offers nothing else, without ever returning control to
+    `step`'s own check in between. A bridge that kept acknowledging commands -
+    advancing its own sequence, so nothing here looks stale - while never
+    actually moving the game clock would spin inside that loop forever without
+    a check at the loop's own granularity, not only once per `step` call.
+    """
+    environment, port = _environment(decision_cadence=DecisionCadence.CHOICE_POINTS)
+    environment.cadence = CadenceConfig(max_quiet_game_ms=1000, stall_window_wall_seconds=10.0)
+    environment.reset()  # a normal, fast reset at a real choice point
+
+    # Freeze the world exactly as a bridge that stopped advancing time would:
+    # cash never rises past the cheapest row's cost, so nothing ever becomes a
+    # choice point again, however many times a fresh reading is taken.
+    port.cash = 0.0
+    calls = {"count": 0}
+
+    def frozen_zero_time_advance(**_: object) -> FakeCommandResult:
+        calls["count"] += 1
+        # A fresh reading each time - the port's own sequence still advances,
+        # so this is not the stale/divergence failure - but no frame is ever
+        # stepped, so the game clock genuinely never moves.
+        return FakeCommandResult(
+            "confirmed", "budget_exhausted", frames=0, game_ms=0.0, round_ms=0.0,
+            wall_micros=0, state=port._observe(),
+        )
+
+    monkeypatch.setattr(port, "advance_until_event", frozen_zero_time_advance)
+
+    # Seeded from the real clock so it starts consistent with `last_progress_at`,
+    # which `reset` above already set from the real clock before this patch.
+    clock = [run_environment.time.monotonic()]
+
+    def fake_monotonic() -> float:
+        clock[0] += 1.0
+        return clock[0]
+
+    monkeypatch.setattr(run_environment.time, "monotonic", fake_monotonic)
+
+    transition = environment.step(WAIT)
+
+    assert transition.termination is TerminationOutcome.STALLED
+    assert calls["count"] > 1, "the guard must catch a spin across several advances"
+
+
+def test_a_mask_legal_purchase_the_bridge_rejects_ends_the_episode() -> None:
+    """A mask/bridge disagreement ends the episode instead of looping (`#86`).
+
+    The mask has already approved `action` when the bridge rejects it here, so
+    this is exactly the disagreement `#86` is about, not an ordinary refusal.
+    """
+    environment, port = _environment()
+    state = environment.reset()
+    action = upgrade_action("attack", 0)
+    assert state.action_mask[action_index(action)], "the mask must call this legal"
+    # Force a disagreement: the bridge's own precondition now refuses the same
+    # purchase the mask just approved.
+    port.slots[("attack", 0)].cost = port.cash + 1_000.0
+
+    transition = environment.step(action)
+
+    assert transition.outcome is ActionOutcome.UNAVAILABLE
+    assert transition.termination is TerminationOutcome.MASK_LEGAL_REJECTED
+    assert not transition.admissible
+
+
+def test_an_episode_longer_than_the_old_decision_cap_is_not_truncated() -> None:
+    """No decision-count cap: a slowly-dying episode may outlast the old 20,000.
+
+    `EVERY_SLICE` makes each decision exactly one frame here (the budget equals
+    one frame), so decision count is deterministic: `max_health / (damage_per_second
+    * frame_seconds)` decisions pass before death.
+    """
+    environment, _ = _environment(
+        decision_cadence=DecisionCadence.EVERY_SLICE,
+        damage_per_second=0.002,
+        max_health=5.0,
+        seconds_per_wave=10_000.0,
+    )
+    environment.cadence = CadenceConfig(frame_game_ms=100.0, max_quiet_game_ms=100)
+    environment.reset()
+
+    termination = None
+    decisions = 0
+    while termination is None:
+        transition = environment.step(WAIT)
+        decisions += 1
+        termination = transition.termination
+
+    assert termination is TerminationOutcome.GAME_OVER
+    assert decisions > 20_000
 
 
 def test_the_death_boundary_is_settled_by_advancing_not_by_reading_again() -> None:

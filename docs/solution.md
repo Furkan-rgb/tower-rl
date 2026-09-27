@@ -770,7 +770,8 @@ Use separate outcomes:
 ```text
 GAME_OVER              valid terminal episode
 OPERATOR_STOP          valid truncation, excluded from evaluation
-MAX_EPISODE_DURATION   truncation requiring diagnosis
+STALLED                truncation requiring diagnosis: the game clock stopped advancing
+MASK_LEGAL_REJECTED    environment failure: bridge rejected a mask-legal purchase
 OBSERVATION_INVALID    environment failure
 ACTION_PIPELINE_FAILED environment failure
 UI_STATE_LOST          environment failure
@@ -780,6 +781,15 @@ RECOVERY_FAILED        actor quarantine/fatal depending on scope
 ```
 
 Only `GAME_OVER` represents a normal terminal transition. Training policy for truncated sequences must be explicit; evaluation accepts only complete `GAME_OVER` episodes.
+
+There is no decision-count or wall-clock length cap on an episode: a progressing
+episode may run for as many decisions and as long as the game keeps dying on
+its own schedule (waves 50-110 and 5-10+ minutes are the expected range under
+the Workshop profile). `STALLED` is the only thing that ends an episode for
+"too long" reasons, and it is a liveness check, not a length one: it fires when
+the game clock has not advanced for `STALL_WINDOW_WALL_SECONDS` (120 s) of wall
+time, so a long run of legal, zero-game-time purchases is ordinary play and
+does not trip it (`#88`).
 
 ## 8. Baseline and episode lifecycle
 

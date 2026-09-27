@@ -50,8 +50,6 @@ class ActorConfig:
     #: the learning window overlaps them, which is what R2D2 does.
     stride: int = 40
     epsilon: float = 0.0
-    #: Refuses to spin forever if the environment never terminates an episode.
-    max_decisions_per_episode: int = 20_000
 
     def __post_init__(self) -> None:
         if self.sequence_length < 2:
@@ -106,7 +104,12 @@ class Actor:
         total_reward = 0.0
         termination = TerminationOutcome.OPERATOR_STOP
 
-        for _ in range(self.config.max_decisions_per_episode):
+        # No decision cap: the environment's own liveness guard (`STALLED`,
+        # `run_environment.STALL_WINDOW_WALL_SECONDS`) is what ends an episode
+        # that stops making progress, so this loop runs until the environment
+        # says the episode is over rather than until some fixed count of
+        # decisions is spent (`#88`).
+        while True:
             with self.profile.span(OBSERVATION_DECODE):
                 features = encode_state(state)
             if not any(features.mask):
@@ -134,8 +137,6 @@ class Actor:
                 break
             if transition.next_state is not None:
                 state = transition.next_state
-        else:
-            termination = TerminationOutcome.MAX_EPISODE_DURATION
 
         summary = self.environment.summarize(termination)
         offered, accepted = self._emit(steps, summary)

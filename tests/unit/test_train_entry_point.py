@@ -390,7 +390,7 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     for stacked in ("history_length", "n_step", "discount", "learning_rate", "network_hidden"):
         assert resolved[stacked] is None, stacked
 
-    latest = Path(report["session"]) / arm["run_id"] / "checkpoints" / "latest.pt"
+    latest = Path(report["run_folder"]) / "checkpoints" / "latest.pt"
     policy, identity = checkpoint_policy(
         latest,
         decision_cadence=resolved["decision_cadence"],
@@ -441,7 +441,7 @@ SELECTION_PERIOD = 100
 def numbered_checkpoints(report: dict[str, Any]) -> tuple[dict[str, Any], Path, list[int]]:
     """The arm, its checkpoint directory, and the decisions each file names."""
     arm = report["arm"]
-    directory = Path(report["session"]) / arm["run_id"] / "checkpoints"
+    directory = Path(report["run_folder"]) / "checkpoints"
     files = directory.glob("checkpoint-d*.pt")
     return arm, directory, sorted(int(path.stem.removeprefix("checkpoint-d")) for path in files)
 
@@ -996,7 +996,7 @@ def numbered(run_dir: Path, budget: int, **overrides: str | None) -> dict[str, A
 
 def latest_checkpoint(report: dict[str, Any]) -> Path:
     """The resume point of a finished segment, which is what a resume is given."""
-    return Path(report["session"]) / report["arm"]["run_id"] / "checkpoints" / "latest.pt"
+    return Path(report["run_folder"]) / "checkpoints" / "latest.pt"
 
 
 def resume_from(
@@ -1044,7 +1044,8 @@ def resumed_arm(
             instances=fleet(1),
             device=torch.device("cpu"),
             profile_id=PROFILE,
-            parent=run_dir / "resumed-session",
+            run_dir=settings.run_folder,
+            segment=1,
             revision="test",
             started=0.0,
             tracker=NoExperimentTracker(),
@@ -1465,7 +1466,7 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
 
 def saved_replay(run_dir: Path) -> Path:
     """The one run directory's saved buffer under `run_dir`, found as an operator would."""
-    (dump,) = run_dir.glob(f"session-*/*/{REPLAY_DIRECTORY}")
+    (dump,) = run_dir.glob(f"*/{REPLAY_DIRECTORY}")
     return dump
 
 
@@ -1667,9 +1668,9 @@ def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_poi
     with pytest.raises(RuntimeError, match="the run failed"):
         session(tmp_path, budget="400")
 
-    (checkpoint,) = tmp_path.glob("session-*/*/checkpoints/latest.pt")
+    (checkpoint,) = tmp_path.glob("*/checkpoints/latest.pt")
     assert not non_finite_tensors(dict(load(checkpoint).backbone_state))
-    assert not list(tmp_path.glob(f"session-*/*/{REPLAY_DIRECTORY}"))
+    assert not list(tmp_path.glob(f"*/{REPLAY_DIRECTORY}"))
 
 
 def test_a_failed_replay_save_neither_masks_the_error_nor_stops_the_checkpoint(
@@ -1681,7 +1682,7 @@ def test_a_failed_replay_save_neither_masks_the_error_nor_stops_the_checkpoint(
     monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", refuse)
     with pytest.raises(RuntimeError, match="the run failed"):
         interrupted_session(tmp_path / "failed", monkeypatch)
-    (checkpoint,) = (tmp_path / "failed").glob("session-*/*/checkpoints/latest.pt")
+    (checkpoint,) = (tmp_path / "failed").glob("*/checkpoints/latest.pt")
     assert load(checkpoint).progress.environment_decisions >= 100
 
     # A run that spends its budget is not failed by it either.
@@ -1689,7 +1690,7 @@ def test_a_failed_replay_save_neither_masks_the_error_nor_stops_the_checkpoint(
     monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", refuse)
     report = session(tmp_path / "finished", budget="200")
     assert report["arm"]["decisions"] >= 200
-    assert not list((tmp_path / "finished").glob(f"session-*/*/{REPLAY_DIRECTORY}"))
+    assert not list((tmp_path / "finished").glob(f"*/{REPLAY_DIRECTORY}"))
 
 
 # -- discounting by game time (board #81) ------------------------------------

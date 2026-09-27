@@ -36,6 +36,11 @@ collection afterwards is exactly as concurrent as before.
 
     uv run python scripts/run_actors.py \\
         --actors 2 --episodes 20
+
+With `--policy checkpoint:<path>` and no output given, every actor's record and
+the fleet's `fleet.json` are filed with the run that wrote the checkpoint, in
+`<run folder>/evaluations/<name>/`; `--evaluation-name` names it (default: the
+checkpoint and the UTC time).
 """
 
 from __future__ import annotations
@@ -58,8 +63,11 @@ from run_episodes import (  # noqa: E402
     CHECKPOINT_SELECTOR,
     POLICIES,
     add_cadence_arguments,
+    add_evaluation_name_argument,
     add_upgrade_availability_argument,
     add_workshop_level_argument,
+    checkpoint_evaluation_directory,
+    refuse_an_unused_evaluation_name,
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
@@ -408,6 +416,25 @@ def collect_episodes(
     return record
 
 
+def settle_outputs(arguments: argparse.Namespace) -> None:
+    """Fill in where the actors' records and the fleet report go, when not given.
+
+    A checkpoint's evaluation is filed with the run that wrote it, in
+    `<run folder>/evaluations/<name>/`, the report as `fleet.json` beside the
+    records; a floor's goes to `state/records/`. Either output given by hand
+    keeps the old defaults for the other.
+    """
+    refuse_an_unused_evaluation_name(arguments, "output_directory", "output")
+    directory = checkpoint_evaluation_directory(arguments.policy, arguments.evaluation_name)
+    if arguments.output_directory is None and arguments.output is None and directory is not None:
+        arguments.output_directory = directory
+        arguments.output = directory / "fleet.json"
+    if arguments.output_directory is None:
+        arguments.output_directory = state_directory() / "records" / "actors"
+    if arguments.output is None:
+        arguments.output = state_directory() / "records" / "actors.json"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--actors", type=int, default=2, help="concurrent instances to run")
@@ -443,17 +470,29 @@ def main() -> int:
     parser.add_argument(
         "--output-directory",
         type=Path,
-        default=state_directory() / "records" / "actors",
-        help="where each actor's own episode record is written",
+        default=None,
+        help=(
+            "where each actor's own episode record is written; default "
+            "<run folder>/evaluations/<name>/ for a checkpoint, "
+            "state/records/actors/ for a floor"
+        ),
     )
     parser.add_argument(
-        "--output", type=Path, default=state_directory() / "records" / "actors.json"
+        "--output",
+        type=Path,
+        default=None,
+        help=(
+            "where the fleet's report is written; default fleet.json beside the "
+            "actors' records for a checkpoint, state/records/actors.json for a floor"
+        ),
     )
+    add_evaluation_name_argument(parser)
     arguments = parser.parse_args()
 
     if arguments.actors < 1:
         raise SystemExit("a fleet needs at least one actor")
     checkpoint_arm(arguments.policy)
+    settle_outputs(arguments)
     arguments.frame_rates = frame_rates(arguments.frame_rate_hz, arguments.actors)
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
     instances = [CloneInstance(index=index) for index in range(arguments.actors)]

@@ -55,12 +55,41 @@ state/bridge/<sha256>/   one installed bridge build, named for its own digest
 state/bridge/current     symlink to the bridge that is deployed
 state/bridge/builds/     experiment bridge variants, selected only by TOWER_BRIDGE_BUILD_DIR
 state/bridge/config/     the private build configuration (never committed)
-state/runs/              training runs, checkpoints and reports
+state/runs/<run name>/   one training run (below)
 state/mlflow.db          the MLflow store, with artifacts in state/mlartifacts/
 state/records/           evaluation records: actors, arms, episodes, selection
 state/recordings/        spectate recordings and their per-run records
-state/logs/              each emulator's own captured output, by serial
+state/logs/              each emulator's own captured output, by serial, and
+                         any stage log not pointed into a run folder
 ```
+
+A training run's folder is the single root for everything about that run
+(`src/tower_rl/experiment/run_folder.py`):
+
+```text
+state/runs/<run name>/
+  manifest.json          configuration, the upgrade setup the game read back,
+                         and `segments`: one entry per sitting (run id, start
+                         time, parent checkpoint, decisions it resumed from)
+  checkpoints/           latest.pt and every numbered checkpoint, all segments
+  replay/                the buffer saved beside the final latest.pt
+  segments/<n>/          summary.json and train.log of sitting n
+  logs/                  run_stage.sh stage logs (--log-directory)
+  evaluations/<name>/    per-actor records and fleet.json of a checkpoint's evaluation
+```
+
+`train.py --run-name` names the folder (default `<backbone>-<UTC start>`, for
+example `stacked-dqn-20260927T134501Z`). A `--resume` from the folder's own
+`checkpoints/latest.pt` continues in it as the next segment; a resume from a
+numbered checkpoint or from a run written before this layout starts a new
+folder naming its parent. `run_episodes.py` and `run_actors.py` with
+`--policy checkpoint:<path>` write to the checkpoint's run folder under
+`evaluations/<--evaluation-name>/` (default `<checkpoint>-<UTC time>`) unless an
+output is given. Runs from before this layout stay where they are, in
+`state/runs/session-*/<run id>/`, and their checkpoints load and resume as
+before; a new evaluation of one is filed the same way, under
+`<old run folder>/evaluations/<name>/`, while the evaluations made before this
+layout stay in `state/records/`.
 
 `state/` is git-ignored in full — the artifacts in it are far above GitHub's
 file limit and this repository is public — and no project state is kept anywhere
@@ -546,8 +575,10 @@ A stage — a training seed, an evaluation batch, a recording session — is hou
 of device time, so it is launched once and left alone rather than watched:
 
 ```text
-nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
-  uv run --extra tracking python scripts/train.py \
+run=stacked-dqn-$(date -u +%Y%m%dT%H%M%SZ)
+nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 \
+    --log-directory "state/runs/$run/logs" -- \
+  uv run --extra tracking python scripts/train.py --run-name "$run" \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
       --budget-decisions 120000 --checkpoint-every-decisions 5000 \
@@ -587,8 +618,11 @@ all, is a refusal — as is `emulator-5554` or the canonical evaluation AVD
 anywhere. The canonical AVD is never killed either: if one is running when the
 stage ends, the summary says the cleanup failed and it is left for you.
 
-Everything the stage and the script write goes to `state/logs/<name>-<timestamp>.log`
-and to stdout, ending in one summary line:
+Everything the stage and the script write goes to
+`<--log-directory>/<name>-<timestamp>.log` — `state/logs/` when none is given; a
+training stage names its run folder's `logs/`, as above — and to stdout,
+ending in one summary line. A failed stage's logcat dumps go beside it; the
+emulators' own logs stay in `state/logs/`:
 
 ```text
 stage m2-run2-train-seed1: exit 0, cleanup ok, instances 7/7 cleaned, 0 exited during teardown, wall 08:12:44

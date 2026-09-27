@@ -870,6 +870,22 @@ class _IdleStreamBridge:
                 self._send(self._result(request_id, "rejected", "stale_or_duplicate"))
                 continue
             self._last_request_id = request_id
+            if command["kind"] == "slot_labels":
+                # The environment names the rows before its first round, to
+                # record the upgrade setup; one named row is enough here.
+                self._send(
+                    {
+                        "type": "slot_labels", "protocol_version": 2,
+                        "labels": [
+                            {"family": "attack", "index": 0, "name": "Damage",
+                             "description": ""}
+                        ],
+                    }
+                )
+                self._sequence += 1
+                self._send(self._state())
+                self._send(self._result(request_id, "confirmed", "slot_labels_reported"))
+                continue
             was_active = self._run_active
             self._apply_pause_rule(command)
             self._sequence += 1

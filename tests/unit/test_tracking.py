@@ -142,9 +142,10 @@ def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
 def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -> None:
     calls = recorded.calls
 
-    # The run is opened, its manifest goes up, then every curve point reports a
-    # measurement and the checkpoint behind it, and the summary closes the run.
-    assert calls[:3] == ["start_run", "log_artifact", "log_metrics"]
+    # The run is opened, its manifest goes up, and again once the first round
+    # start has pinned the run's upgrade setup; then every curve point reports
+    # a measurement and the checkpoint behind it, and the summary closes the run.
+    assert calls[:4] == ["start_run", "log_artifact", "log_artifact", "log_metrics"]
     assert calls[-2:] == ["log_artifact", "finish"]
     assert calls.count("log_metrics") == len(recorded.points) >= 2
     # Each evaluation point contributes a measurement and the checkpoint it
@@ -153,7 +154,8 @@ def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -
     evaluations = [
         point for point in recorded.points if "eval_mean_final_wave" in point.metrics
     ]
-    assert calls.count("log_artifact") == len(evaluations) + 2
+    # The manifest goes up once more, rewritten with the run's upgrade setup.
+    assert calls.count("log_artifact") == len(evaluations) + 3
 
 
 def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:
@@ -252,7 +254,7 @@ def test_provenance_travels_with_the_run(recorded: RecordedRun) -> None:
     assert tags["profile_id"] == PROFILE
     assert tags["backbone"] == "stacked-dqn"
     assert tags["actors"] == "1"
-    assert tags["session"].startswith("session-")
+    assert tags["run_folder"].startswith("stacked-dqn-")
     assert tags["run_id"] == recorded.name
 
 
@@ -508,7 +510,7 @@ def test_the_numbered_checkpoints_land_on_the_run_that_reported_the_episodes(
 ) -> None:
     """One run id carries both, or the candidate cannot be found from the curve."""
     recorded, report = per_episode
-    run_dir = Path(report["session"]) / report["arm"]["run_id"]
+    run_dir = Path(report["run_folder"])
     numbered = sorted((run_dir / "checkpoints").glob("checkpoint-*.pt"))
     uploaded = [path for path, _ in recorded.artifacts if path.name.startswith("checkpoint-")]
 

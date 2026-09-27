@@ -929,6 +929,21 @@ ADR 0012), which is environment configuration and is never saved. Timed research
 is permitted only in progression mode. A run is comparable only with runs under
 the same account and the same Workshop level. The v1 records stay valid under v1.
 
+The flags a run is started with say what it asked for, not what the game held.
+So every run also records its upgrade setup as the game read it back: every
+in-run row the game names, whether it was purchasable at the episode's first
+observation, and the Workshop level it stood at after the round began
+(`environment/upgrade_setup.py`, schema in the
+[environment contract](environment-contract.md#upgrade-setup-record)). The
+setup's sha256 digest is what runs are compared by, and every episode record
+carries it. The full setup is written once: to a training run's manifest (its
+digest also goes into the checkpoint identity), or to an evaluation file. An
+episode that drifted carries its own full setup. An episode on a different
+setup is invalid (`UPGRADE_SETUP_DRIFT`), and a resume or an evaluation of a
+checkpoint is refused when its first episode's setup is not the checkpoint's.
+Two runs with fewer in-run rows, or with a different Workshop set, therefore
+stay distinguishable even when their flags are spelled the same.
+
 Every run episode records its exact progression-profile identity. Replay and
 evaluation reject profile-incompatible data; fixed-baseline V1 replay/evaluation
 is isolated from progression-mode runs. Progression evaluation measures Tier-1
@@ -1980,6 +1995,15 @@ section 9.2b was retired and there is no `--backbone` flag — running to
 `--budget-decisions`, checkpointing atomically under `state/runs`, and taking
 one exploration-free evaluation on the final weights after the budget is spent.
 
+Each run is one folder, `state/runs/<run name>/` (`--run-name`, default
+`<backbone>-<UTC start>`), holding its manifest, checkpoints, saved replay, a
+summary and training log per segment, the stage logs pointed into it, and the
+evaluations of its checkpoints; `docs/setup.md` gives the layout. A sitting of
+`train.py` is a segment: a resume from the folder's own `latest.pt` continues in
+the folder as the next one, and the manifest lists every segment's run id and
+parent. A resume from anything else starts a new folder, so a branch never
+overwrites the run it branched from.
+
 The budget is cumulative decisions across the fleet, accounted at episode
 granularity: the run stops after the episode each actor crossed the budget in.
 Section 9.2b gives the reasons and the schedules that read it.
@@ -2031,7 +2055,7 @@ On graceful stop: stop starting episodes, allow a configurable drain window, clo
 Resume through an explicit form such as:
 
 ```text
-train.py --resume state/runs/<session>/<run>/checkpoints/latest.pt
+train.py --resume state/runs/<run name>/checkpoints/latest.pt
 ```
 
 On resume: validate source/config/schema/baseline compatibility before loading. Require an explicit migration path for incompatibilities; do not partially load silently. A graceful stop plus this resume path is the V1 pause/resume mechanism; do not claim pause support until the interrupted-versus-uninterrupted checkpoint test passes.

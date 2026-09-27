@@ -42,6 +42,7 @@ from tower_rl.environment.run_port import (
     AdvanceResultLike,
     RunPort,
     RunPortError,
+    UpgradeSlotLabelLike,
     WorkshopRowLike,
 )
 from tower_rl.environment.run_state import (
@@ -52,6 +53,7 @@ from tower_rl.environment.run_state import (
     hud_readings,
     validate_transition,
 )
+from tower_rl.environment.upgrade_setup import UpgradeSetup, UpgradeSetupReference
 from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows
 
 
@@ -483,6 +485,11 @@ class InstrumentedRunEnvironment:
     #: watching one run; it is not a logging hook, and nothing it is handed is
     #: a record of anything (see `DecisionView`).
     on_decision: Callable[[DecisionView], None] | None = None
+    #: The upgrade setup this environment's episodes are held to. Its own by
+    #: default; a run hands every environment of its fleet the same one, and a
+    #: run that continues or plays a checkpoint seeds it with that checkpoint's
+    #: setup digest.
+    setup_reference: UpgradeSetupReference = field(default_factory=UpgradeSetupReference)
     _state: RunState | None = field(default=None, init=False)
     _episode_id: str = field(default="", init=False)
     #: Episodes begun on this environment, which only the view above reports.
@@ -499,6 +506,15 @@ class InstrumentedRunEnvironment:
     #: state of the episode carries it, because nothing inside the round puts
     #: the levels back.
     _workshop_reverted: str | None = field(default=None, init=False)
+    #: What the game calls each upgrade row, read once before the first round.
+    _labels: tuple[UpgradeSlotLabelLike, ...] | None = field(default=None, init=False)
+    #: The Workshop rows the game read back once this episode's round started;
+    #: None when no Workshop profile is written, and so nothing was read.
+    _workshop_read: tuple[WorkshopRowLike, ...] | None = field(default=None, init=False)
+    #: The setup the current episode is played on, as the game read it back.
+    _setup: UpgradeSetup | None = field(default=None, init=False)
+    #: Why this episode's setup is not the run's, when it is not.
+    _setup_drift: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         # A negative level is refused here, not at the first round start.
@@ -514,11 +530,14 @@ class InstrumentedRunEnvironment:
         opening slices exactly as it does inside `step`, so the first
         observation of an episode is the same kind of state as every later one.
         """
+        # Before the round, because the labels are a boundary command the port
+        # will not issue inside one. Cached after the first episode.
+        labels = self._slot_labels()
         if self.upgrade_availability is UpgradeAvailability.ALL:
-            # Before the round, because the labels are a boundary command the
-            # port will not issue inside one. Cached after the first episode.
             self._resolve_real_rows()
         self._workshop_reverted = None
+        self._workshop_read = None
+        self._setup_drift = None
         if self.workshop_level > WORKSHOP_OFF:
             # Before the round, so whatever the game derives from the levels at
             # the round start sees them. Whether it derives them there, at load,
@@ -540,6 +559,11 @@ class InstrumentedRunEnvironment:
         state = self._read_state()
         if state is None or state.lifecycle != "active":
             raise RunPortError("the instance did not reach an active run")
+        # The setup is read off the first observation, after any unlock, and
+        # the Workshop read above: what the game held, not what was asked for.
+        self._setup = UpgradeSetup.read_back(labels, state, self._workshop_read)
+        _, self._setup_drift = self.setup_reference.admit(self._setup)
+        state = self._setup_held(state)
         self._state = state
         self._episode_id = uuid.uuid4().hex
         self._episodes += 1
@@ -570,6 +594,8 @@ class InstrumentedRunEnvironment:
             upgrade_availability=str(self.upgrade_availability),
             workshop_level=self.workshop_level,
             workshop_rows=workshop_rows(self.workshop_level),
+            upgrade_setup=self._setup,
+            upgrade_setup_drifted=self._setup_drift is not None,
             decision_cadence=str(self.decision_cadence),
             final_wave=self._tally.peak_wave,
             decisions=self._tally.decisions,
@@ -995,7 +1021,24 @@ class InstrumentedRunEnvironment:
             state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
         if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
             state = self._settle_death_boundary(state)
-        return self._workshop_held(self._availability_held(state))
+        return self._setup_held(self._workshop_held(self._availability_held(state)))
+
+    # -- upgrade setup -----------------------------------------------------
+
+    def _slot_labels(self) -> tuple[UpgradeSlotLabelLike, ...]:
+        if self._labels is None:
+            self._labels = tuple(self.port.slot_labels())
+        return self._labels
+
+    def _setup_held(self, state: RunState) -> RunState:
+        """Refuse every state of an episode played on another setup than the run's."""
+        if self._setup_drift is None:
+            return state
+        return replace(
+            state,
+            valid=False,
+            invalid_reasons=state.invalid_reasons + (self._setup_drift,),
+        )
 
     # -- upgrade availability ----------------------------------------------
 
@@ -1009,7 +1052,7 @@ class InstrumentedRunEnvironment:
         neither unlocked nor checked for.
         """
         if self._real_rows is None:
-            labels = [label for label in self.port.slot_labels() if label.name]
+            labels = [label for label in self._slot_labels() if label.name]
             # A build that names more slots than `run-action-v1` numbers is a
             # different action schema, and it fails closed here by the same
             # reason the builder gives it - not as a `ValueError` out of
@@ -1116,6 +1159,7 @@ class InstrumentedRunEnvironment:
             reported = self.port.workshop_levels()
         except RunPortError as failure:
             raise RunPortError(f"{WORKSHOP_NOT_APPLIED}: {failure}") from failure
+        self._workshop_read = tuple(reported)
         moved = self._rows_not_at_level(reported, rows)
         if moved:
             self._workshop_reverted = (

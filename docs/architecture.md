@@ -99,6 +99,11 @@ Owns the decision problem, and nothing about how a device is reached.
   (ADR 0011): under `UpgradeAvailability.ALL` it reopens every real upgrade row
   at each round start through the port and holds the episode to it
   (`UNLOCK_NOT_APPLIED`, `UNLOCK_REVERTED`).
+- `upgrade_setup.py` — `UpgradeSetup`, its digest, and `UpgradeSetupReference`.
+  An `UpgradeSetup` is the setup the game read back for one episode: every
+  named row, its in-run availability and its Workshop level. One reference is
+  shared by a run's environments and holds the run to its first setup
+  (`UPGRADE_SETUP_DRIFT`) or to a checkpoint's (`UpgradeSetupRefused`).
 - `decision_time.py` — `DecisionTimeProfile` and `DecisionTimeBreakdown`: where
   a decision's wall time went, by bucket.
 - `project_state.py` — `repository_root` and `state_directory`: the git-ignored
@@ -316,13 +321,19 @@ and no script.
 - `metrics.py` — learning-curve points, health counters, collection-window and
   decision-time lines.
 - `training_report.py` — `TrainingReport`, which writes a run's artifacts.
+- `run_folder.py` — the run folder layout (`state/runs/<run name>/`: manifest,
+  `checkpoints/`, `replay/`, `segments/<n>/`, `logs/`, `evaluations/<name>/`),
+  the default run name, which segments and run ids a folder holds, whether a
+  resume continues in place, and where an evaluation of a checkpoint is filed.
 - `comparison.py` — `iqm`, `stratified_bootstrap`,
   `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`.
 - `wave_statistics.py` — per-wave equivalence analysis between two arms.
 
 **State.** Run identity is immutable and is stamped into every checkpoint and
-every record. Durable state is files under the run directory plus whatever the
-tracker holds; nothing here is mutated in place.
+every record. Durable state is files under the run folder plus whatever the
+tracker holds. A run folder holds one run however many sittings it took: each
+sitting is a segment with a run id of its own, and the manifest's `segments`
+list is the one thing a later segment appends to.
 
 ## 5a. The two loose modules
 
@@ -421,8 +432,14 @@ windows that smooth them. Game time travels as a metric rather than as a
 second axis: `episode_game_seconds_cumulative` per episode and
 `learner_game_seconds` beside the learner's summaries.
 
-`--resume <checkpoint>` makes the run a second segment of an earlier one:
-`resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
+`--resume <checkpoint>` makes the run a second segment of an earlier one.
+`train.choose_run_folder` decides where it is written, from paths alone, at
+parse time: a resume from a run folder's own `latest.pt` continues in that
+folder as `segments/<n+1>/`; any other checkpoint — a numbered one, or one of a
+run written before run folders (`state/runs/session-*/<run id>/`) — starts a
+new folder, so no earlier evidence is overwritten, and a folder that already
+holds a manifest is refused for anything but its own continuation. The
+segment's replay save replaces the dump it reloaded. `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
 device is touched — refusing one whose `CheckpointIdentity` names another arm,
 profile or schema, a stacked-dqn one whose recorded discount differs from the
 command's (`docs/solution.md` §9.4d), and one that has already spent

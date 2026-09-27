@@ -96,6 +96,9 @@ action, and it is never persisted.**
   same way the protocol fields are, so existing checkpoint keys keep resolving.
   The row names are left out of the checkpoint identity, so that correcting a
   guessed name after the device check does not orphan checkpoints.
+  What the game actually held (every row's Workshop level, as read back after
+  the round start) is recorded separately as the run's upgrade setup; see
+  [Upgrade setup record](../environment-contract.md#upgrade-setup-record).
 
 ### What this supersedes
 

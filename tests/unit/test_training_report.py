@@ -151,6 +151,7 @@ EPISODE_RECORD_KEYS = {
     "upgrade_availability",
     "workshop_level",
     "workshop_rows",
+    "upgrade_setup_digest",
     "decisions",
     "advances",
     "purchases",
@@ -256,14 +257,13 @@ def test_everything_the_run_writes_lands_outside_the_repository(
     trained: dict[str, Any],
 ) -> None:
     repository = Path(train.__file__).resolve().parents[1]
-    session_dir = Path(trained["session"])
-    summary = json.loads((session_dir / "summary.json").read_text())
+    run_dir = Path(trained["run_folder"])
+    summary = json.loads((run_dir / "segments" / "1" / "summary.json").read_text())
 
-    assert repository not in session_dir.parents
+    assert repository not in run_dir.parents
     assert summary["arm"]["learning_curve"] == trained["arm"]["learning_curve"]
     arm = trained["arm"]
-    run_dir = Path(arm["checkpoint_path"]).parents[1]
-    assert (run_dir / "summary.json").exists()
+    assert Path(arm["checkpoint_path"]).parents[1] == run_dir
     assert (run_dir / "manifest.json").exists()
     # The checkpoint round-trips: written atomically, checksummed on read.
     checkpoint = load(Path(arm["checkpoint_path"]))
@@ -335,7 +335,8 @@ def test_the_record_names_the_pre_registered_point_rather_than_its_caller(
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
             profile_id=PROFILE,
-            parent=tmp_path,
+            run_dir=tmp_path / "run",
+            segment=1,
             revision="test",
             started=0.0,
             tracker=train.NoExperimentTracker(),

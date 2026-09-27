@@ -774,7 +774,7 @@ def test_train_then_select_then_report(
             device=torch.device("cpu"),
         )
 
-    run = Path(session["session"]) / session["arm"]["run_id"]
+    run = Path(session["run_folder"])
     checkpoints = sorted((run / "checkpoints").glob("checkpoint-d*.pt"))
     assert len(checkpoints) >= 2, "the budget crosses the cadence more than once"
 
@@ -797,7 +797,7 @@ def test_train_then_select_then_report(
     # The same decision, written beside the run for the next command to read.
     beside = json.loads((run / "selection.json").read_text())
     assert Path(beside["checkpoint"]) == chosen
-    assert beside["run_id"] == run.name
+    assert beside["run_id"] == session["arm"]["run_id"]
 
     # Set B: the selection, played again into a directory of its own, beside the
     # floors it has to be read against.

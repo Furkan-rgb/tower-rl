@@ -9,6 +9,7 @@ arguments but that the settings the run was built with are the ones it records.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,8 @@ def _arm(run_dir: Path, **overrides: str | None) -> Any:
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
             profile_id=PROFILE,
-            parent=run_dir,
+            run_dir=run_dir / "run",
+            segment=1,
             revision="test",
             started=0.0,
             tracker=train.NoExperimentTracker(),
@@ -151,7 +153,9 @@ def test_the_arm_is_filed_under_the_identity_it_was_built_with(tmp_path: Path) -
     """What the script composes is what the checkpoints are written under."""
     arm = _arm(tmp_path)
 
-    assert arm.identity.run_id == arm.run_dir.name
+    manifest = json.loads((arm.run_dir / "manifest.json").read_text())
+    assert manifest["run_id"] == arm.identity.run_id
+    assert manifest["segments"][0]["run_id"] == arm.identity.run_id
     assert arm.identity.profile_id == PROFILE
     assert arm.identity.observation_schema == OBSERVATION_SCHEMA_VERSION
 

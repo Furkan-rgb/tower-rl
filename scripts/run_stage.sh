@@ -3,7 +3,12 @@ set -euo pipefail
 
 # One device stage, from one invocation, ending with the device verified clean.
 #
-#   run_stage.sh --name <stage> --instances <N> [--shutdown-grace <s>] -- <command...>
+#   run_stage.sh --name <stage> --instances <N> [--shutdown-grace <s>]
+#                [--log-directory <dir>] -- <command...>
+#
+# `--log-directory` is where the stage log (and a failed stage's logcat dumps)
+# is written, `state/logs` by default; a training stage points it at its run
+# folder's `logs/`. The emulators' own logs stay in `state/logs` either way.
 #
 # A stage is a multi-hour device command: a training seed, an evaluation batch, a
 # recording session. Launched once in the background, this script supervises it
@@ -39,7 +44,8 @@ set -euo pipefail
 # one or wait out a real duration. Each defaults to the real thing, none is a
 # runtime option, and no run sets any of them:
 #   TOWER_STAGE_PROC_ROOT       the /proc to count qemu processes in
-#   TOWER_STAGE_LOG_DIRECTORY   where the stage log is written
+#   TOWER_STAGE_LOG_DIRECTORY   the state/logs the emulator logs are read from,
+#                               and the stage log's default directory
 #   TOWER_STAGE_SETTLE_TIMEOUT  how long an instance on its way out is given
 
 # `stop_stage` waits on the stage and on a timer at once through `wait -n -p`,
@@ -91,6 +97,7 @@ default_shutdown_grace=900
 
 name=""
 instances=0
+stage_log_directory=""
 shutdown_grace="$default_shutdown_grace"
 stage_command=()
 
@@ -99,6 +106,7 @@ while [ $# -gt 0 ]; do
     --name) name="${2:?--name needs a value}"; shift 2 ;;
     --instances) instances="${2:?--instances needs a value}"; shift 2 ;;
     --shutdown-grace) shutdown_grace="${2:?--shutdown-grace needs a value}"; shift 2 ;;
+    --log-directory) stage_log_directory="${2:?--log-directory needs a value}"; shift 2 ;;
     --) shift; stage_command=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -115,7 +123,8 @@ case "$shutdown_grace" in ''|*[!0-9]*) echo "--shutdown-grace must be a whole nu
 # the same rule `instrumented_bridge.sh` follows, so a stage launched from
 # anywhere finds the same bridge, the same logs and the same scripts.
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-log_directory="${TOWER_STAGE_LOG_DIRECTORY:-$repository_root/state/logs}"
+emulator_log_directory="${TOWER_STAGE_LOG_DIRECTORY:-$repository_root/state/logs}"
+log_directory="${stage_log_directory:-$emulator_log_directory}"
 # A test seam and nothing else: no run ever sets it, and /proc is the only place
 # a real host's processes are.
 proc_root="${TOWER_STAGE_PROC_ROOT:-/proc}"
@@ -278,13 +287,13 @@ log_stage_failure_logcat() {
 #: summary rather than requiring a second pass through per-instance log files
 #: after the fact. The path matches how `bring_up` names the file it captures
 #: each instance's own stdout/stderr into (`EMULATOR_LOG_DIRECTORY` in
-#: `src/tower_rl/simulation/instance.py`), which is the same `state/logs`
-#: directory this script's own log lives in by default. `|| true` throughout:
+#: `src/tower_rl/simulation/instance.py`): `state/logs`, whatever
+#: `--log-directory` moved this script's own log to. `|| true` throughout:
 #: teardown must never abort on this, a past review finding.
 log_emulator_crash_lines() {
   local serial log_file
   for serial in "${expected_serials[@]}"; do
-    log_file="$log_directory/tower-rl-emulator-$serial.log"
+    log_file="$emulator_log_directory/tower-rl-emulator-$serial.log"
     [ -r "$log_file" ] || continue
     {
       echo "crash-lines: $serial ($log_file)"

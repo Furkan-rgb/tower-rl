@@ -239,6 +239,11 @@ def resolved_config(
         "target_ema_decay": (
             arguments.target_ema_decay if name == "stacked-dqn" else None
         ),
+        # SR-SPR-style resets: the interval in gradient steps, 0 for none -
+        # every run before M3-P014 - and the last step one may happen at,
+        # derived from the budget.
+        "reset_every_steps": learner.reset_every_steps,
+        "last_reset_step": learner.last_reset_step,
         "epsilon_start": config.exploration.epsilon_start,
         "epsilon_end": config.exploration.epsilon_end,
         "epsilon_anneal_decisions": config.exploration.anneal_decisions,

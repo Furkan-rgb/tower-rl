@@ -562,16 +562,17 @@ check against a ledger of every version the learner reached).
 The cadence is counted in decisions, so a refresh lands inside an episode; the
 refresh at an episode's start restarts the count, so no episode opens on
 parameters older than the previous one's last. `--parameter-sync-decisions 0`
-refreshes only at episode start and never inside one — `M3-P009`'s cadence,
-and the one the stacked-dqn benchmark arm runs (`M3-P013`,
-docs/experiments.md). 100 is offered as an alternative, on Ape-X's basis: its
-actors copy the learner's parameters every 400 frames (Horgan et al. 2018,
-§4.1), which at an action repeat of 4 is 100 agent steps. It was tried at
-`M3-P011`/`M3-P012` bundled with other changes and, isolated in `M3-P012`'s
-mechanism check, did not by itself explain either run's shortfall against
-`M3-P009` — but a single-run screen against a single comparator cannot
-resolve gaps of the size observed, so this is not significant evidence for or
-against refresh-100 either (`M3-P012`, docs/experiments.md). A mid-episode swap is safe for `stacked-dqn` because what it carries
+refreshes only at episode start and never inside one — `M3-P009`'s cadence.
+The stacked-dqn recipe runs 10 (`M3-P014`, docs/experiments.md), derived from
+parameter lag in gradient steps rather than copied: the lag is about
+actors × replay ratio × cadence, so 7 × 1.0 × 10 is at most 70 updates and
+about 35 on average, against Ape-X's ~53 (Horgan et al. 2018: its actors copy
+every 400 frames) and the 199-update mean lag of BBF, which acts from its EMA
+target (§9.4's table). At M3-P009's cadence of 0 the same product over a
+~550-decision episode is up to ~3,850 updates. Refresh-100 (`M3-P011`/`M3-P012`)
+was never isolated as the cause of either run's shortfall, and a single-run
+screen could not have resolved it (`M3-P012`, docs/experiments.md). A
+mid-episode swap is safe for `stacked-dqn` because what it carries
 through an episode is a window of its own inputs, not a state its parameters
 produced; a swap changes how the window is read, never what is in it.
 DreamerV3's carried latent is produced by its parameters, so it is fixed at
@@ -1452,7 +1453,7 @@ Use configurable defaults close to established R2D2 practice:
   `--n-step` to the final value over the first gradient steps and then holds,
   n(t) = round(n0 · (n1/n0)^(min(t,T)/T)) - long early for fast credit
   propagation, short once the value estimate is worth bootstrapping from. t
-  counts gradient steps since the start. The counter is the learner's own and
+  counts gradient steps since the start or the latest reset (below). The counter is the learner's own and
   travels in the checkpoint, so a resume continues the schedule; unset, n is
   fixed, as for every run before run 4;
 - discount 0.99 per decision by default, a horizon of 100 decisions, calibrated
@@ -1512,55 +1513,51 @@ it a single near-zero-priority sequence would shrink every weight. A checkpoint
 recorded under other replay exponents is refused on `--resume`, as one under
 another exploration is.
 
-What matters about the replay ratio is transitions replayed per transition
-generated, not gradient steps per decision: a gradient step here replays a whole
-batch of unrolled sequences. At 80-step sequences, burn-in 7 and batch 8 a
-sequence has 73 − n learnable steps (the last n have no bootstrap state inside
-the window), so one step replays 8 × 70 = 560 transitions at the final n of 3.
-The default, reverted to M3-P009's 1.0 gradient steps per decision (from
-M3-P010's 0.114 — board #85), is therefore 560:1 (504:1 while n is still 10),
-against 8 for DQN and about 1 for Ape-X and R2D2; the first training run's 2.0
-was 1087:1. M3-P010 ran the data-efficient literature's 32-64:1 band instead
-(SPR's 64:1: without network resets the gain from a higher replay ratio fails
-beyond about 1-2 updates per step at batch 32, D'Oro et al. 2023, and BBF's
-256:1 depends on the resets this learner does not have). At matched gradient
-steps M3-P010 tracked M3-P009 within 2.5-4 waves, but 0.114 gradient steps per
-decision reaches a given step count 9x slower in decisions than 1.0 does, and
-M3-P009's climb to ~37 happened between 35k and 100k gradient steps — which
-M3-P010 would only reach at 300k-900k decisions. D'Oro et al.'s bound was
-derived in the Atari-100k batch-32 regime and is contradicted here: it is not
-evidence for running below 1.0 on this project's geometry and reward scale
-(M3-P010, docs/experiments.md).
+**The stacked-dqn recipe (board #85, `M3-P014`).** SR-SPR (D'Oro et al. 2023,
+as BBF's code configures it) is the base: a high replay ratio made to pay by
+periodic resets, and a fresh actor refresh. Each value applies the source's
+reasoning to this problem's units rather than copying its number; where a BBF
+piece does not transfer it is excluded. "Verified" means read in the paper's
+text or the official code (BBF: Schwarzer et al. 2023, arXiv 2305.19452, and
+github.com/google-research/google-research/tree/master/bigger_better_faster,
+`BBF.gin` and `SR_SPR.gin`); measurements are in `M3-P014`'s recipe derivation
+(docs/experiments.md).
 
-Replay does not need to hold the whole run: `--replay-capacity` defaults to
-4096 windows, M3-P009's known-good value (about 164k decisions at the
-asymptotic 40 decisions per window of a stride of 40, evicting well before a
-~1M-decision budget is spent). 25,000 windows, tried at M3-P010, would keep the
-early heavily-explored data forever within the budget and cost about 19.2 GiB
-against 4096's 3.2 GiB, with swap already full under M3-P009's seven emulators
-(about 33 GB available) — and there is no evidence it helps: capacity's effect
-is untested and is a candidate for its own arm, not a default backed by a
-result. A stored decision costs about 19.5 KB in memory (582 Python floats of
-features; measured 2026-09-27 on synthetic episodes cut by `Actor._windows`).
+| parameter | principle → quantity → our value | value | source |
+| --- | --- | --- | --- |
+| batch | McCandlish et al.'s critical batch B_simple = tr(Σ)/\|G\|² predicts where larger batches stop paying; measured on M3-P009's replay it is 3.5 windows at 21k steps and 15.6 at 296k. The learner step is compute-bound (collate ~0.6 ms per window dominates from batch 16 up), so the smallest batch inside the noise scale | 8 windows | McCandlish 2018 verified (arXiv 1812.06162); measured |
+| replay ratio | Count independent data replayed, not correlated positions: a window's 73 positions carry 1.1-10.3 independent ones (measured), so 1.0 × 8 windows replays 9-82 effective positions per decision, BBF's RR-8 regime (RR 8 × batch 32 = 256 sampled transitions per agent step; a stored datum takes part in ~180 updates mid-run and ~1,000 for BBF's first 2k steps, against 584 here under FIFO eviction). The earlier "560 transitions replayed per decision" (against ~1 for Ape-X and R2D2) count treated correlated positions as independent. M3-P010's 0.114 tracked M3-P009 at matched steps but 9× slower in decisions | 1.0 gradient steps per decision | BBF text and code verified; M3-P010 measured |
+| parameter refresh | Lag in updates ≈ actors × ratio × cadence: 7 × 1.0 × 10 → at most 70, about 35 on average, against Ape-X's ~53 (learner 19 batches/s × actor refresh every 400 frames ≈ 2.8 s ⇒ ≈53 updates of lag) and BBF's EMA-target mean lag of 199 (§6.10) | `--parameter-sync-decisions 10` | Horgan et al. 2018 verified (Ape-X, arXiv 1803.00933); BBF code verified |
+| reset interval | BBF resets every 40k updates and anneals over 25% of training; here recovery after a reset takes R ≈ 20-30k updates (offline, on M3-P009's replay), so 4R keeps the adapting fraction at ~25% | `--reset-every-steps 100000` | BBF text and code verified; R measured |
+| last reset | BBF's `no_resets_after`: the last reset leaves ≈ one interval (≥ 3× recovery) before the end. Gradient steps trail decisions by the ~4.3k warm-up, so the 1,000,000-decision budget takes ≈995.7k gradient steps; reset 9, at 900k steps (near decision 904.3k), leaves ≈95.7k steps — 3-5× the measured 20-30k recovery | budget × ratio − interval (900k at 1M: 9 resets) | BBF code verified; measured |
+| what a reset does | SR-SPR: head and projection re-initialised, encoder shrunk and perturbed, target reset, optimiser state of the re-initialised parameters dropped (Nikishin et al. 2022 reset optimiser statistics) | `core` and `heads` fresh; `trunk` ← 0.8 old + 0.2 fresh; target ← online; AdamW state cleared for core and heads only | `SR_SPR.gin` verified (0.8/0.2; BBF's 0.5/0.5 is for its 4× network); Nikishin arXiv 2205.07802 verified |
+| n-step after a reset | BBF restarts the 10→3 anneal over 10k steps after each reset; offline, the restart raised Q correlation at 10k updates from 0.58 to 0.77 | 10 → 3 over 10k steps from each reset | BBF text and code verified; measured |
+| discount | Per game-second; 0.999 tripled the value scale and clipped the gradient (M3-P011) | 0.997 per game-second | M3-P011/M3-P012 measured |
+| γ anneal | BBF's 0.97 → 0.997 is per agent step; ours is per game-second, and M3-P011 showed value-scale sensitivity | excluded | judgement |
+| target | EMA, τ 0.005 as BBF and SR-SPR | decay 0.995 | BBF code verified |
+| learning rate | BBF 1e-4 | 1e-4 | BBF code verified |
+| Adam ε | BBF's 1.5e-4 pairs with rewards clipped to ±1; ours are ~1/35 per game-second, and at M3-P010 300k 41% of parameters had sqrt(v̂) below it, cutting the mean step to 0.044× lr against M3-P009's 0.102× | 1e-8 (torch's default) | M3-P010 measured |
+| weight decay | BBF's 0.1 curbs overfitting in a 4× network ("larger networks need more regularization"); SR-SPR uses 0; this network is 197k parameters | 1e-5 | BBF text, `SR_SPR.gin` verified; judgement |
+| SPR loss, 4× width | Self-prediction exists for pixel inputs; the features here are dense and engineered. No underfitting to widen against | excluded | judgement |
+| replay sampling | R2D2's α/β/η (below) | 0.9 / 0.6 / 0.9 | Kapturowski et al. 2019 verified; Acme reference config verified |
+| replay capacity | Fedus et al. 2020 finds capacity and oldest-policy age separate factors, gives no closed form, and that n-step is what makes capacity pay; Nikishin et al. 2022 finds resets need the buffer preserved across the reset, not the whole run kept. Criterion (judgement): the oldest data is at least one reset interval old (≥ ~2,500 windows). 4096 windows ≈ 169k decisions at 41.3 decisions per window ≈ 1.7 reset intervals (the literature spans ≈0.5, DrQ + resets, to ≈20, SR-SPR, intervals). Keep-everything (≈25,000 windows, ≈23 GiB RAM) is a separate candidate arm, not bundled here. RAM ≈ 1.0 MB per window (24.4 KB per stored decision, measured on the M3-P010/M3-P012 dumps), so 4096 ≈ 3.8 GiB | 4096 | Fedus et al. 2020 verified (arXiv 2007.06700); Nikishin et al. 2022 verified (arXiv 2205.07802); costs M3-P010/M3-P012 measured |
 
-The optimiser is AdamW at lr 1e-4 with weight decay 1e-5 and ε reverted to
-torch's default 1e-8 (from M3-P010's 1.5e-4, the ε of Rainbow, DER, SPR and
-BBF — board #93, reverted board #85). 1.5e-4 pairs with those recipes' rewards
-clipped to ±1; this project's rewards are about 1/35 per game-second, so 1.5e-4
-does not merely bound the step on a near-zero second moment, it dominates it:
-at M3-P010 300k decisions, 41% of parameters had sqrt(v̂) below 1.5e-4, and its
-mean per-step update was 0.044× the learning rate against M3-P009's 0.102× at
-1e-8; applying 1.5e-4 to M3-P009's own moments would have cut its step by 36%
-(M3-P010, docs/experiments.md). A resume keeps the ε its optimizer state
-carries — torch restores it with the state — so a checkpoint from before board
-#93 goes on at 1e-8 already, and its record says so.
+A reset happens in `StackedDqnBackbone.learn`, after the step that reaches a
+multiple of `--reset-every-steps`, against a fresh network seeded from the run
+seed and the reset count so a run's resets are reproducible. The step of the
+latest reset and the count travel in the checkpoint, so a resume continues both
+the n-step anneal and the seeding; a checkpoint from before resets loads as
+never reset. Each reset is logged as `learner_resets` on the decision axis, so
+a dip in the curve is attributable. `--early-stop-patience-periods` stays 0 for
+a resetting run: a plateau rule would read the post-reset dips as decline.
 
-None of the replay ratio, the capacity or the refresh cadence is in a
-checkpoint's identity, and each now defaults to a different value than the runs
-before it, so `--resume` refuses a checkpoint recorded under other values
-rather than continue it under the new defaults silently; repeating the recorded
-values continues it as it was. A checkpoint that recorded
-`parameter_sync_episodes` 1 reads as `--parameter-sync-decisions 0`.
+None of the replay ratio, the capacity, the refresh cadence or the reset
+interval is in a checkpoint's identity, and several default to different values
+than the runs before them, so `--resume` refuses a checkpoint recorded under
+other values rather than continue it under the new defaults silently; repeating
+the recorded values continues it as it was. A checkpoint that recorded
+`parameter_sync_episodes` 1 reads as `--parameter-sync-decisions 0`. A resume
+keeps the Adam ε its optimizer state carries.
 
 Exploration anneals over a horizon counted in decisions and is then held at the
 floor, rather than being derived from progress through the whole budget.
@@ -1597,10 +1594,11 @@ episode against the random baseline's 18.7.
 
 Both backbones draw from this one replay under this one configuration; that is
 what makes their comparison fair. Where `stacked-dqn` departs is only in its
-optimisation, and only in the three ways the Atari 100k literature in
-`docs/rl-candidates.md` 3.1 calls for: an exponential-moving-average target
-instead of a periodic hard copy, decoupled weight decay (AdamW), and a replay
-ratio the training loop supplies rather than the algorithm. Every such departure
+optimisation, and only in the four ways the Atari 100k literature in
+`docs/rl-candidates.md` 3.1 and the recipe table above call for: an
+exponential-moving-average target instead of a periodic hard copy, decoupled
+weight decay (AdamW), a replay ratio the training loop supplies rather than the
+algorithm, and periodic resets. Every such departure
 is a resolved value recorded with the experiment, not a hidden default.
 
 ### 9.4b PyTorch directly, not TorchRL (for now)
@@ -1715,7 +1713,7 @@ every loss is a mean over the steps its weight keeps.
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`) | same; stride 32, burn-in 0 | none |
 | train ratio | 512, Table 2's setting for the 500K-1M-step, vector-observation, 12M-model budget (Proprio Control 500K and Visual Control 1M rows; dv3.txt lines 869-870), matching the code's `crafter` preset (configs.yaml: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`, its only 1.1M-step single-environment preset) | 512, which is train_ratio/(batch_size·batch_length) = 512/(16·64) = 0.5 gradient steps per decision (`dreamer.py:143`). No flag overrides it. | 2026-09-25: this budget and model size is what the paper's own Table 2 specifies, and it is the code's own preset for a matching 1.1M-step, single-environment run. (Supersedes the earlier claim that the `atari100k` preset's 256 was "the published preset for the matching low-data, one-environment regime"; `atari100k` is a 400K-step, 100 discrete-action benchmark, not this one.) |
 | warm-up | trains once replay holds B·T steps (`embodied/run/train.py:71`), about 1,088 agent steps once the official replay's chunking is counted | 25 windows, about 1,008 decisions at stride 32 | A window count is what `TrainingConfig` expresses. 25 windows is the nearest to the official figure. |
-| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 25,000 windows by default, **no online queue** | 2026-09-27: the shared default is 25,000 windows, sized for `stacked-dqn`'s ~550-decision episodes (§9.4); at DreamerV3's shorter episodes (roughly 4 windows per 148-decision episode) that holds about 0.9M decisions, so 1M-decision runs still pass `--replay-capacity 40000` so the buffer holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows at those ~37 decisions each is about 29 GB. DreamerV3's parameter refresh is fixed at every episode start (`--parameter-sync-decisions 0`, §6.10). An online queue would need a replay change. |
+| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 4096 windows by default, **no online queue** | The shared `--replay-capacity` default is 4096, derived for `stacked-dqn` in §9.4. 1M-decision DreamerV3 runs still pass `--replay-capacity 40000` so the buffer holds the whole run (the official `replay.size` is 5e6): at DreamerV3's shorter episodes (roughly 4 windows per 148-decision episode) that holds about 0.9M decisions. The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows at those ~37 decisions each is about 29 GB. DreamerV3's parameter refresh is fixed at every episode start (`--parameter-sync-decisions 0`, §6.10). An online queue would need a replay change. |
 | replay context | 1, with stored latents | **0**, the official code's own zero-context path | Replay stores no latents, and writing them back into replay would change replay. |
 | action mask | none | **the mask is an observation key.** It is encoded and decoded (binary cross-entropy). Acting samples under the true mask. Imagination samples under the decoded mask (logit > 0, WAIT always valid). | Invalid actions must never be chosen. In imagination the true mask is unknown, so the model's own belief of it is used. |
 | terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
@@ -1933,7 +1931,7 @@ The learner increments `model_version` after each publication interval. It publi
 
 Actors poll or receive notification between inference steps and swap weights atomically at a safe boundary. They record the active version in every sequence. Reject incompatible weights loudly.
 
-As built (§6.10), each actor copies the learner's parameters into its own acting network at every episode start and every `--parameter-sync-decisions` of its own decisions after it (100, Ape-X's 400 frames), on its own thread before a decision's forward pass and under the learner's lock, so a swap can land inside an episode but never inside a decision or an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode. DreamerV3 refreshes at episode starts only (`0`).
+As built (§6.10), each actor copies the learner's parameters into its own acting network at every episode start and every `--parameter-sync-decisions` of its own decisions after it (default 100; the stacked-dqn recipe runs 10, §9.4), on its own thread before a decision's forward pass and under the learner's lock, so a swap can land inside an episode but never inside a decision or an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode. DreamerV3 refreshes at episode starts only (`0`).
 
 ### 9.7 Training stability checks
 

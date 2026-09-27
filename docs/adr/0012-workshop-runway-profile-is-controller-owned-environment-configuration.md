@@ -1,7 +1,9 @@
 # ADR 0012 — Workshop runway profile is controller-owned environment configuration (baseline v2)
 
 **Status:** accepted, 2026-09-27. Board `#80`. Supersedes ADR 0001 and the
-fixed-baseline parts of ADR 0005 (see below). Not yet exercised on device.
+fixed-baseline parts of ADR 0005 (see below). A first device check found that
+`enhancement*` is not the Workshop, and the target was corrected; the corrected
+target has not been exercised on device yet.
 
 ## Context
 
@@ -19,9 +21,14 @@ change the account permanently.
 
 The instrumented bridge can already write game-owned arrays in the live heap of
 a disposable read-only instance (ADR 0011). The Workshop's levels are three
-such arrays on `Main`: `enhancementLevel`, `enhancementDefenseLevel` and
-`enhancementUtilityLevel`, named by `enhancementName*` and bounded by
-`enhancementMaxLevel*`.
+such arrays on `Main`: `upgradeWorkshopLevel`, `upgradeWorkshopDefenseLevel`
+and `upgradeWorkshopUtilityLevel`. They are bounded by
+`upgradeWorkshopMaxLevel`, `upgradeDefenseWorkshopMaxLevel` and
+`upgradeUtilityWorkshopMaxLevel`, and `implemented*Workshops` counts each
+family's rows. The game keeps no Workshop name array. A Workshop row shares its
+index with the in-run row, which `upgradeName*` names; this is inferred from
+the field layout. The `enhancement*` arrays belong to the separate
+"Enhancements" feature and are not the Workshop.
 
 ## Decision
 
@@ -46,10 +53,10 @@ action, and it is never persisted.**
 - **Which rows.** All 11 runway rows get the same level N: Damage, Attack Speed,
   Critical Chance, Critical Factor, Health, Health Regen, Defense %, Defense
   Absolute, Thorns, Cash Bonus and Cash / Wave. These are the levers that let a
-  tower survive and earn in a normal round. The row names in
-  `environment/workshop.WORKSHOP_RUNWAY_ROWS` are the game's in-run labels. They
-  are not confirmed on device as Workshop names. "Thorns" is written as
-  "Thorn Damage".
+  tower survive and earn in a normal round. The names in
+  `environment/workshop.WORKSHOP_RUNWAY_ROWS` are the exact in-run labels,
+  confirmed on the device. Thorns is "Thorn Damage" and cash per wave is
+  "Cash / Wave".
 - **Rows held at 0, and why.** Each would change what a round *is* rather than
   how long the tower lasts in it:
   - **Orbs** one-shot normal enemies. The round would stop being a fight.
@@ -60,11 +67,18 @@ action, and it is never persisted.**
     death that ends an episode.
   All other rows are left at the account's level, which on v1 is 0.
 - **Rows are addressed by name, never by index.** The bridge resolves each name
-  against the live `enhancementName*` arrays. It refuses the whole command if a
-  name is unknown or matches more than one row, if a name is requested twice,
-  or if N is above a row's maximum. The command runs in three passes: resolve
-  and validate, write, then read everything back. It reports every row's level
-  before and after, and the effect scalars before and after.
+  against the live in-run name arrays and writes the Workshop level at that
+  index. It refuses the whole command, with nothing written, if:
+  - a name is unknown or matches more than one row;
+  - a name is requested twice;
+  - a row is at or past its family's implemented count;
+  - N is above a row's Workshop maximum.
+  The command runs in three passes: resolve and validate; re-resolve all three
+  families, then write; read everything back. It reports each family's
+  implemented count and every row's Workshop level before and after.
+- **Confinement.** The host refuses a level above 0
+  (`WORKSHOP_NOT_CONFINED`) unless the target emulator's process was launched
+  `-read-only`.
 - **Placement and enforcement.** `InstrumentedRunEnvironment.reset` writes the
   profile *before* `begin_episode`, and checks it once the round has started.
   - If the write does not land, the episode is refused with
@@ -91,7 +105,17 @@ action, and it is never persisted.**
 ## Consequences
 
 - **Floors per profile.** A v2 arm's curve can only be read against floors
-  measured under the same Workshop level.
+  measured under the same Workshop level. Until those exist, a run at N > 0
+  reports `reference_final_waves` and `versus_scripted_reference` as null.
+- **A gate before any v2 measurement.** A device check must first show that
+  play at N differs from play at N = 0: in wave-1 tower stats or in-run row
+  values (the observation's `damage`, `attackSpeed`, `thornDamage`, tower max
+  health and so on), and in final waves. The bridge reports only the levels it
+  wrote. That the game acts on them is a separate claim, and this check is
+  what establishes it.
+- **Tear down after a write.** At N = 0 nothing is read or reset. An instance
+  that has taken a Workshop write must therefore be torn down before any
+  N = 0 run, or that run would play the levels left behind.
 - **Two new invalid reasons**, `WORKSHOP_NOT_APPLIED` and `WORKSHOP_REVERTED`,
   documented in `docs/environment-contract.md`.
 - **A per-round cost.** Each episode boundary gets two extra round trips.
@@ -99,9 +123,9 @@ action, and it is never persisted.**
   fields at initialisation, even when the level is 0. A build of the game
   without them fails closed at bridge start.
 - **Unconfirmed until the device check:**
-  - the row names;
+  - that a Workshop row shares its in-run row's index;
+  - that `implemented*Workshops` bounds the valid rows;
   - whether a round start reloads the levels from the save (this is what
     `WORKSHOP_REVERTED` would catch);
-  - whether the game derives the effect scalars from the levels when the round
-    starts;
-  - whether the Workshop's tier lock (`enhancementTierUnlocked`) gates the rows.
+  - whether the game applies a written level to the tower when the round
+    starts.

@@ -26,7 +26,7 @@ from test_train_entry_point import (
 )
 
 from tower_rl.environment.project_state import repository_root, state_directory
-from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
+from tower_rl.experiment.run_identity import REFERENCE_FINAL_WAVES, SCRIPTED_REFERENCE
 from tower_rl.experiment.tracking import (
     ExperimentTracker,
     NoExperimentTracker,
@@ -241,7 +241,7 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
     assert params["reference_scripted"] == 5.57
     assert params["reference_random"] == 5.35
     assert params["reference_wait"] == 1.87
-    assert params["reference_source"] == train.REFERENCE_FINAL_WAVES["source"]
+    assert params["reference_source"] == REFERENCE_FINAL_WAVES["source"]
 
 
 def test_provenance_travels_with_the_run(recorded: RecordedRun) -> None:

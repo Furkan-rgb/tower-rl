@@ -8,10 +8,13 @@ invalidates it by name. Off - level 0 - issues no Workshop command at all.
 
 from __future__ import annotations
 
+import argparse
 import threading
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+import run_episodes
 from fakes.fake_run_port import FakeRunPort
 from test_instrumented_bridge import _connected_client, _observation
 
@@ -28,7 +31,15 @@ from tower_rl.environment.run_environment import (
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.environment.workshop import WORKSHOP_OFF, WORKSHOP_RUNWAY_ROWS, workshop_rows
-from tower_rl.experiment.run_identity import RunIdentity, checkpoint_identity
+from tower_rl.experiment.run_identity import (
+    REFERENCE_FINAL_WAVES,
+    SCRIPTED_REFERENCE,
+    RunIdentity,
+    checkpoint_identity,
+    reference_final_waves,
+    scripted_reference,
+    tracked_params,
+)
 from tower_rl.learning.checkpoint import identity_hash
 from tower_rl.learning.evaluator import episode_record
 from tower_rl.simulation.instrumented_bridge import (
@@ -146,18 +157,74 @@ def _workshop_message(*, wrote: bool) -> dict[str, object]:
             {"family": "defense", "index": 9, "name": "Orbs", "max_level": 5,
              "before": 0, "after": 0},
         ],
-        "effects": [{"field": "damageEnhancement", "before": 1.0, "after": None}],
+        "families": [
+            {"family": "attack", "implemented": 17},
+            {"family": "defense", "implemented": 18},
+            {"family": "utility", "implemented": 13},
+        ],
     }
 
 
-def test_the_workshop_report_decodes_every_row_and_effect() -> None:
+def test_the_workshop_report_decodes_every_row_and_each_implemented_count() -> None:
     report = decode_workshop_state(_workshop_message(wrote=True))
 
     assert report.wrote
     assert [(row.name, row.before, row.after) for row in report.rows] == [
         ("Damage", 0, 5), ("Orbs", 0, 0)
     ]
-    assert report.effects[0].before == 1.0 and report.effects[0].after is None
+    assert dict(report.implemented) == {"attack": 17, "defense": 18, "utility": 13}
+    missing = {**_workshop_message(wrote=True), "families": []}
+    with pytest.raises(BridgeProtocolError):
+        decode_workshop_state(missing)
+
+
+def test_a_held_check_that_cannot_read_refuses_the_episode() -> None:
+    """The write landed, but the round start's read did not: never assumed held."""
+    environment, port = _environment(5, refuse_workshop_read=True)
+
+    with pytest.raises(RunPortError, match=WORKSHOP_NOT_APPLIED):
+        environment.reset()
+
+    assert [command[0] for command in port.workshop_commands] == ["set", "begin", "read"]
+
+
+def _proc(root: Path, command_line: str) -> Path:
+    """A `/proc` holding one process with this argv, the shape the check reads."""
+    (root / "4242").mkdir(parents=True)
+    (root / "4242" / "cmdline").write_bytes(command_line.replace(" ", "\0").encode() + b"\0")
+    (root / "self").mkdir()
+    return root
+
+
+def test_a_workshop_write_is_refused_unless_the_instance_is_read_only(tmp_path: Path) -> None:
+    writable = _proc(tmp_path / "a", "qemu-system-x86_64 -avd clone -port 5556 -no-window")
+    confined = _proc(tmp_path / "b", "qemu-system-x86_64 -avd clone -port 5556 -read-only")
+
+    with pytest.raises(SystemExit, match="WORKSHOP_NOT_CONFINED.*not launched -read-only"):
+        run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 5, writable)
+    with pytest.raises(SystemExit, match="WORKSHOP_NOT_CONFINED.*no emulator process"):
+        run_episodes.refuse_an_unconfined_workshop_write("emulator-5558", 5, confined)
+    run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 5, confined)
+    # Level 0 writes nothing, so it needs no confinement.
+    run_episodes.refuse_an_unconfined_workshop_write("emulator-5556", 0, writable)
+
+
+def test_the_cli_level_is_bounded_like_the_bridge() -> None:
+    parser = argparse.ArgumentParser()
+    run_episodes.add_workshop_level_argument(parser)
+
+    assert parser.parse_args(["--workshop-level", "9999"]).workshop_level == 9999
+    for bad in ("-1", "10000"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--workshop-level", bad])
+
+
+def test_a_runway_run_is_given_no_v1_floor() -> None:
+    assert reference_final_waves(0) == REFERENCE_FINAL_WAVES
+    assert scripted_reference(0) == SCRIPTED_REFERENCE
+    assert reference_final_waves(5) is None and scripted_reference(5) is None
+    assert "reference_scripted" in tracked_params({"workshop_level": 0})
+    assert not any(key.startswith("reference_") for key in tracked_params({"workshop_level": 5}))
 
 
 def test_the_write_command_is_held_to_the_native_parser() -> None:

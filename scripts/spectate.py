@@ -1154,7 +1154,7 @@ def run(arguments: argparse.Namespace) -> int:
             )
 
         client, adapter, environment = open_environment(
-            instance.bridge_host_port, expected, arguments
+            instance.serial, instance.bridge_host_port, expected, arguments
         )
         # Before the first round, which is the only time a command of the
         # adapter's own initiative may be issued: the labels are constant for

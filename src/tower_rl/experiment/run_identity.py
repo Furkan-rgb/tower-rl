@@ -54,6 +54,21 @@ REFERENCE_FINAL_WAVES: dict[str, object] = {
 SCRIPTED_REFERENCE = 5.57
 
 
+def reference_final_waves(workshop_level: int) -> dict[str, object] | None:
+    """The floors a run at this Workshop level is read against, or `None`.
+
+    The measured floors are baseline v1's (level 0). A run under the Workshop
+    runway profile plays a different tower, and no floor has been measured for
+    it yet (ADR 0012), so it is given none rather than a v1 number.
+    """
+    return REFERENCE_FINAL_WAVES if workshop_level == WORKSHOP_OFF else None
+
+
+def scripted_reference(workshop_level: int) -> float | None:
+    """`SCRIPTED_REFERENCE` for a baseline v1 run; `None` under the runway profile."""
+    return SCRIPTED_REFERENCE if workshop_level == WORKSHOP_OFF else None
+
+
 def source_revision() -> str:
     """Bind every artifact to the code that produced it."""
     result = subprocess.run(
@@ -314,5 +329,8 @@ def tracked_params(resolved: dict[str, object]) -> dict[str, object]:
     opened months later is self-contained.
     """
     params: dict[str, object] = dict(resolved)
-    params.update({f"reference_{key}": value for key, value in REFERENCE_FINAL_WAVES.items()})
+    level = resolved.get("workshop_level", WORKSHOP_OFF)
+    floors = reference_final_waves(level if isinstance(level, int) else WORKSHOP_OFF)
+    if floors is not None:
+        params.update({f"reference_{key}": value for key, value in floors.items()})
     return params

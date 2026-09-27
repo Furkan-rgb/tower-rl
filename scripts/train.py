@@ -102,10 +102,10 @@ from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
 from tower_rl.experiment.run_identity import (  # noqa: E402
-    REFERENCE_FINAL_WAVES,
     RunIdentity,
     checkpoint_identity,
     dreamer_resolved_config,
+    reference_final_waves,
     resolved_config,
     source_revision,
     tracked_params,
@@ -1323,7 +1323,7 @@ def train_session(
             "wall_seconds": round(time.monotonic() - started, 1),
             # Repeated at the top of the report as well as inside each arm: the
             # curve is meaningless without the floors it is read against.
-            "reference_final_waves": REFERENCE_FINAL_WAVES,
+            "reference_final_waves": reference_final_waves(workshop_level_from(arguments)),
             # One arm. The session used to carry a list of them, from a
             # comparison of several backbones that was retired: this project
             # trains one backbone and compares it against the non-learned floors
@@ -1368,7 +1368,7 @@ def connect(
     releases and closes afterwards: a fleet that half connected must still put
     down every bridge it picked up.
     """
-    client, adapter, environment = open_environment(port, expected, arguments)
+    client, adapter, environment = open_environment(serial, port, expected, arguments)
     opened.append((adapter, client))
     return ActorInstance(serial=serial, environment=environment)
 

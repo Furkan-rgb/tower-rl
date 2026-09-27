@@ -42,7 +42,7 @@ from tower_rl.experiment.metrics import (
     window_line,
     window_metrics,
 )
-from tower_rl.experiment.run_identity import REFERENCE_FINAL_WAVES, SCRIPTED_REFERENCE
+from tower_rl.experiment.run_identity import reference_final_waves, scripted_reference
 from tower_rl.experiment.tracking import TrackedRun
 from tower_rl.learning.backbone import Backbone
 from tower_rl.learning.checkpoint import (
@@ -316,6 +316,7 @@ class TrainingReport:
         path = self.run_dir / "checkpoints" / f"decisions-{progress.decisions:07d}.pt"
         digest = self._write(progress, path)
         spread = evaluation.distribution
+        floor = scripted_reference(self.identity.workshop_level)
         point = LearningCurvePoint(
             decisions=progress.decisions,
             episodes=progress.episodes,
@@ -330,7 +331,9 @@ class TrainingReport:
             valid_episodes=evaluation.valid_episodes,
             invalid_episodes=evaluation.invalid_episodes,
             invalid_by_reason=dict(evaluation.invalid_by_reason),
-            versus_scripted_reference=round(spread.mean - SCRIPTED_REFERENCE, 3),
+            versus_scripted_reference=(
+                None if floor is None else round(spread.mean - floor, 3)
+            ),
             checkpoint_fingerprint=digest,
             checkpoint_path=str(path),
             weighted_loss=progress.mean_recent_weighted_loss,
@@ -426,7 +429,11 @@ class TrainingReport:
         for window in windows[len(self.collection_curve) :]:
             self.collection_curve.append(window)
             self.run.log_metrics(
-                window_metrics(window, actor_index=self.training.actor_index),
+                window_metrics(
+                    window,
+                    actor_index=self.training.actor_index,
+                    scripted_floor=scripted_reference(self.identity.workshop_level),
+                ),
                 decisions=window.decisions_at_end,
             )
             print(f"[{self.name}] collection: {window_line(window)}", flush=True)
@@ -586,7 +593,7 @@ class TrainingReport:
             "action_distribution": (
                 asdict(distribution) if distribution is not None else None
             ),
-            "reference_final_waves": REFERENCE_FINAL_WAVES,
+            "reference_final_waves": reference_final_waves(self.identity.workshop_level),
             # The fleet: what each actor contributed, and the aggregate rate the
             # run was actually collected at.
             "actors": [

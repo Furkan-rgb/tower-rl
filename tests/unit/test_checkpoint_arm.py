@@ -9,6 +9,7 @@ produces says which checkpoint it was.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,9 +27,11 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.checkpoint import (
+    CheckpointError,
     CheckpointIdentity,
     TrainingProgress,
     identity_hash,
+    load,
     write_checkpoint,
 )
 from tower_rl.learning.evaluator import evaluate
@@ -321,6 +324,26 @@ def test_a_checkpoint_refuses_to_be_played_under_other_rows_or_another_cadence(
     rebuilt, restored = checkpoint_policy(path, **PLAYED)
     assert restored == identity()
     assert rebuilt.online.training is False
+
+
+def test_a_checkpoint_refuses_another_workshop_level_to_play_or_resume(tmp_path: Path) -> None:
+    """A baseline v1 checkpoint is not a v2 one, in either direction (ADR 0012).
+
+    The level is not in the weights, so nothing would fail to load: the refusal
+    is the only thing between a v1 checkpoint and a v2 run's numbers.
+    """
+    path, _ = trained_checkpoint(tmp_path)
+
+    with pytest.raises(ValueError, match="workshop_level differs"):
+        checkpoint_policy(
+            path,
+            decision_cadence=DecisionCadence.EVERY_SLICE.value,
+            upgrade_availability=UpgradeAvailability.IMAGE.value,
+            workshop_level=5,
+        )
+    with pytest.raises(CheckpointError, match="workshop_level differs"):
+        load(path, expected=replace(identity(), workshop_level=5))
+    assert load(path, expected=identity()).identity == identity()
 
 
 def test_an_arm_the_session_cannot_play_is_refused_before_the_episodes(

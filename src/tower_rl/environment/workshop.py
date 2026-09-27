@@ -6,9 +6,11 @@ the controller owns - chosen once per run by the operator, applied before every
 round on the disposable instance, never persisted and never a policy action -
 and the agent still has to earn every in-run upgrade on top of it.
 
-The game calls the Workshop "Enhancement". Its rows are addressed here by the
-name the game gives them and resolved against the live name arrays by the
-bridge, so a guessed index can never write the wrong row.
+The game keeps no Workshop name array: a Workshop row shares its index with the
+in-run upgrade row, so the rows are addressed here by the in-run row's name and
+the bridge resolves each name against the live `upgradeName*` arrays before
+writing `upgradeWorkshop*Level` at that index. A guessed index can never write
+the wrong row.
 """
 
 from __future__ import annotations
@@ -19,11 +21,13 @@ from __future__ import annotations
 #: Level Skips remove the enemies' own scaling, and Death Defy, Recovery and the
 #: Wall are extra lives.
 #:
-#: The names are the in-run upgrade rows' names, read off the device
-#: (`slot_labels`); that the Workshop names its rows identically is not yet
-#: confirmed on the device. The bridge refuses a name it cannot find by name
-#: (`workshop_row_unknown:<name>`), and `run_episodes.py --list-workshop-rows`
-#: prints the names it has.
+#: The names are the exact in-run row labels read off the device
+#: (`slot_labels`, `state/records/m3-p004/eval-arm/emulator-5568.json`): Thorns
+#: is "Thorn Damage" (defense 4) and cash per wave is "Cash / Wave" (utility 1).
+#: That a Workshop row shares its in-run row's index is inferred from the game's
+#: field layout and not yet confirmed on the device. The bridge refuses a name
+#: it cannot find (`workshop_row_unknown:<name>`), and
+#: `run_episodes.py --list-workshop-rows` prints what it has.
 WORKSHOP_RUNWAY_ROWS: tuple[str, ...] = (
     "Damage",
     "Attack Speed",

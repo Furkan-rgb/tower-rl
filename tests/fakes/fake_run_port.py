@@ -177,9 +177,9 @@ class FakeRunPort:
     #: Set to have every round start put the Workshop levels back to 0, the
     #: shape of a game that reloads them at the start from what it saved.
     workshop_reverts_at_round_start: bool = False
-    #: Set to raise from both Workshop commands, the shape of a bridge that
-    #: could not carry them.
-    refuse_workshop: bool = False
+    #: Set to have the Workshop read after the round start fail, the shape of a
+    #: bridge that wrote the levels but could not read them back.
+    refuse_workshop_read: bool = False
     #: Set to raise from `begin_episode`, to exercise failure classification.
     refuse_to_start: bool = False
     #: Boundary restarts this port has made because the speed pin was not held.
@@ -329,8 +329,6 @@ class FakeRunPort:
     def set_workshop_levels(self, level: int, rows: Sequence[str]) -> tuple[FakeWorkshopRow, ...]:
         """Resolve every name first and write nothing unless all resolve, as the bridge does."""
         self.workshop_commands.append(("set", level, tuple(rows)))
-        if self.refuse_workshop:
-            raise RunPortError("fake instance could not carry the Workshop write")
         where = {
             name: (family, index)
             for family, names in self.workshop_names.items()
@@ -348,7 +346,7 @@ class FakeRunPort:
 
     def workshop_levels(self) -> tuple[FakeWorkshopRow, ...]:
         self.workshop_commands.append(("read", 0, ()))
-        if self.refuse_workshop:
+        if self.refuse_workshop_read:
             raise RunPortError("fake instance could not carry the Workshop read")
         self.sequence += 1
         return self._workshop_rows()

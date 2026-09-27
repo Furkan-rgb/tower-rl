@@ -227,9 +227,11 @@ class UnlockFamilyState:
 class WorkshopRow:
     """One Workshop row, and the permanent level it held before and after a command.
 
-    Every row the game has, not only the ones a write named, so a report also
-    shows that the rest were left alone. For a read, `before` and `after` are
-    the same reading.
+    `name` is the in-run row's label: the game keeps no Workshop name array, and
+    a Workshop row shares its index with the in-run row. `max_level` is the
+    Workshop ceiling. Every row the game has, not only the ones a write named,
+    so a report also shows that the rest were left alone. For a read, `before`
+    and `after` are the same reading.
     """
 
     family: str
@@ -241,26 +243,16 @@ class WorkshopRow:
 
 
 @dataclass(frozen=True)
-class WorkshopEffect:
-    """One `Main` effect scalar a Workshop row feeds, read before and after.
+class WorkshopReport:
+    """What `workshop_levels` or `set_workshop_levels` found standing (ADR 0012).
 
-    The independent witness to a write: the level read back only echoes what
-    was written, this says whether the game's own derived value moved. `None`
-    for a reading that was not a finite number.
+    `implemented` is each family's `implemented*Workshops` count, which the
+    bridge holds a write within.
     """
 
-    field: str
-    before: float | None
-    after: float | None
-
-
-@dataclass(frozen=True)
-class WorkshopReport:
-    """What `workshop_levels` or `set_workshop_levels` found standing (ADR 0012)."""
-
     wrote: bool
+    implemented: Mapping[str, int]
     rows: tuple[WorkshopRow, ...]
-    effects: tuple[WorkshopEffect, ...]
 
 
 @dataclass(frozen=True)
@@ -531,7 +523,7 @@ def decode_unlock_state(
 def decode_workshop_state(
     message: Mapping[str, Any], *, max_entries: int = DEFAULT_MAX_UPGRADE_ENTRIES
 ) -> WorkshopReport:
-    """Decode every Workshop row's levels and the effect scalars (ADR 0012)."""
+    """Decode every Workshop row's levels and each family's implemented count (ADR 0012)."""
     _require_message_type(message, "workshop_state")
     if _int(message, "protocol_version", minimum=1) != PROTOCOL_VERSION:
         raise BridgeProtocolError("unsupported workshop-state protocol version")
@@ -555,21 +547,17 @@ def decode_workshop_state(
             raise BridgeProtocolError(f"duplicate workshop row: {row.family}[{row.index}]")
         seen.add((row.family, row.index))
         rows.append(row)
-    effects_value = message.get("effects")
-    if not isinstance(effects_value, list):
-        raise BridgeProtocolError("workshop effects are missing or malformed")
-    effects: list[WorkshopEffect] = []
-    for value in effects_value:
+    families_value = message.get("families")
+    if not isinstance(families_value, list) or len(families_value) != len(UPGRADE_FAMILIES):
+        raise BridgeProtocolError("workshop families are missing or malformed")
+    implemented: dict[str, int] = {}
+    for value in families_value:
         if not isinstance(value, Mapping):
-            raise BridgeProtocolError("workshop effect must be an object")
-        effects.append(
-            WorkshopEffect(
-                field=_string(value, "field"),
-                before=_optional_number(value, "before"),
-                after=_optional_number(value, "after"),
-            )
-        )
-    return WorkshopReport(wrote=_bool(message, "wrote"), rows=tuple(rows), effects=tuple(effects))
+            raise BridgeProtocolError("workshop family must be an object")
+        implemented[_upgrade_family(value)] = _int(value, "implemented", minimum=0)
+    if set(implemented) != set(UPGRADE_FAMILIES):
+        raise BridgeProtocolError("workshop families must name each family once")
+    return WorkshopReport(wrote=_bool(message, "wrote"), implemented=implemented, rows=tuple(rows))
 
 
 def _workshop_command_rows(message: Mapping[str, Any]) -> tuple[str, ...]:
@@ -957,7 +945,7 @@ class InstrumentedBridgeClient:
         return self._unlock_state
 
     def read_workshop_levels(self, *, expected_sequence: int) -> WorkshopReport:
-        """Report every Workshop row's permanent level and the effect scalars; write nothing.
+        """Report every Workshop row's permanent level and ceiling; write nothing.
 
         What the first device session reads the game's own row names from, and
         what the environment reads once a round has started to check that the
@@ -1187,13 +1175,6 @@ def _finite_number(message: Mapping[str, Any], name: str) -> float:
 #: Enough for the longest upgrade description the game carries, and short enough
 #: that sixty of them cannot approach the frame bound.
 MAX_LABEL_CHARACTERS = 256
-
-
-def _optional_number(message: Mapping[str, Any], name: str) -> float | None:
-    """A finite number, or `None` where the bridge reported the reading as null."""
-    if message.get(name, ...) is None:
-        return None
-    return _finite_number(message, name)
 
 
 def _label_text(message: Mapping[str, Any], name: str) -> str:

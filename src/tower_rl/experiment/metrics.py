@@ -59,7 +59,7 @@ class LearningCurvePoint:
     invalid_by_reason: dict[str, int]
     #: The scripted floor is the bar; the difference is spelled out rather than
     #: left to the reader to subtract.
-    versus_scripted_reference: float
+    versus_scripted_reference: float | None
     #: The checkpoint holding exactly the weights this point scored.
     checkpoint_fingerprint: str
     checkpoint_path: str
@@ -83,10 +83,14 @@ class LearningCurvePoint:
 
     def line(self) -> str:
         spread = "n/a" if self.stdev_final_wave is None else f"{self.stdev_final_wave:.2f}"
+        versus = (
+            "no scripted floor for this Workshop level"
+            if self.versus_scripted_reference is None
+            else f"vs scripted {SCRIPTED_REFERENCE}: {self.versus_scripted_reference:+.2f}"
+        )
         return (
             f"decisions {self.decisions} wall {self.wall_seconds:.0f}s "
-            f"mean final wave {self.mean_final_wave:.2f} sd {spread} "
-            f"vs scripted {SCRIPTED_REFERENCE}: {self.versus_scripted_reference:+.2f} "
+            f"mean final wave {self.mean_final_wave:.2f} sd {spread} {versus} "
             f"({self.valid_episodes} valid, {self.invalid_episodes} invalid)"
         )
 
@@ -107,11 +111,12 @@ def curve_metrics(
         "eval_mean_final_wave": point.mean_final_wave,
         "eval_valid_episodes": float(point.valid_episodes),
         "eval_invalid_episodes": float(point.invalid_episodes),
-        "versus_scripted_reference": point.versus_scripted_reference,
         "episodes": float(point.episodes),
         "optimisation_steps": float(point.model_version),
         "wall_seconds": point.wall_seconds,
     }
+    if point.versus_scripted_reference is not None:
+        metrics["versus_scripted_reference"] = point.versus_scripted_reference
     if point.stdev_final_wave is not None:
         metrics["eval_stdev_final_wave"] = point.stdev_final_wave
     if waves:
@@ -224,7 +229,10 @@ def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
 
 
 def window_metrics(
-    window: CollectionWindow, *, actor_index: Mapping[str, int]
+    window: CollectionWindow,
+    *,
+    actor_index: Mapping[str, int],
+    scripted_floor: float | None = SCRIPTED_REFERENCE,
 ) -> dict[str, float]:
     """One point of the collection curve, which is what the run is read from.
 
@@ -247,16 +255,20 @@ def window_metrics(
     - `collection_window_*` health counters, from `health_metrics`.
 
     `actor_index` places each actor id on the series index it reports under -
-    the fleet's own order, the same one `episode_actor` uses.
+    the fleet's own order, the same one `episode_actor` uses. `scripted_floor`
+    is `None` for a run with no measured floor (a Workshop runway run, ADR
+    0012), and the versus series is then absent rather than measured against a
+    v1 number.
     """
     metrics = {
         "collection_mean_final_wave": window.mean_final_wave,
-        "collection_versus_scripted_reference": window.mean_final_wave - SCRIPTED_REFERENCE,
         "collection_episodes": float(window.episodes),
         "collection_window_wait_fraction": window.wait_fraction,
         "collection_window_purchases_per_episode": window.purchases_per_episode,
         "collection_window_near_greedy_episodes": float(window.near_greedy_episodes),
     }
+    if scripted_floor is not None:
+        metrics["collection_versus_scripted_reference"] = window.mean_final_wave - scripted_floor
     if window.near_greedy_mean_final_wave is not None:
         metrics["collection_window_near_greedy_mean_final_wave"] = (
             window.near_greedy_mean_final_wave

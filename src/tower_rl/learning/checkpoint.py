@@ -120,14 +120,14 @@ def identity_hash(identity: CheckpointIdentity) -> str:
 
     `decision_cadence`, `upgrade_availability` and `workshop_level` are
     deliberately not hashed. This token names a run, and a run collects under
-    one cadence, one availability and one Workshop profile from beginning to
-    end, so none of them can distinguish two
-    identities that share a run id - while hashing either would re-key every
-    checkpoint and record written before it existed, and the tokens already
-    cited in selection records and reports would stop resolving. Using a
-    checkpoint under the wrong cadence or the wrong availability is refused by
-    `incompatibilities`, which says which field differs; that is the instrument
-    for the refusal, and this is the instrument for naming the run.
+    one cadence, one availability and one Workshop level from beginning to end,
+    so none of the three can distinguish two identities that share a run id -
+    while hashing any of them would re-key every checkpoint and record written
+    before it existed, and the tokens already cited in selection records and
+    reports would stop resolving. Using a checkpoint under the wrong cadence,
+    availability or Workshop level is refused by `incompatibilities`, which
+    says which field differs; that is the instrument for the refusal, and this
+    is the instrument for naming the run.
     """
     payload = json.dumps(_hashed_fields(identity), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]

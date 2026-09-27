@@ -64,6 +64,7 @@ from tower_rl.learning.policies import (  # noqa: E402
 )
 from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    MAX_WORKSHOP_LEVEL,
     BridgeCompatibility,
     InstrumentedBridgeClient,
     UpgradeSlotLabel,
@@ -249,8 +250,10 @@ def upgrade_availability_from(arguments: argparse.Namespace) -> UpgradeAvailabil
 
 def _workshop_level(text: str) -> int:
     level = int(text)
-    if level < WORKSHOP_OFF:
-        raise argparse.ArgumentTypeError("a Workshop level cannot be negative")
+    if not WORKSHOP_OFF <= level <= MAX_WORKSHOP_LEVEL:
+        raise argparse.ArgumentTypeError(
+            f"a Workshop level is {WORKSHOP_OFF} to {MAX_WORKSHOP_LEVEL}, the bridge's own bound"
+        )
     return level
 
 
@@ -290,18 +293,72 @@ def decision_cadence_from(arguments: argparse.Namespace) -> DecisionCadence:
     return DecisionCadence(arguments.decision_cadence)
 
 
+def emulator_command_line(serial: str, proc: Path = Path("/proc")) -> str | None:
+    """The command line of the emulator process that holds `serial`'s console port.
+
+    The same reading `run_stage.sh`'s `emulator_command_line` takes: the process
+    whose argv carries `-port <console port>`, read from `/proc/<pid>/cmdline`.
+    `None` when the serial is not an emulator's or no process holds the port.
+    """
+    port = serial.removeprefix("emulator-")
+    if port == serial or not port.isdigit():
+        return None
+    try:
+        entries = sorted(proc.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:  # gone, or not ours to look at
+            continue
+        text = " " + raw.replace(b"\0", b" ").decode("utf-8", "replace")
+        if f" -port {port} " in text:
+            return text
+    return None
+
+
+def refuse_an_unconfined_workshop_write(
+    serial: str, level: int, proc: Path = Path("/proc")
+) -> None:
+    """Refuse a Workshop write unless the instance was launched `-read-only` (ADR 0012).
+
+    The runway profile is written into a live game whose save could carry it;
+    only a read-only instance guarantees that nothing it does outlives it. At
+    level 0 nothing is written, so there is nothing to confine.
+    """
+    if level == WORKSHOP_OFF:
+        return
+    command_line = emulator_command_line(serial, proc)
+    if command_line is None:
+        raise SystemExit(
+            f"WORKSHOP_NOT_CONFINED: no emulator process holds {serial}'s port, so it "
+            "cannot be shown to be read-only; refusing a Workshop write"
+        )
+    if " -read-only " not in command_line:
+        raise SystemExit(
+            f"WORKSHOP_NOT_CONFINED: {serial} was not launched -read-only; refusing a "
+            "Workshop write"
+        )
+
+
 def open_environment(
-    port: int, expected: BridgeCompatibility, arguments: argparse.Namespace
+    serial: str, port: int, expected: BridgeCompatibility, arguments: argparse.Namespace
 ) -> tuple[InstrumentedBridgeClient, InstrumentedRunAdapter, InstrumentedRunEnvironment]:
     """Connect the bridge and build the adapter and environment on top of it.
 
     The wiring every collection entry point (`run_episodes.py`, `train.py`,
     `spectate.py`) needs identically: the same client timeouts, then the
-    adapter, then the environment built from this invocation's cadence and
-    upgrade-availability arguments. The caller keeps its own connect-time
-    side effects (printing the handshake, reading slot labels, wrapping the
-    result) and its own `release()`/`close()` in `finally`.
+    adapter, then the environment built from this invocation's cadence,
+    upgrade-availability and Workshop arguments. A Workshop level above 0 is
+    refused before anything connects unless `serial` runs `-read-only`. The
+    caller keeps its own connect-time side effects (printing the handshake,
+    reading slot labels, wrapping the result) and its own `release()`/`close()`
+    in `finally`.
     """
+    refuse_an_unconfined_workshop_write(serial, workshop_level_from(arguments))
     client = InstrumentedBridgeClient(
         "127.0.0.1",
         port,
@@ -328,8 +385,10 @@ def print_workshop_rows(client: InstrumentedBridgeClient, level: int) -> None:
 
     At 0 this only reads. Above 0 it applies the runway profile once, exactly
     as a round start would, and prints the report the write came back with:
-    every row's level before and after, and the effect scalars before and
-    after, which say whether the game's own derived values moved.
+    each family's implemented count, and every row's in-run name, Workshop
+    maximum, and Workshop level before and after. Whether the level took hold
+    in combat is read elsewhere: from the tower stats in the first observation
+    of a round (`damage`, `attackSpeed`, `thornDamage`, ...), against level 0.
     """
     sequence = client.read_state().sequence
     if level > WORKSHOP_OFF:
@@ -341,8 +400,8 @@ def print_workshop_rows(client: InstrumentedBridgeClient, level: int) -> None:
     print(json.dumps(
         {
             "wrote": report.wrote,
+            "implemented": dict(report.implemented),
             "rows": [vars(row) for row in report.rows],
-            "effects": [vars(effect) for effect in report.effects],
         },
         indent=2,
     ), flush=True)
@@ -390,7 +449,9 @@ def main() -> int:
     )
     expected = compatibility(bridge_build_directory())
 
-    client, adapter, environment = open_environment(arguments.port, expected, arguments)
+    client, adapter, environment = open_environment(
+        arguments.serial, arguments.port, expected, arguments
+    )
     handshake = client.handshake
     print(
         f"bridge {handshake.bridge_version} profile {handshake.compatibility.profile_id} "

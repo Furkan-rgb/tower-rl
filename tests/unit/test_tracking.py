@@ -153,7 +153,9 @@ def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -
     evaluations = [
         point for point in recorded.points if "eval_mean_final_wave" in point.metrics
     ]
-    assert calls.count("log_artifact") == len(evaluations) + 2
+    # The manifest goes up once more, rewritten with the run's upgrade setup
+    # after its first episode.
+    assert calls.count("log_artifact") == len(evaluations) + 3
 
 
 def test_metrics_are_keyed_by_decisions_consumed(recorded: RecordedRun) -> None:

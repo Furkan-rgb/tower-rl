@@ -213,6 +213,7 @@ def test_a_checkpoint_is_selected_by_path_beside_the_named_floors(tmp_path: Path
         "checkpoint_path": str(path.resolve()),
         "checkpoint_identity": identity_hash(identity()),
         "run_id": identity().run_id,
+        "upgrade_setup_digest": None,
     }
 
 

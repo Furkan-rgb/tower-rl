@@ -435,9 +435,29 @@ checkpoint before format 4 (`DECISION_BUDGET_FORMAT_VERSION`) is from the
 game-time budget era: `load` still reads it for evaluation, but `resume_point`
 refuses it by name. `build_arm` continues
 the parent's tracked run through `open_run` when it had one, and names the
-parent in `resolved_config.parent_checkpoint`; replay is not
-persisted, so the buffer re-warms under the loaded policy before learning
-restarts.
+parent in `resolved_config.parent_checkpoint`.
+
+Replay is saved once, as a run ends, never periodically (a DreamerV3 buffer is
+gigabytes). However `train_session` ends — budget, early stop, kill bar, an
+exception or an interrupt, anything that runs Python cleanup —
+`TrainingReport.save_resume_point` holds the fleet still
+(`TrainingRun.held_still`: the progress lock, then the buffer's) and writes
+`latest.pt` and `PrioritizedSequenceReplay.save_to(<run_dir>/replay/)` at one
+decision count, and halts the run: actors still collecting after an interrupt
+return at their next lock, counting and checkpointing nothing more. The dump is `.npy` arrays (a shared step table, the sequences
+as indices into it, their priorities, in FIFO order) plus `replay.json` with
+the capacity, the sampling exponents, the counters, and the run's decision
+count and `CheckpointIdentity`; it is written to a sibling and renamed into
+place, and checked by shape rather than hash on load. Sequences an actor had
+not yet emitted are not in it. A failed replay save is printed, never raised
+over the error that ended the run. On `--resume`, `with_parent_replay` looks for
+`replay/` beside the checkpoint's `checkpoints/`: with none, the buffer
+re-warms under the loaded policy; with one saved at the checkpoint's decision
+count, into the same capacity, sampling and identity, `build_arm` reloads it
+(`load_from`) and records it in `resolved_config.replay_restored_from` and in
+each checkpoint's replay provenance; any other dump — from a later point than an
+earlier numbered checkpoint, say — is refused before bring-up. The warm-up gate
+reads the buffer's length, so a reloaded buffer learns from the first episode.
 
 ### The post-hoc selection path
 

@@ -149,6 +149,7 @@ def resolved_config(
     stride: int,
     device: torch.device,
     parent_checkpoint: str | None = None,
+    replay_restored_from: str | None = None,
 ) -> dict[str, object]:
     """Everything the run was actually fixed with, as one flat snapshot.
 
@@ -165,6 +166,9 @@ def resolved_config(
         # whole run's, not this segment's - a resume continues a budget, it does
         # not start a second one.
         "parent_checkpoint": parent_checkpoint,
+        # The parent's saved replay buffer this segment started from, or None
+        # when it started with an empty buffer and re-warmed it.
+        "replay_restored_from": replay_restored_from,
         # The fleet this arm actually collected with, and the instances it
         # addressed - one actor per emulator instance.
         "actors": len(actor_ids),

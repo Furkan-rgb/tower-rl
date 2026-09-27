@@ -371,6 +371,15 @@ def test_a_block_must_buy_at_least_one_decision() -> None:
         _run().advance(0)
 
 
+def test_a_halted_run_refuses_to_advance() -> None:
+    """Its resume point is written; collecting on would silently contradict it."""
+    training = _run()
+    with training.held_still():
+        pass
+    with pytest.raises(RuntimeError, match="halted"):
+        training.advance(10)
+
+
 def test_the_loss_window_is_reported_and_empty_before_any_step() -> None:
     training = _run(budget_decisions=2500)
 

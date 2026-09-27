@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy
 import pytest
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, encode_state
@@ -11,10 +15,12 @@ from tower_rl.learning.replay import (
     R2D2_PRIORITY_EXPONENT,
     R2D2_PRIORITY_MIX,
     PrioritizedSequenceReplay,
+    ReplayDumpError,
     ReplayRejected,
     ReplaySequence,
     ReplayStep,
     SequenceMetadata,
+    read_replay_metadata,
 )
 from tower_rl.simulation.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
 
@@ -370,3 +376,151 @@ def test_a_step_must_say_how_much_game_time_it_spanned() -> None:
     """No default: a forgotten call site must fail, not silently discount nothing."""
     with pytest.raises(TypeError, match="game_ms"):
         ReplayStep(_features(), action_index(WAIT), 0.0, False, admissible=True)  # type: ignore[call-arg]
+
+
+# -- saved to disk and reloaded ----------------------------------------------
+
+
+def _episode_windows(episode: str, cash: float, length: int = 6) -> list[ReplaySequence]:
+    """Two windows of one episode overlapping by half, sharing steps as the actor's do."""
+    steps = [
+        ReplayStep(
+            features=_features(cash=cash + step),
+            action_index=action_index(WAIT) if step % 2 else 1,
+            reward=0.25 * step,
+            done=step == length - 1,
+            admissible=True,
+            padding=step == 0,
+            game_ms=100.0 * step + 0.5,
+        )
+        for step in range(length)
+    ]
+    metadata = _metadata(episode_id=episode, model_version=int(cash), epsilon=cash / 1000)
+    return [
+        ReplaySequence(metadata=metadata, steps=tuple(steps[:4]), burn_in=1),
+        ReplaySequence(metadata=metadata, steps=tuple(steps[2:]), burn_in=1),
+    ]
+
+
+def _filled(replay: PrioritizedSequenceReplay) -> PrioritizedSequenceReplay:
+    """Past capacity, so the ring has wrapped, with priorities the learner moved."""
+    for episode in range(4):
+        for sequence in _episode_windows(f"episode-{episode}", cash=100.0 + 7 * episode):
+            replay.add(sequence)
+    indices, _, _ = replay.sample(3)
+    replay.update_priorities(indices, tuple((0.1 * (i + 1), 2.0) for i in range(3)))
+    return replay
+
+
+def _prioritized() -> PrioritizedSequenceReplay:
+    return PrioritizedSequenceReplay(capacity=5, seed=11)
+
+
+def _uniform() -> PrioritizedSequenceReplay:
+    return PrioritizedSequenceReplay.uniform(5, seed=11)
+
+
+@pytest.mark.parametrize("build", [_prioritized, _uniform], ids=["prioritized", "uniform"])
+def test_a_saved_buffer_reloads_exactly_and_samples_identically(
+    build: Callable[[], PrioritizedSequenceReplay], tmp_path: Path
+) -> None:
+    saved = _filled(build())
+    assert saved.stats.evicted == 3, "the ring wrapped before it was saved"
+    directory = tmp_path / "replay"
+
+    size = saved.save_to(directory, run={"decisions": 1234})
+
+    assert size > 0
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["replay"]
+    loaded = build()
+    loaded.load_from(directory)
+    # Every sequence in insertion order - the order is the ring's cursor - with
+    # its priority, the compatibility key and the counters.
+    assert list(loaded._items) == list(saved._items)
+    assert list(loaded._priorities) == list(saved._priorities)
+    assert loaded.compatibility == saved.compatibility
+    assert loaded.stats == saved.stats
+    # Overlapping windows share their steps again, so a reload does not grow
+    # the buffer past the one it was saved from.
+    assert saved._items[1].steps[2] is saved._items[2].steps[0]
+    assert loaded._items[1].steps[2] is loaded._items[2].steps[0]
+    # From one seed, the two draw the same batches with the same weights.
+    saved._random.seed(11)
+    for _ in range(3):
+        assert loaded.sample(4) == saved.sample(4)
+
+
+def test_an_empty_buffer_saves_and_reloads_empty(tmp_path: Path) -> None:
+    PrioritizedSequenceReplay(capacity=5).save_to(tmp_path / "replay", run={})
+    loaded = PrioritizedSequenceReplay(capacity=5)
+    loaded.load_from(tmp_path / "replay")
+    assert len(loaded) == 0 and loaded.compatibility is None
+
+
+def test_a_save_never_overwrites_an_existing_dump(tmp_path: Path) -> None:
+    replay = _filled(_prioritized())
+    replay.save_to(tmp_path / "replay", run={"decisions": 1})
+    replay.add(_episode_windows("episode-9", cash=500.0)[0])
+    with pytest.raises(ReplayDumpError, match="already exists"):
+        replay.save_to(tmp_path / "replay", run={"decisions": 2})
+
+    assert read_replay_metadata(tmp_path / "replay")["run"] == {"decisions": 1}
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["replay"]
+
+
+@pytest.mark.parametrize(
+    ("array", "value", "reason"),
+    [("sequence_episode", 99, "index episodes"), ("sequence_burn_in", 99, "invalid sequence")],
+)
+def test_a_dump_with_an_impossible_sequence_is_refused(
+    tmp_path: Path, array: str, value: int, reason: str
+) -> None:
+    _filled(_prioritized()).save_to(tmp_path / "replay", run={})
+    path = tmp_path / "replay" / f"{array}.npy"
+    values = numpy.load(path)
+    values[0] = value
+    numpy.save(path, values)
+    with pytest.raises(ReplayDumpError, match=reason):
+        _prioritized().load_from(tmp_path / "replay")
+
+
+@pytest.mark.parametrize(
+    "other",
+    [lambda: PrioritizedSequenceReplay(capacity=6), lambda: PrioritizedSequenceReplay.uniform(5)],
+    ids=["capacity", "sampling"],
+)
+def test_a_dump_from_another_buffer_is_refused(
+    other: Callable[[], PrioritizedSequenceReplay], tmp_path: Path
+) -> None:
+    _filled(_prioritized()).save_to(tmp_path / "replay", run={})
+    with pytest.raises(ReplayDumpError, match="capacity 5"):
+        other().load_from(tmp_path / "replay")
+
+
+def test_a_dump_is_only_loaded_into_an_empty_buffer(tmp_path: Path) -> None:
+    _filled(_prioritized()).save_to(tmp_path / "replay", run={})
+    replay = _prioritized()
+    replay.add(_sequence())
+    with pytest.raises(ReplayDumpError, match="empty buffer"):
+        replay.load_from(tmp_path / "replay")
+
+
+def test_a_dump_whose_array_lost_rows_is_refused(tmp_path: Path) -> None:
+    _filled(_prioritized()).save_to(tmp_path / "replay", run={})
+    rows = numpy.load(tmp_path / "replay" / "step_rows.npy")
+    numpy.save(tmp_path / "replay" / "step_rows.npy", rows[:-1])
+    with pytest.raises(ReplayDumpError, match="step_rows has shape"):
+        _prioritized().load_from(tmp_path / "replay")
+
+
+def test_a_failed_save_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    replay = _filled(_prioritized())
+    monkeypatch.setattr(numpy, "save", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        replay.save_to(tmp_path / "replay", run={})
+    assert list(tmp_path.iterdir()) == []

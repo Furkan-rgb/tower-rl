@@ -15,8 +15,12 @@ behind.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
+
+import torch
 
 from tower_rl.environment.decision_time import EMPTY_BREAKDOWN, DecisionTimeBreakdown
 from tower_rl.experiment.metrics import (
@@ -56,6 +60,28 @@ from tower_rl.learning.training import (
     collection_windows,
     episode_health,
 )
+
+#: Where in a run's directory its replay buffer is saved as the run ends,
+#: beside `checkpoints/`: `<run_dir>/replay/`.
+REPLAY_DIRECTORY = "replay"
+
+
+def non_finite_tensors(state: Any, name: str = "") -> list[str]:
+    """The keys of every tensor in a nested state dict holding a NaN or an infinity."""
+    if isinstance(state, torch.Tensor):
+        is_float = state.is_floating_point() or state.is_complex()
+        return [name] if is_float and not bool(torch.isfinite(state).all()) else []
+    if isinstance(state, Mapping):
+        items: Iterable[tuple[Any, Any]] = state.items()
+    elif isinstance(state, (list, tuple)):
+        items = enumerate(state)
+    else:
+        return []
+    return [
+        broken
+        for key, value in items
+        for broken in non_finite_tensors(value, f"{name}.{key}" if name else str(key))
+    ]
 
 
 def numbered_checkpoint_name(decisions: int) -> str:
@@ -136,6 +162,9 @@ class TrainingReport:
     #: The tracking run this report's checkpoints name as their own, so a resume
     #: from one of them can continue that series. None when untracked.
     tracking_run_id: str | None = None
+    #: The saved buffer this run's replay was loaded from on resume, or None
+    #: when it started empty. Recorded in every checkpoint's replay provenance.
+    replay_restored_from: str | None = None
 
     def __post_init__(self) -> None:
         self.decisions_logged = self.resumed_decisions
@@ -159,6 +188,63 @@ class TrainingReport:
     def checkpoint(self, report: TrainingProgressReport) -> None:
         """The resume point, overwritten in place as the run proceeds."""
         self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
+
+    @property
+    def replay_path(self) -> Path:
+        return self.run_dir / REPLAY_DIRECTORY
+
+    def save_resume_point(self, *, after_failure: bool = False) -> None:
+        """Write `latest.pt` and the replay buffer beside it, at one decision count.
+
+        Called once, as the run ends, however it ends: the buffer is gigabytes,
+        so it is saved there and never periodically. The fleet is held still
+        for both, so the checkpoint and the buffer describe the same moment and
+        a resume can require one to match the other.
+
+        A failed replay save is reported and not raised: the checkpoint is
+        already written, and a resume from it re-warms replay exactly as it did
+        before replay was saved at all.
+
+        `after_failure` is the run ending on an exception or an interrupt, which
+        may have struck mid-update. Then a backbone holding a non-finite weight
+        or optimizer moment writes neither file: the last periodic `latest.pt`
+        is a better resume point than a broken one written over it.
+        """
+        with self.training.held_still():
+            report = self.training.report
+            if after_failure:
+                broken = non_finite_tensors(self.backbone.state_dict())
+                if broken:
+                    print(
+                        f"[{self.name}] resume point not written: non-finite values "
+                        f"in {', '.join(broken[:5])}; the last periodic latest.pt stands",
+                        flush=True,
+                    )
+                    return
+            self.checkpoint(report)
+            print(
+                f"[{self.name}] saving replay ({len(self.replay)} sequences) to "
+                f"{self.replay_path}; this can take a minute or two",
+                flush=True,
+            )
+            started = time.monotonic()
+            try:
+                size = self.replay.save_to(
+                    self.replay_path,
+                    run={"decisions": report.decisions, "identity": asdict(self.identity)},
+                )
+            except Exception as failure:  # noqa: BLE001 - best effort; see above
+                print(
+                    f"[{self.name}] replay not saved ({failure}); a resume re-warms it",
+                    flush=True,
+                )
+                return
+            print(
+                f"[{self.name}] replay saved: {len(self.replay)} sequences, "
+                f"{size / 1e9:.2f} GB in {time.monotonic() - started:.1f} s "
+                f"to {self.replay_path}",
+                flush=True,
+            )
 
     def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
         """One candidate model of the run, named by the decisions behind it.
@@ -206,7 +292,11 @@ class TrainingReport:
             ),
             backbone_state=self.backbone.state_dict(),
             resolved_config=self.resolved,
-            replay_provenance={**self.replay.snapshot(), "restored": False},
+            replay_provenance={
+                **self.replay.snapshot(),
+                "restored": self.replay_restored_from is not None,
+                "restored_from": self.replay_restored_from,
+            },
             tracking_run_id=self.tracking_run_id,
         )
 

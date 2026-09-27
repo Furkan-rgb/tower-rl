@@ -38,7 +38,15 @@ evaluation set still did not cross the wall (P(final ≥ 22) = 0.000), but
 its training data produced the project's first episode — across every run
 checked — to complete wave 21 and reach wave 22, a single occurrence not
 reproduced in that run's own remaining training episodes or in its
-evaluation set.
+evaluation set. `M3-P007` (`#84`) then ran DreamerV3 at the same
+1,000,000-decision budget as `M3-P006`'s twin run: after the pre-
+registration's early-stop rule was dropped mid-run by developer decision
+(fixed-budget training to the full 1M, reported as a deviation) and one
+resume restarted replay empty (a discontinuity predating replay
+persistence, `#87`), its evaluation set also did not cross the wall
+(P(final ≥ 22) = 0.000) and scored below `M3-P006` on this single-run
+comparison (-1.32, Welch 95% CI ≈ [-2.36, -0.27]); no eval or training
+episode in this run reached wave 22.
 
 | ID | question | change vs control | control | result (eval mean final wave, n, P(≥20)) | verdict | what was learned | commit(s) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -48,7 +56,7 @@ evaluation set.
 | `M3-P004` | Does a graded survival-time reward (vs the wave reward's flat within-wave signal) pass the wall? | `--survival-time-reward` on top of `M3-P003`'s game-time discount | `M3-P003` 17.076, n=105 | 18.270, SD 3.213, n=100, P(≥20)=0.540 (54/100) | DO NOT ADOPT — health gate fails (value-fit correlation 0.79597 < 0.8, the same failure mode as `M3-P003`), despite the eval mean clearing its own bar by a wide margin | 2/100 episodes reached wave 21 — the first `M3`-series episodes to do so, not the first ever (M2 run 4 already reached wave 21 in 32/105); in-wave survival time at wave-20 death fell (16.785s vs control 18.747s), opposite the hypothesised direction | `ae3c3fa`/`610045e` (land), `5b76b42` (results correction) |
 | `M3-P005` | Does ε-z-greedy's temporally-extended exploration produce the sustained investment needed to pass the wall? | `--ez-greedy` on top of `M3-P004`'s flags (game-time discount + survival-time reward) | `M3-P004` 18.270, SD 3.213, n=100 | 16.346, SD 4.368, n=104, P(≥20)=0.481 (50/104) | ADOPT, per the pre-registered rule (healthy AND eval mean ≥15.97); "wall crossed" tier not met (P(≥22)=0.000 < 0.05) | P(≥21) rose to 0.154 (16/104) vs control 0.020, but not a new ceiling (M2 run 4 already reached wave 21 in 32/105); all 16 wave-21 deaths were incomplete; no consistent rise across exploring actors 2-4; long-option episodes (`longest_option`≥10) had a lower, not higher, mean final wave | `438a923` (land), `90def22` (pre-registration), `93ff866` (results) |
 | `M3-P006` | Does ~8× more training (1,000,000 decisions vs 120,712) with the adopted `M3-P005` recipe cross the wave 20-21 wall? | `--budget-decisions 1000000` (plus `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--replay-capacity 4096` explicit, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2`) on top of `M3-P005`'s exact recipe | `M3-P005` 16.346, SD 4.368, n=104 | 17.010, SD 4.163, n=104, P(≥20)=0.500 (52/104) | "More training did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule; run early-stopped at 752,118 decisions (period 15/20) | Eval mean indistinguishable from `M3-P005` (bootstrap +0.663 [-0.490,+1.808]); arm from period 10 (500,143 decisions), curve peaked there then declined; one training episode (near-greedy actor, index 1791/3650) completed wave 21 and reached wave 22 — the project's first, not reproduced elsewhere in training or in eval | `f6ad3d1` (pre-registration) |
-| `M3-P007` | At the same 1,000,000-decision budget and early-stop rule as `M3-P006`, does DreamerV3 (a model-based learner) cross the wave 20-21 wall that stacked-dqn did not? | `--backbone dreamerv3`, `--budget-decisions 1000000`, `--replay-capacity 40000` (scaled from `M3-P002`'s default 4096, which would FIFO at ≈13% of this budget), `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` — identical periods/early-stop to `M3-P006`; `train_ratio=512` (0.5 gradient steps/decision) per `DreamerConfig`'s default | `M3-P002` 12.676, SD 2.392, n=105; context: `M3-P006` 17.010, SD 4.163, n=104 | pending | pending | pending | pending |
+| `M3-P007` | At the same 1,000,000-decision budget and early-stop rule as `M3-P006`, does DreamerV3 (a model-based learner) cross the wave 20-21 wall that stacked-dqn did not? | `--backbone dreamerv3`, `--budget-decisions 1000000`, `--replay-capacity 40000` (scaled from `M3-P002`'s default 4096, which would FIFO at ≈13% of this budget), `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` — identical periods/early-stop to `M3-P006`; `train_ratio=512` (0.5 gradient steps/decision) per `DreamerConfig`'s default | `M3-P002` 12.676, SD 2.392, n=105; context: `M3-P006` 17.010, SD 4.163, n=104 | 15.695, SD 3.533, n=105, P(≥20)=0.181 (19/105) | "DreamerV3 did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule | Deviation: early stopping was dropped mid-run by developer decision, training to the full 1,000,000-decision budget instead of stopping at period 16 (800,124 decisions); a resume (r3-cont) restarted replay empty, predating `#87`; arm from period 11 (550,069 decisions, predates the resume); vs `M3-P006` (single run each): -1.32, Welch 95% CI ≈ [-2.36, -0.27]; bimodal eval distribution (35/105 die at waves 11-12, 19/105 reach 20); no wave ≥22 episode anywhere in training or eval | `ce9c2e0` (pre-registration), `f263b7b` (amendment), this commit (results) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -322,6 +330,119 @@ polling loops.
 - **Known risk, accepted.** A cold `torch.compile` of ≈4 min on the first
   update blocks actors. The inductor cache (`/tmp/torchinductor_furkan`)
   is expected warm for the relaunch.
+
+### Results, as run
+
+**Verdict, per the pre-registered rule: "DreamerV3 did not cross the wall
+under this recipe."** Eval P(final ≥ 22) = 0.000 < 0.05.
+
+**Training segments.** Attempt 1 (disregarded already in the 2026-09-26
+amendment above) and a stray resume of it are both disregarded, in full.
+A second attempt, r2, was aborted at ≈4 min: `emulator-5564`'s bring-up
+failed with an adb port clash (`cannot bind listener: Address already in
+use`), so it ran 6 actors against the pre-registered 7 — disregarded. r3
+was a fresh start on 7 actors at 10:40 on 2026-09-26; under the
+pre-registered early-stop rule it stopped itself at selection period 16
+(800,124 decisions), wall `14:55:41`.
+
+**Deviation from the pre-registration, decided by the developer, reported
+honestly.** At ≈15:10 on 2026-09-26, with the run at ≈220k decisions and
+well before any early-stop trigger, the developer dropped early stopping
+for this run: it trains to the full 1,000,000-decision budget instead.
+Reasons given: fixed-budget training is standard practice; `M3-P006` kept
+improving until 500k decisions; and the early-stop rule was a budget-saver
+for this project, not part of the method under test. At the time of the
+decision the curve was already known to be flat (periods 2-4 ≈ 14.8; see
+the period table below). This decision was made before r3 itself
+early-stopped at period 16, so it governs the continuation described next
+rather than r3's own stopping point.
+
+r3-cont resumed from `latest.pt` (sha256
+`088574cffb59842b4a12d5f7bcc976ce8683a6c69928a34f42a065300e0fc0ff`) with
+patience set to 0 (no early stop). It ran to 1,000,076 decisions at
+period 20's close, wall `03:49:11`. **Replay restarted EMPTY on this
+resume** — this run predates replay persistence across resume (`#87`) —
+a recorded discontinuity in the training data, not a deviation from
+anything pre-registered (the pre-registration's "known confounds" section
+already stated a resume re-warms replay empty). Period 17's mean dipped to
+14.320 immediately after the resume; the dip is correlated with the
+resume in time, but the cause (empty replay vs. ordinary run-to-run noise)
+is not tested and is not claimed here.
+
+**Rate.** Fleet throughput measured at steady state ≈57k decisions/hour:
+34,877 decisions (899 → 35,776) over 36m45s on 2026-09-26, and ≈350k
+decisions over 6.2 h later in the run. After the learner speed-up
+(`da7a7bd`, 3.4× per update), the fleet is actor-bound, not learner-bound.
+
+**Selection-period curve** (near-greedy mean final wave at each period's
+own close, decisions at close in parentheses; union of r3's periods 1-16
+and r3-cont's periods 17-20 — r3-cont's own `summary.json` lists only
+periods 17-20 since its early-stop tracker was restored from r3's
+parent state):
+
+| period | decisions | mean final wave |
+| --- | --- | --- |
+| 1 | 50,128 | 10.704 |
+| 2 | 100,153 | 14.814 |
+| 3 | 150,058 | 14.799 |
+| 4 | 200,029 | 14.776 |
+| 5 | 250,230 | 15.218 |
+| 6 | 300,214 | 15.031 |
+| 7 | 350,178 | 15.697 |
+| 8 | 400,128 | 15.087 |
+| 9 | 450,042 | 15.400 |
+| 10 | 500,001 | 15.509 |
+| **11** | **550,069** | **16.036 (max, arm)** |
+| 12 | 600,055 | 15.729 |
+| 13 | 650,103 | 15.644 |
+| 14 | 700,032 | 15.466 |
+| 15 | 750,127 | 15.628 |
+| 16 | 800,124 | 15.687 |
+| 17 | 850,171 | 14.320 |
+| 18 | 900,053 | 14.961 |
+| 19 | 950,099 | 15.590 |
+| 20 | 1,000,076 | 15.490 |
+
+Shape: rising from period 1 to period 2, a plateau (periods 2-10, mean
+≈15.0-15.7 with no clear trend), a single peak at period 11, a shallow
+decline and partial rebounds through period 16, the resume-adjacent dip at
+period 17, then a partial recovery through period 20 that does not regain
+the period-11 peak. As with `M3-P006`, most of this run's later training
+did not improve on a peak reached well before the budget's end.
+
+**Arm** (`docs/solution.md` §9.2b): counting periods 2 and later, the best
+near-greedy mean is period 11 at 550,069 decisions, **16.036** waves —
+`state/runs/session-20260926-104655/dreamerv3-20260926-104655-d9601c/checkpoints/checkpoint-d0550069.pt`,
+sha256
+`18b1743fe44a5a9aec9c5ca12b2cb6ac0480e76d387d4fb5a49505e5f11d740b`,
+verified against its `.sha256` sidecar. The arm predates the r3-cont
+resume, so it is unaffected by the empty-replay discontinuity.
+
+**Evaluation.** `state/records/m3-p007/eval-arm/`, default build, n=105
+valid of 105 (7×15, no invalid episodes). Mean final wave **15.695**, SD
+**3.533**, 95% CI (normal approx.) **[15.02, 16.37]**. P(final ≥ 20):
+**0.181** (19/105). P(final ≥ 21): **0.019** (2/105). P(final ≥ 22):
+**0.000** (0/105). Histogram of final wave: {9:1, 11:20, 12:15, 13:1,
+14:2, 15:6, 16:9, 17:8, 18:10, 19:14, 20:17, 21:2}. The distribution is
+bimodal: 35/105 episodes die at waves 11-12, and 19/105 reach wave 20; no
+eval or training episode in this run reached wave 22.
+
+**Against `M3-P006`** (stacked-dqn, same 1,000,000-decision budget:
+17.010, SD 4.163, n=104, P(≥20)=0.500, P(≥21)=0.202): difference
+**-1.32**, Welch 95% CI ≈ **[-2.36, -0.27]** — this is a single run each,
+not a powered comparison, and is reported descriptively.
+
+**Pre-registered verdict.** "DreamerV3 did not cross the wall under this
+recipe" — the pre-registered "wall crossed" tier (eval P(≥22) ≥ 0.05) is
+not met (observed 0.000), and on this single-run-each comparison
+DreamerV3 scored below `M3-P006`'s stacked-dqn arm. No cause beyond what
+was tested is claimed: this write-up does not attribute the gap to the
+resume, the empty replay restart, or the recipe difference between the
+two arms' reward/discount settings, none of which was isolated by this
+run.
+
+**Speed-up used in this run.** Merge `da7a7bd` ("Merge Dreamer learner
+bf16 + torch.compile speed-up (3.4x per update)").
 
 ## M3-P006: stacked-dqn with the adopted `M3-P005` recipe, 1,000,000 decisions (pre-registered, written before the run)
 

@@ -641,6 +641,23 @@ def test_the_fresh_network_is_seeded_by_the_run_seed_and_the_reset_count() -> No
     assert not parameters_are_equal(_backbone(seed=1)._fresh_network(), first._fresh_network())
 
 
+def test_fresh_network_leaves_the_cpu_rng_state_unchanged() -> None:
+    backbone = _backbone()
+    before = torch.get_rng_state()
+    backbone._fresh_network()
+    after = torch.get_rng_state()
+    assert torch.equal(before, after)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_fresh_network_leaves_the_cuda_rng_state_unchanged() -> None:
+    backbone = _backbone()
+    before = torch.cuda.get_rng_state()
+    backbone._fresh_network()
+    after = torch.cuda.get_rng_state()
+    assert torch.equal(before, after)
+
+
 def test_a_reset_restarts_the_n_step_anneal(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = _record_n_steps(monkeypatch)
     backbone = _annealed(n_step_anneal_steps=2, reset_every_steps=3, last_reset_step=3)

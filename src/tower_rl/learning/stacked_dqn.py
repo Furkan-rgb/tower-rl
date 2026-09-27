@@ -463,11 +463,20 @@ class StackedDqnBackbone:
 
         Built on the CPU inside a forked RNG, so a run's resets are reproducible
         from its seed and draw nothing from the stream the rest of the run uses.
+        ``fork_rng(devices=[])`` only saves and restores the CPU generator, so
+        only the CPU generator is reseeded here (``torch.default_generator``,
+        not ``torch.manual_seed``, which would also reseed every CUDA
+        generator and is not undone on exit from the fork).
+
+        With ``seed`` set to ``None`` (only tests do this; ``--seed`` defaults
+        to 0), the CPU generator is never reseeded here, so every reset draws
+        the same fresh network from wherever the ambient CPU RNG stream is at
+        that point in the run.
         """
         with torch.random.fork_rng(devices=[]):
             if self.config.seed is not None:
                 seed = random.Random(f"{self.config.seed}/reset/{self.resets}").getrandbits(63)
-                torch.manual_seed(seed)
+                torch.default_generator.manual_seed(seed)
             fresh = StackedPolicyNetwork(
                 self.network_config, history_length=self.config.history_length
             )

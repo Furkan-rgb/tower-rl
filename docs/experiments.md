@@ -438,8 +438,11 @@ trajectory?
 - `--parameter-sync-decisions 10` (was `M3-P013`'s 0): at most ~70 updates of
   parameter lag, about Ape-X's;
 - `--reset-every-steps 100000` (new, board #85): at gradient steps 100k,
-  200k, …, 900k — the last one interval before the 1,000,000 steps the budget
-  buys, so 9 resets — `core` and `heads` are re-initialised, the trunk
+  200k, …, 900k — the last reset leaving ≈ one interval (≥ 3× the measured
+  20-30k recovery) before the end, so 9 resets. Gradient steps trail
+  decisions by the ~4.3k warm-up, so the 1,000,000-decision budget takes
+  ≈995.7k gradient steps; reset 9 at 900k steps (near decision 904.3k) leaves
+  ≈95.7k steps — `core` and `heads` are re-initialised, the trunk
   becomes 0.8 · old + 0.2 · fresh, the target becomes the online network,
   AdamW state is cleared for core and heads only, and the 10 → 3 n-step
   anneal restarts. Each reset is logged as `learner_resets`;
@@ -450,9 +453,9 @@ trajectory?
   a recovered one (below).
 
 Everything else is `M3-P013`'s: γ 0.997 per game-second, replay ratio 1.0,
-`--replay-capacity 4096` (an inherited default, under derivation; held here
-until a derived value exists), AdamW lr 1e-4, ε 1e-8, weight decay 1e-5, EMA
-τ 0.005, R2D2 PER, left-padding, seed 0.
+`--replay-capacity 4096` (derived in `docs/solution.md` §9.4: the oldest data
+stays at least one reset interval old, ≈1.7 intervals, ≈3.8 GiB), AdamW lr
+1e-4, ε 1e-8, weight decay 1e-5, EMA τ 0.005, R2D2 PER, left-padding, seed 0.
 
     export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/workshop-render-interval-16
     scripts/run_stage.sh --name m3-p014-stackeddqn-v2-train --instances 7 \

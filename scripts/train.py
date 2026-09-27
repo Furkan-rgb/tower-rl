@@ -597,7 +597,8 @@ def build_arm(
             )
             print(
                 f"[{name}] learner reset {logged_resets} at step "
-                f"{report.optimisation_steps}, {report.decisions} decisions",
+                f"{logged_resets * arguments.reset_every_steps}, "
+                f"{report.decisions} decisions",
                 flush=True,
             )
         # The episode first: it is the tracked unit, and the window below it is
@@ -828,9 +829,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=4096,
         help=(
-            "replay windows held, shared with --backbone dreamerv3; 4096 is the "
-            "known-good value (M3-P009). Untested at 1M decisions and, with swap "
-            "already full, 25,000 would cost ~19 GiB while keeping the early "
+            "replay windows held, shared with --backbone dreamerv3; 4096 is "
+            "derived in docs/solution.md 9.4 (the oldest data stays at least "
+            "one reset interval old). Untested at 1M decisions and, with swap "
+            "already full, 25,000 would cost ~23 GiB while keeping the early "
             "heavily-explored data forever (M3-P010, docs/experiments.md); "
             "capacity is tested only as its own arm"
         ),

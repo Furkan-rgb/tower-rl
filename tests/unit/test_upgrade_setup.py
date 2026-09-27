@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -241,3 +242,28 @@ def test_the_setup_row_is_what_the_record_names() -> None:
             }
         ],
     }
+
+
+def test_exactly_one_concurrent_admit_is_told_it_pinned() -> None:
+    """A fleet's actors reach their first round start together; one records it."""
+    setup = _setup(_environment()[0])
+    pinned_with: list[UpgradeSetup] = []
+    reference = UpgradeSetupReference(on_pinned=pinned_with.append)
+    threads = 16
+    start = threading.Barrier(threads)
+    results: list[tuple[bool, str | None]] = []
+
+    def admit() -> None:
+        start.wait()
+        results.append(reference.admit(setup))
+
+    workers = [threading.Thread(target=admit) for _ in range(threads)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert len(results) == threads
+    assert sum(pinned for pinned, _ in results) == 1
+    assert all(drift is None for _, drift in results)
+    assert pinned_with == [setup]

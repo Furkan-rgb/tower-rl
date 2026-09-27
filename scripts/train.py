@@ -101,7 +101,10 @@ from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
-from tower_rl.environment.upgrade_setup import UpgradeSetupReference  # noqa: E402
+from tower_rl.environment.upgrade_setup import (  # noqa: E402
+    UpgradeSetup,
+    UpgradeSetupReference,
+)
 from tower_rl.experiment.run_identity import (  # noqa: E402
     RunIdentity,
     checkpoint_identity,
@@ -516,20 +519,6 @@ def build_arm(
 
     def on_episode(report: TrainingProgressReport) -> None:
         nonlocal warmed
-        if arm.identity.upgrade_setup_digest is None and setup.first is not None:
-            # The run's first episode has said which setup the game held: every
-            # checkpoint from here on is keyed on it, and the manifest records it.
-            arm.identity = replace(arm.identity, upgrade_setup_digest=setup.first.digest)
-            write_manifest(
-                manifest,
-                {
-                    "run_id": run_id,
-                    **resolved,
-                    "upgrade_setup": setup.first.to_record(),
-                    "upgrade_setup_digest": setup.first.digest,
-                },
-            )
-            run.log_artifact(manifest)
         if (
             not warmed
             and resume is not None
@@ -571,6 +560,24 @@ def build_arm(
     manifest = run_dir / "manifest.json"
     write_manifest(manifest, {"run_id": run_id, **resolved})
     run.log_artifact(manifest)
+
+    def record_setup(first: UpgradeSetup) -> None:
+        # The run's first episode has said which setup the game held: every
+        # checkpoint from here on is keyed on it, and the manifest records it.
+        # Called once, by the reset that pinned it, on that actor's thread.
+        arm.identity = replace(arm.identity, upgrade_setup_digest=first.digest)
+        write_manifest(
+            manifest,
+            {
+                "run_id": run_id,
+                **resolved,
+                "upgrade_setup": first.to_record(),
+                "upgrade_setup_digest": first.digest,
+            },
+        )
+        run.log_artifact(manifest)
+
+    setup.on_pinned = record_setup
     if resume is not None:
         # Where this segment picked the budget up, on the same axis every other
         # point of the run is keyed by. The parent itself is named in

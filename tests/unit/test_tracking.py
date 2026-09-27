@@ -142,9 +142,10 @@ def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
 def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -> None:
     calls = recorded.calls
 
-    # The run is opened, its manifest goes up, then every curve point reports a
-    # measurement and the checkpoint behind it, and the summary closes the run.
-    assert calls[:3] == ["start_run", "log_artifact", "log_metrics"]
+    # The run is opened, its manifest goes up, and again once the first round
+    # start has pinned the run's upgrade setup; then every curve point reports
+    # a measurement and the checkpoint behind it, and the summary closes the run.
+    assert calls[:4] == ["start_run", "log_artifact", "log_artifact", "log_metrics"]
     assert calls[-2:] == ["log_artifact", "finish"]
     assert calls.count("log_metrics") == len(recorded.points) >= 2
     # Each evaluation point contributes a measurement and the checkpoint it
@@ -153,8 +154,7 @@ def test_the_session_reports_in_the_order_a_run_happens(recorded: RecordedRun) -
     evaluations = [
         point for point in recorded.points if "eval_mean_final_wave" in point.metrics
     ]
-    # The manifest goes up once more, rewritten with the run's upgrade setup
-    # after its first episode.
+    # The manifest goes up once more, rewritten with the run's upgrade setup.
     assert calls.count("log_artifact") == len(evaluations) + 3
 
 

@@ -562,7 +562,7 @@ class InstrumentedRunEnvironment:
         # The setup is read off the first observation, after any unlock, and
         # the Workshop read above: what the game held, not what was asked for.
         self._setup = UpgradeSetup.read_back(labels, state, self._workshop_read)
-        self._setup_drift = self.setup_reference.admit(self._setup)
+        _, self._setup_drift = self.setup_reference.admit(self._setup)
         state = self._setup_held(state)
         self._state = state
         self._episode_id = uuid.uuid4().hex

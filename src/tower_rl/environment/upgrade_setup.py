@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -142,14 +142,20 @@ class UpgradeSetupReference:
     expected: str | None = None
     #: What `expected` came from, for the refusal to name.
     expected_from: str = "the checkpoint"
+    #: Called once, by the call that pinned the run's first setup, with that
+    #: setup: how a run records it (its manifest, its checkpoint identity)
+    #: exactly once, from whichever actor's thread got there first.
+    on_pinned: Callable[[UpgradeSetup], None] | None = None
     first: UpgradeSetup | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
-    def admit(self, setup: UpgradeSetup) -> str | None:
+    def admit(self, setup: UpgradeSetup) -> tuple[bool, str | None]:
         """Pin the run's first setup, or say how this one drifted from it.
 
-        Returns None for a setup the run is on, and the drift reason otherwise.
-        Raises `UpgradeSetupRefused` when the first setup is not the expected one.
+        Returns whether this call was the one that pinned the setup - decided
+        under the lock, so exactly one call ever is - and None for a setup the
+        run is on or the drift reason otherwise. Raises `UpgradeSetupRefused`
+        when the first setup is not the expected one.
         """
         digest = setup.digest
         with self._lock:
@@ -162,11 +168,17 @@ class UpgradeSetupReference:
                         "checkpoint's experience is not this run's decision problem"
                     )
                 self.first = setup
-                return None
-            first = self.first.digest
+                pinned = True
+            else:
+                pinned = False
+                first = self.first.digest
+        if pinned:
+            if self.on_pinned is not None:
+                self.on_pinned(setup)
+            return True, None
         if digest == first:
-            return None
-        return (
+            return False, None
+        return False, (
             f"{UPGRADE_SETUP_DRIFT}: this episode's setup {digest[:12]} differs from "
             f"the run's first {first[:12]}"
         )

@@ -221,6 +221,9 @@ episode from three read-backs:
   the episode's first observation, read after the round start and after the
   unlock under `all`. Under `image` it is the availability at the episode's
   first observation, which the game may change later in the episode.
+  Availability is recorded per row from the game's read-back, so an unlock
+  that lands a different row set is recorded as drift rather than assumed
+  identical.
 - **`workshop_level`:** the row's level in `RunPort.workshop_levels`, read once
   the round has started. That read is made only at N > 0; at N = 0 nothing is
   read, every row records 0, and `workshop_read_back` is false. A row missing
@@ -245,8 +248,9 @@ The digest is the sha256 hex of that record as canonical JSON (sorted keys,
 separators `,` and `:`, ASCII). Every episode record (`episode_record`) carries
 only `upgrade_setup_digest`. The full `upgrade_setup` is written in three places:
 
-- in a training run's `manifest.json`, which is rewritten after the run's first
-  episode with that episode's `upgrade_setup` and `upgrade_setup_digest`;
+- in a training run's `manifest.json`, which is rewritten once, by the round
+  start that pins the run's first setup (`UpgradeSetupReference.on_pinned`),
+  with that episode's `upgrade_setup` and `upgrade_setup_digest`;
 - once per evaluation output file (`run_episodes.py`, and therefore each
   per-instance file of `run_actors.py`), at the file level beside
   `upgrade_availability`: the setup of the file's first episode;

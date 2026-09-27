@@ -267,6 +267,10 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         # decision problem attached (ADR 0009, ADR 0011).
         "decision_cadence": summary.decision_cadence,
         "upgrade_availability": summary.upgrade_availability,
+        # And the Workshop runway profile it was played on (ADR 0012), so an
+        # evaluation can be matched to the training it is read against.
+        "workshop_level": summary.workshop_level,
+        "workshop_rows": list(summary.workshop_rows),
         "decisions": summary.decisions,
         # Decisions are choice points and advances are cadence slices, so both
         # units are recorded: a run collected under either cadence can be read

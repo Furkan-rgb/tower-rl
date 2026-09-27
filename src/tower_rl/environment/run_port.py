@@ -93,6 +93,28 @@ class UnlockFamilyStateLike(Protocol):
     def true_count(self) -> int: ...
 
 
+@runtime_checkable
+class WorkshopRowLike(Protocol):
+    """One Workshop row and the permanent level it holds (ADR 0012).
+
+    `after` is read back out of the game once the command is done, never a
+    restatement of what was asked for, so a write that did not take reports as
+    one. For a read it is simply the level the row holds.
+    """
+
+    @property
+    def family(self) -> str: ...
+
+    @property
+    def index(self) -> int: ...
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def after(self) -> int: ...
+
+
 class RunPortError(RuntimeError):
     """The port could not complete a request; the caller classifies the episode."""
 
@@ -134,6 +156,24 @@ class RunPort(Protocol):
         round begins (`M2-E008`), so this is a round-scoped capability rather
         than a property of the image, and the counts come back read out of the
         game after the write so a write that did not take is visible here.
+        """
+        ...
+
+    def set_workshop_levels(self, level: int, rows: Sequence[str]) -> Sequence[WorkshopRowLike]:
+        """Write one permanent Workshop level into the named rows, and report every row.
+
+        Issued before a round starts, and only by an environment configured
+        with a Workshop level (ADR 0012). The rows are the game's own names; a
+        name the game does not have, or a level above a row's ceiling, refuses
+        the whole write with `RunPortError`. The write is in-memory only.
+        """
+        ...
+
+    def workshop_levels(self) -> Sequence[WorkshopRowLike]:
+        """Read every Workshop row's permanent level, writing nothing.
+
+        How the environment checks, once the round has started, that the
+        levels it wrote before the start are still the ones the game holds.
         """
         ...
 

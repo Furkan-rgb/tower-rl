@@ -236,7 +236,7 @@ unless ADR 0006 explicitly defines the bounded training-only exception:
 - real-money/store purchases, advertisements, credential automation, cloud/save
   manipulation, tournaments, leaderboards, competitive/event participation, or
   use against other players;
-- Workshop, Lab, Card, Module, Perk, event, tournament, or other permanent/meta-progression optimization;
+- having a policy choose or optimize Workshop, Lab, Card, Module, Perk, event, tournament, or other permanent/meta progression. The run's Workshop levels are a fixed part of the environment configuration that the operator sets (section 7.2), and are never a decision the agent makes;
 - arbitrary free-form screen-coordinate actions learned by the agent;
 - support for tiers other than Tier 1;
 - mobile-device deployment or unattended remote/cloud deployment;
@@ -267,7 +267,14 @@ Invalid episodes must be excluded from model-quality evaluation and clearly dist
 
 ### 7.2 Baseline contract
 
-The permanent state used by V1 must be frozen, versioned, and auditable. At minimum, the project must record all visible permanent choices known to affect a run, the game/app version, device profile, display settings, in-game speed, and relevant configuration.
+The permanent state a run is played under must be fixed for the run, versioned, and auditable. It has two parts:
+
+- **The account.** This is the image and save, which are frozen.
+- **The Workshop runway profile.** This is one Workshop level that the controller writes into a fixed set of rows in the running game's memory before each round. The operator selects it with `--workshop-level N`, and it is never saved (ADR 0012).
+
+Baseline v1 is the account at level 0. Baseline v2 is the same account with a runway profile at N > 0; it moves the tower past the wave-20 wall that the v1 account cannot pass. Runs under different profiles are different experiments and are not compared with each other. The v1 results stay valid as recorded, under v1.
+
+At minimum, the project must record all visible permanent choices known to affect a run, the Workshop level and rows, the game/app version, device profile, display settings, in-game speed, and relevant configuration.
 
 Normal death-to-new-run navigation should preserve natural variation. A golden recovery state must restore actors that drift, become corrupted, enter an unsupported screen, or otherwise fail baseline verification. The implementation must not silently assume that repeated restoration produces suitable randomness; this must be tested.
 

@@ -145,9 +145,12 @@ EPISODE_RECORD_KEYS = {
     "final_wave",
     # The protocol the episode was played under, on the row itself: a pooled
     # row that cannot say which cadence asked it or which upgrade rows it could
-    # buy from is a wave with no decision problem attached (ADR 0009, 0011).
+    # buy from is a wave with no decision problem attached (ADR 0009, 0011,
+    # 0012).
     "decision_cadence",
     "upgrade_availability",
+    "workshop_level",
+    "workshop_rows",
     "decisions",
     "advances",
     "purchases",

@@ -30,6 +30,7 @@ from tower_rl.environment.run_environment import (
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
+from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
@@ -90,6 +91,10 @@ class RunIdentity:
     #: image's either way: availability is applied at each round start, not
     #: baked into the image.
     upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE
+    #: The Workshop runway profile's level (ADR 0012): 0 is baseline v1, the
+    #: account as the image holds it; above 0 the profile's rows are set to it
+    #: before every round. The same kind of operator choice as the two above.
+    workshop_level: int = WORKSHOP_OFF
 
     @classmethod
     def started_now(
@@ -100,6 +105,7 @@ class RunIdentity:
         source_revision: str,
         decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS,
         upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE,
+        workshop_level: int = WORKSHOP_OFF,
     ) -> RunIdentity:
         """A fresh identity for a run about to start, with a new run id."""
         return cls(
@@ -109,6 +115,7 @@ class RunIdentity:
             source_revision=source_revision,
             decision_cadence=decision_cadence,
             upgrade_availability=upgrade_availability,
+            workshop_level=workshop_level,
         )
 
 
@@ -130,6 +137,7 @@ def checkpoint_identity(identity: RunIdentity) -> CheckpointIdentity:
         source_revision=identity.source_revision,
         decision_cadence=identity.decision_cadence,
         upgrade_availability=identity.upgrade_availability,
+        workshop_level=identity.workshop_level,
     )
 
 
@@ -145,6 +153,7 @@ def resolved_config(
     cadence: CadenceConfig,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    workshop_level: int,
     burn_in: int,
     stride: int,
     device: torch.device,
@@ -264,6 +273,10 @@ def resolved_config(
         # start, which is a different decision problem and a different set of
         # baselines (ADR 0011).
         "upgrade_availability": str(upgrade_availability),
+        # The Workshop runway profile every round was played on, and the rows
+        # it was written into: 0 and none is baseline v1 (ADR 0012).
+        "workshop_level": workshop_level,
+        "workshop_rows": list(workshop_rows(workshop_level)),
         "device": str(device),
         # The guest rate this arm actually collected at: a fleet run raises
         # every instance to it, and a single actor's is whatever the operator

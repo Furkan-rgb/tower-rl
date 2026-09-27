@@ -159,7 +159,20 @@ host cross-compile only, nothing installed:
 b9852e6494056fedaf1b142af2368dbaa4ac975c7dfea2ffbff44b16f1d76284   source before ADR 0011
 f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with ADR 0011, 2026-09-20; installed at state/bridge/current
 7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228   render-off experiment, TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16 (#27), 2026-09-23
+58d5d48a4b0fc16b0115587eac7689cc236dd39b394e682ef8626fcd662f1e7d   source with ADR 0012 Workshop commands (#80), 2026-09-27; state/bridge/builds/workshop-default/, not installed
+e8a8f36d11ceba7eb59c339c568ac08bfe40e9931875bbd739ad4cc10541a25a   the same with TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16, 2026-09-27; state/bridge/builds/workshop-render-interval-16/
 ```
+
+`58d5d48a…` and `e8a8f36d…` are the source with the Workshop runway commands
+(`workshop_levels`, `set_workshop_levels`;
+[ADR 0012](adr/0012-workshop-runway-profile-is-controller-owned-environment-configuration.md)).
+They were built with the recipe above, and the second adds the render-interval
+option. Each sits in its own directory with its own `CMakeCache.txt` and an
+unchanged copy of `state/bridge/current/libunity-bridge.so`, and a run selects
+one with `TOWER_BRIDGE_BUILD_DIR`. Neither is installed as
+`state/bridge/current` until a device check has confirmed the commands. These
+builds require the Workshop fields at initialisation, so a game build without
+them fails at bridge start even at `--workshop-level 0`.
 
 `7b5e9701…` is an **experiment variant, not a production digest**. It is the
 same source built with `-DTOWER_BRIDGE_RENDER_FRAME_INTERVAL=16` added to the

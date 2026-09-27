@@ -51,6 +51,7 @@ from tower_rl.environment.run_environment import (  # noqa: E402
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows  # noqa: E402
 from tower_rl.learning.actor import ActorConfig  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, identity_hash  # noqa: E402
 from tower_rl.learning.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
@@ -87,6 +88,7 @@ def policy_from(
     *,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    workshop_level: int,
     sampling_seed: str | None = None,
 ) -> tuple[Policy, dict[str, object]]:
     """The arm this run plays, and the identity every record of it carries.
@@ -119,6 +121,7 @@ def policy_from(
             path,
             decision_cadence=str(decision_cadence),
             upgrade_availability=str(upgrade_availability),
+            workshop_level=workshop_level,
             # A checkpoint that samples its policy draws from a stream of this
             # instance's own, not one every instance of a fleet shares.
             sampling_seed=sampling_seed,
@@ -144,6 +147,7 @@ def actor_record(
     max_quiet_game_ms: int,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    workshop_level: int,
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
 ) -> dict[str, Any]:
@@ -166,6 +170,10 @@ def actor_record(
     # the image's six rows and one collected on every real row are measurements
     # of two different decision problems (ADR 0011).
     record["upgrade_availability"] = str(upgrade_availability)
+    # And on which Workshop setup: baseline v1's bare account at 0, the runway
+    # profile's rows at this level otherwise (ADR 0012).
+    record["workshop_level"] = workshop_level
+    record["workshop_rows"] = list(workshop_rows(workshop_level))
     record["wall_seconds"] = round(wall_seconds, 1)
     # What the game calls each slot the actions address, so the human reading
     # this record afterwards can tell what `attack:3` was. Never an input: the
@@ -239,6 +247,36 @@ def upgrade_availability_from(arguments: argparse.Namespace) -> UpgradeAvailabil
     return UpgradeAvailability(arguments.upgrade_availability)
 
 
+def _workshop_level(text: str) -> int:
+    level = int(text)
+    if level < WORKSHOP_OFF:
+        raise argparse.ArgumentTypeError("a Workshop level cannot be negative")
+    return level
+
+
+def add_workshop_level_argument(parser: argparse.ArgumentParser) -> None:
+    """The Workshop runway profile's level (ADR 0012).
+
+    Beside the availability because it is the same kind of choice: fixed by the
+    operator for the whole run, applied by the environment, never chosen by the
+    policy. 0 is the default and is baseline v1, the account as the image holds
+    it; nothing is written.
+    """
+    parser.add_argument(
+        "--workshop-level",
+        type=_workshop_level,
+        default=WORKSHOP_OFF,
+        help="set the Workshop runway profile's rows to this level before every "
+        "round, on the disposable instance only; 0 (the default) writes nothing "
+        "(ADR 0012)",
+    )
+
+
+def workshop_level_from(arguments: argparse.Namespace) -> int:
+    """The Workshop runway profile's level this invocation plays on."""
+    return int(arguments.workshop_level)
+
+
 def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
     return CadenceConfig(
         frame_game_ms=arguments.frame_game_ms,
@@ -280,8 +318,34 @@ def open_environment(
         cadence=cadence_from(arguments),
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
     )
     return client, adapter, environment
+
+
+def print_workshop_rows(client: InstrumentedBridgeClient, level: int) -> None:
+    """The Workshop rows as the game names them, for a device session to read.
+
+    At 0 this only reads. Above 0 it applies the runway profile once, exactly
+    as a round start would, and prints the report the write came back with:
+    every row's level before and after, and the effect scalars before and
+    after, which say whether the game's own derived values moved.
+    """
+    sequence = client.read_state().sequence
+    if level > WORKSHOP_OFF:
+        report = client.set_workshop_levels(
+            level, workshop_rows(level), expected_sequence=sequence
+        )
+    else:
+        report = client.read_workshop_levels(expected_sequence=sequence)
+    print(json.dumps(
+        {
+            "wrote": report.wrote,
+            "rows": [vars(row) for row in report.rows],
+            "effects": [vars(effect) for effect in report.effects],
+        },
+        indent=2,
+    ), flush=True)
 
 
 def main() -> int:
@@ -299,6 +363,14 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    add_workshop_level_argument(parser)
+    parser.add_argument(
+        "--list-workshop-rows",
+        action="store_true",
+        help="print every Workshop row as the game names it, with its level and "
+        "ceiling, and exit without playing; with --workshop-level above 0, apply "
+        "the runway profile once first and print its before/after report (ADR 0012)",
+    )
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "episodes.json"
     )
@@ -313,6 +385,7 @@ def main() -> int:
         arguments.policy,
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
         sampling_seed=arguments.serial,
     )
     expected = compatibility(bridge_build_directory())
@@ -327,6 +400,13 @@ def main() -> int:
     # Before the first round: a command of the adapter's own initiative belongs
     # to the episode boundary, and these are constant for the build.
     labels = adapter.slot_labels()
+    if arguments.list_workshop_rows:
+        try:
+            print_workshop_rows(client, workshop_level_from(arguments))
+        finally:
+            adapter.release()
+            client.close()
+        return 0
 
     started = time.monotonic()
     try:
@@ -348,6 +428,7 @@ def main() -> int:
         max_quiet_game_ms=arguments.max_quiet_game_ms,
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
         wall_seconds=time.monotonic() - started,
         labels=labels,
     )

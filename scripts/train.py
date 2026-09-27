@@ -90,9 +90,11 @@ import torch  # noqa: E402
 from run_episodes import (  # noqa: E402
     add_cadence_arguments,
     add_upgrade_availability_argument,
+    add_workshop_level_argument,
     decision_cadence_from,
     open_environment,
     upgrade_availability_from,
+    workshop_level_from,
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
@@ -296,12 +298,15 @@ def build_arm(
     # what every actor may buy, for the identity its checkpoints are keyed on
     # and for the snapshot it records (ADR 0011).
     upgrade_availability = upgrade_availability_from(arguments)
+    # And so is the Workshop runway profile (ADR 0012).
+    workshop_level = workshop_level_from(arguments)
     identity = RunIdentity.started_now(
         name,
         profile_id=profile_id,
         source_revision=revision,
         decision_cadence=decision_cadence,
         upgrade_availability=upgrade_availability,
+        workshop_level=workshop_level,
     )
     run_id = identity.run_id
     run_dir = parent / run_id
@@ -385,6 +390,7 @@ def build_arm(
         cadence=instances[0].environment.cadence,
         decision_cadence=decision_cadence,
         upgrade_availability=upgrade_availability,
+        workshop_level=workshop_level,
         burn_in=burn_in,
         stride=stride,
         device=device,
@@ -912,6 +918,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    add_workshop_level_argument(parser)
     parser.add_argument(
         "--run-dir",
         type=Path,
@@ -1060,6 +1067,8 @@ def resume_point(
             # A checkpoint collected on other rows is not experience this run
             # can continue either (ADR 0011).
             upgrade_availability=upgrade_availability_from(arguments),
+            # Nor one collected on another Workshop setup (ADR 0012).
+            workshop_level=workshop_level_from(arguments),
         )
     )
     try:

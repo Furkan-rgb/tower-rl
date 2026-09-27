@@ -10,7 +10,7 @@ home screen's own BATTLE control - and reads the game's own `round_active` and
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from tower_rl.environment.run_port import RunPortError
@@ -25,6 +25,8 @@ from tower_rl.simulation.instrumented_bridge import (
     InstrumentedBridgeError,
     UnlockFamilyState,
     UpgradeSlotLabel,
+    WorkshopReport,
+    WorkshopRow,
 )
 
 #: The game's own speed multiplier, pinned at 1x. It is not a speed-up mechanism
@@ -164,6 +166,48 @@ class InstrumentedRunAdapter:
             raise RunPortError(
                 f"the bridge could not reopen the upgrade rows: "
                 f"{type(failure).__name__}: {failure}"
+            ) from failure
+
+    def set_workshop_levels(self, level: int, rows: Sequence[str]) -> tuple[WorkshopRow, ...]:
+        """Write the Workshop runway profile's level into its rows, before a round (ADR 0012).
+
+        Issued by the environment inside `reset`, before `begin_episode`, and
+        like the unlock it binds the sequence it reads here rather than being
+        routed through `_command_between_rounds`: nothing is holding a sequence
+        at that point, and the environment reads afresh afterwards.
+        """
+        return self._workshop_command(
+            "write the Workshop levels",
+            lambda sequence: self.client.set_workshop_levels(
+                level, rows, expected_sequence=sequence
+            ),
+        )
+
+    def workshop_levels(self) -> tuple[WorkshopRow, ...]:
+        """Every Workshop row's level, read inside `reset` once the round has started."""
+        return self._workshop_command(
+            "read the Workshop levels",
+            lambda sequence: self.client.read_workshop_levels(expected_sequence=sequence),
+        )
+
+    def _workshop_command(
+        self, what: str, command: Callable[[int], WorkshopReport]
+    ) -> tuple[WorkshopRow, ...]:
+        state = self._latest_state()
+        try:
+            return command(state.sequence).rows
+        except BridgeCompatibilityError as incompatible:
+            # A bridge built before ADR 0012 cannot parse the command at all.
+            raise RunPortError(
+                "the installed bridge has no Workshop commands, so the Workshop "
+                "runway profile cannot be applied: deploy a build that has them "
+                f"(see docs/setup.md): {incompatible}"
+            ) from incompatible
+        except BridgeStaleObservationError as stale:
+            raise RunPortError(f"the bridge refused to {what} as stale: {stale}") from stale
+        except InstrumentedBridgeError as failure:
+            raise RunPortError(
+                f"the bridge could not {what}: {type(failure).__name__}: {failure}"
             ) from failure
 
     # -- lifecycle ---------------------------------------------------------

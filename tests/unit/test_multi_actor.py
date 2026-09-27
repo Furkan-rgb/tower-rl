@@ -272,6 +272,7 @@ def bring_up_steps(
         max_episode_wall_seconds=600.0,
         decision_cadence="choice-points",
         upgrade_availability="image",
+        workshop_level=0,
         output_directory=tmp_path,
     )
     assert collect_episodes(instance, arguments)["valid_episodes"] == 1
@@ -412,6 +413,7 @@ def stagger_arguments(tmp_path: Path) -> argparse.Namespace:
         max_episode_wall_seconds=600.0,
         decision_cadence="choice-points",
         upgrade_availability="image",
+        workshop_level=0,
         output_directory=tmp_path,
     )
 

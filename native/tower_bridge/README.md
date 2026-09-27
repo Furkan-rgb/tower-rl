@@ -248,6 +248,46 @@ Nothing here writes unless it is asked to: `unlock_state` reads and reports, and
 `--upgrade-availability all`. The write is in-memory only — nothing here calls a
 save.
 
+`workshop_levels` and `set_workshop_levels` apply the Workshop runway profile
+(ADR 0012) using the same `WritePrimitiveArray` path.
+
+- **What they touch.** The game's Workshop is "Enhancement". Each family has
+  three `Main` arrays: `enhancementName` (`String[]`), `enhancementLevel`
+  (`Int32[]`) and `enhancementMaxLevel` (`Int32[]`). The Defense and Utility
+  families use the same names with `Defense` / `Utility` inserted. The bridge
+  resolves and type-checks all nine arrays at initialisation. It also resolves
+  seven `Single` effect scalars (`damageEnhancement`, `attackSpeedEnhancement`,
+  `criticalMultEnhancement`, `towerHealthEnhancement`,
+  `towerHealthRegenEnhancement`, `defenseAbsEnhancement`,
+  `cashBonusEnhancement`).
+- **Commands.**
+  - `{"kind":"workshop_levels"}` only reads.
+  - `{"kind":"set_workshop_levels","level":N,"rows":["Damage",...]}` writes.
+    N is 1–9999. There are at most 32 names, each of at most 64 printable
+    ASCII characters, with no `"` and no `\`.
+- **The three passes.**
+  1. Every name is resolved against the live name arrays. The whole command is
+     refused, and nothing is written, if a name:
+     - is not found (`workshop_row_unknown:<name>`);
+     - matches more than one row (`workshop_row_ambiguous:<name>`);
+     - is requested twice (`workshop_row_duplicate:<name>`);
+     - has a maximum below N (`workshop_level_above_max:<name>`).
+  2. The arrays are resolved again, and the command is refused if the game has
+     swapped one out. Only then is N written into the resolved indexes.
+  3. Everything is read back.
+- **The report.** It is one `workshop_state` frame, sent before the state and
+  the result:
+  `{"wrote":bool,"rows":[{family,index,name,max_level,before,after}...],"effects":[{field,before,after}...]}`.
+  It covers every row, not only the requested ones, so a check can see that the
+  rows held at 0 stayed there. A non-finite effect value is sent as `null`.
+- **Results.** On success the command is confirmed with
+  `workshop_levels_applied` or `workshop_levels_reported`. On failure it is
+  rejected with the named reason above, or with `workshop_unreadable`.
+- **When it runs.** Nothing issues the write unless `--workshop-level` is above
+  0. Like the unlock, it is never saved.
+- **Initialisation now needs the Workshop fields.** A game build without them
+  fails at bridge initialisation, whatever the level.
+
 ## Known live behavior
 
 IL2CPP resolution happens on the first client connection and is then cached.

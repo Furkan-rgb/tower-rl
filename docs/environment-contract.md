@@ -147,6 +147,45 @@ Two arms that differ in availability are not measuring the same decision
 problem, and the measured baselines belong to the availability they were
 collected under.
 
+### Workshop runway profile
+
+The Workshop levels a run is played under are also **environment
+configuration** ([ADR 0012](adr/0012-workshop-runway-profile-is-controller-owned-environment-configuration.md)).
+`--workshop-level N` selects them on every runner, the same way
+`--upgrade-availability` does.
+
+- **0** is the default. No Workshop command is issued, and the run plays the
+  account's own levels. This is baseline v1.
+- **N > 0** plays baseline v2. Before each round, the controller writes level N
+  into the eleven rows in `environment/workshop.WORKSHOP_RUNWAY_ROWS`, by name.
+  The write goes into the live heap of the disposable instance and is never
+  saved. The rows ADR 0012 holds at 0 (Orbs, Interest, Enemy Level Skips, Death
+  Defy, Recovery, Wall) are not touched.
+
+`InstrumentedRunEnvironment.reset` issues `RunPort.set_workshop_levels`
+**before** `begin_episode`, and checks the read-back. It then reads
+`RunPort.workshop_levels` once the round has started. There are two ways the
+profile can fail:
+
+- `WORKSHOP_NOT_APPLIED`: the write did not land. The bridge could not carry
+  the command, a name did not resolve to exactly one row, N is above a row's
+  maximum, or a row read back at another level. The boundary fails by name,
+  like `UNLOCK_NOT_APPLIED`.
+- `WORKSHOP_REVERTED`: a row was not at N once the round had started, for
+  example because the round start reloaded the save. Every state of that
+  episode is invalid, so it is classified `observation_invalid`. The rows are
+  read once per episode, not per decision: the levels are not in the
+  observation, and no in-round change to them is known (a mid-round revert would
+not be detected).
+
+The level and the row names are recorded in `resolved_config` and in every
+per-episode row (`episode_record`). The level is also in `CheckpointIdentity`,
+and a difference is refused by name, both for a resume and in
+`policies.checkpoint_policy`. `python scripts/run_episodes.py
+--list-workshop-rows [--workshop-level N]` prints every Workshop row: family,
+index, name, level and maximum, plus the effect scalars. At N > 0 it applies
+the write first.
+
 `validate_transition(previous, current)` rejects a non-advancing source sequence
 or capture time, a profile identity or schema version that changed inside an
 episode, backward wave movement while both states are active, and any upgrade
@@ -174,9 +213,10 @@ silently renumbering.
 
 The action mask is authoritative for the current observation. Navigation (tab
 selection, scrolling, opening menus, starting Tier 1, closing supported modals)
-is controller-owned and never appears as a policy action. Workshop spending, Lab
-research, milestone claims, purchases, advertisements, and other permanent/meta
-actions are outside the V1 API and this run contract.
+is controller-owned and never appears as a policy action. The Workshop levels a
+run is played under are environment configuration (see Workshop runway profile),
+not an action. Workshop spending, Lab research, milestone claims, purchases,
+advertisements, and other permanent/meta choices are outside the run API.
 
 ## Action outcomes
 
@@ -336,6 +376,9 @@ time its advances budgeted and fails the episode by name rather than counting it
   classified `observation_invalid`; it is never absorbed. Checked on active
   states, because a terminal run offers no decision and the game legitimately
   recomputes availability at the round boundary behind it.
+- `WORKSHOP_NOT_APPLIED`, `WORKSHOP_REVERTED`: under `--workshop-level N > 0`,
+  the Workshop runway profile did not land before the round, or did not hold
+  through the round start (see Workshop runway profile).
 - `DEATH_BOUNDARY_TRANSIENT` — the one inconsistency the bridge may legitimately
   show. Health and the round flag are read separately, so at the instant of
   death health goes negative a moment before game-over flips (`M1B-E008`). It is
@@ -385,7 +428,8 @@ human approval; all other capabilities remain masked.
 A confirmed permanent change creates a new immutable verified progression profile
 linked to the prior profile. Recovery must verify and continue that profile, not
 silently restore the parent. Timed research is permitted only in progression
-mode. Fixed-baseline run training and evaluation require an idle/frozen profile;
+mode. Run training and evaluation require an idle account image. The only
+permanent state they change is the in-memory Workshop runway profile (ADR 0012);
 all run episodes are tagged with their exact profile, and incompatible replay or
 evaluation is rejected. Progression evaluation measures Tier-1 performance per
 real elapsed time from compatible immutable profiles.

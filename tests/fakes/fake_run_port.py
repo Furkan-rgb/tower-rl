@@ -9,7 +9,7 @@ primary experience come from the real game.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from tower_rl.environment.run_actions import SLOTS_PER_FAMILY
@@ -25,6 +25,25 @@ FAMILIES = ("attack", "defense", "utility")
 #: the device's shape - a named tail that no availability flag can make
 #: purchasable.
 DEVICE_REAL_ROWS = {"attack": 17, "defense": 18, "utility": 13}
+
+#: A small Workshop holding every row the runway profile names and a few it
+#: leaves alone, spread across the three families.
+FAKE_WORKSHOP_NAMES = {
+    "attack": ("Damage", "Attack Speed", "Critical Chance", "Critical Factor", "Attack Range"),
+    "defense": (
+        "Health", "Health Regen", "Defense %", "Defense Absolute", "Thorn Damage", "Orbs",
+        "Death Defy",
+    ),
+    "utility": ("Cash Bonus", "Cash / Wave", "Interest / Wave"),
+}
+
+
+@dataclass(frozen=True)
+class FakeWorkshopRow:
+    family: str
+    index: int
+    name: str
+    after: int
 
 
 @dataclass(frozen=True)
@@ -148,6 +167,19 @@ class FakeRunPort:
     #: recomputed availability under the episode, which the environment must
     #: hear rather than absorb.
     revert_unlocks_after_advances: int | None = None
+    #: The Workshop this instance has, by family, in the game's own row names
+    #: (ADR 0012). Every row starts at level 0 and tops out at
+    #: `workshop_max_level`.
+    workshop_names: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(FAKE_WORKSHOP_NAMES)
+    )
+    workshop_max_level: int = 99
+    #: Set to have every round start put the Workshop levels back to 0, the
+    #: shape of a game that reloads them at the start from what it saved.
+    workshop_reverts_at_round_start: bool = False
+    #: Set to raise from both Workshop commands, the shape of a bridge that
+    #: could not carry them.
+    refuse_workshop: bool = False
     #: Set to raise from `begin_episode`, to exercise failure classification.
     refuse_to_start: bool = False
     #: Boundary restarts this port has made because the speed pin was not held.
@@ -204,9 +236,22 @@ class FakeRunPort:
     #: How many times the environment asked for a state of its own accord. One
     #: decision must not cost one of these on top of its advance.
     reads: int = field(default=0, init=False)
+    #: Each Workshop row's level, by `(family, index)`.
+    workshop_levels_held: dict[tuple[str, int], int] = field(default_factory=dict, init=False)
+    #: Every Workshop command in the order it arrived: `("set", level, rows)`,
+    #: `("read", 0, ())`, and `("begin", 0, ())` for each round start between
+    #: them, so a test can see which side of the start a write landed on.
+    workshop_commands: list[tuple[str, int, tuple[str, ...]]] = field(
+        default_factory=list, init=False
+    )
 
     def __post_init__(self) -> None:
         self._build_slots()
+        self.workshop_levels_held = {
+            (family, index): 0
+            for family, names in self.workshop_names.items()
+            for index in range(len(names))
+        }
 
     def _build_slots(self) -> None:
         self.slots = {}
@@ -229,6 +274,9 @@ class FakeRunPort:
         if self.refuse_to_start or self.episodes in self.refuse_episodes:
             raise RunPortError("fake instance refused to start")
         self._build_slots()
+        self.workshop_commands.append(("begin", 0, ()))
+        if self.workshop_reverts_at_round_start:
+            self.workshop_levels_held = dict.fromkeys(self.workshop_levels_held, 0)
         self.wave = self.starting_wave
         self.cash = self.start_cash
         self.health = self.max_health
@@ -276,6 +324,40 @@ class FakeRunPort:
                 ),
             )
             for family in FAMILIES
+        )
+
+    def set_workshop_levels(self, level: int, rows: Sequence[str]) -> tuple[FakeWorkshopRow, ...]:
+        """Resolve every name first and write nothing unless all resolve, as the bridge does."""
+        self.workshop_commands.append(("set", level, tuple(rows)))
+        if self.refuse_workshop:
+            raise RunPortError("fake instance could not carry the Workshop write")
+        where = {
+            name: (family, index)
+            for family, names in self.workshop_names.items()
+            for index, name in enumerate(names)
+        }
+        for name in rows:
+            if name not in where:
+                raise RunPortError(f"rejected: workshop_row_unknown:{name}")
+            if level > self.workshop_max_level:
+                raise RunPortError(f"rejected: workshop_level_above_max:{name}")
+        for name in rows:
+            self.workshop_levels_held[where[name]] = level
+        self.sequence += 1
+        return self._workshop_rows()
+
+    def workshop_levels(self) -> tuple[FakeWorkshopRow, ...]:
+        self.workshop_commands.append(("read", 0, ()))
+        if self.refuse_workshop:
+            raise RunPortError("fake instance could not carry the Workshop read")
+        self.sequence += 1
+        return self._workshop_rows()
+
+    def _workshop_rows(self) -> tuple[FakeWorkshopRow, ...]:
+        return tuple(
+            FakeWorkshopRow(family, index, name, self.workshop_levels_held[(family, index)])
+            for family, names in self.workshop_names.items()
+            for index, name in enumerate(names)
         )
 
     def read_state(self) -> FakeRunReading | None:

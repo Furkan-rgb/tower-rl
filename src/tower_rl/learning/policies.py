@@ -118,6 +118,7 @@ def checkpoint_policy(
     *,
     decision_cadence: str,
     upgrade_availability: str,
+    workshop_level: int,
     device: torch.device | None = None,
     sampling_seed: str | None = None,
 ) -> tuple[StackedDqnBackbone | DreamerBackbone, CheckpointIdentity]:
@@ -131,9 +132,10 @@ def checkpoint_policy(
     weights, and one rebuilt with a shorter history would load them and act on a
     window the run never saw.
 
-    The two settings that are *not* in the weights are taken from the caller and
-    checked: the cadence the policy will be asked at (ADR 0009) and the upgrade
-    rows it will be offered (ADR 0011). Neither changes a tensor, so neither
+    The settings that are *not* in the weights are taken from the caller and
+    checked: the cadence the policy will be asked at (ADR 0009), the upgrade
+    rows it will be offered (ADR 0011) and the Workshop runway profile it will
+    play on (ADR 0012). None changes a tensor, so none
     would fail to load - a checkpoint trained on the image's six purchasable
     rows would quietly play a fully unlocked run, and the wave it scored would
     be read against floors measured under something else. They are required
@@ -153,10 +155,12 @@ def checkpoint_policy(
         checkpoint.identity,
         decision_cadence=str(decision_cadence),
         upgrade_availability=str(upgrade_availability),
+        workshop_level=workshop_level,
     )
-    # Every other field is copied from the checkpoint, so only these two can
+    # Every other field is copied from the checkpoint, so only these three can
     # differ: `incompatibilities` stays the one place that says what a
-    # difference means, and its reasons name both values.
+    # difference means, and its reasons name both values. The Workshop runway
+    # profile is the third setting that changes no tensor (ADR 0012).
     refusals = checkpoint.identity.incompatibilities(played)
     if refusals:
         raise ValueError(f"{path} cannot be played here: {'; '.join(refusals)}")

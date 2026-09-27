@@ -725,6 +725,7 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
             selector,
             decision_cadence=DecisionCadence.CHOICE_POINTS,
             upgrade_availability=UpgradeAvailability.IMAGE,
+            workshop_level=0,
         )
         report = evaluate(environment(), policy, episodes=episodes, profile_id=PROFILE)
         record = run_episodes.actor_record(
@@ -734,6 +735,7 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
             max_quiet_game_ms=4000,
             decision_cadence=DecisionCadence.CHOICE_POINTS,
             upgrade_availability=UpgradeAvailability.IMAGE,
+            workshop_level=0,
             wall_seconds=60.0,
         )
         (directory / f"fake-{index}.json").write_text(json.dumps(record, indent=2))
@@ -974,6 +976,7 @@ def test_the_floors_go_through_the_same_selector_as_a_checkpoint(tmp_path: Path)
             selector,
             decision_cadence=DecisionCadence.CHOICE_POINTS,
             upgrade_availability=UpgradeAvailability.IMAGE,
+            workshop_level=0,
         )
         assert isinstance(policy, expected)
         assert identity == {"name": selector}

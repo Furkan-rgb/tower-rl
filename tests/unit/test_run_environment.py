@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 
 import pytest
-from fakes.fake_run_port import DEVICE_REAL_ROWS, FakeCommandResult, FakeRunPort
+from fakes.fake_run_port import DEVICE_REAL_ROWS, FAMILIES, FakeCommandResult, FakeRunPort
 
 from tower_rl.environment import run_environment
 from tower_rl.environment.episode import (
@@ -19,7 +19,12 @@ from tower_rl.environment.features import (
     SCALAR_FEATURES,
     encode_state,
 )
-from tower_rl.environment.run_actions import WAIT, action_index, upgrade_action
+from tower_rl.environment.run_actions import (
+    SLOTS_PER_FAMILY,
+    WAIT,
+    action_index,
+    upgrade_action,
+)
 from tower_rl.environment.run_environment import (
     ADVANCE_TRUNCATED_BY_WALL,
     BRIDGE_EVENT_DIVERGENCE,
@@ -479,6 +484,12 @@ def test_a_waves_upgrade_costs_snapshot_every_rows_price_at_wave_entry() -> None
     """Cash spent and what was bought say what a wave cost; this says the price
     every row carried when the wave began, which is what a cost curve above
     level 8 has to be read against (`#80`).
+
+    The expectation is `FakeRunPort`'s own slot-cost formula
+    (`5.0 + 5.0 * index` for a real row), not a value recomputed from
+    `cost_log` on the state the environment already returned - a bug that
+    wrote the wrong raw cost into `cost_log` would pass a recomputation-based
+    check while still failing this one.
     """
     environment, _ = _environment()
     state = environment.reset()
@@ -488,7 +499,11 @@ def test_a_waves_upgrade_costs_snapshot_every_rows_price_at_wave_entry() -> None
 
     summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
 
-    expected = {str(row.action): math.expm1(row.cost_log) for row in state.rows}
+    expected = {
+        str(upgrade_action(family, index)): 5.0 + 5.0 * index
+        for family in FAMILIES
+        for index in range(SLOTS_PER_FAMILY)
+    }
     assert summary.waves[0].upgrade_costs == pytest.approx(expected)
 
 
@@ -595,6 +610,56 @@ def test_the_stall_guard_ignores_a_long_streak_of_zero_game_time_purchases(
     transition = environment.step(WAIT)
 
     assert transition.termination is TerminationOutcome.STALLED
+
+
+def test_the_stall_guard_fires_inside_the_choice_points_loop_not_only_once_per_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The internal WAIT-advance loop must hear the guard on every advance.
+
+    `_advance_to_choice_point` folds forced-WAIT advances together whenever the
+    settled state offers nothing else, without ever returning control to
+    `step`'s own check in between. A bridge that kept acknowledging commands -
+    advancing its own sequence, so nothing here looks stale - while never
+    actually moving the game clock would spin inside that loop forever without
+    a check at the loop's own granularity, not only once per `step` call.
+    """
+    environment, port = _environment(decision_cadence=DecisionCadence.CHOICE_POINTS)
+    environment.cadence = CadenceConfig(max_quiet_game_ms=1000, stall_window_wall_seconds=10.0)
+    environment.reset()  # a normal, fast reset at a real choice point
+
+    # Freeze the world exactly as a bridge that stopped advancing time would:
+    # cash never rises past the cheapest row's cost, so nothing ever becomes a
+    # choice point again, however many times a fresh reading is taken.
+    port.cash = 0.0
+    calls = {"count": 0}
+
+    def frozen_zero_time_advance(**_: object) -> FakeCommandResult:
+        calls["count"] += 1
+        # A fresh reading each time - the port's own sequence still advances,
+        # so this is not the stale/divergence failure - but no frame is ever
+        # stepped, so the game clock genuinely never moves.
+        return FakeCommandResult(
+            "confirmed", "budget_exhausted", frames=0, game_ms=0.0, round_ms=0.0,
+            wall_micros=0, state=port._observe(),
+        )
+
+    monkeypatch.setattr(port, "advance_until_event", frozen_zero_time_advance)
+
+    # Seeded from the real clock so it starts consistent with `last_progress_at`,
+    # which `reset` above already set from the real clock before this patch.
+    clock = [run_environment.time.monotonic()]
+
+    def fake_monotonic() -> float:
+        clock[0] += 1.0
+        return clock[0]
+
+    monkeypatch.setattr(run_environment.time, "monotonic", fake_monotonic)
+
+    transition = environment.step(WAIT)
+
+    assert transition.termination is TerminationOutcome.STALLED
+    assert calls["count"] > 1, "the guard must catch a spin across several advances"
 
 
 def test_a_mask_legal_purchase_the_bridge_rejects_ends_the_episode() -> None:

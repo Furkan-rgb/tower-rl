@@ -409,7 +409,8 @@ recurrent state. If it wins over rank 1 it wins here.
   ratios the parameters move faster relative to the data, so drift is worse here
   than in the published setting.
 - Truncation handling. The termination taxonomy distinguishes `GAME_OVER` from
-  `MAX_EPISODE_DURATION` and from environment failures. Bootstrapping through a
+  `STALLED` (no length cap - a liveness failure when the game clock stops
+  advancing, `#88`) and from environment failures. Bootstrapping through a
   truncation as if it were a terminal state teaches the agent that dying is
   free. This must be explicit and tested.
 - Hyperparameter surface. Sequence length, burn-in length, overlap, and
@@ -941,9 +942,11 @@ stratified bootstrap as the inferential tool.
    insurance and should be part of the protocol, not an afterthought.
 7. **Non-neutral episode exclusion.** The termination taxonomy makes it easy to
    drop episodes. Dropping `OBSERVATION_INVALID` or `DEVICE_FAILED` is neutral.
-   Dropping `MAX_EPISODE_DURATION` is not: those are the longest-surviving
-   episodes, so excluding them truncates the right tail and penalises exactly
-   the agents the project is trying to find. Decide the rule in advance, apply
+   Dropping `STALLED` is not: since it is a liveness failure rather than a
+   length cap, it can hit an agent at any point, but a policy that plays slowly
+   or degenerately is more likely to trip it, so excluding those episodes
+   penalises exactly the agents the project is trying to find. Decide the rule
+   in advance, apply
    it identically to every candidate, and report the exclusion counts.
 8. **Peeking and informal early stopping.** Watching curves and stopping a run
    that "looks bad" converts the comparison into an unquantified sequential test.

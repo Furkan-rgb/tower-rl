@@ -764,6 +764,23 @@ class InstrumentedRunEnvironment:
                 validate_transition(state, after),
             )
 
+        # The choice-points loop (`_advance_to_choice_point`, `_first_choice_point`)
+        # calls this repeatedly with WAIT, without ever returning to `step`'s own
+        # check, while the settled state offers nothing but WAIT. A bridge that
+        # kept returning fresh, zero-game-time readings would spin here forever
+        # without this: `step`'s check alone only bounds the decision the policy
+        # is being asked for, not the internal advances folded into answering it
+        # (review of b179203, `#88`).
+        now = time.monotonic()
+        self._tally.refresh_progress(now)
+        if now - self._tally.last_progress_at > self.cadence.stall_window_wall_seconds:
+            return _Advance(
+                state,
+                (DecisionEvent.SLICE_ELAPSED,),
+                0,
+                (f"{STALLED_REASON_PREFIX} {self.cadence.stall_window_wall_seconds}s",),
+            )
+
         budget = self.cadence.max_quiet_game_ms
         with self.profile.span(BRIDGE_ROUND_TRIP):
             result = self.port.advance_until_event(

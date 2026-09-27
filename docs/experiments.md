@@ -72,7 +72,8 @@ recipe on the new baseline.
 | `M3-P008` | With `M3-P006`'s exact recipe unchanged, does always-on R2D2 prioritized replay (α=0.9, β=0.6, η=0.9) plus no early stop move the eval mean or the P(≥22) wall-crossed reading? | `M3-P006`'s command verbatim minus `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` (full `--budget-decisions 1000000`); PER always-on (`aadf8f4`) and replay persistence across resume (`#87`) are both active with no flag | `M3-P006` 17.010, SD 4.163, n=104 | not evaluated — stopped at 278,966/1,000,000 decisions | STOPPED by developer decision, before evaluation | Near-greedy period means for periods 1-5: 8.38, 13.36, 15.22, 15.01, 16.14; the SIGINT replay dump (4096 sequences, 0.85 GB, 7.7 s) was the first on-device confirmation of `#87`; superseded by `M3-P009` under baseline v2 (`#80`, ADR 0012) rather than resumed | this commit (results) |
 | `M3-P009` | Under baseline v2 (Workshop level 5, the 11 ADR 0012 rows), does `M3-P008`'s exact recipe (stacked-dqn, always-on R2D2 PER, no early stop) reach the ceiling model's predicted wave range? | `M3-P008`'s command verbatim plus `--workshop-level 5` | none — single run, not comparable with any v1 result | not evaluated — stopped at 325,493/1,000,000 decisions | STOPPED by developer decision, before evaluation | Near-greedy period means: P1 26.31 (n=65, 50,108 decisions), P2 35.73 (n=41, 100,569), P3 37.74 (n=35, 150,249), P4 37.92 (n=37, 200,670), P5 34.48 (n=40, 250,192), P6 41.85 (n=33, 300,621) — well above the scripted L5 reference (21, 21, 21); validity 535/556 (12 invalid episodes, all with unrecoverable reasons since `summary.json` is not written on SIGINT, `#91`); superseded by `M3-P010` (`#92`/`#93`) rather than resumed | this commit (results) |
 | `M3-P010` | Under baseline v2, does `M3-P009`'s recipe bundled with six changes (longer horizon, lower replay ratio, larger replay, periodic parameter sync, AdamW ε default, left-padded opening decisions) hold or exceed `M3-P009`'s near-greedy period means? | `--discount-per-game-second 0.999` (was 0.997); `--gradient-steps-per-decision 0.114` (was 1.0); `--replay-capacity 25000` (was 4096); `--parameter-sync-decisions 100` (new); AdamW ε 1.5e-4 (code default); every episode left-padded (`#92`) | `M3-P009`: not a matched-budget comparator (stopped at 325,493/1,000,000 decisions); primary comparison is scripted/random at L5, both still to be measured at n=105 under v2 | not evaluated — stopped at 343,869/1,000,000 decisions | STOPPED by developer decision, before evaluation; the replay-ratio and AdamW ε changes isolated as the dominant regression | Near-greedy period means: 23.71 (n=147), 26.28 (53), 27.04 (48), 27.51 (49), 27.18 (50), 27.16 (50) — flat from period 2, well below `M3-P009` at matched periods; validity 799/834; matched-gradient-step and AdamW second-moment diagnostics point to the replay ratio (0.114 vs 1.0) as dominant, compounded by ε (1.5e-4 vs 1e-8); superseded by `M3-P011` (`#85`) rather than resumed | this commit (results) |
-| `M3-P011` | Does `M3-P009`'s recipe (replay ratio, capacity, AdamW ε reverted to `M3-P009`'s values) plus only γ 0.999, a 100-decision parameter-sync cadence, and left-padding hold `M3-P009`'s near-greedy trajectory, isolating `M3-P010`'s regression to its other three changes? | `--discount-per-game-second 0.999` (was 0.997); `--parameter-sync-decisions 100` (new); left-padding (`#92`, unconditional); `--gradient-steps-per-decision 1.0` and `--replay-capacity 4096` held at `M3-P009`'s values; AdamW ε held at `1e-8` | `M3-P009`'s near-greedy period means (table above), read as a screen | pending | pending | this commit (pre-registration) |
+| `M3-P011` | Does `M3-P009`'s recipe (replay ratio, capacity, AdamW ε reverted to `M3-P009`'s values) plus only γ 0.999, a 100-decision parameter-sync cadence, and left-padding hold `M3-P009`'s near-greedy trajectory, isolating `M3-P010`'s regression to its other three changes? | `--discount-per-game-second 0.999` (was 0.997); `--parameter-sync-decisions 100` (new); left-padding (`#92`, unconditional); `--gradient-steps-per-decision 1.0` and `--replay-capacity 4096` held at `M3-P009`'s values; AdamW ε held at `1e-8` | `M3-P009`'s near-greedy period means (table above), read as a screen | not evaluated — stopped on the pre-registered kill bar at 100,123/1,000,000 decisions | STOPPED — kill bar tripped (near-greedy mean 31.84 over (50000,100000], below 32.0), before evaluation | Period 1 (50,062 decisions) 25.35 (n=65), well below `M3-P009`'s matched 26.31 but inside the screen's stated noise floor; period 2 (100,123 decisions) 31.86 (n=43, one fewer than the 44 the kill-bar check itself counted), 3.9 waves below the pre-registered bar of 32 (`M3-P009`'s value minus 3-4) and below `M3-P009`'s matched 35.73; gradient norm ran higher (22.1/20.1 vs `M3-P009`'s 13.5/6.9) and value-fit lower (0.872/0.768 vs 0.919/0.882) at matched periods; wait share and purchases per episode were close to `M3-P009`'s. Validity 204/205, stage exit 0, cleanup verified. The three remaining changes from `M3-P009` are γ 0.999, refresh-100, and left-padding; a gradient norm above the clip of 10 and falling value-fit are consistent with γ 0.999's roughly 3x larger value scale (horizon ~1000 vs ~333 game-seconds), but this is a hypothesis, not isolated — the 3.9-wave gap is also near the screen's own stated ~5-6-wave resolution, so the stop honours the pre-registered rule without proving γ is the cause. Superseded by `M3-P012` (`#85`), which reverts γ to `M3-P009`'s 0.997 while keeping refresh-100 and left-padding | this commit (results) |
+| `M3-P012` | With `M3-P011`'s exact configuration (`M3-P009`'s recipe plus refresh-100 and left-padding), does reverting γ to `M3-P009`'s 0.997 recover `M3-P009`'s near-greedy trajectory? | `--discount-per-game-second 0.997` (was `M3-P011`'s 0.999; back to `M3-P009`'s value); `--parameter-sync-decisions 100` and left-padding held at `M3-P011`'s values | `M3-P009`'s near-greedy period means (table above), read as a screen; `M3-P011`'s stopped result (this table) as a secondary reference | pending | pending | this commit (pre-registration) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -138,6 +139,91 @@ cleanup completed normally in every stage; a native rebuild mid-check
 `33de682666eeac8fb8a2260ce18c5a6f7f57c941ff677fc209daaf2a658195e8`) landed
 on disk after each stage's own `adb push`, so all three stages ran the
 prior binary — not a fault in the deploy path.
+
+## M3-P012: `M3-P011`'s exact configuration, γ reverted to `M3-P009`'s 0.997 (pre-registered, written before the run)
+
+**Date:** 2026-09-27. Board `#85`. Single seed, single run.
+
+**Question.** `M3-P011` (`M3-P009`'s recipe plus γ 0.999, a 100-decision
+parameter-sync cadence, and left-padding) stopped itself on its 100,000-
+decision kill bar, 3.9 waves below the bar and below `M3-P009`'s matched
+period-2 mean, with a gradient norm above the clip of 10 and a falling
+value-fit — readings consistent with (but not isolated to) γ 0.999's
+roughly 3x larger value scale. Does restoring γ to `M3-P009`'s 0.997,
+with refresh-100 and left-padding unchanged, recover `M3-P009`'s
+near-greedy trajectory? If yes, γ 0.999 was `M3-P011`'s regression. If
+no, refresh-100 or left-padding is the suspect, and the next screen
+reverts refresh-100.
+
+**Recipe.** `M3-P011`'s command exactly (above), with exactly one change:
+
+- `--discount-per-game-second 0.997` (was `0.999`, `M3-P011`'s value;
+  back to `M3-P009`'s value);
+- `--parameter-sync-decisions 100` and left-padding (`#92`, unconditional
+  in code) held at `M3-P011`'s values.
+
+    export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/workshop-render-interval-16
+    scripts/run_stage.sh --name m3-p012-stackeddqn-v2-train --instances 7 \
+      --log-directory state/runs/m3-p012-stackeddqn-v2-<UTC stamp>/logs -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 1000000 --checkpoint-every-decisions 25000 \
+      --selection-period-decisions 50000 --epsilon-anneal-decisions 8000 --seed 0 \
+      --gradient-steps-per-decision 1.0 --n-step 10 --n-step-final 3 \
+      --n-step-anneal-steps 10000 --kill-bar 50000:25000:27 \
+      --kill-bar 100000:50000:32 --kill-bar 150000:100000:30 \
+      --frame-game-ms 100 --discount-per-game-second 0.997 --survival-time-reward \
+      --ez-greedy --replay-capacity 4096 --workshop-level 5 \
+      --parameter-sync-decisions 100 \
+      --run-name m3-p012-stackeddqn-v2-<UTC stamp>
+
+**Kill-bar semantics.** Unchanged from `M3-P011` (`src/tower_rl/learning/training.py`,
+`TrainingRun._check_kill_bars`): a `--kill-bar AT:START:MIN` reads only
+the near-greedy actors' valid episodes in `(START, AT]` and stops the run
+there if their mean final wave is below `MIN`.
+
+**Kill bars.** Identical to `M3-P011`'s: `50000:25000:27`,
+`100000:50000:32`, `150000:100000:30` — set against `M3-P009`'s matched
+period means (26.31, 35.73, 37.74) for the reasons given in the
+`M3-P011` pre-registration above, not restated here.
+
+**Primary comparison.** `M3-P009`'s near-greedy period means (matched
+periods, table above), read as a screen; `M3-P011`'s stopped result
+(period 1 25.35/n=65, period 2 31.86/n=43, gradient norm 22.1/20.1,
+value-fit 0.872/0.768) as a secondary reference for whether this run
+tracks closer to `M3-P009` or to `M3-P011`.
+
+**Mechanism check.** `M3-P011`'s gradient norm stayed above the clip of
+10 at both matched periods (22.1, 20.1) against `M3-P009`'s well-clipped
+13.5/6.9. If γ 0.999 was the cause, this run's gradient norm at 100k
+decisions should fall below 10, as `M3-P009`'s did.
+
+**Arm rule.** `docs/solution.md` §9.2b, unchanged: the best near-greedy
+selection-period mean, counting periods 2 and later, ties broken to the
+earlier period.
+
+**Evaluation.** Unchanged from `M3-P011`'s evaluation protocol: the arm,
+on the `workshop-default` build, n=105 (7x15),
+`--upgrade-availability all --frame-game-ms 100 --workshop-level 5`, once
+the run reaches an arm worth evaluating (i.e., not skipped on a kill
+bar).
+
+**Known confounds, stated in advance.** One seed (0). This run isolates γ
+alone against `M3-P011` (refresh-100 and left-padding held fixed), so a
+pass or fail here can be attributed to γ specifically, unlike `M3-P011`'s
+own three-way bundle against `M3-P009`.
+
+**Timebox.** 18 h for training to the full budget if the screen passes;
+governed by the kill bars otherwise.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
 
 ## M3-P011: `M3-P009`'s configuration plus γ 0.999, refresh every 100 decisions, left-padding (pre-registered, written before the run)
 
@@ -258,6 +344,48 @@ and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
 after. Stop after three consecutive unexplained failures.
 `state/bridge/current` is never repointed. One device stage at a time; no
 polling loops.
+
+### Stopped, as run
+
+**Verdict: STOPPED, kill bar tripped, not evaluated.** Run
+`state/runs/m3-p011-stackeddqn-v2-20260927T155835Z`, mlflow
+`813cd2b60fdb43ab8839863d075a3b17`. The run stopped itself at **100,123**
+of the planned 1,000,000 decisions, on the pre-registered kill bar at
+100,000: "near-greedy mean final wave over (50000, 100000] was 31.84 over
+44 episodes, below 32.0" (2026-09-27 19:03 local, 17:03 UTC). Stage exit
+0, cleanup verified. Validity 204/205 collected episodes.
+
+**Near-greedy selection-period means:**
+
+| period | decisions | mean final wave | n |
+| --- | --- | --- | --- |
+| 1 | 50,062 | 25.35 | 65 |
+| 2 | 100,123 | 31.86 | 43 |
+
+The period-close figure (n=43) counts one episode fewer than the kill-bar
+check itself (n=44, mean 31.84) — the two readings agree to within
+rounding.
+
+**Matched comparison against `M3-P009`** (mlflow `46f7fa0e`) at ~50k /
+~100k decisions:
+
+| | `M3-P011` | `M3-P009` |
+| --- | --- | --- |
+| Near-greedy mean | 25.35 / 31.86 | 26.31 / 35.73 |
+| Gradient norm | 22.1 / 20.1 | 13.5 / 6.9 |
+| Value-fit | 0.872 / 0.768 | 0.919 / 0.882 |
+| Wait share | 0.76 / 0.84 | 0.75 / 0.82 |
+| Purchases per episode | 96.6 / 98.9 | 99.9 / 111.7 |
+
+**Reading.** The three remaining changes from `M3-P009` are γ 0.999,
+refresh-100, and left-padding. A gradient norm above the clip of 10 and a
+falling value-fit are consistent with γ 0.999's roughly 3x larger value
+scale (horizon 1/(1-γ) ≈ 1000 vs 333 game-seconds); this is a hypothesis,
+not isolated by this run. **Limit.** The 3.9-wave gap between period 2's
+31.86 and `M3-P009`'s matched 35.73 is near the screen's own stated
+~5-6-wave resolution. The stop honours the pre-registered rule; it is not
+a proof that γ is the cause. Superseded by `M3-P012` (`#85`, below), which
+holds refresh-100 and left-padding and reverts γ to `M3-P009`'s 0.997.
 
 ## M3-P009: stacked-dqn with R2D2 prioritized replay under baseline v2 (Workshop level 5) (pre-registered, written before the run)
 

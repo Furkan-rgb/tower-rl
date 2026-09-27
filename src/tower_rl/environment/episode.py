@@ -310,6 +310,12 @@ class EpisodeSummary:
     #: problem, so the episode says which it was rather than leaving it to the
     #: run it happened to be filed under.
     upgrade_availability: str = "image"
+    #: The Workshop runway profile this episode was played on (ADR 0012): the
+    #: level written before its round and the rows it was written into. 0 and
+    #: no rows is baseline v1, the account as the image holds it. An episode
+    #: played on another profile is not comparable, so it says which it was.
+    workshop_level: int = 0
+    workshop_rows: tuple[str, ...] = ()
     #: Which cadence stops the policy was asked at (ADR 0009), for the same
     #: reason: a decision means a different thing under each. Both are strings
     #: rather than the environment's own enums because this module is below

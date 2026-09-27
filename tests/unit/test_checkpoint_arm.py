@@ -9,6 +9,7 @@ produces says which checkpoint it was.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,9 +27,11 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.checkpoint import (
+    CheckpointError,
     CheckpointIdentity,
     TrainingProgress,
     identity_hash,
+    load,
     write_checkpoint,
 )
 from tower_rl.learning.evaluator import evaluate
@@ -48,9 +51,10 @@ LEARNER = StackedDqnConfig(history_length=4, n_step=3, seed=7)
 #: The protocol these fixtures' checkpoint was collected under, which is what a
 #: session has to be playing for it to be playable at all. `identity()` leaves
 #: both at their defaults, so an every-slice checkpoint on the image's rows.
-PLAYED: dict[str, str] = {
+PLAYED: dict[str, str | int] = {
     "decision_cadence": DecisionCadence.EVERY_SLICE.value,
     "upgrade_availability": UpgradeAvailability.IMAGE.value,
+    "workshop_level": 0,
 }
 
 
@@ -193,11 +197,13 @@ def test_a_checkpoint_is_selected_by_path_beside_the_named_floors(tmp_path: Path
         "scripted",
         decision_cadence=DecisionCadence.EVERY_SLICE,
         upgrade_availability=UpgradeAvailability.IMAGE,
+        workshop_level=0,
     )
     _, checkpoint_identity = run_episodes.policy_from(
         f"checkpoint:{path}",
         decision_cadence=DecisionCadence.EVERY_SLICE,
         upgrade_availability=UpgradeAvailability.IMAGE,
+        workshop_level=0,
     )
 
     assert isinstance(scripted, CheapestFirstPolicy)
@@ -216,12 +222,14 @@ def test_an_arm_that_is_neither_a_name_nor_a_checkpoint_is_refused(tmp_path: Pat
             "greedy",
             decision_cadence=DecisionCadence.EVERY_SLICE,
             upgrade_availability=UpgradeAvailability.IMAGE,
+            workshop_level=0,
         )
     with pytest.raises(SystemExit, match="no checkpoint at"):
         run_episodes.policy_from(
             f"checkpoint:{tmp_path / 'absent.pt'}",
             decision_cadence=DecisionCadence.EVERY_SLICE,
             upgrade_availability=UpgradeAvailability.IMAGE,
+            workshop_level=0,
         )
     # The fleet checks the same thing before it starts N emulators for it.
     with pytest.raises(SystemExit, match="unknown policy"):
@@ -238,13 +246,14 @@ def test_an_actor_record_names_the_checkpoint_that_produced_it(tmp_path: Path) -
         f"checkpoint:{path}",
         decision_cadence=DecisionCadence.EVERY_SLICE,
         upgrade_availability=UpgradeAvailability.IMAGE,
+        workshop_level=0,
     )
 
     report = evaluate(environment(), policy, episodes=2, profile_id=PROFILE)
     record = run_episodes.actor_record(
         report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000,
         decision_cadence=DecisionCadence.CHOICE_POINTS,
-        upgrade_availability=UpgradeAvailability.IMAGE, wall_seconds=12.0,
+        upgrade_availability=UpgradeAvailability.IMAGE, workshop_level=0, wall_seconds=12.0,
     )
 
     assert record["policy_identity"] == arm
@@ -262,12 +271,13 @@ def test_the_fleet_report_carries_the_arm_its_actors_played(tmp_path: Path) -> N
         f"checkpoint:{path}",
         decision_cadence=DecisionCadence.EVERY_SLICE,
         upgrade_availability=UpgradeAvailability.IMAGE,
+        workshop_level=0,
     )
     report = evaluate(environment(), CheapestFirstPolicy(), episodes=1, profile_id=PROFILE)
     record = run_episodes.actor_record(
         report, arm, frame_game_ms=100.0, max_quiet_game_ms=4000,
         decision_cadence=DecisionCadence.CHOICE_POINTS,
-        upgrade_availability=UpgradeAvailability.IMAGE, wall_seconds=9.0,
+        upgrade_availability=UpgradeAvailability.IMAGE, workshop_level=0, wall_seconds=9.0,
     )
 
     aggregated = run_actors.aggregate(
@@ -297,6 +307,7 @@ def test_a_checkpoint_refuses_to_be_played_under_other_rows_or_another_cadence(
             path,
             decision_cadence=DecisionCadence.EVERY_SLICE.value,
             upgrade_availability=UpgradeAvailability.ALL.value,
+            workshop_level=0,
         )
     assert "'image' vs 'all'" in str(unlocked.value)
 
@@ -305,6 +316,7 @@ def test_a_checkpoint_refuses_to_be_played_under_other_rows_or_another_cadence(
             path,
             decision_cadence=DecisionCadence.CHOICE_POINTS.value,
             upgrade_availability=UpgradeAvailability.IMAGE.value,
+            workshop_level=0,
         )
 
     # And the matching protocol plays, so the refusal is a refusal and not a
@@ -312,6 +324,26 @@ def test_a_checkpoint_refuses_to_be_played_under_other_rows_or_another_cadence(
     rebuilt, restored = checkpoint_policy(path, **PLAYED)
     assert restored == identity()
     assert rebuilt.online.training is False
+
+
+def test_a_checkpoint_refuses_another_workshop_level_to_play_or_resume(tmp_path: Path) -> None:
+    """A baseline v1 checkpoint is not a v2 one, in either direction (ADR 0012).
+
+    The level is not in the weights, so nothing would fail to load: the refusal
+    is the only thing between a v1 checkpoint and a v2 run's numbers.
+    """
+    path, _ = trained_checkpoint(tmp_path)
+
+    with pytest.raises(ValueError, match="workshop_level differs"):
+        checkpoint_policy(
+            path,
+            decision_cadence=DecisionCadence.EVERY_SLICE.value,
+            upgrade_availability=UpgradeAvailability.IMAGE.value,
+            workshop_level=5,
+        )
+    with pytest.raises(CheckpointError, match="workshop_level differs"):
+        load(path, expected=replace(identity(), workshop_level=5))
+    assert load(path, expected=identity()).identity == identity()
 
 
 def test_an_arm_the_session_cannot_play_is_refused_before_the_episodes(
@@ -332,4 +364,5 @@ def test_an_arm_the_session_cannot_play_is_refused_before_the_episodes(
             f"checkpoint:{path}",
             decision_cadence=DecisionCadence.EVERY_SLICE,
             upgrade_availability=UpgradeAvailability.ALL,
+            workshop_level=0,
         )

@@ -84,10 +84,12 @@ from run_episodes import (  # noqa: E402
     POLICIES,
     add_cadence_arguments,
     add_upgrade_availability_argument,
+    add_workshop_level_argument,
     decision_cadence_from,
     open_environment,
     policy_from,
     upgrade_availability_from,
+    workshop_level_from,
 )
 
 from tower_rl.environment.episode import (  # noqa: E402
@@ -1046,6 +1048,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    add_workshop_level_argument(parser)
     # Real time at 60 Hz, pinned after `add_cadence_arguments` sets its own
     # 100 ms default: the fleet's 100 ms is a throughput choice for a policy
     # that never watches itself, and M2-S001 found 100 ms and 16.667 ms
@@ -1075,6 +1078,7 @@ def run(arguments: argparse.Namespace) -> int:
         arguments.policy,
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
     )
     expected = compatibility(bridge_build_directory())
     instance = CloneInstance(index=arguments.instance_index)
@@ -1150,7 +1154,7 @@ def run(arguments: argparse.Namespace) -> int:
             )
 
         client, adapter, environment = open_environment(
-            instance.bridge_host_port, expected, arguments
+            instance.serial, instance.bridge_host_port, expected, arguments
         )
         # Before the first round, which is the only time a command of the
         # adapter's own initiative may be issued: the labels are constant for

@@ -296,6 +296,18 @@ The profile id is the image's under either value; the availability travels in
 the run identity and in every record, and the baselines belong to the
 availability they were collected under.
 
+The Workshop levels are environment configuration in the same way
+([ADR 0012](adr/0012-workshop-runway-profile-is-controller-owned-environment-configuration.md)).
+The v1 account has no Workshop levels, and its tower hits a wall around wave 20
+whatever the policy does. `--workshop-level N` (default 0, off) writes level N
+into eleven named Workshop rows before each round. The write goes into the live
+heap through the bridge's `set_workshop_levels` command, before
+`begin_episode`, and the rows are read back once the round has started. This is
+baseline v2: the v1 account plus a profile that exists only in memory. It is a
+runway for learning in-run play over a longer round, not a Workshop decision,
+and no policy chooses it. v2 runs are not compared with v1 runs, and the v1
+records stay valid under v1.
+
 Live 29.0.3 evidence in `M1B-E001` constrains two further details. In-run
 availability is `unlocked`, not `maxed`, and a positive cost within current cash;
 `tier_unlocked` is reported state and is false for every offered upgrade, so it
@@ -455,7 +467,10 @@ Keep action domains type-separated:
   learned action type accepted by `TowerEnv.step`;
 - navigation commands are private controller operations;
 - permanent `MetaAction` operations such as Workshop spending or Lab scheduling
-  are absent from V1 APIs and exist only in the M8–M11 progression context.
+  are absent from the run API and exist only in the M8–M11 progression context.
+  The Workshop runway profile is not one of them. It is a fixed level that the
+  controller writes into memory before each round, as environment
+  configuration (ADR 0012).
 
 The M8–M11 progression context reuses the device, vision, and navigator layers
 through a separate `MetaEnv` and `MetaController` contract. That reuse does not
@@ -825,7 +840,7 @@ the game and service behavior remain safe and deterministic enough for V1.
 
 The validated initial baseline, `tower-t1-initial-v1`, uses the Play-installed
 29.0.3 game at Battle home with Tier 1 selected, highest wave 2, 53 unspent coins,
-0 gems, no Tower-RL Workshop spending, and all post-Workshop progression systems
+0 gems, no Workshop levels in its save, and all post-Workshop progression systems
 including Labs still locked. The 53-coin balance includes an unavoidable 50-coin
 first-run Workshop grant. Its canonical local snapshot is
 `tower_golden_t1_v1_play_29_0_3_lavapipe_swangle_offline_home_20260914`, created
@@ -907,10 +922,12 @@ than a human prompt, are the authority boundary.
 A successful permanent change creates a new immutable verified progression
 profile with a parent-profile identity, visible-state fingerprint, capability
 inventory, timestamps, and configuration identity. Recovery verifies and resumes
-that profile; it must not silently restore an earlier profile. The fixed V1
-baseline remains a distinct immutable idle/frozen profile. Timed research is
-permitted only in progression mode. Fixed-baseline run training and evaluation
-require an idle/frozen profile and remain comparable to their V1 records.
+that profile; it must not silently restore an earlier profile. Run training and
+evaluation use an idle account image, which is never changed permanently. On top
+of that image they may use the in-memory Workshop runway profile (baseline v2,
+ADR 0012), which is environment configuration and is never saved. Timed research
+is permitted only in progression mode. A run is comparable only with runs under
+the same account and the same Workshop level. The v1 records stay valid under v1.
 
 Every run episode records its exact progression-profile identity. Replay and
 evaluation reject profile-incompatible data; fixed-baseline V1 replay/evaluation

@@ -1,6 +1,7 @@
 # ADR 0001: Keep permanent progression outside V1
 
-- **Status:** Superseded by ADR 0005
+- **Status:** Superseded by ADR 0005, and by ADR 0012 for the fixed Workshop
+  baseline (a controller-owned Workshop runway profile; baseline v2)
 - **Date:** 2026-09-14
 
 ## Context

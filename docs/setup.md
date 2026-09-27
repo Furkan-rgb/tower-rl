@@ -159,7 +159,44 @@ host cross-compile only, nothing installed:
 b9852e6494056fedaf1b142af2368dbaa4ac975c7dfea2ffbff44b16f1d76284   source before ADR 0011
 f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with ADR 0011, 2026-09-20; installed at state/bridge/current
 7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228   render-off experiment, TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16 (#27), 2026-09-23
+33de682666eeac8fb8a2260ce18c5a6f7f57c941ff677fc209daaf2a658195e8   source with ADR 0012 Workshop commands (#80), 2026-09-27; state/bridge/builds/workshop-default/, not installed
+53d346ae26f721318dc24e67644b5834b01cc48cf195a9c3154cffac2b11c7d3   the same with TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16, 2026-09-27; state/bridge/builds/workshop-render-interval-16/
 ```
+
+`33de6826…` and `53d346ae…` are the source with the Workshop runway commands
+(`workshop_levels`, `set_workshop_levels`;
+[ADR 0012](adr/0012-workshop-runway-profile-is-controller-owned-environment-configuration.md)).
+They were built with the recipe above, and the second adds the render-interval
+option. Each sits in its own directory with its own `CMakeCache.txt` and an
+unchanged copy of `state/bridge/current/libunity-bridge.so`, and a run selects
+one with `TOWER_BRIDGE_BUILD_DIR`. They supersede a first pair (`58d5d48a…`,
+`e8a8f36d…`) that targeted the `enhancement*` arrays. A device check showed
+those arrays are not the Workshop, so that pair was never valid. It has been
+deleted: the same directories were overwritten, and the pair is no longer
+available. An intermediate pair on the corrected target (`42188a12…`,
+`3007f6d5…`) was overwritten the same way when the pre-write re-check began
+comparing the implemented counts. Neither build is installed as
+`state/bridge/current` until a device check has confirmed the commands. These
+builds require the Workshop fields (`upgradeWorkshop*Level`,
+`*WorkshopMaxLevel`, `implemented*Workshops`) at initialisation, so a game
+build without them fails at bridge start even at `--workshop-level 0`.
+
+Two rules govern Workshop runs (ADR 0012):
+
+- **Tear down after a write.** A level above 0 is refused unless the instance
+  was launched `-read-only`. At level 0 nothing is read or reset, so an
+  instance that has taken a Workshop write must be torn down before any
+  level-0 run.
+- **A per-row gate before any v2 measurement.** Rows are resolved by in-run
+  name at a shared index, which is unconfirmed on the device until this gate
+  passes. At N against N = 0, a device check must show three things:
+  - every targeted wave-1 stat moves: `damage`, `attackSpeed`,
+    `criticalChance`, `criticalMult`, tower max health, `towerHealthRegen`,
+    `defenseRel`, `defenseAbs`, `thornDamage`, and the cash bonus /
+    `cashPerWave`;
+  - none of the mechanics held at 0 appears: orbs, Death Defy, wall, recovery,
+    interest, enemy level skips;
+  - the final waves, compared against N = 0.
 
 `7b5e9701…` is an **experiment variant, not a production digest**. It is the
 same source built with `-DTOWER_BRIDGE_RENDER_FRAME_INTERVAL=16` added to the

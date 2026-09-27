@@ -1,6 +1,8 @@
 # ADR 0005: Stage meta progression behind separate contracts and capabilities
 
-- **Status:** Accepted
+- **Status:** Accepted; partly superseded by ADR 0012. The frozen v1 baseline and
+  "Workshop only in M8–M11" are replaced by a controller-owned Workshop runway
+  profile (baseline v2). The staging of strategic progression still stands.
 - **Date:** 2026-09-14
 - **Supersedes:** ADR 0001
 

@@ -123,6 +123,8 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             # Plays each arm of the protocol through the same selector.
             "test_evaluation_protocol",
             "test_script_bridge_directory",
+            # The Workshop level's CLI bound and its read-only confinement.
+            "test_workshop_runway",
         }
     ),
     "select_checkpoint": frozenset({"test_evaluation_protocol"}),

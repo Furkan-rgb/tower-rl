@@ -248,6 +248,59 @@ Nothing here writes unless it is asked to: `unlock_state` reads and reports, and
 `--upgrade-availability all`. The write is in-memory only — nothing here calls a
 save.
 
+`workshop_levels` and `set_workshop_levels` apply the Workshop runway profile
+(ADR 0012) using the same `WritePrimitiveArray` path.
+
+- **What they touch.** The game keeps no Workshop name array: a Workshop row
+  shares its index with the in-run row (inferred from the field layout), so it
+  is named by the in-run label (`upgradeName`, `upgradeDefenseName`,
+  `upgradeUtilityName`, the same arrays as the slot labels). Its level is
+  `upgradeWorkshopLevel` / `upgradeWorkshopDefenseLevel` /
+  `upgradeWorkshopUtilityLevel` (`Int32[]`), its ceiling
+  `upgradeWorkshopMaxLevel` / `upgradeDefenseWorkshopMaxLevel` /
+  `upgradeUtilityWorkshopMaxLevel` (`Int32[]`, the game's own inconsistent
+  naming), and `implementedWorkshops` / `implementedDefenseWorkshops` /
+  `implementedUtilityWorkshops` (`Int32`) counts each family's implemented
+  rows. All are type-checked at initialisation. The presets
+  (`presetUpgradeWorkshop*Level`) and costs are never touched.
+- **Commands.**
+  - `{"kind":"workshop_levels"}` only reads.
+  - `{"kind":"set_workshop_levels","level":N,"rows":["Damage",...]}` writes.
+    N is 1–9999. There are at most 32 names, each of at most 64 printable
+    ASCII characters, with no `"` and no `\`.
+- **The three passes.** A family's rows are the indexes its name, level and
+  ceiling arrays all cover.
+  1. Every name is resolved against the in-run names. The whole command is
+     refused, and nothing is written, if a name:
+     - is not found (`workshop_row_unknown:<name>`);
+     - matches more than one row (`workshop_row_ambiguous:<name>`);
+     - is requested twice (`workshop_row_duplicate:<name>`);
+     - sits at or past its family's implemented count
+       (`workshop_row_not_implemented:<name>`);
+     - has a Workshop maximum below N (`workshop_level_above_max:<name>`).
+  2. All three families are resolved again and compared with pass one before
+     any row is written; a swapped array refuses the command with nothing
+     written. Only then is N written into the resolved indexes.
+  3. Everything is read back. If that read fails after the write began, the
+     reason is `workshop_write_unverified`: the game may hold part of the
+     write, and the instance must be torn down.
+- **The report.** It is one `workshop_state` frame, sent before the state and
+  the result:
+  `{"wrote":bool,"families":[{family,implemented}...],"rows":[{family,index,name,max_level,before,after}...]}`.
+  It covers every row, not only the requested ones, so a check can see that the
+  rows held at 0 stayed there. It carries no effect reading: whether a level
+  took hold in combat is read from the tower stats every observation already
+  carries (`damage`, `attackSpeed`, `thornDamage`, `defenseAbs`, ...).
+- **Results.** On success the command is confirmed with
+  `workshop_levels_applied` or `workshop_levels_reported`. On failure it is
+  rejected with the named reason above, or with `workshop_unreadable`.
+- **When it runs.** Nothing issues the write unless `--workshop-level` is above
+  0, and the host refuses that level unless the instance was launched
+  `-read-only`. Like the unlock, it is never saved.
+- **Initialisation now needs the Workshop fields.** A game build without them
+  fails at bridge initialisation, whatever the level. The separate
+  "Enhancements" feature (`enhancement*`) is not the Workshop and is not read.
+
 ## Known live behavior
 
 IL2CPP resolution happens on the first client connection and is then cached.

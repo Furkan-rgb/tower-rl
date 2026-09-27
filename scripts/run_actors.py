@@ -59,6 +59,7 @@ from run_episodes import (  # noqa: E402
     POLICIES,
     add_cadence_arguments,
     add_upgrade_availability_argument,
+    add_workshop_level_argument,
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
@@ -386,6 +387,7 @@ def collect_episodes(
             "--max-quiet-game-ms", str(arguments.max_quiet_game_ms),
             "--decision-cadence", str(arguments.decision_cadence),
             "--upgrade-availability", str(arguments.upgrade_availability),
+            "--workshop-level", str(arguments.workshop_level),
             "--output", str(output),
         ],
         capture_output=True,
@@ -437,6 +439,7 @@ def main() -> int:
     )
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    add_workshop_level_argument(parser)
     parser.add_argument(
         "--output-directory",
         type=Path,
@@ -476,6 +479,8 @@ def main() -> int:
     # The whole fleet collects under one availability; each actor's own record
     # carries it too (ADR 0011).
     report["upgrade_availability"] = str(arguments.upgrade_availability)
+    # And on one Workshop runway profile (ADR 0012), likewise.
+    report["workshop_level"] = arguments.workshop_level
     report["cores_per_instance"] = arguments.cores
     # Per instance index, because one fleet may hold two arms; each actor's
     # entry and each actor's own record carry the rate it collected at.

@@ -69,6 +69,11 @@ class CheckpointIdentity:
     #: image offers - so the default is the honest reading of a file that does
     #: not say.
     upgrade_availability: str = UpgradeAvailability.IMAGE
+    #: The Workshop runway profile's level the experience was collected on
+    #: (ADR 0012). Absent from every checkpoint written before the profile
+    #: existed, and those were all collected on the bare account - so 0 is the
+    #: honest reading of a file that does not say.
+    workshop_level: int = 0
 
     def incompatibilities(self, other: CheckpointIdentity) -> tuple[str, ...]:
         """Differences that make a resume unsafe. The run id may legitimately differ."""
@@ -88,6 +93,10 @@ class CheckpointIdentity:
             # one, so the weights and the baselines are not interchangeable
             # (ADR 0011).
             "upgrade_availability",
+            # Nor did one that learned on another Workshop setup: the tower it
+            # played is a different tower, and baseline v2 results are not
+            # comparable with v1's (ADR 0012).
+            "workshop_level",
         ):
             # Read as the strings they are declared as. Two of these are
             # written from `StrEnum` members, and a reason quoting
@@ -109,15 +118,16 @@ def identity_hash(identity: CheckpointIdentity) -> str:
     record that only carried a path would stop meaning anything the moment the
     file was copied.
 
-    `decision_cadence` and `upgrade_availability` are deliberately not hashed.
-    This token names a run, and a run collects under one cadence and one
-    availability from beginning to end, so neither field can distinguish two
-    identities that share a run id - while hashing either would re-key every
-    checkpoint and record written before it existed, and the tokens already
-    cited in selection records and reports would stop resolving. Using a
-    checkpoint under the wrong cadence or the wrong availability is refused by
-    `incompatibilities`, which says which field differs; that is the instrument
-    for the refusal, and this is the instrument for naming the run.
+    `decision_cadence`, `upgrade_availability` and `workshop_level` are
+    deliberately not hashed. This token names a run, and a run collects under
+    one cadence, one availability and one Workshop level from beginning to end,
+    so none of the three can distinguish two identities that share a run id -
+    while hashing any of them would re-key every checkpoint and record written
+    before it existed, and the tokens already cited in selection records and
+    reports would stop resolving. Using a checkpoint under the wrong cadence,
+    availability or Workshop level is refused by `incompatibilities`, which
+    says which field differs; that is the instrument for the refusal, and this
+    is the instrument for naming the run.
     """
     payload = json.dumps(_hashed_fields(identity), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
@@ -127,6 +137,7 @@ def _hashed_fields(identity: CheckpointIdentity) -> dict[str, Any]:
     fields = asdict(identity)
     del fields["decision_cadence"]
     del fields["upgrade_availability"]
+    del fields["workshop_level"]
     return fields
 
 

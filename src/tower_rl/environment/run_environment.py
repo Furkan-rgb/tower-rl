@@ -12,7 +12,7 @@ import math
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
@@ -38,7 +38,12 @@ from tower_rl.environment.run_actions import (
     action_index,
     upgrade_action,
 )
-from tower_rl.environment.run_port import AdvanceResultLike, RunPort, RunPortError
+from tower_rl.environment.run_port import (
+    AdvanceResultLike,
+    RunPort,
+    RunPortError,
+    WorkshopRowLike,
+)
 from tower_rl.environment.run_state import (
     INVENTORY_TOO_WIDE,
     ExactRunReadingLike,
@@ -47,6 +52,7 @@ from tower_rl.environment.run_state import (
     hud_readings,
     validate_transition,
 )
+from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows
 
 
 class DecisionCadence(StrEnum):
@@ -130,6 +136,17 @@ STALLED_REASON_PREFIX = "the game clock did not advance for"
 #: policy is being asked to solve has stopped being the one it was configured
 #: for, and repeating the action would only spin (`#86`).
 MASK_LEGAL_PURCHASE_REJECTED = "a mask-legal purchase was rejected by the bridge"
+
+#: The Workshop levels a run was configured with did not land before the round
+#: (ADR 0012): the bridge refused the write - a row name the game does not have,
+#: a level above a row's ceiling - or read back another level. Raised out of
+#: `reset` like `UNLOCK_NOT_APPLIED`, for the same reason.
+WORKSHOP_NOT_APPLIED = "WORKSHOP_NOT_APPLIED"
+
+#: A Workshop level written before the round no longer stands once the round has
+#: started. The episode is not played on the setup it was configured with, so
+#: every state of it is invalid and the episode is classified, loudly.
+WORKSHOP_REVERTED = "WORKSHOP_REVERTED"
 
 
 @dataclass(frozen=True)
@@ -451,6 +468,10 @@ class InstrumentedRunEnvironment:
     #: what the profile image offers and is what every baseline so far was
     #: measured under; `ALL` reopens every real row at each round start.
     upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE
+    #: The Workshop runway profile's level (ADR 0012). `WORKSHOP_OFF`, the
+    #: default, writes nothing and is baseline v1; above it, the profile's rows
+    #: are set to this level before every round.
+    workshop_level: int = WORKSHOP_OFF
     #: Where this instance's decision time goes. One profile per instance,
     #: mutated only by the actor thread that drives it (see
     #: `environment/decision_time.py`); a run publishes snapshots of it.
@@ -473,6 +494,15 @@ class InstrumentedRunEnvironment:
     #: Resolved only under `ALL`, which is the only configuration that has
     #: anything to say about them.
     _real_rows: frozenset[RunActionId] | None = field(default=None, init=False)
+    #: Why this episode is not on the Workshop setup it was configured with, as
+    #: found once its round had started; `None` while the levels stand. Every
+    #: state of the episode carries it, because nothing inside the round puts
+    #: the levels back.
+    _workshop_reverted: str | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        # A negative level is refused here, not at the first round start.
+        workshop_rows(self.workshop_level)
 
     # -- episode lifecycle -------------------------------------------------
 
@@ -488,6 +518,13 @@ class InstrumentedRunEnvironment:
             # Before the round, because the labels are a boundary command the
             # port will not issue inside one. Cached after the first episode.
             self._resolve_real_rows()
+        self._workshop_reverted = None
+        if self.workshop_level > WORKSHOP_OFF:
+            # Before the round, so whatever the game derives from the levels at
+            # the round start sees them. Whether it derives them there, at load,
+            # or at purchase is not known; the check after the start below is
+            # what says whether they held (ADR 0012).
+            self._apply_workshop_profile()
         restarts_before = self.port.pin_restarts
         with self.profile.span(BRIDGE_ROUND_TRIP):
             self.port.begin_episode()
@@ -498,6 +535,8 @@ class InstrumentedRunEnvironment:
             # so a write made any earlier would already have been taken back
             # (`M2-E008`).
             self._apply_upgrade_availability()
+        if self.workshop_level > WORKSHOP_OFF:
+            self._check_workshop_held()
         state = self._read_state()
         if state is None or state.lifecycle != "active":
             raise RunPortError("the instance did not reach an active run")
@@ -529,6 +568,8 @@ class InstrumentedRunEnvironment:
             episode_id=self._episode_id,
             profile_id=state.profile_id,
             upgrade_availability=str(self.upgrade_availability),
+            workshop_level=self.workshop_level,
+            workshop_rows=workshop_rows(self.workshop_level),
             decision_cadence=str(self.decision_cadence),
             final_wave=self._tally.peak_wave,
             decisions=self._tally.decisions,
@@ -954,7 +995,7 @@ class InstrumentedRunEnvironment:
             state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
         if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
             state = self._settle_death_boundary(state)
-        return self._availability_held(state)
+        return self._workshop_held(self._availability_held(state))
 
     # -- upgrade availability ----------------------------------------------
 
@@ -1041,6 +1082,66 @@ class InstrumentedRunEnvironment:
             valid=False,
             invalid_reasons=state.invalid_reasons
             + (f"{UNLOCK_REVERTED}: {len(locked)} real rows are locked, from {locked[0]}",),
+        )
+
+    # -- Workshop runway profile ------------------------------------------
+
+    def _apply_workshop_profile(self) -> None:
+        """Write the profile's level into its rows, before the round, and check it took.
+
+        One attempt and no retry, as for the unlock: a write that was refused or
+        did not read back is an episode that would not be the one it was
+        configured to be.
+        """
+        rows = workshop_rows(self.workshop_level)
+        try:
+            reported = self.port.set_workshop_levels(self.workshop_level, rows)
+        except RunPortError as failure:
+            raise RunPortError(f"{WORKSHOP_NOT_APPLIED}: {failure}") from failure
+        short = self._rows_not_at_level(reported, rows)
+        if short:
+            raise RunPortError(
+                f"{WORKSHOP_NOT_APPLIED}: the game read back other levels: {', '.join(short)}"
+            )
+
+    def _check_workshop_held(self) -> None:
+        """Once the round has started, read the levels again and remember any that moved.
+
+        Read once per episode rather than per decision: the levels are not in
+        the observation, and a read is a round trip of its own. A read that
+        fails is a boundary that would not open, as a failed write is.
+        """
+        rows = workshop_rows(self.workshop_level)
+        try:
+            reported = self.port.workshop_levels()
+        except RunPortError as failure:
+            raise RunPortError(f"{WORKSHOP_NOT_APPLIED}: {failure}") from failure
+        moved = self._rows_not_at_level(reported, rows)
+        if moved:
+            self._workshop_reverted = (
+                f"{WORKSHOP_REVERTED}: {len(moved)} Workshop rows moved at the round "
+                f"start, from {moved[0]}"
+            )
+
+    def _rows_not_at_level(
+        self, reported: Sequence[WorkshopRowLike], rows: Sequence[str]
+    ) -> list[str]:
+        """The profile's rows that do not stand at its level, as `name level` strings."""
+        standing = {row.name: row.after for row in reported}
+        return [
+            f"{name} {standing.get(name, 'absent')}"
+            for name in rows
+            if standing.get(name) != self.workshop_level
+        ]
+
+    def _workshop_held(self, state: RunState) -> RunState:
+        """Refuse every state of an episode whose Workshop levels did not hold."""
+        if self._workshop_reverted is None:
+            return state
+        return replace(
+            state,
+            valid=False,
+            invalid_reasons=state.invalid_reasons + (self._workshop_reverted,),
         )
 
     def _settle_death_boundary(self, state: RunState) -> RunState:

@@ -30,6 +30,7 @@ from tower_rl.environment.run_environment import (
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
+from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
@@ -51,6 +52,21 @@ REFERENCE_FINAL_WAVES: dict[str, object] = {
 
 #: The floor a learned arm has to clear to mean anything.
 SCRIPTED_REFERENCE = 5.57
+
+
+def reference_final_waves(workshop_level: int) -> dict[str, object] | None:
+    """The floors a run at this Workshop level is read against, or `None`.
+
+    The measured floors are baseline v1's (level 0). A run under the Workshop
+    runway profile plays a different tower, and no floor has been measured for
+    it yet (ADR 0012), so it is given none rather than a v1 number.
+    """
+    return REFERENCE_FINAL_WAVES if workshop_level == WORKSHOP_OFF else None
+
+
+def scripted_reference(workshop_level: int) -> float | None:
+    """`SCRIPTED_REFERENCE` for a baseline v1 run; `None` under the runway profile."""
+    return SCRIPTED_REFERENCE if workshop_level == WORKSHOP_OFF else None
 
 
 def source_revision() -> str:
@@ -90,6 +106,10 @@ class RunIdentity:
     #: image's either way: availability is applied at each round start, not
     #: baked into the image.
     upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE
+    #: The Workshop runway profile's level (ADR 0012): 0 is baseline v1, the
+    #: account as the image holds it; above 0 the profile's rows are set to it
+    #: before every round. The same kind of operator choice as the two above.
+    workshop_level: int = WORKSHOP_OFF
 
     @classmethod
     def started_now(
@@ -100,6 +120,7 @@ class RunIdentity:
         source_revision: str,
         decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS,
         upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE,
+        workshop_level: int = WORKSHOP_OFF,
     ) -> RunIdentity:
         """A fresh identity for a run about to start, with a new run id."""
         return cls(
@@ -109,6 +130,7 @@ class RunIdentity:
             source_revision=source_revision,
             decision_cadence=decision_cadence,
             upgrade_availability=upgrade_availability,
+            workshop_level=workshop_level,
         )
 
 
@@ -130,6 +152,7 @@ def checkpoint_identity(identity: RunIdentity) -> CheckpointIdentity:
         source_revision=identity.source_revision,
         decision_cadence=identity.decision_cadence,
         upgrade_availability=identity.upgrade_availability,
+        workshop_level=identity.workshop_level,
     )
 
 
@@ -145,6 +168,7 @@ def resolved_config(
     cadence: CadenceConfig,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    workshop_level: int,
     burn_in: int,
     stride: int,
     device: torch.device,
@@ -264,6 +288,10 @@ def resolved_config(
         # start, which is a different decision problem and a different set of
         # baselines (ADR 0011).
         "upgrade_availability": str(upgrade_availability),
+        # The Workshop runway profile every round was played on, and the rows
+        # it was written into: 0 and none is baseline v1 (ADR 0012).
+        "workshop_level": workshop_level,
+        "workshop_rows": list(workshop_rows(workshop_level)),
         "device": str(device),
         # The guest rate this arm actually collected at: a fleet run raises
         # every instance to it, and a single actor's is whatever the operator
@@ -301,5 +329,8 @@ def tracked_params(resolved: dict[str, object]) -> dict[str, object]:
     opened months later is self-contained.
     """
     params: dict[str, object] = dict(resolved)
-    params.update({f"reference_{key}": value for key, value in REFERENCE_FINAL_WAVES.items()})
+    level = resolved.get("workshop_level", WORKSHOP_OFF)
+    floors = reference_final_waves(level if isinstance(level, int) else WORKSHOP_OFF)
+    if floors is not None:
+        params.update({f"reference_{key}": value for key, value in floors.items()})
     return params

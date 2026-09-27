@@ -51,6 +51,7 @@ from tower_rl.environment.run_environment import (  # noqa: E402
     UpgradeAvailability,
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
+from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows  # noqa: E402
 from tower_rl.learning.actor import ActorConfig  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, identity_hash  # noqa: E402
 from tower_rl.learning.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
@@ -63,6 +64,7 @@ from tower_rl.learning.policies import (  # noqa: E402
 )
 from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
 from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
+    MAX_WORKSHOP_LEVEL,
     BridgeCompatibility,
     InstrumentedBridgeClient,
     UpgradeSlotLabel,
@@ -87,6 +89,7 @@ def policy_from(
     *,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    workshop_level: int,
     sampling_seed: str | None = None,
 ) -> tuple[Policy, dict[str, object]]:
     """The arm this run plays, and the identity every record of it carries.
@@ -119,6 +122,7 @@ def policy_from(
             path,
             decision_cadence=str(decision_cadence),
             upgrade_availability=str(upgrade_availability),
+            workshop_level=workshop_level,
             # A checkpoint that samples its policy draws from a stream of this
             # instance's own, not one every instance of a fleet shares.
             sampling_seed=sampling_seed,
@@ -144,6 +148,7 @@ def actor_record(
     max_quiet_game_ms: int,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
+    workshop_level: int,
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
 ) -> dict[str, Any]:
@@ -166,6 +171,10 @@ def actor_record(
     # the image's six rows and one collected on every real row are measurements
     # of two different decision problems (ADR 0011).
     record["upgrade_availability"] = str(upgrade_availability)
+    # And on which Workshop setup: baseline v1's bare account at 0, the runway
+    # profile's rows at this level otherwise (ADR 0012).
+    record["workshop_level"] = workshop_level
+    record["workshop_rows"] = list(workshop_rows(workshop_level))
     record["wall_seconds"] = round(wall_seconds, 1)
     # What the game calls each slot the actions address, so the human reading
     # this record afterwards can tell what `attack:3` was. Never an input: the
@@ -238,6 +247,38 @@ def upgrade_availability_from(arguments: argparse.Namespace) -> UpgradeAvailabil
     return UpgradeAvailability(arguments.upgrade_availability)
 
 
+def _workshop_level(text: str) -> int:
+    level = int(text)
+    if not WORKSHOP_OFF <= level <= MAX_WORKSHOP_LEVEL:
+        raise argparse.ArgumentTypeError(
+            f"a Workshop level is {WORKSHOP_OFF} to {MAX_WORKSHOP_LEVEL}, the bridge's own bound"
+        )
+    return level
+
+
+def add_workshop_level_argument(parser: argparse.ArgumentParser) -> None:
+    """The Workshop runway profile's level (ADR 0012).
+
+    Beside the availability because it is the same kind of choice: fixed by the
+    operator for the whole run, applied by the environment, never chosen by the
+    policy. 0 is the default and is baseline v1, the account as the image holds
+    it; nothing is written.
+    """
+    parser.add_argument(
+        "--workshop-level",
+        type=_workshop_level,
+        default=WORKSHOP_OFF,
+        help="set the Workshop runway profile's rows to this level before every "
+        "round, on the disposable instance only; 0 (the default) writes nothing "
+        "(ADR 0012)",
+    )
+
+
+def workshop_level_from(arguments: argparse.Namespace) -> int:
+    """The Workshop runway profile's level this invocation plays on."""
+    return int(arguments.workshop_level)
+
+
 def cadence_from(arguments: argparse.Namespace) -> CadenceConfig:
     return CadenceConfig(
         frame_game_ms=arguments.frame_game_ms,
@@ -250,18 +291,79 @@ def decision_cadence_from(arguments: argparse.Namespace) -> DecisionCadence:
     return DecisionCadence(arguments.decision_cadence)
 
 
+def emulator_command_lines(serial: str, proc: Path = Path("/proc")) -> list[str]:
+    """The command line of every emulator process that holds `serial`'s console port.
+
+    Only a process whose `/proc/<pid>/exe` is the emulator or a `qemu-system-*`
+    binary counts, as in `spectate.running_emulators`: any other process can
+    quote an emulator's argv (a shell, an editor, this script's own caller). Of
+    those, the ones whose `/proc/<pid>/cmdline` carries `-port <console port>`,
+    the reading `run_stage.sh` takes. Empty when the serial is not an
+    emulator's or no emulator holds the port.
+    """
+    port = serial.removeprefix("emulator-")
+    if port == serial or not port.isdigit():
+        return []
+    try:
+        entries = sorted(proc.iterdir())
+    except OSError:
+        return []
+    found: list[str] = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = Path(os.readlink(entry / "exe")).name
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:  # gone, or not ours to look at
+            continue
+        if not (executable.startswith("qemu-system") or executable == "emulator"):
+            continue
+        text = " " + raw.replace(b"\0", b" ").decode("utf-8", "replace")
+        if f" -port {port} " in text:
+            found.append(text)
+    return found
+
+
+def refuse_an_unconfined_workshop_write(
+    serial: str, level: int, proc: Path = Path("/proc")
+) -> None:
+    """Refuse a Workshop write unless the instance was launched `-read-only` (ADR 0012).
+
+    The runway profile is written into a live game whose save could carry it;
+    only a read-only instance guarantees that nothing it does outlives it. At
+    level 0 nothing is written, so there is nothing to confine.
+    """
+    if level == WORKSHOP_OFF:
+        return
+    command_lines = emulator_command_lines(serial, proc)
+    if not command_lines:
+        raise SystemExit(
+            f"WORKSHOP_NOT_CONFINED: no emulator process holds {serial}'s port, so it "
+            "cannot be shown to be read-only; refusing a Workshop write"
+        )
+    if any(" -read-only " not in command_line for command_line in command_lines):
+        raise SystemExit(
+            f"WORKSHOP_NOT_CONFINED: {serial} was not launched -read-only; refusing a "
+            "Workshop write"
+        )
+
+
 def open_environment(
-    port: int, expected: BridgeCompatibility, arguments: argparse.Namespace
+    serial: str, port: int, expected: BridgeCompatibility, arguments: argparse.Namespace
 ) -> tuple[InstrumentedBridgeClient, InstrumentedRunAdapter, InstrumentedRunEnvironment]:
     """Connect the bridge and build the adapter and environment on top of it.
 
     The wiring every collection entry point (`run_episodes.py`, `train.py`,
     `spectate.py`) needs identically: the same client timeouts, then the
-    adapter, then the environment built from this invocation's cadence and
-    upgrade-availability arguments. The caller keeps its own connect-time
-    side effects (printing the handshake, reading slot labels, wrapping the
-    result) and its own `release()`/`close()` in `finally`.
+    adapter, then the environment built from this invocation's cadence,
+    upgrade-availability and Workshop arguments. A Workshop level above 0 is
+    refused before anything connects unless `serial` runs `-read-only`. The
+    caller keeps its own connect-time side effects (printing the handshake,
+    reading slot labels, wrapping the result) and its own `release()`/`close()`
+    in `finally`.
     """
+    refuse_an_unconfined_workshop_write(serial, workshop_level_from(arguments))
     client = InstrumentedBridgeClient(
         "127.0.0.1",
         port,
@@ -278,8 +380,36 @@ def open_environment(
         cadence=cadence_from(arguments),
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
     )
     return client, adapter, environment
+
+
+def print_workshop_rows(client: InstrumentedBridgeClient, level: int) -> None:
+    """The Workshop rows as the game names them, for a device session to read.
+
+    At 0 this only reads. Above 0 it applies the runway profile once, exactly
+    as a round start would, and prints the report the write came back with:
+    each family's implemented count, and every row's in-run name, Workshop
+    maximum, and Workshop level before and after. Whether the level took hold
+    in combat is read elsewhere: from the tower stats in the first observation
+    of a round (`damage`, `attackSpeed`, `thornDamage`, ...), against level 0.
+    """
+    sequence = client.read_state().sequence
+    if level > WORKSHOP_OFF:
+        report = client.set_workshop_levels(
+            level, workshop_rows(level), expected_sequence=sequence
+        )
+    else:
+        report = client.read_workshop_levels(expected_sequence=sequence)
+    print(json.dumps(
+        {
+            "wrote": report.wrote,
+            "implemented": dict(report.implemented),
+            "rows": [vars(row) for row in report.rows],
+        },
+        indent=2,
+    ), flush=True)
 
 
 def main() -> int:
@@ -297,6 +427,14 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=47652)
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    add_workshop_level_argument(parser)
+    parser.add_argument(
+        "--list-workshop-rows",
+        action="store_true",
+        help="print every Workshop row as the game names it, with its level and "
+        "ceiling, and exit without playing; with --workshop-level above 0, apply "
+        "the runway profile once first and print its before/after report (ADR 0012)",
+    )
     parser.add_argument(
         "--output", type=Path, default=state_directory() / "records" / "episodes.json"
     )
@@ -311,11 +449,14 @@ def main() -> int:
         arguments.policy,
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
         sampling_seed=arguments.serial,
     )
     expected = compatibility(bridge_build_directory())
 
-    client, adapter, environment = open_environment(arguments.port, expected, arguments)
+    client, adapter, environment = open_environment(
+        arguments.serial, arguments.port, expected, arguments
+    )
     handshake = client.handshake
     print(
         f"bridge {handshake.bridge_version} profile {handshake.compatibility.profile_id} "
@@ -325,6 +466,13 @@ def main() -> int:
     # Before the first round: a command of the adapter's own initiative belongs
     # to the episode boundary, and these are constant for the build.
     labels = adapter.slot_labels()
+    if arguments.list_workshop_rows:
+        try:
+            print_workshop_rows(client, workshop_level_from(arguments))
+        finally:
+            adapter.release()
+            client.close()
+        return 0
 
     started = time.monotonic()
     try:
@@ -346,6 +494,7 @@ def main() -> int:
         max_quiet_game_ms=arguments.max_quiet_game_ms,
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
+        workshop_level=workshop_level_from(arguments),
         wall_seconds=time.monotonic() - started,
         labels=labels,
     )

@@ -395,6 +395,7 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
         latest,
         decision_cadence=resolved["decision_cadence"],
         upgrade_availability=resolved["upgrade_availability"],
+        workshop_level=0,
     )
     assert identity.backbone == "dreamerv3"
     assert isinstance(policy, DreamerBackbone)
@@ -410,6 +411,7 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
             latest,
             decision_cadence=resolved["decision_cadence"],
             upgrade_availability=resolved["upgrade_availability"],
+            workshop_level=0,
             sampling_seed=serial,
         )
         every = tuple(True for _ in range(len(RUN_ACTIONS)))
@@ -1283,6 +1285,7 @@ def test_a_game_time_era_checkpoint_still_loads_for_evaluation(tmp_path: Path) -
         legacy,
         decision_cadence=parent.identity.decision_cadence.value,
         upgrade_availability=parent.identity.upgrade_availability.value,
+        workshop_level=0,
     )
 
     assert identity == parent.identity, "rebuilt from the file's own identity"
@@ -1722,6 +1725,7 @@ def test_a_game_time_run_records_its_discount_and_its_checkpoint_plays(tmp_path:
         latest_checkpoint(report),
         decision_cadence=resolved["decision_cadence"],
         upgrade_availability=resolved["upgrade_availability"],
+        workshop_level=0,
     )
     assert isinstance(policy, StackedDqnBackbone)
     assert policy.config.discount_per_game_second == 0.997
@@ -1757,6 +1761,7 @@ def test_a_checkpoint_from_before_the_game_time_discount_still_plays(tmp_path: P
         older,
         decision_cadence=parent.identity.decision_cadence.value,
         upgrade_availability=parent.identity.upgrade_availability.value,
+        workshop_level=0,
     )
     assert isinstance(policy, StackedDqnBackbone)
     assert policy.config.discount_per_game_second is None

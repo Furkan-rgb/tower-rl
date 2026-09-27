@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstddef>
@@ -402,6 +403,28 @@ struct FamilyLabelFields {
   FieldInfo* descriptions;
 };
 
+// Bounds on a `set_workshop_levels` command: how many rows it may name, how
+// long a name may be, and the highest level it may ask for. The host holds the
+// same numbers (`simulation/instrumented_bridge.py`); the game's own per-row
+// ceiling is checked against its `*WorkshopMaxLevel` arrays on top of this.
+constexpr size_t kMaxWorkshopRows = 32;
+constexpr size_t kMaxWorkshopNameChars = 64;
+constexpr int32_t kMaxWorkshopLevel = 9999;
+
+// One family of the Workshop (ADR 0012). The game keeps no Workshop name array:
+// a Workshop row shares its index with the in-run row, so it is addressed by
+// the in-run row's name (`upgradeName*`, the slot labels). Its permanent level
+// and ceiling are the `upgradeWorkshop*Level` / `*WorkshopMaxLevel` arrays, and
+// `implemented*Workshops` counts the rows the game has implemented, which a
+// write is held within.
+struct WorkshopFamilyFields {
+  const char* name;
+  FieldInfo* names;
+  FieldInfo* levels;
+  FieldInfo* max_levels;
+  FieldInfo* implemented;
+};
+
 struct MainFields {
   FieldInfo* instance;
   FieldInfo* game_speed;
@@ -424,6 +447,7 @@ struct MainFields {
   FamilyFields utility;
   LiveField live[kLiveFieldCount];
   FamilyLabelFields labels[3];
+  WorkshopFamilyFields workshop[3];
 };
 
 struct Runtime {
@@ -540,6 +564,14 @@ struct Command {
   // arrays, `unlock_all` writes them true first (ADR 0011).
   bool unlock_state;
   bool unlock_all;
+  // The Workshop runway profile (ADR 0012): `workshop_levels` reports every
+  // Workshop row; `set_workshop_levels` writes one level into the named rows
+  // first. The names are the game's own, bounded and quote-free.
+  bool workshop_read;
+  bool workshop_write;
+  int32_t workshop_level;
+  size_t workshop_row_count;
+  char workshop_rows[kMaxWorkshopRows][kMaxWorkshopNameChars + 1];
   uint32_t budget_game_millis;
   float frame_game_millis;
   float health_change_fraction;
@@ -589,6 +621,37 @@ bool LoadFields(const Il2CppApi& api, Il2CppClass* main, Il2CppClass* int_select
     if (labels.labels == nullptr || labels.descriptions == nullptr) {
       __android_log_print(ANDROID_LOG_ERROR, kLogTag, "%s upgrade row labels are unavailable",
                           labels.name);
+      return false;
+    }
+  }
+  // The Workshop (ADR 0012), resolved and type-checked here like every other
+  // field: a name the class does not carry, or one of another shape, is a named
+  // initialization failure rather than a command that later writes at a guess.
+  // The max-level names are the game's own, inconsistent order included.
+  fields->workshop[0] = {"attack", fields->labels[0].labels,
+                         Field(api, main, "upgradeWorkshopLevel"),
+                         Field(api, main, "upgradeWorkshopMaxLevel"),
+                         Field(api, main, "implementedWorkshops")};
+  fields->workshop[1] = {"defense", fields->labels[1].labels,
+                         Field(api, main, "upgradeWorkshopDefenseLevel"),
+                         Field(api, main, "upgradeDefenseWorkshopMaxLevel"),
+                         Field(api, main, "implementedDefenseWorkshops")};
+  fields->workshop[2] = {"utility", fields->labels[2].labels,
+                         Field(api, main, "upgradeWorkshopUtilityLevel"),
+                         Field(api, main, "upgradeUtilityWorkshopMaxLevel"),
+                         Field(api, main, "implementedUtilityWorkshops")};
+  for (const WorkshopFamilyFields& workshop : fields->workshop) {
+    if (KindFromTypeName(DeclaredTypeName(api, workshop.names).c_str()) !=
+            FieldKind::kStringArray ||
+        KindFromTypeName(DeclaredTypeName(api, workshop.levels).c_str()) !=
+            FieldKind::kInt32Array ||
+        KindFromTypeName(DeclaredTypeName(api, workshop.max_levels).c_str()) !=
+            FieldKind::kInt32Array ||
+        KindFromTypeName(DeclaredTypeName(api, workshop.implemented).c_str()) !=
+            FieldKind::kInt32) {
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                          "%s Workshop level, max-level or implemented field is absent or mistyped",
+                          workshop.name);
       return false;
     }
   }
@@ -1116,6 +1179,181 @@ bool BuildSlotLabels(const Il2CppApi& api, const MainFields& fields, std::string
   return json->size() <= kMaxFrameBytes;
 }
 
+// One family's Workshop arrays and implemented count, resolved from `Main`
+// afresh. The name array (the in-run labels) and the two Workshop arrays need
+// not be the same width; a row exists for this purpose only at an index all
+// three cover, so `length` is the shortest of them. Re-resolved by every pass
+// for the reason `ResolveUnlockArray` gives: a held pointer would write to an
+// array the game had swapped out, and read back a success the game never saw.
+struct WorkshopArrays {
+  Il2CppArray* names = nullptr;
+  Il2CppArray* levels = nullptr;
+  Il2CppArray* max_levels = nullptr;
+  int32_t implemented = 0;
+  size_t length = 0;
+};
+
+bool ResolveWorkshopArrays(const Il2CppApi& api, Il2CppObject* main,
+                           const WorkshopFamilyFields& family, WorkshopArrays* arrays) {
+  if (!ReadField(api, main, family.names, &arrays->names) ||
+      !ReadField(api, main, family.levels, &arrays->levels) ||
+      !ReadField(api, main, family.max_levels, &arrays->max_levels) ||
+      !ReadField(api, main, family.implemented, &arrays->implemented) ||
+      arrays->names == nullptr || arrays->levels == nullptr || arrays->max_levels == nullptr) {
+    return false;
+  }
+  arrays->length = std::min({static_cast<size_t>(api.array_length(arrays->names)),
+                             static_cast<size_t>(api.array_length(arrays->levels)),
+                             static_cast<size_t>(api.array_length(arrays->max_levels))});
+  return arrays->length != 0 && arrays->length <= kMaxEntriesPerFamily;
+}
+
+bool SameWorkshopArrays(const WorkshopArrays& left, const WorkshopArrays& right) {
+  return left.names == right.names && left.levels == right.levels &&
+         left.max_levels == right.max_levels && left.implemented == right.implemented &&
+         left.length == right.length;
+}
+
+// The Workshop runway profile (ADR 0012). With `command.workshop_write` it
+// writes `command.workshop_level` into the Workshop level of every row the
+// command names; either way it reports every family's implemented count and
+// every Workshop row - family, index, in-run name, Workshop max level, and the
+// Workshop level before and after. For a read the two readings are the same.
+//
+// Pass one resolves and reads everything and resolves every requested name
+// against the in-run names, writing nothing: an unknown name, a name the game
+// gives two rows, a name asked for twice, a row at or past its family's
+// implemented count, or a level above a row's ceiling refuses the command
+// whole, named in `refusal`, with the game exactly as it was. Pass two
+// re-resolves all three families and only then writes; a family swapped out
+// under the command still refuses it with nothing written. Pass three reads
+// everything once more and reports it, so a write that did not take reports as
+// one; if pass three cannot read after a write began, the refusal is
+// `workshop_write_unverified`, because the game may already hold part of it.
+//
+// In-memory only, like the unlock: nothing here calls a save. Issued only by
+// an environment configured with `--workshop-level` above 0.
+bool ReportWorkshopState(const Il2CppApi& api, const MainFields& fields, const Command& command,
+                         std::string* json, std::string* refusal) {
+  *refusal = "workshop_unreadable";
+  Il2CppObject* main = nullptr;
+  api.field_static_get_value(fields.instance, &main);
+  if (!NativeHandleIsAlive(api, main)) return false;
+  constexpr size_t kFamilies = sizeof(fields.workshop) / sizeof(fields.workshop[0]);
+  WorkshopArrays seen[kFamilies];
+  std::string names[kFamilies][kMaxEntriesPerFamily];
+  int32_t before[kFamilies][kMaxEntriesPerFamily] = {};
+  int32_t ceilings[kFamilies][kMaxEntriesPerFamily] = {};
+  bool targeted[kFamilies][kMaxEntriesPerFamily] = {};
+  // Pass one: everything read, and every requested row resolved by name.
+  for (size_t family = 0; family < kFamilies; ++family) {
+    if (!ResolveWorkshopArrays(api, main, fields.workshop[family], &seen[family])) return false;
+    for (size_t index = 0; index < seen[family].length; ++index) {
+      void* name = nullptr;
+      if (!ReadPrimitiveArray(api, seen[family].names, index, &name) ||
+          !ReadPrimitiveArray(api, seen[family].levels, index, &before[family][index]) ||
+          !ReadPrimitiveArray(api, seen[family].max_levels, index, &ceilings[family][index])) {
+        return false;
+      }
+      names[family][index] =
+          name == nullptr ? std::string()
+                          : Utf8FromUtf16(api.string_chars(name), api.string_length(name),
+                                          kMaxWorkshopNameChars);
+    }
+  }
+  if (command.workshop_write) {
+    for (size_t row = 0; row < command.workshop_row_count; ++row) {
+      const std::string wanted = command.workshop_rows[row];
+      size_t matches = 0, match_family = 0, match_index = 0;
+      for (size_t family = 0; family < kFamilies; ++family) {
+        for (size_t index = 0; index < seen[family].length; ++index) {
+          if (names[family][index] == wanted) {
+            ++matches;
+            match_family = family;
+            match_index = index;
+          }
+        }
+      }
+      if (matches == 0) { *refusal = "workshop_row_unknown:" + wanted; return false; }
+      if (matches > 1) { *refusal = "workshop_row_ambiguous:" + wanted; return false; }
+      if (targeted[match_family][match_index]) {
+        *refusal = "workshop_row_duplicate:" + wanted;
+        return false;
+      }
+      if (static_cast<int64_t>(match_index) >= seen[match_family].implemented) {
+        *refusal = "workshop_row_not_implemented:" + wanted;
+        return false;
+      }
+      if (command.workshop_level > ceilings[match_family][match_index]) {
+        *refusal = "workshop_level_above_max:" + wanted;
+        return false;
+      }
+      targeted[match_family][match_index] = true;
+    }
+    // Pass two: every family read again and proven unchanged before any write.
+    WorkshopArrays current[kFamilies];
+    for (size_t family = 0; family < kFamilies; ++family) {
+      if (!ResolveWorkshopArrays(api, main, fields.workshop[family], &current[family]) ||
+          !SameWorkshopArrays(current[family], seen[family])) {
+        return false;
+      }
+    }
+    // From here the game may hold part of the write, so a failure is no longer
+    // a clean refusal.
+    *refusal = "workshop_write_unverified";
+    for (size_t family = 0; family < kFamilies; ++family) {
+      for (size_t index = 0; index < current[family].length; ++index) {
+        if (targeted[family][index] &&
+            !WritePrimitiveArray(api, current[family].levels, index, command.workshop_level)) {
+          // A write refused part way leaves the rows before it written; the
+          // report below still goes out and shows exactly what now stands.
+          break;
+        }
+      }
+    }
+  }
+  // Pass three: what now stands, read from the fields once more.
+  *json = "{\"type\":\"workshop_state\",\"protocol_version\":2,\"wrote\":";
+  json->append(command.workshop_write ? "true" : "false");
+  json->append(",\"families\":[");
+  for (size_t family = 0; family < kFamilies; ++family) {
+    if (family != 0) json->push_back(',');
+    json->append("{\"family\":\"");
+    json->append(fields.workshop[family].name);
+    json->append("\",\"implemented\":");
+    json->append(std::to_string(seen[family].implemented));
+    json->push_back('}');
+  }
+  json->append("],\"rows\":[");
+  for (size_t family = 0; family < kFamilies; ++family) {
+    WorkshopArrays arrays;
+    if (!ResolveWorkshopArrays(api, main, fields.workshop[family], &arrays) ||
+        !SameWorkshopArrays(arrays, seen[family])) {
+      return false;
+    }
+    for (size_t index = 0; index < arrays.length; ++index) {
+      int32_t after = 0;
+      if (!ReadPrimitiveArray(api, arrays.levels, index, &after)) return false;
+      if (json->back() != '[') json->push_back(',');
+      json->append("{\"family\":\"");
+      json->append(fields.workshop[family].name);
+      json->append("\",\"index\":");
+      json->append(std::to_string(index));
+      json->append(",\"name\":\"");
+      json->append(names[family][index]);
+      json->append("\",\"max_level\":");
+      json->append(std::to_string(ceilings[family][index]));
+      json->append(",\"before\":");
+      json->append(std::to_string(before[family][index]));
+      json->append(",\"after\":");
+      json->append(std::to_string(after));
+      json->push_back('}');
+    }
+  }
+  json->append("]}");
+  return json->size() <= kMaxFrameBytes;
+}
+
 bool AppendFamily(const Il2CppApi& api, Il2CppObject* main, const FamilyFields& fields,
                   std::string* json) {
   Il2CppArray *costs = nullptr, *levels = nullptr, *unlocked = nullptr, *tier_unlocked = nullptr,
@@ -1315,6 +1553,53 @@ bool ParseCommand(const std::string& payload, Command* command) {
   if (tail == "unlock_state\"}" || tail == "unlock_all_upgrades\"}") {
     command->unlock_state = true;
     command->unlock_all = tail.rfind("unlock_all", 0) == 0;
+    command->family = nullptr; command->index = 0;
+    return true;
+  }
+  command->workshop_read = false;
+  command->workshop_write = false;
+  command->workshop_level = 0;
+  command->workshop_row_count = 0;
+  if (tail == "workshop_levels\"}") {
+    command->workshop_read = true;
+    command->family = nullptr; command->index = 0;
+    return true;
+  }
+  // `set_workshop_levels`: one level, then the rows by the game's own names, as
+  // a JSON array of printable-ASCII strings with no quote or backslash in them.
+  constexpr char kWorkshopKey[] = "set_workshop_levels\",\"level\":";
+  constexpr char kRowsKey[] = ",\"rows\":[";
+  if (tail.rfind(kWorkshopKey, 0) == 0) {
+    size_t at = sizeof(kWorkshopKey) - 1, digits = 0;
+    int32_t level = 0;
+    for (; at < tail.size() && tail[at] >= '0' && tail[at] <= '9'; ++at, ++digits) {
+      level = level * 10 + (tail[at] - '0');
+      if (level > kMaxWorkshopLevel) return false;
+    }
+    if (digits == 0 || level < 1 || tail.compare(at, sizeof(kRowsKey) - 1, kRowsKey) != 0) {
+      return false;
+    }
+    at += sizeof(kRowsKey) - 1;
+    size_t count = 0;
+    while (true) {
+      if (count == kMaxWorkshopRows || at >= tail.size() || tail[at] != '"') return false;
+      const size_t start = ++at;
+      while (at < tail.size() && tail[at] != '"') {
+        if (tail[at] < 0x20 || tail[at] > 0x7E || tail[at] == '\\') return false;
+        ++at;
+      }
+      if (at >= tail.size() || at == start || at - start > kMaxWorkshopNameChars) return false;
+      std::memcpy(command->workshop_rows[count], tail.data() + start, at - start);
+      command->workshop_rows[count][at - start] = '\0';
+      ++count;
+      ++at;
+      if (at < tail.size() && tail[at] == ',') { ++at; continue; }
+      break;
+    }
+    if (tail.compare(at, std::string::npos, "]}") != 0) return false;
+    command->workshop_write = true;
+    command->workshop_level = level;
+    command->workshop_row_count = count;
     command->family = nullptr; command->index = 0;
     return true;
   }
@@ -2197,6 +2482,8 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         SendCommandResult(client, command, "rejected", "stale_or_duplicate", sequence, AdvanceDetail{}); continue;
       }
       UpgradeEvidence before{}, after{};
+      // Outlives `reason`, which may point into it.
+      std::string workshop_refusal;
       const char* outcome = "confirmed";
       const char* reason = "confirmed_state_change";
       AdvanceDetail detail{};
@@ -2235,6 +2522,18 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
         } else {
           outcome = "rejected";
           reason = "unlock_state_unreadable";
+        }
+      } else if (command.workshop_read || command.workshop_write) {
+        // The Workshop runway profile (ADR 0012). The report frame goes out
+        // before the state and the result, as the unlock report does; a refusal
+        // sends none and names why in the result.
+        std::string report;
+        if (ReportWorkshopState(api, fields, command, &report, &workshop_refusal)) {
+          if (!SendFrame(client, report)) return;
+          reason = command.workshop_write ? "workshop_levels_applied" : "workshop_levels_reported";
+        } else {
+          outcome = "rejected";
+          reason = workshop_refusal.c_str();
         }
       } else if (command.set_speed) {
         // This confirms that the slot holds the requested value, which is not

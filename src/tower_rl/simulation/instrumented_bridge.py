@@ -13,7 +13,7 @@ import select
 import socket
 import struct
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -60,7 +60,19 @@ UPGRADE_FAMILIES = ("attack", "defense", "utility")
 #: before that decision has no such kind at all, so its parser answers
 #: `protocol_error` and drops the connection rather than rejecting a command it
 #: understands; that surfaces here as a `BridgeCompatibilityError`.
-SEQUENCE_ONLY_COMMAND_KINDS = frozenset({"slot_labels", "unlock_state", "unlock_all_upgrades"})
+#: `workshop_levels` reads every Workshop row (ADR 0012); it is the read half of
+#: `set_workshop_levels`, which carries a level and row names as well.
+SEQUENCE_ONLY_COMMAND_KINDS = frozenset(
+    {"slot_labels", "unlock_state", "unlock_all_upgrades", "workshop_levels"}
+)
+#: Bounds on a `set_workshop_levels` command. They mirror `kMaxWorkshopRows`,
+#: `kMaxWorkshopNameChars` and `kMaxWorkshopLevel` in
+#: `native/tower_bridge/tower_bridge.cpp`, whose parser refuses anything past
+#: them - and refuses a name with a quote, a backslash or anything outside
+#: printable ASCII, which the client therefore refuses first.
+MAX_WORKSHOP_ROWS = 32
+MAX_WORKSHOP_NAME_CHARACTERS = 64
+MAX_WORKSHOP_LEVEL = 9999
 LIFECYCLE_ACTIONS = frozenset(
     {
         "start_round",
@@ -212,6 +224,38 @@ class UnlockFamilyState:
 
 
 @dataclass(frozen=True)
+class WorkshopRow:
+    """One Workshop row, and the permanent level it held before and after a command.
+
+    `name` is the in-run row's label: the game keeps no Workshop name array, and
+    a Workshop row shares its index with the in-run row. `max_level` is the
+    Workshop ceiling. Every row the game has, not only the ones a write named,
+    so a report also shows that the rest were left alone. For a read, `before`
+    and `after` are the same reading.
+    """
+
+    family: str
+    index: int
+    name: str
+    max_level: int
+    before: int
+    after: int
+
+
+@dataclass(frozen=True)
+class WorkshopReport:
+    """What `workshop_levels` or `set_workshop_levels` found standing (ADR 0012).
+
+    `implemented` is each family's `implemented*Workshops` count, which the
+    bridge holds a write within.
+    """
+
+    wrote: bool
+    implemented: Mapping[str, int]
+    rows: tuple[WorkshopRow, ...]
+
+
+@dataclass(frozen=True)
 class BridgeRunUnavailable:
     """The game holds no initialized run; only a lifecycle command applies."""
 
@@ -231,6 +275,9 @@ class BridgeCommand:
     budget_game_ms: int | None = None
     frame_game_ms: float | None = None
     health_change_fraction: float | None = None
+    #: `set_workshop_levels` only: the level, and the rows by their names.
+    level: int | None = None
+    rows: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -473,6 +520,61 @@ def decode_unlock_state(
     return _bool(message, "wrote"), tuple(families)
 
 
+def decode_workshop_state(
+    message: Mapping[str, Any], *, max_entries: int = DEFAULT_MAX_UPGRADE_ENTRIES
+) -> WorkshopReport:
+    """Decode every Workshop row's levels and each family's implemented count (ADR 0012)."""
+    _require_message_type(message, "workshop_state")
+    if _int(message, "protocol_version", minimum=1) != PROTOCOL_VERSION:
+        raise BridgeProtocolError("unsupported workshop-state protocol version")
+    rows_value = message.get("rows")
+    if not isinstance(rows_value, list) or len(rows_value) > max_entries * len(UPGRADE_FAMILIES):
+        raise BridgeProtocolError("workshop rows are missing, malformed, or exceed their bound")
+    rows: list[WorkshopRow] = []
+    seen: set[tuple[str, int]] = set()
+    for value in rows_value:
+        if not isinstance(value, Mapping):
+            raise BridgeProtocolError("workshop row must be an object")
+        row = WorkshopRow(
+            family=_upgrade_family(value),
+            index=_int(value, "index", minimum=0),
+            name=_label_text(value, "name"),
+            max_level=_int(value, "max_level", minimum=0),
+            before=_int(value, "before", minimum=0),
+            after=_int(value, "after", minimum=0),
+        )
+        if (row.family, row.index) in seen:
+            raise BridgeProtocolError(f"duplicate workshop row: {row.family}[{row.index}]")
+        seen.add((row.family, row.index))
+        rows.append(row)
+    families_value = message.get("families")
+    if not isinstance(families_value, list) or len(families_value) != len(UPGRADE_FAMILIES):
+        raise BridgeProtocolError("workshop families are missing or malformed")
+    implemented: dict[str, int] = {}
+    for value in families_value:
+        if not isinstance(value, Mapping):
+            raise BridgeProtocolError("workshop family must be an object")
+        implemented[_upgrade_family(value)] = _int(value, "implemented", minimum=0)
+    if set(implemented) != set(UPGRADE_FAMILIES):
+        raise BridgeProtocolError("workshop families must name each family once")
+    return WorkshopReport(wrote=_bool(message, "wrote"), implemented=implemented, rows=tuple(rows))
+
+
+def _workshop_command_rows(message: Mapping[str, Any]) -> tuple[str, ...]:
+    """The row names a `set_workshop_levels` command carries, held to the bridge's parser."""
+    value = message.get("rows")
+    if not isinstance(value, list) or not value or len(value) > MAX_WORKSHOP_ROWS:
+        raise BridgeProtocolError(f"workshop rows must be 1 to {MAX_WORKSHOP_ROWS} names")
+    for name in value:
+        if (
+            not isinstance(name, str)
+            or not 0 < len(name) <= MAX_WORKSHOP_NAME_CHARACTERS
+            or any(not " " <= character <= "~" or character in '"\\' for character in name)
+        ):
+            raise BridgeProtocolError(f"unsupported workshop row name: {name!r}")
+    return tuple(value)
+
+
 def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
     _require_message_type(message, "command")
     if _int(message, "protocol_version", minimum=1) != PROTOCOL_VERSION:
@@ -485,7 +587,9 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
     family = message.get("family")
     index = message.get("index")
     action = message.get("action")
-    if kind in {"lifecycle", "set_speed", "advance", *SEQUENCE_ONLY_COMMAND_KINDS} and (
+    if kind in {
+        "lifecycle", "set_speed", "advance", "set_workshop_levels", *SEQUENCE_ONLY_COMMAND_KINDS
+    } and (
         family is not None or index is not None
     ):
         raise BridgeProtocolError(f"{kind} command must not contain an upgrade target")
@@ -517,6 +621,17 @@ def decode_command(message: Mapping[str, Any]) -> BridgeCommand:
             request_id,
             _int(message, "expected_observation_sequence", minimum=1),
             kind,
+        )
+    if kind == "set_workshop_levels":
+        level = _int(message, "level", minimum=1)
+        if level > MAX_WORKSHOP_LEVEL:
+            raise BridgeProtocolError("workshop level is outside the allowed range")
+        return BridgeCommand(
+            request_id,
+            _int(message, "expected_observation_sequence", minimum=1),
+            kind,
+            level=level,
+            rows=_workshop_command_rows(message),
         )
     if kind == "set_speed":
         value = _finite_number(message, "value")
@@ -609,6 +724,7 @@ class InstrumentedBridgeClient:
         self._slot_labels: tuple[UpgradeSlotLabel, ...] = ()
         self._unlock_state: tuple[UnlockFamilyState, ...] = ()
         self._unlock_wrote: bool | None = None
+        self._workshop_report: WorkshopReport | None = None
 
     @property
     def handshake(self) -> BridgeHandshake:
@@ -741,6 +857,12 @@ class InstrumentedBridgeClient:
                 message, max_entries=self.max_upgrade_entries
             )
             return None
+        if message_type == "workshop_state":
+            # The answer to the Workshop command in flight, as the unlock report is.
+            self._workshop_report = decode_workshop_state(
+                message, max_entries=self.max_upgrade_entries
+            )
+            return None
         if message_type == "heartbeat":
             sequence = _int(message, "last_observation_sequence", minimum=0)
             if sequence != self._last_observation_sequence:
@@ -822,6 +944,57 @@ class InstrumentedBridgeClient:
             )
         return self._unlock_state
 
+    def read_workshop_levels(self, *, expected_sequence: int) -> WorkshopReport:
+        """Report every Workshop row's permanent level and ceiling; write nothing.
+
+        What the first device session reads the game's own row names from, and
+        what the environment reads once a round has started to check that the
+        levels it wrote before the start still stand (ADR 0012).
+        """
+        return self._workshop_command(
+            {"kind": "workshop_levels"}, expected_sequence=expected_sequence
+        )
+
+    def set_workshop_levels(
+        self, level: int, rows: Sequence[str], *, expected_sequence: int
+    ) -> WorkshopReport:
+        """Write one permanent Workshop level into the named rows, and report every row.
+
+        The Workshop runway profile (ADR 0012), issued before each round on the
+        disposable instance. The bridge resolves each name against the game's
+        own name arrays and refuses the whole write, naming the row, for a name
+        it does not have, has twice, or was asked for twice, or for a level
+        above the row's ceiling. The levels come back read out of the game after
+        the write. In-memory only: it must never be pointed at the canonical
+        evaluation AVD.
+        """
+        return self._workshop_command(
+            {"kind": "set_workshop_levels", "level": level, "rows": list(rows)},
+            expected_sequence=expected_sequence,
+        )
+
+    def _workshop_command(
+        self, fields: Mapping[str, object], *, expected_sequence: int
+    ) -> WorkshopReport:
+        self._workshop_report = None
+        result = self.send_command(
+            {
+                "type": "command",
+                "protocol_version": PROTOCOL_VERSION,
+                "request_id": f"workshop-{time.monotonic_ns() % 1_000_000_000}",
+                "expected_observation_sequence": expected_sequence,
+                **fields,
+            }
+        )
+        report = self._workshop_report
+        if result.outcome != CommandOutcome.CONFIRMED or report is None:
+            raise BridgeProtocolError(f"the bridge reported no Workshop state: {result.reason}")
+        if report.wrote != (fields["kind"] == "set_workshop_levels"):
+            raise BridgeProtocolError(
+                f"the Workshop report does not match the {fields['kind']} command it answers"
+            )
+        return report
+
     def send_command(self, message: Mapping[str, object]) -> BridgeCommandResult:
         """Submit one sequence-bound semantic command and await its bounded result."""
         if self._socket is None or self._handshake is None:
@@ -848,6 +1021,10 @@ class InstrumentedBridgeClient:
                 canonical["budget_game_ms"] = command.budget_game_ms
                 canonical["frame_game_ms"] = command.frame_game_ms
                 canonical["health_change_fraction"] = command.health_change_fraction
+            elif command.kind == "set_workshop_levels":
+                # In this order: the bridge's parser reads the level, then the rows.
+                canonical["level"] = command.level
+                canonical["rows"] = list(command.rows or ())
             self._write_message(canonical)
             deadline = time.monotonic() + self.read_timeout
             # The bridge emits the state a result describes immediately before the

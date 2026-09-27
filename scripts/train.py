@@ -90,9 +90,11 @@ import torch  # noqa: E402
 from run_episodes import (  # noqa: E402
     add_cadence_arguments,
     add_upgrade_availability_argument,
+    add_workshop_level_argument,
     decision_cadence_from,
     open_environment,
     upgrade_availability_from,
+    workshop_level_from,
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
@@ -100,10 +102,10 @@ from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
 from tower_rl.experiment.run_identity import (  # noqa: E402
-    REFERENCE_FINAL_WAVES,
     RunIdentity,
     checkpoint_identity,
     dreamer_resolved_config,
+    reference_final_waves,
     resolved_config,
     source_revision,
     tracked_params,
@@ -296,12 +298,15 @@ def build_arm(
     # what every actor may buy, for the identity its checkpoints are keyed on
     # and for the snapshot it records (ADR 0011).
     upgrade_availability = upgrade_availability_from(arguments)
+    # And so is the Workshop runway profile (ADR 0012).
+    workshop_level = workshop_level_from(arguments)
     identity = RunIdentity.started_now(
         name,
         profile_id=profile_id,
         source_revision=revision,
         decision_cadence=decision_cadence,
         upgrade_availability=upgrade_availability,
+        workshop_level=workshop_level,
     )
     run_id = identity.run_id
     run_dir = parent / run_id
@@ -385,6 +390,7 @@ def build_arm(
         cadence=instances[0].environment.cadence,
         decision_cadence=decision_cadence,
         upgrade_availability=upgrade_availability,
+        workshop_level=workshop_level,
         burn_in=burn_in,
         stride=stride,
         device=device,
@@ -912,6 +918,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
+    add_workshop_level_argument(parser)
     parser.add_argument(
         "--run-dir",
         type=Path,
@@ -1060,6 +1067,8 @@ def resume_point(
             # A checkpoint collected on other rows is not experience this run
             # can continue either (ADR 0011).
             upgrade_availability=upgrade_availability_from(arguments),
+            # Nor one collected on another Workshop setup (ADR 0012).
+            workshop_level=workshop_level_from(arguments),
         )
     )
     try:
@@ -1314,7 +1323,7 @@ def train_session(
             "wall_seconds": round(time.monotonic() - started, 1),
             # Repeated at the top of the report as well as inside each arm: the
             # curve is meaningless without the floors it is read against.
-            "reference_final_waves": REFERENCE_FINAL_WAVES,
+            "reference_final_waves": reference_final_waves(workshop_level_from(arguments)),
             # One arm. The session used to carry a list of them, from a
             # comparison of several backbones that was retired: this project
             # trains one backbone and compares it against the non-learned floors
@@ -1359,7 +1368,7 @@ def connect(
     releases and closes afterwards: a fleet that half connected must still put
     down every bridge it picked up.
     """
-    client, adapter, environment = open_environment(port, expected, arguments)
+    client, adapter, environment = open_environment(serial, port, expected, arguments)
     opened.append((adapter, client))
     return ActorInstance(serial=serial, environment=environment)
 

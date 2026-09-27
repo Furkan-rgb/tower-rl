@@ -207,6 +207,58 @@ episode, backward wave movement while both states are active, and any upgrade
 level that moved backwards. Invalid observations are retried, recovered,
 quarantined, or terminated; they do not become an ordinary `WAIT` transition.
 
+### Upgrade setup record
+
+`upgrade_availability`, `workshop_level` and `workshop_rows` record what a run
+asked for. The upgrade setup (`environment/upgrade_setup.UpgradeSetup`) records
+what the game held once the request was applied. `reset` builds it every
+episode from three read-backs:
+
+- **Rows:** every slot `RunPort.slot_labels` names (a non-empty label), sorted
+  by family and index. The labels are read once, before the first round, in
+  every availability mode.
+- **`available_in_run`:** the row's in-run availability flag (`unlocked`) in
+  the episode's first observation, read after the round start and after the
+  unlock under `all`.
+- **`workshop_level`:** the row's level in `RunPort.workshop_levels`, read once
+  the round has started. That read is made only at N > 0; at N = 0 nothing is
+  read, every row records 0, and `workshop_read_back` is false. A row missing
+  from the read would record null.
+
+An excerpt shaped like `M3-P009` (`all`, N = 5). On the supported build the
+full record holds 48 rows (17 attack, 18 defense, 13 utility):
+
+```json
+{
+  "workshop_read_back": true,
+  "rows": [
+    {"family": "attack", "index": 0, "name": "Damage",
+     "available_in_run": true, "workshop_level": 5},
+    {"family": "attack", "index": 4, "name": "Attack Range",
+     "available_in_run": true, "workshop_level": 0}
+  ]
+}
+```
+
+The digest is the sha256 hex of that record as canonical JSON (sorted keys,
+separators `,` and `:`, ASCII). Every episode record (`episode_record`) carries
+`upgrade_setup` and `upgrade_setup_digest`. A training run's `manifest.json` is
+rewritten after its first episode with that episode's `upgrade_setup` and
+`upgrade_setup_digest`, and the digest joins `CheckpointIdentity` as
+`upgrade_setup_digest`: checked by `incompatibilities`, left out of
+`identity_hash`. A checkpoint without a digest, written before the record
+existed or before its run's first episode, is not refused on that field.
+
+One `UpgradeSetupReference` is shared by every environment of a run. The first
+episode any actor begins pins it. A later episode whose digest differs has
+every state invalid with `UPGRADE_SETUP_DRIFT` and is classified
+`observation_invalid`. When the run resumes a checkpoint (`train.py --resume`)
+or plays one (`run_episodes.py --policy checkpoint:`), the reference holds that
+checkpoint's digest, and a first episode on another setup raises
+`UpgradeSetupRefused`, which ends the run rather than counting as a failed
+episode. That refusal comes at the first round start, not before bring-up: the
+setup is only known once the game has read it back.
+
 ## Run learned actions
 
 The V1 policy can emit only `WAIT` plus `BUY_<UPGRADE>` values from the

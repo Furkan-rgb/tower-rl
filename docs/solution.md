@@ -929,6 +929,19 @@ ADR 0012), which is environment configuration and is never saved. Timed research
 is permitted only in progression mode. A run is comparable only with runs under
 the same account and the same Workshop level. The v1 records stay valid under v1.
 
+The flags a run is started with say what it asked for, not what the game held.
+So every episode also records its upgrade setup as the game read it back: every
+in-run row the game names, whether it was purchasable at the episode's first
+observation, and the Workshop level it stood at after the round began
+(`environment/upgrade_setup.py`, schema in the
+[environment contract](environment-contract.md#upgrade-setup-record)). The
+setup's sha256 digest is what runs are compared by. The run's first setup is
+written to its manifest and its checkpoint identity. An episode on a different
+setup is invalid (`UPGRADE_SETUP_DRIFT`), and a resume or an evaluation of a
+checkpoint is refused when its first episode's setup is not the checkpoint's.
+Two runs with fewer in-run rows, or with a different Workshop set, therefore
+stay distinguishable even when their flags are spelled the same.
+
 Every run episode records its exact progression-profile identity. Replay and
 evaluation reject profile-incompatible data; fixed-baseline V1 replay/evaluation
 is isolated from progression-mode runs. Progression evaluation measures Tier-1

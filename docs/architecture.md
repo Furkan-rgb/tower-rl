@@ -99,6 +99,11 @@ Owns the decision problem, and nothing about how a device is reached.
   (ADR 0011): under `UpgradeAvailability.ALL` it reopens every real upgrade row
   at each round start through the port and holds the episode to it
   (`UNLOCK_NOT_APPLIED`, `UNLOCK_REVERTED`).
+- `upgrade_setup.py` — `UpgradeSetup`, its digest, and `UpgradeSetupReference`.
+  An `UpgradeSetup` is the setup the game read back for one episode: every
+  named row, its in-run availability and its Workshop level. One reference is
+  shared by a run's environments and holds the run to its first setup
+  (`UPGRADE_SETUP_DRIFT`) or to a checkpoint's (`UpgradeSetupRefused`).
 - `decision_time.py` — `DecisionTimeProfile` and `DecisionTimeBreakdown`: where
   a decision's wall time went, by bucket.
 - `project_state.py` — `repository_root` and `state_directory`: the git-ignored

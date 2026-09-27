@@ -48,16 +48,20 @@ class StackedDqnConfig:
     #: The candidate study treats this as the tuned knob in the range 4 to 16 and
     #: names k = 1 as the ablation that settles whether history is needed at all.
     history_length: int = 8
-    #: 1/(1 - discount) is the horizon in decisions. An episode here is about
-    #: 121 decisions, so 0.997 (horizon 333) is effectively undiscounted and
-    #: leaves the return dominated by noise far past anything the state predicts.
+    #: 1/(1 - discount) is the horizon in decisions: 100 at 0.99. What the
+    #: per-decision discount was calibrated against was the ~121-decision
+    #: episode of baseline v1; the game-time discount below replaced it for the
+    #: runs since, whose horizon does not move with how many choice points a
+    #: policy makes.
     discount: float = 0.99
     #: Discount per second of game time instead of per decision, or None for
     #: `discount` per decision. A transition that spans t game-seconds is then
     #: discounted by this ** t: a purchase takes no game time and costs no
     #: discount, and the horizon is fixed in waves rather than in however many
     #: choice points a policy makes (docs/solution.md 9.4d). When set,
-    #: `discount` is not read.
+    #: `discount` is not read. The recipe's value is 0.999, a horizon of 1,000
+    #: game-seconds or about 28 waves, which covers the tens of waves a
+    #: purchase now pays off over at baseline v2.
     discount_per_game_second: float | None = None
     #: Replace the wave reward, in the learner only, with game time survived in
     #: waves, integrated exactly under the game-time discount
@@ -80,6 +84,12 @@ class StackedDqnConfig:
     learning_rate: float = 1e-4
     #: Decoupled weight decay, hence AdamW rather than Adam.
     weight_decay: float = 1e-5
+    #: AdamW's epsilon, 1.5e-4 as Rainbow, DER, SPR and BBF use rather than
+    #: torch's 1e-8: it bounds the step on a parameter whose second moment is
+    #: near zero, which a TD target that moves as the value does keeps
+    #: producing. Every checkpoint written before this field ran at 1e-8, and
+    #: a resume keeps the epsilon its optimizer state holds.
+    adam_epsilon: float = 1.5e-4
     #: A target that follows the online network smoothly. At this replay ratio a
     #: periodic hard copy moves the target in large infrequent jumps, which is
     #: what the data-efficient recipe replaces.
@@ -199,6 +209,7 @@ class StackedDqnBackbone:
         self.optimizer = torch.optim.AdamW(
             self.online.parameters(),
             lr=self.config.learning_rate,
+            eps=self.config.adam_epsilon,
             weight_decay=self.config.weight_decay,
         )
         self._random = random.Random(self.config.seed)

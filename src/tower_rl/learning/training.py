@@ -37,10 +37,11 @@ instances on this host (M1B-E028), and an actor spends nearly all of its time
 waiting on a socket, so the actors are threads: they share the replay buffer
 directly and nothing has to be serialised between processes.  What they do not
 share is the network they act from.  Each actor holds its own copy of it and the
-learner publishes into that copy between the actor's episodes, which is the
-actor-learner arrangement of Ape-X and R2D2: a forward pass then contends with
-nothing, where every actor reading the one live network would have put fifty
-decisions a second and a dozen gradient steps a second through one lock.  What
+learner publishes into that copy every `parameter_sync_decisions` of the
+actor's own decisions, between two of them, which is the actor-learner
+arrangement of Ape-X and R2D2: a forward pass then contends with nothing, where
+every actor reading the one live network would have put fifty decisions a
+second and a dozen gradient steps a second through one lock.  What
 that costs is the discipline in this file - the run's progress is mutated only
 under `_lock`, the buffer only under the replay's own lock, and the learner's
 parameters are read only through `Learner.publish_to`.
@@ -55,6 +56,7 @@ from collections.abc import Callable, Collection, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import partial
 
 from tower_rl.environment.decision_time import (
     LEARNER_STEP,
@@ -232,10 +234,11 @@ class Learner:
     def publish_to(self, acting: Backbone) -> None:
         """Copy the learner's parameters into one actor's acting copy.
 
-        Called on that actor's own thread between its episodes, which is the
-        other half of the no-torn-read guarantee: the lock keeps the source
-        still while it is read, and an actor that is copying is by construction
-        not acting, so no forward pass can see the copy half written.
+        Called on that actor's own thread between two of its decisions, which
+        is the other half of the no-torn-read guarantee: the lock keeps the
+        source still while it is read, and an actor that is copying is by
+        construction not acting, so no forward pass can see the copy half
+        written. Every decision is therefore taken on one complete version.
         """
         with self.lock:
             acting.load_state_dict(self.backbone.state_dict())
@@ -259,12 +262,15 @@ class TrainingConfig:
     #: handful of episodes of one policy.
     warmup_sequences: int = 100
     batch_size: int = 8
-    #: Gradient steps per environment decision: the replay ratio. What matters
-    #: is the transitions replayed per transition generated, which is this times
-    #: the learnable steps in a batch - at 80-step sequences, burn-in 7, n-step
-    #: 10 and batch 8 that is about 504 per step, so 0.25 puts the run at 126:1,
-    #: above SPR's 64:1. The 2.0 of the first run was 1087:1.
-    gradient_steps_per_decision: float = 0.25
+    #: Gradient steps per environment decision. What matters is the replay
+    #: ratio, transitions replayed per transition generated, which is this
+    #: times the learnable steps in a batch: batch 8 of 80-step sequences with
+    #: burn-in 7 learn 73 - n steps each, 560 per step at the final n of 3. So
+    #: 0.114 is 63.8:1 (57.5:1 while n is still 10), SPR's 64:1: without
+    #: network resets the gain from replaying more stops at about 32-64:1
+    #: (D'Oro et al. 2023), and BBF's 256:1 needs the resets this run does not
+    #: have (docs/solution.md 9.4).
+    gradient_steps_per_decision: float = 0.114
     #: Episodes per point of the collection curve. The curve is read from the
     #: collection episodes themselves rather than from exploration-free
     #: evaluations: at epsilon 0.05 they are almost on-policy, they cost no
@@ -301,17 +307,20 @@ class TrainingConfig:
     #: actor: one dead emulator out of four is one withdrawn actor, not a dead
     #: environment, and the run ends only when every actor has withdrawn.
     max_consecutive_episode_failures: int = 5
-    #: Episodes one actor plays between refreshes of the copy it acts from, its
-    #: parameter lag. One means every actor starts each episode from the
-    #: learner's current parameters, which is exactly what a single actor did
-    #: when it acted from the learner's network directly - the reason it is the
-    #: default is that it leaves `--actors 1` unchanged against the runs already
-    #: measured. It is also well inside published practice: Ape-X and R2D2
-    #: actors refresh every few hundred environment steps, and an episode here
-    #: is about 121 decisions. Raising it trades freshness for fewer
-    #: publications; the lag it buys is bounded by this many of the actor's own
-    #: episodes, never by the fleet's rate.
-    parameter_sync_episodes: int = 1
+    #: Decisions one actor takes between refreshes of the copy it acts from,
+    #: inside an episode. Every episode also starts on a fresh copy, and that
+    #: refresh restarts the count, so an episode never opens on parameters
+    #: older than the previous one's last. 100 is Ape-X's 400 frames at an
+    #: action repeat of 4 (Horgan et al. 2018). A fleet of seven at the
+    #: default 0.114 gradient steps per decision then acts on parameters at
+    #: most about 7 x 100 x 0.114 = 80 gradient steps old; refreshing once per
+    #: 550-decision episode instead would be about 7 x 550 x 0.114 = 440 (and
+    #: 3,850 at M3-P009's 1.0). Safe for a backbone whose carried state is its
+    #: own input history, as stacked-dqn's is. Zero refreshes at the start of
+    #: every episode only, never inside one: what a backbone whose carried
+    #: state the parameters themselves produced needs, which is DreamerV3's
+    #: recurrent latent (`scripts/train.py` fixes it there).
+    parameter_sync_decisions: int = 100
     #: Pre-registered floors on the decision axis the run stops itself on; see
     #: `KillBar`. Empty is off, which is every run before run 4.
     kill_bars: tuple[KillBar, ...] = ()
@@ -327,8 +336,8 @@ class TrainingConfig:
             raise ValueError("a collection window needs at least one episode")
         if self.max_consecutive_episode_failures < 1:
             raise ValueError("at least one episode failure must be survivable")
-        if self.parameter_sync_episodes < 1:
-            raise ValueError("actors must be synchronised at least every episode")
+        if self.parameter_sync_decisions < 0:
+            raise ValueError("a synchronisation cadence cannot be negative")
         if self.checkpoint_every_decisions < 0:
             raise ValueError("a checkpoint cadence cannot be negative")
         if self.selection_period_decisions < 1:
@@ -845,11 +854,12 @@ class TrainingRun:
     #: per-actor metric series is keyed by, so it is resolved once here rather
     #: than re-derived by everything that reports per actor.
     actor_index: dict[str, int] = field(default_factory=dict, init=False)
-    #: Episodes each actor has played since its copy was last refreshed. Starts
-    #: at the cadence so every actor publishes before its first episode, which
+    #: Decisions each actor has taken since its copy was last refreshed. Starts
+    #: at the cadence so every actor publishes before its first decision, which
     #: is also what picks up a checkpoint loaded into the backbone after the run
     #: was built. Each actor touches only its own entry of a dict whose keys are
-    #: all present from construction, so it needs no lock of its own.
+    #: all present from construction, so it needs no lock of its own. Unread
+    #: at a cadence of zero, which refreshes at every episode start instead.
     _since_sync: dict[str, int] = field(default_factory=dict, init=False)
     #: Where on the decision axis this segment's `report.collected` starts: zero
     #: for a fresh run, the parent's count for a resumed one. A kill bar places
@@ -917,7 +927,14 @@ class TrainingRun:
             # in the same buckets. Wired here like the acting copy above, for
             # the same reason: the run owns what an actor is attached to.
             actor.environment.profile = actor.profile
-            self._since_sync[actor_id] = self.config.parameter_sync_episodes
+            self._since_sync[actor_id] = 0
+            # Handed to the actor rather than run between its episodes: a
+            # refresh at a cadence in decisions lands inside them.
+            actor.before_decision = (
+                partial(self._before_decision, actor_id, copy, actor.profile)
+                if self.config.parameter_sync_decisions
+                else None
+            )
             self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
     @property
@@ -1103,24 +1120,22 @@ class TrainingRun:
                 self.report.epsilon = exploration.reported_epsilon(
                     self.report.decisions
                 )
-            # Refreshed between episodes and never inside one: the copy's
-            # parameters hold still for a whole episode, and the history window
-            # the actor carries through that episode was produced by exactly the
-            # parameters it is still acting from. `_lock` is released first, so
-            # the only order locks are ever taken in is progress, then replay,
-            # then learner.
-            if self._since_sync[actor_id] >= self.config.parameter_sync_episodes:
-                with profile.span(LEARNER_STEP):
-                    self.learner.publish_to(acting)
-                self._since_sync[actor_id] = 0
+            # Every episode starts on a fresh copy, and the count of decisions
+            # to the next refresh restarts here. At a cadence of zero the copy
+            # then holds still through the whole episode; otherwise the
+            # refreshes inside it are `_before_decision`'s. `_lock` is released
+            # first, so the only order locks are ever taken in is progress,
+            # then replay, then learner.
+            self._refresh(actor_id, acting, profile)
             # Exploration is set per episode rather than per step, so a stored
             # sequence has one epsilon and its provenance stays meaningful.
             actor.config = replace(actor.config, epsilon=epsilon)
-            # The version of the parameters this episode is actually played
-            # with, which is the copy's rather than the learner's: a sequence
-            # must be stamped with the policy that produced it.
+            # The version of the parameters this episode starts on, which is
+            # the copy's rather than the learner's: a sequence must be stamped
+            # with the policy that produced it. Under a cadence in decisions a
+            # later refresh may move it inside the episode, so this is the
+            # oldest version any of its decisions was taken with.
             actor.model_version = acting.model_version
-            self._since_sync[actor_id] += 1
             try:
                 result = actor.run_episode()
             except RunPortError as failure:
@@ -1161,6 +1176,24 @@ class TrainingRun:
                 # to learn from and nothing the budget is counted in, so it
                 # leaves the fleet exactly as one on a failing port does.
                 raise RunPortError(barren)
+
+    def _refresh(self, actor_id: str, acting: Backbone, profile: DecisionTimeProfile) -> None:
+        """Publish the learner's parameters into one actor's copy, on its own thread."""
+        with profile.span(LEARNER_STEP):
+            self.learner.publish_to(acting)
+        self._since_sync[actor_id] = 0
+
+    def _before_decision(
+        self, actor_id: str, acting: Backbone, profile: DecisionTimeProfile
+    ) -> None:
+        """Count one decision of this actor's, refreshing its copy first if one is due.
+
+        Called by the actor before each forward pass (`Actor.before_decision`),
+        so a refresh lands between two decisions and never inside one.
+        """
+        if self._since_sync[actor_id] >= self.config.parameter_sync_decisions:
+            self._refresh(actor_id, acting, profile)
+        self._since_sync[actor_id] += 1
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:
         """Count an episode the port could not deliver, against run and actor."""

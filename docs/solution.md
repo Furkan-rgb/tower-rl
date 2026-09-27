@@ -547,18 +547,41 @@ Only the learner mutates model and optimizer state. Weight publication is atomic
 
 In the single-process fleet this is realised by giving every actor its own copy
 of the network to act from, as Ape-X and R2D2 do, and publishing the learner's
-parameters into that copy between the actor's episodes. A forward pass then
-contends with nothing: at the fleet sizes a shrunken render target allows, every
-actor reading the one live network would have put tens of decisions and a dozen
-gradient steps a second through a single lock. A publication is the only shared
-moment left. It is taken under the lock the learner's optimisation step holds, so
-it can never read half a step, and it is performed on the actor's own thread
-between its episodes, so it can never land inside one — which is also what keeps
-the recurrent state an actor carries through an episode consistent with the
-parameters that produced it. The lag is `--parameter-sync-episodes`, counted in
-that actor's own episodes and defaulting to 1: refreshing every episode is
-exactly what a single actor acting from the learner's own network always did, so
-`--actors 1` is unchanged against the runs already measured.
+parameters into that copy at the start of every episode and then every
+`--parameter-sync-decisions` of the actor's own decisions within it (default
+100). A forward pass then contends with nothing: at the fleet
+sizes a shrunken render target allows, every actor reading the one live network
+would have put tens of decisions and a dozen gradient steps a second through a
+single lock. A publication is the only shared moment left. It is taken under the
+lock the learner's optimisation step holds, so it can never read half a step, and
+it is performed on the actor's own thread before a decision's forward pass
+(`Actor.before_decision`), so it can never land inside one: every decision is
+taken on one complete version (`tests/unit/test_fleet_training.py`, a torn-copy
+check against a ledger of every version the learner reached).
+
+The cadence is counted in decisions, so a refresh lands inside an episode; the
+refresh at an episode's start restarts the count, so no episode opens on
+parameters older than the previous one's last. 100 is Ape-X's: its actors copy
+the learner's parameters every 400 frames (Horgan et al. 2018, §4.1), which at
+an action repeat of 4 is 100 agent steps. A fleet of seven at the default
+0.114 gradient steps per decision then acts on parameters at most about
+7 × 100 × 0.114 ≈ 80 gradient steps old, where refreshing once per
+~550-decision episode leaves them about 7 × 550 × 0.114 ≈ 440 behind (3,850 at
+M3-P009's 1.0 gradient steps per decision), a lag that grows with episode
+length. A mid-episode swap is safe for `stacked-dqn` because what it carries
+through an episode is a window of its own inputs, not a state its parameters
+produced; a swap changes how the window is read, never what is in it.
+DreamerV3's carried latent is produced by its parameters, so it is fixed at
+`--parameter-sync-decisions 0`, which refreshes at every episode start and never
+inside one — the behaviour every run before this used. A sequence's
+`model_version` is the version its episode's first decision was taken with, so
+under a cadence in decisions it is the oldest version in the episode.
+
+`--actors 1` is unchanged against the runs already measured. A single actor
+takes its gradient steps between its own episodes, so its copy is fresh at
+every episode start, as its acting network was before the fleet existed, and a
+refresh inside an episode copies the version it already holds
+(`tests/unit/test_fleet_training.py`, the fleet-of-one tests).
 
 **Learner step profile.** At production shapes (batch 8 × 80 steps, burn-in 7,
 n = 10, 197,379 parameters) on the RTX 4090, one gradient step — `collate` plus
@@ -1429,9 +1452,10 @@ Use configurable defaults close to established R2D2 practice:
   counts gradient steps since the start. The counter is the learner's own and
   travels in the checkpoint, so a resume continues the schedule; unset, n is
   fixed, as for every run before run 4;
-- discount 0.99. Its horizon of 100 decisions is comparable to the ~121 decision
-  episode; 0.997 is a horizon of 333 and is effectively undiscounted here.
-  `stacked-dqn` may instead discount by game time (section 9.4d);
+- discount 0.99 per decision by default, a horizon of 100 decisions, calibrated
+  against baseline v1's ~121-decision episode. Every run since M3-P003 has
+  discounted `stacked-dqn` by game time instead (section 9.4d), whose recipe
+  value is now 0.999 per game-second;
 - Double Q-learning;
 - dueling head;
 - prioritized sequence replay at R2D2's published values (below), always on;
@@ -1443,17 +1467,24 @@ Use configurable defaults close to established R2D2 practice:
 
 Exact values are starting hypotheses, not acceptance requirements. Record every experiment's resolved values.
 
-Overlapping windows are cut so that every episode contributes the step that ended
-it. Striding from the start of an episode alone emits whole windows only, which
-stores a terminal step just when the episode length happens to be a multiple of
-the stride and stores nothing at all for an episode shorter than one window.
-Under `reward-v1` the reward is a wave delta, so termination is the whole of the
-negative signal and a short episode is an early death: both are exactly what the
-learner must see. So the last window of an episode is aligned to its end,
-overlapping its predecessor where it must, and an episode too short for one
-window is padded at the front up to a full window. Padding is flagged, and a
+Overlapping windows are cut so that every episode contributes both the step
+that began it and the step that ended it. Striding over an episode alone loses
+both ends. A window's burn-in is never a target, so window 0's first
+`burn_in` steps — the first seven decisions of every episode, the opening
+purchases — were never learned, while acting took them on the zero history an
+episode starts from (board #92). And whole windows alone store a terminal step
+just when the episode length happens to be a multiple of the stride, and nothing
+at all for an episode shorter than one window. Under `reward-v1` the reward is a
+wave delta, so termination is the whole of the negative signal and a short
+episode is an early death: both are exactly what the learner must see. So every
+episode is padded at the front with one burn-in of filler — zeroed features,
+which is the history window an episode really starts from — and further, up to
+a full window, if it is still too short for one; and the last window of an
+episode is aligned to its end, overlapping its predecessor where it must. Every
+decision is then a learning step in some window. Padding is flagged, and a
 flagged step is never a training target and never contributes a TD error to a
-priority.
+priority. At a stride of 40 an episode of 550 decisions is cut into 13 windows,
+about 42 decisions each.
 
 For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Record prioritization alpha, importance-sampling beta, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
 
@@ -1480,10 +1511,39 @@ another exploration is.
 
 What matters about the replay ratio is transitions replayed per transition
 generated, not gradient steps per decision: a gradient step here replays a whole
-batch of unrolled sequences. At 80-step sequences, burn-in 7, n-step 10 and
-batch 8 one step replays about 504 transitions, so 0.25 gradient steps per
-decision is about 126:1 - above SPR's 64:1 - where the first training run's
-2.0 was 1087:1 against 8 for DQN and about 1 for R2D2.
+batch of unrolled sequences. At 80-step sequences, burn-in 7 and batch 8 a
+sequence has 73 − n learnable steps (the last n have no bootstrap state inside
+the window), so one step replays 8 × 70 = 560 transitions at the final n of 3.
+The default, 0.114 gradient steps per decision, is therefore 63.8:1 (57.5:1
+while n is still 10) — SPR's 64:1, and 114k gradient steps over a 1M-decision
+budget, comparable to SPR's 100k. Not higher: without network resets the gain
+from a higher replay ratio fails beyond about 1-2 updates per step at batch 32,
+32-64:1 (D'Oro et al. 2023), and BBF's 256:1 depends on the resets this learner
+does not have. M3-P009 ran 1.0 (560:1); the first training run's 2.0 was
+1087:1, against 8 for DQN and about 1 for Ape-X and R2D2.
+
+Replay holds the whole run: `--replay-capacity` defaults to 25,000 windows,
+1M decisions at the asymptotic 40 decisions per window of a stride of 40 (about
+1.06M at 550-decision episodes). The data-efficient methods this learner
+follows (DER, SPR, BBF) never discard data within their budget, and Ape-X keeps
+2M transitions. A stored decision costs about 19.5 KB in memory (582 Python
+floats of features; measured 2026-09-27 on synthetic episodes cut by
+`Actor._windows`), so 25,000 windows are about 19.2 GiB against 4096's 3.2 GiB.
+The host has 125 GiB, of which about 33 GB were available with M3-P009's seven
+emulators and its 4096-window buffer running.
+
+The optimiser is AdamW at lr 1e-4 with weight decay 1e-5 and ε 1.5e-4, the ε of
+Rainbow, DER, SPR and BBF, rather than torch's 1e-8: ε bounds the step on a
+parameter whose second moment is near zero. A resume keeps the ε its
+optimizer state carries — torch restores it with the state — so a checkpoint
+from before this goes on at 1e-8, and its record says so.
+
+None of the replay ratio, the capacity or the refresh cadence is in a
+checkpoint's identity, and each now defaults to a different value than the runs
+before it, so `--resume` refuses a checkpoint recorded under other values
+rather than continue it under the new defaults silently; repeating the recorded
+values continues it as it was. A checkpoint that recorded
+`parameter_sync_episodes` 1 reads as `--parameter-sync-decisions 0`.
 
 Exploration anneals over a horizon counted in decisions and is then held at the
 floor, rather than being derived from progress through the whole budget.
@@ -1638,7 +1698,7 @@ every loss is a mean over the steps its weight keeps.
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`) | same; stride 32, burn-in 0 | none |
 | train ratio | 512, Table 2's setting for the 500K-1M-step, vector-observation, 12M-model budget (Proprio Control 500K and Visual Control 1M rows; dv3.txt lines 869-870), matching the code's `crafter` preset (configs.yaml: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`, its only 1.1M-step single-environment preset) | 512, which is train_ratio/(batch_size·batch_length) = 512/(16·64) = 0.5 gradient steps per decision (`dreamer.py:143`). No flag overrides it. | 2026-09-25: this budget and model size is what the paper's own Table 2 specifies, and it is the code's own preset for a matching 1.1M-step, single-environment run. (Supersedes the earlier claim that the `atari100k` preset's 256 was "the published preset for the matching low-data, one-environment regime"; `atari100k` is a 400K-step, 100 discrete-action benchmark, not this one.) |
 | warm-up | trains once replay holds B·T steps (`embodied/run/train.py:71`), about 1,088 agent steps once the official replay's chunking is counted | 25 windows, about 1,008 decisions at stride 32 | A window count is what `TrainingConfig` expresses. 25 windows is the nearest to the official figure. |
-| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 4,096 windows by default, **no online queue** | 2026-09-25: the default 4,096 windows hold about 131k decisions (roughly 4 windows per 148-decision episode); it no longer holds a full 1M-decision run. 1M-decision runs pass `--replay-capacity 40000` so the buffer still holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows is about 20 GB. An online queue would need a replay change. |
+| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 25,000 windows by default, **no online queue** | 2026-09-27: the shared default is 25,000 windows, sized for `stacked-dqn`'s ~550-decision episodes (§9.4); at DreamerV3's shorter episodes (roughly 4 windows per 148-decision episode) that holds about 0.9M decisions, so 1M-decision runs still pass `--replay-capacity 40000` so the buffer holds the whole run (the official `replay.size` is 5e6). The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows at those ~37 decisions each is about 29 GB. DreamerV3's parameter refresh is fixed at every episode start (`--parameter-sync-decisions 0`, §6.10). An online queue would need a replay change. |
 | replay context | 1, with stored latents | **0**, the official code's own zero-context path | Replay stores no latents, and writing them back into replay would change replay. |
 | action mask | none | **the mask is an observation key.** It is encoded and decoded (binary cross-entropy). Acting samples under the true mask. Imagination samples under the decoded mask (logit > 0, WAIT always valid). | Invalid actions must never be chosen. In imagination the true mask is unknown, so the model's own belief of it is used. |
 | terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
@@ -1700,11 +1760,24 @@ game time instead, as a semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
 - the value-fit correlation uses the same d·r and d, so it measures the return
   the target is trained towards.
 
-The chosen value is γ_s = 0.997 per game-second: a horizon of 333 game-seconds,
-about 9.5 waves of 35 s, the smallest round horizon that covers the 8–10 waves
-to the next boss wall. Nothing longer is taken: with a model estimated from
-limited data, a planning horizon shorter than the true one plans better (Jiang,
-Kulesza, Singh & Lewis 2015).
+The chosen value is γ_s = 0.999 per game-second: a horizon of 1/(1 − γ_s) ≈
+1000 game-seconds, about 28 waves of 35 s. It is not a code default: the run's
+command line passes `--discount-per-game-second 0.999`. M3-P003 to M3-P009 used
+0.997, a horizon of 333 s (about 9.5 waves), chosen as the smallest round
+horizon covering the 8–10 waves to the next boss wall, on the ground that a
+planning horizon shorter than the true one plans better with a model estimated
+from limited data (Jiang, Kulesza, Singh & Lewis 2015). That covered one wall
+while episodes were ~121 decisions long. Under baseline v2 an episode runs
+about 550 decisions, and the target is wave 50-110, so a purchase's payoff
+several walls later sits at 0.997^(35·20) ≈ 0.12 of its value and is barely
+visible; at 0.999 it is 0.50. 0.999 is still the shortest round horizon that
+reaches that far, keeping Jiang et al.'s argument for not going longer, and it
+is within the 0.997-0.9997 range R2D2, Agent57 and MuZero use per step
+(Kapturowski et al. 2019; Badia et al. 2020; Schrittwieser et al. 2020). The
+values it bootstraps are bounded by V_max ≈ 28.6 (§9.4e); the Huber loss stays
+and no value rescaling (Pohlen et al. 2018) is added, because R2D2 needed that
+rescaling for unclipped rewards in the thousands, not for returns of this
+size.
 
 Unset, the discount is `--discount` per decision (0.99), with targets identical
 to the bit to those before the flag existed; the two flags are refused
@@ -1712,8 +1785,9 @@ together, and the flag is refused under `--backbone dreamerv3`, which keeps its
 published per-step discount. The flag is recorded in the resolved config, and a
 resume under a different discount than its checkpoint's is refused. Within a
 multi-advance span a wave reward is booked at the span's end rather than when
-it occurred, which understates it by at most γ_s^(span seconds) - about 5% on
-the longest early WAIT spans (about 17 s) and nothing on purchase spans - and
+it occurred, which understates it by at most 1 − γ_s^(span seconds) - about
+1.7% at 0.999 (5% at 0.997) on the longest early WAIT spans (about 17 s) and
+nothing on purchase spans - and
 the bias is accepted rather than measured, because an exact measure needs
 per-advance events on `RunTransition`. Per decision stays the default pending
 the M3-P003 comparison.
@@ -1750,11 +1824,12 @@ clock-driven. In the M3-P003 evaluation records
 all 1,585 completed waves from wave 2 on, boss waves included, lasted
 34.88–35.20 game-s; wave 1 lasted 33.7–34.6 s. The 43 deaths in wave 20 came
 0.7–34.7 s into it. So game time survived is, to within 0.2 s per wave, 35 ×
-waves passed plus the time into the final wave. With γ_s = 0.997, from the start
-of a wave, a death at 5 s is worth 0.142 and a death at 30 s is worth 0.820.
+waves passed plus the time into the final wave. With γ_s = 0.999, from the start
+of a wave, a death at 5 s is worth 0.143 and a death at 30 s is worth 0.844.
 Under the wave reward both are worth the same. An immortal policy is worth
-1/(β · 35) = 9.51, against 9.02 under the wave reward, and the longest span
-(about 17 s) earns 0.474.
+V_max = 1/(β · 35) = 28.56, against 28.06 under the wave reward, and the longest
+span (about 17 s) earns 0.482. (At the earlier 0.997: 0.142, 0.820, 9.51 against
+9.02, and 0.474.)
 
 This changes the optimised objective, by a bounded amount; section 7.5 of
 `docs/task.md` records the developer's acceptance. Undiscounted, a trajectory's
@@ -1840,6 +1915,8 @@ The learner increments `model_version` after each publication interval. It publi
 - checksum.
 
 Actors poll or receive notification between inference steps and swap weights atomically at a safe boundary. They record the active version in every sequence. Reject incompatible weights loudly.
+
+As built (§6.10), each actor copies the learner's parameters into its own acting network at every episode start and every `--parameter-sync-decisions` of its own decisions after it (100, Ape-X's 400 frames), on its own thread before a decision's forward pass and under the learner's lock, so a swap can land inside an episode but never inside a decision or an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode. DreamerV3 refreshes at episode starts only (`0`).
 
 ### 9.7 Training stability checks
 

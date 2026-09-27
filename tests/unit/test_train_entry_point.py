@@ -19,7 +19,7 @@ import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -28,7 +28,8 @@ from fakes.fake_run_port import FakeRunPort
 from fakes.recording_tracker import RecordingTracker
 
 from tower_rl.environment.episode import TerminationOutcome
-from tower_rl.environment.features import StateFeatures
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -41,19 +42,21 @@ from tower_rl.experiment.training_report import (
     non_finite_tensors,
     numbered_checkpoint_name,
 )
-from tower_rl.learning.actor import ActorConfig
+from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.policies import checkpoint_policy
+from tower_rl.learning.policies import Policy, checkpoint_policy
 from tower_rl.learning.replay import (
     R2D2_PRIORITY_EXPONENT,
     PrioritizedSequenceReplay,
+    ReplayStep,
     read_replay_metadata,
 )
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone
 from tower_rl.learning.training import TrainingRun
+from tower_rl.learning.value_learning import n_step_targets
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -241,7 +244,9 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     """
     defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
 
-    assert defaults.gradient_steps_per_decision == 0.25
+    # About 64 transitions replayed per decision: 0.114 x 8 sequences x 70
+    # learnable steps at the final n of 3 (solution.md 9.4).
+    assert defaults.gradient_steps_per_decision == 0.114
     assert defaults.batch_size == 8
     assert defaults.warmup_sequences == 100
     assert defaults.sequence_length == 80
@@ -253,14 +258,14 @@ def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path
     assert (defaults.epsilon_start, defaults.epsilon_end) == (1.0, 0.05)
     assert defaults.epsilon_anneal_decisions == 10_000
     assert defaults.exploration == "uniform", "run 1's schedule is the default"
-    assert defaults.replay_capacity == 4096
+    # The whole budget: about a million decisions at a stride of 40.
+    assert defaults.replay_capacity == 25_000
     assert defaults.collection_window_episodes == 100
     assert defaults.evaluate_every_episodes == 0, "no frequent mid-run evaluation"
     assert defaults.evaluation_episodes == 30
-    # One episode of parameter lag: a fleet's actors act from copies of the
-    # network, and refreshing every episode is what a single actor acting from
-    # the learner itself has always done.
-    assert defaults.parameter_sync_episodes == 1
+    # Ape-X's refresh of every 400 frames, 100 agent steps: a fleet's actors act
+    # from copies of the network, refreshed inside an episode as well.
+    assert defaults.parameter_sync_decisions == 100
 
 
 def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -> None:
@@ -1399,9 +1404,12 @@ def test_an_untracked_resume_does_not_announce_a_tracked_run(
             str(checkpoint),
             "--budget-decisions",
             "100000",
-            # The parent's, so the replay it saved is reloaded rather than refused.
+            # The parent's, so the replay it saved is reloaded rather than refused
+            # and the resume is not refused for a changed loop setting.
             "--replay-capacity",
             "64",
+            "--gradient-steps-per-decision",
+            "0.2",
             "--run-dir",
             str(tmp_path / "second"),
         ],
@@ -1964,3 +1972,145 @@ def test_a_checkpoint_sampled_uniformly_is_not_resumed_under_prioritized_replay(
 
     with pytest.raises(SystemExit, match="a different replay"):
         resume_from(tmp_path / "second", older, 400)
+
+
+# -- The replay ratio, the buffer and what a resume keeps (boards #92, #93) ----
+
+
+def test_the_default_replay_ratio_replays_about_64_transitions_per_decision(
+    tmp_path: Path,
+) -> None:
+    """Gradient steps per decision x sequences per step x learnable steps each.
+
+    The learnable steps are counted by the target itself: a window of 80 with
+    burn-in 7 leaves 73 steps, and the last n of them have no bootstrap state
+    inside the window.
+    """
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    unroll = defaults.sequence_length - defaults.stacked_burn_in
+    rewards = torch.zeros(1, unroll)
+    q = torch.zeros(1, unroll, len(RUN_ACTIONS))
+    mask = torch.ones(1, unroll, len(RUN_ACTIONS), dtype=torch.bool)
+
+    def replayed_per_decision(n_step: int) -> float:
+        _, learnable = n_step_targets(
+            rewards,
+            rewards.bool(),
+            q,
+            q,
+            mask,
+            discounts=torch.full((1, unroll), 0.9, dtype=torch.float64),
+            n_step=n_step,
+        )
+        return float(
+            defaults.gradient_steps_per_decision * defaults.batch_size * learnable.sum().item()
+        )
+
+    # At the final n of the anneal the recipe runs, and while n is at its start.
+    assert replayed_per_decision(3) == pytest.approx(64.0, abs=0.5)
+    assert replayed_per_decision(defaults.n_step) == pytest.approx(57.5, abs=0.5)
+
+
+def test_the_default_buffer_holds_a_million_decisions(tmp_path: Path) -> None:
+    """Nothing within the budget is discarded, at baseline v2's 550-decision episodes."""
+    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    actor = Actor(
+        environment=cast(InstrumentedRunEnvironment, None),
+        policy=cast(Policy, None),
+        config=ActorConfig(
+            sequence_length=defaults.sequence_length,
+            burn_in=defaults.stacked_burn_in,
+            # What `build_arm` strides by.
+            stride=max(1, defaults.sequence_length // 2),
+        ),
+    )
+    step = ReplayStep(
+        features=StateFeatures(
+            scalars=(0.0,) * SCALAR_COUNT,
+            rows=(0.0,) * (ROW_COUNT * ROW_WIDTH),
+            mask=(True,) * len(RUN_ACTIONS),
+        ),
+        action_index=0,
+        reward=0.0,
+        done=False,
+        admissible=True,
+        game_ms=0.0,
+    )
+    decisions = 550
+    windows = len(actor._windows([step] * decisions))
+
+    assert windows == 13
+    assert defaults.replay_capacity * decisions / windows >= 1_000_000
+
+
+def test_a_resume_under_another_loop_setting_is_refused(tmp_path: Path) -> None:
+    """None of them is in the identity, and a changed default would move them silently."""
+    checkpoint = latest_checkpoint(session(tmp_path / "first"))
+
+    with pytest.raises(
+        SystemExit, match=r"--gradient-steps-per-decision 0\.2 \(this run asks for 0\.3\)"
+    ):
+        train.resume_point(
+            arguments(
+                tmp_path / "second",
+                **{
+                    "--budget-decisions": "1000",
+                    "--resume": str(checkpoint),
+                    "--gradient-steps-per-decision": "0.3",
+                },
+            ),
+            profile_id=PROFILE,
+            revision="test",
+        )
+
+
+def test_a_parameter_sync_of_one_episode_reads_as_a_cadence_of_zero() -> None:
+    """Every checkpoint before the cadence in decisions refreshed once per episode."""
+    assert train.recorded_loop_settings({"parameter_sync_episodes": 1}) == {
+        "parameter_sync_decisions": 0
+    }
+    assert train.recorded_loop_settings({}) == {}
+
+
+def test_a_parameter_sync_of_several_episodes_is_refused_as_having_no_equivalent() -> None:
+    with pytest.raises(SystemExit, match="--parameter-sync-episodes 3, which has no equivalent"):
+        train.recorded_loop_settings({"parameter_sync_episodes": 3})
+
+
+def test_a_checkpoint_from_before_the_adam_epsilon_resumes_at_its_own(tmp_path: Path) -> None:
+    """Its optimizer state carries 1e-8, torch restores it, and the record says so.
+
+    Rewritten as a pre-change checkpoint is: the optimizer at torch's epsilon,
+    no `adam_epsilon` in its settings, and a parameter lag of one episode.
+    """
+    checkpoint = latest_checkpoint(session(tmp_path / "first"))
+    old = load(checkpoint)
+    state = dict(old.backbone_state)
+    optimizer = dict(state["optimizer"])
+    optimizer["param_groups"] = [{**group, "eps": 1e-8} for group in optimizer["param_groups"]]
+    state["optimizer"] = optimizer
+    settings = {
+        key: value
+        for key, value in old.resolved_config.items()
+        if key not in ("adam_epsilon", "parameter_sync_decisions")
+    }
+    settings["parameter_sync_episodes"] = 1
+    save(replace(old, backbone_state=state, resolved_config=settings), checkpoint)
+
+    with pytest.raises(SystemExit, match="--parameter-sync-decisions 0"):
+        resumed_arm(tmp_path / "refused", checkpoint, 1000)
+
+    arm, _ = resumed_arm(
+        tmp_path / "second", checkpoint, 1000, **{"--parameter-sync-decisions": "0"}
+    )
+
+    assert arm.backbone.optimizer.param_groups[0]["eps"] == 1e-8
+    assert arm.resolved["adam_epsilon"] == 1e-8
+    assert arm.training.config.parameter_sync_decisions == 0
+
+
+def test_dreamerv3_is_refreshed_only_between_episodes(tmp_path: Path) -> None:
+    """Its latent is state the parameters produced; a swap inside an episode would split it."""
+    assert dreamer_arguments(tmp_path).parameter_sync_decisions == 0
+    with pytest.raises(SystemExit, match="contradicts DreamerV3"):
+        dreamer_arguments(tmp_path, "--parameter-sync-decisions", "100")

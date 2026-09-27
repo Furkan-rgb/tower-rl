@@ -102,14 +102,45 @@ def test_every_episode_length_stores_its_terminal_step(decisions: int) -> None:
 def test_every_stored_window_is_a_full_window_of_real_experience(decisions: int) -> None:
     stored = _stored(decisions)
 
+    first, *rest = stored
     for sequence in stored:
         assert len(sequence.steps) == LENGTH
-        # Padding fills the front only, and only for an episode too short to
-        # fill a window on its own.
+        # Padding fills the front only.
         padded = [step.padding for step in sequence.steps]
         assert padded == sorted(padded, reverse=True)
-        assert not any(padded) or decisions < LENGTH
-        assert sum(padded) == max(0, LENGTH - decisions)
+    # The first window opens on one burn-in of filler, or more for an episode
+    # too short to fill a window on its own. A later window overlapping it may
+    # repeat some of that filler, but only inside its own burn-in.
+    assert sum(step.padding for step in first.steps) == max(BURN_IN, LENGTH - decisions)
+    assert not any(
+        step.padding for sequence in rest for step in sequence.steps[sequence.burn_in :]
+    )
+
+
+@pytest.mark.parametrize("decisions", list(range(1, 3 * LENGTH + 1)))
+def test_every_decision_of_an_episode_is_a_learning_step_somewhere(decisions: int) -> None:
+    """The opening decisions included (#92).
+
+    Before the padding, window 0 put them in its burn-in, which is never a
+    target, in every episode that filled a window.
+    """
+    stored = _stored(decisions)
+
+    learned = {
+        step.reward
+        for sequence in stored
+        for step in sequence.steps[sequence.burn_in :]
+        if not step.padding
+    }
+    # Each step's reward is its index in the episode.
+    assert learned == {float(step) for step in range(decisions)}
+
+
+def test_the_first_decision_of_a_long_episode_is_the_first_learning_step() -> None:
+    first = _stored(3 * LENGTH)[0]
+
+    assert all(step.padding for step in first.steps[:BURN_IN])
+    assert first.steps[BURN_IN].reward == 0.0 and not first.steps[BURN_IN].padding
 
 
 def test_a_short_episode_keeps_its_real_steps_at_the_end_of_the_window() -> None:

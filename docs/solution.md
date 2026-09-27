@@ -561,16 +561,17 @@ check against a ledger of every version the learner reached).
 
 The cadence is counted in decisions, so a refresh lands inside an episode; the
 refresh at an episode's start restarts the count, so no episode opens on
-parameters older than the previous one's last. 100 is Ape-X's: its actors copy
-the learner's parameters every 400 frames (Horgan et al. 2018, §4.1), which at
-an action repeat of 4 is 100 agent steps. A fleet of seven at the default
-1.0 gradient steps per decision (M3-P009's value, reverted from M3-P010's
-0.114 — board #85) then acts on parameters at most about
-7 × 100 × 1.0 ≈ 700 gradient steps old, where refreshing once per
-~550-decision episode instead would leave them about 7 × 550 × 1.0 ≈ 3,850
-behind, a lag that grows with episode length. M3-P009 won under that
-3,850-step staleness, so staleness is not first-order at or below it (M3-P010,
-docs/experiments.md); it is not measurable offline. A mid-episode swap is safe for `stacked-dqn` because what it carries
+parameters older than the previous one's last. `--parameter-sync-decisions 0`
+refreshes only at episode start and never inside one — `M3-P009`'s cadence,
+and the one the stacked-dqn benchmark arm runs (`M3-P013`,
+docs/experiments.md). 100 is offered as an alternative, on Ape-X's basis: its
+actors copy the learner's parameters every 400 frames (Horgan et al. 2018,
+§4.1), which at an action repeat of 4 is 100 agent steps. It was tried at
+`M3-P011`/`M3-P012` bundled with other changes and, isolated in `M3-P012`'s
+mechanism check, did not by itself explain either run's shortfall against
+`M3-P009` — but a single-run screen against a single comparator cannot
+resolve gaps of the size observed, so this is not significant evidence for or
+against refresh-100 either (`M3-P012`, docs/experiments.md). A mid-episode swap is safe for `stacked-dqn` because what it carries
 through an episode is a window of its own inputs, not a state its parameters
 produced; a swap changes how the window is read, never what is in it.
 DreamerV3's carried latent is produced by its parameters, so it is fixed at

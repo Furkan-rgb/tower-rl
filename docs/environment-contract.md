@@ -269,7 +269,13 @@ wave was current, in purchase order, each named the way the action pipeline
 already names a row (`attack:3`) rather than by a new label. Purchase counts and
 cash spent say *how much* a wave cost; this says *what it went to*, which is
 what tells one episode's build apart from another's without carrying every
-purchase decision as its own record. The episode record separately carries
+purchase decision as its own record. Each wave row also carries
+`upgrade_costs`: every row's raw upgrade cost the instant that wave began,
+keyed the same way. `cash_log` and `upgrades_bought` say how much a wave cost
+and what it went to; `upgrade_costs` says what everything else on offer would
+have cost that wave, which is what lets the in-run cost curve be read above
+level 8 rather than only inferred from what was actually bought (`#80`). The
+episode record separately carries
 `final_upgrade_levels` - the levels the episode ended holding, keyed the same
 way, omitting anything still at level 0 - and `final_cash`, the earned cash the
 final observation carried. Both are absent from any record written before these
@@ -286,9 +292,21 @@ survival-time reward (`docs/solution.md` §9.4e), leaves the stored reward and
 ## Termination and recovery
 
 Termination reasons are distinct (`TerminationOutcome`): `game_over`,
-`operator_stop`, `max_episode_duration`, `observation_invalid`,
+`operator_stop`, `stalled`, `mask_legal_rejected`, `observation_invalid`,
 `action_pipeline_failed`, `ui_state_lost`, `device_failed`, `baseline_drift`,
 and `recovery_failed`.
+
+There is no episode-length cap of any kind - no decision-count ceiling and no
+wall-clock ceiling on a progressing episode. `stalled` replaces both former
+caps (`max_episode_duration`, and the actor's own decision-count ceiling): an
+episode ends `stalled` only when the game clock has not advanced for
+`STALL_WINDOW_WALL_SECONDS` (120 s) of wall-clock time, however many waves or
+decisions it has already reached. A long streak of legal, zero-game-time
+purchases is ordinary play and does not trip it unless that same window
+elapses without any of them, a wait, or anything else moving the game clock.
+`mask_legal_rejected` is a different failure: the bridge rejected a purchase
+the action mask had already approved, and the episode ends on the first such
+disagreement rather than looping on it (`#86`, `#88`).
 
 `VALID_TERMINATIONS` is `{game_over}` alone: only a genuine death is a complete
 episode, and everything else is an environment or infrastructure failure

@@ -102,6 +102,35 @@ UNLOCK_NOT_APPLIED = "UNLOCK_NOT_APPLIED"
 #: silent: the state is invalid and the episode is classified.
 UNLOCK_REVERTED = "UNLOCK_REVERTED"
 
+#: How long the game clock may go without advancing before an episode is
+#: classified `STALLED` (`#88`). The bridge's own per-advance wall ceiling
+#: (`ADVANCE_TRUNCATED_BY_WALL`, below) is 15 s against a full advance of about
+#: 0.33 s (M1B-E032) - a single still-progressing advance settles in a small
+#: fraction of a second and even one that hits that ceiling is 8x inside this
+#: window. A streak of legal, zero-game-time purchases (`_advance_to_decision`'s
+#: purchase-settle branch never touches the game clock) is each a single fast
+#: bridge round trip, so many of them fit comfortably inside 120 s too. Set this
+#: low and a device merely running slowly would be misclassified as hung; set
+#: it anywhere near the old 900 s length cap and a genuinely stuck pipeline
+#: would burn most of an episode before anything noticed. 120 s clears the
+#: bridge's own ceiling with margin and is a small fraction of the 5-10+ minute
+#: episodes the Workshop profile expects, so a hang is caught quickly without
+#: being confused for a slow but live one.
+STALL_WINDOW_WALL_SECONDS = 120.0
+
+#: What a transition's reasons carry when the stall window above has elapsed
+#: with no game-clock progress. A prefix, not a fixed string, because the
+#: window that actually applied - `self.cadence.stall_window_wall_seconds` -
+#: rides on it for diagnosis.
+STALLED_REASON_PREFIX = "the game clock did not advance for"
+
+#: A bridge purchase rejection (`precondition_failed` / `UNAVAILABLE`) for an
+#: action the mask had already approved. The mask and the bridge precondition
+#: are supposed to agree exactly; when they do not, the decision problem the
+#: policy is being asked to solve has stopped being the one it was configured
+#: for, and repeating the action would only spin (`#86`).
+MASK_LEGAL_PURCHASE_REJECTED = "a mask-legal purchase was rejected by the bridge"
+
 
 @dataclass(frozen=True)
 class CadenceConfig:
@@ -122,8 +151,12 @@ class CadenceConfig:
     max_quiet_game_ms: int = 2000
     #: A health move worth interrupting for, as a fraction of maximum health.
     health_change_fraction: float = 0.05
-    #: Refuse to run forever if the game stops producing terminal states.
-    max_episode_wall_seconds: float = 900.0
+    #: Refuse to run forever if the game clock stops advancing, however many
+    #: waves or decisions the episode has already reached. Not a length cap: a
+    #: game that keeps dying on its own schedule may run to wave 110 and beyond
+    #: (the Workshop profile's expected range) with no ceiling on decisions or
+    #: wall time at all - only the absence of progress ends it (`#88`).
+    stall_window_wall_seconds: float = STALL_WINDOW_WALL_SECONDS
 
 
 #: The one inconsistency the bridge can legitimately show. Health and the round
@@ -246,6 +279,8 @@ class _WaveTally:
     #: Upgrades bought while this wave was current, in purchase order, each
     #: named as the action pipeline already names a row (`str(action)`).
     upgrades_bought: list[str] = field(default_factory=list)
+    #: Every row's raw cost the instant this wave began, keyed the same way.
+    upgrade_costs: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -291,6 +326,18 @@ class _EpisodeTally:
     #: One accumulator per wave index the episode entered, in order. The last is
     #: the current wave; every advance and every decision is charged to it.
     waves: list[_WaveTally] = field(default_factory=list)
+    #: Wall-clock time the game clock (`game_ms`) last actually advanced.
+    #: Defaults to construction time, so an episode that has taken no decision
+    #: yet starts its stall window from `reset` exactly as the old wall cap did.
+    #: A lambda, not `time.monotonic` itself, so a test that patches
+    #: `time.monotonic` after this module has already imported `time` still
+    #: reaches the patched function: `default_factory` would otherwise capture
+    #: today's real clock at class-definition time and never let go of it.
+    last_progress_at: float = field(default_factory=lambda: time.monotonic())
+    #: `game_ms` as of the last time `last_progress_at` was refreshed, so
+    #: progress can be detected by comparison without touching the advance
+    #: sites that update `game_ms` itself.
+    _progress_game_ms: float = field(default=0.0, init=False)
 
     def enter_wave(self, state: RunState) -> None:
         """Open the accumulator for the wave `state` is in, closing the previous."""
@@ -301,8 +348,23 @@ class _EpisodeTally:
                 wave=state.wave,
                 health_fraction=state.health_fraction,
                 cash_log=state.cash_log,
+                upgrade_costs={
+                    str(row.action): round(math.expm1(row.cost_log), 3) for row in state.rows
+                },
             )
         )
+
+    def refresh_progress(self, now: float) -> None:
+        """Record that the game clock has moved, if it has since the last check.
+
+        Called once per decision rather than at every advance site: `game_ms`
+        already accumulates there, so comparing its running total here is
+        enough to detect progress without a second update scattered across
+        `_advance_to_decision` and `_settle_death_boundary`.
+        """
+        if self.game_ms > self._progress_game_ms:
+            self._progress_game_ms = self.game_ms
+            self.last_progress_at = now
 
     def charge_advance(self, round_ms: float) -> None:
         """Charge an advance's measured round time to the wave it started in.
@@ -495,6 +557,7 @@ class InstrumentedRunEnvironment:
                     health_fraction=wave.health_fraction,
                     cash_log=wave.cash_log,
                     upgrades_bought=tuple(wave.upgrades_bought),
+                    upgrade_costs=dict(wave.upgrade_costs),
                 )
                 for wave in self._tally.waves
             ),
@@ -517,6 +580,17 @@ class InstrumentedRunEnvironment:
         """
         state = self.state
         started = time.monotonic()
+        self._tally.refresh_progress(started)
+        if started - self._tally.last_progress_at > self.cadence.stall_window_wall_seconds:
+            # No length cap behind this: a dying-on-schedule episode may run to
+            # wave 110 and beyond with no ceiling on decisions or wall time at
+            # all. Only the absence of any game-clock progress - waiting,
+            # buying, or otherwise - for the whole window ends it (`#88`).
+            return self._finish(
+                state, state, action, ActionOutcome.WAITED, started, 0, (),
+                (f"{STALLED_REASON_PREFIX} {self.cadence.stall_window_wall_seconds}s",),
+                advances=0, game_ms=0.0,
+            )
         self._tally.decisions += 1
         self._tally.charge_decision()
         mask = state.action_mask
@@ -552,6 +626,19 @@ class InstrumentedRunEnvironment:
                     return self._finish(
                         state, after, action, outcome, started, 0, (),
                         (f"purchase was not confirmed: {purchase_result.reason}",),
+                        advances=0, game_ms=0.0,
+                    )
+                if outcome is ActionOutcome.UNAVAILABLE:
+                    # The mask already refused this action above when it disagreed;
+                    # reaching here means the mask said this purchase was legal and
+                    # the bridge rejected it anyway. The first disagreement ends the
+                    # episode rather than being absorbed as an ordinary wait: nothing
+                    # a greedy policy would do next tells the two apart, so retrying
+                    # would only spin against the same disagreement (`#86`).
+                    after = self._read_state()
+                    return self._finish(
+                        state, after, action, outcome, started, 0, (),
+                        (f"{MASK_LEGAL_PURCHASE_REJECTED}: {purchase_result.reason}",),
                         advances=0, game_ms=0.0,
                     )
 
@@ -675,14 +762,6 @@ class InstrumentedRunEnvironment:
                 (DecisionEvent.PURCHASE_SETTLED,),
                 0,
                 validate_transition(state, after),
-            )
-
-        if time.monotonic() - self._tally.started_at > self.cadence.max_episode_wall_seconds:
-            return _Advance(
-                state,
-                (DecisionEvent.SLICE_ELAPSED,),
-                0,
-                ("episode exceeded its wall-clock limit",),
             )
 
         budget = self.cadence.max_quiet_game_ms
@@ -1125,8 +1204,10 @@ def _classify(
     """Give every stopping condition its own name, never a shared 'failed'."""
     if outcome in (ActionOutcome.AMBIGUOUS, ActionOutcome.FAILED):
         return TerminationOutcome.ACTION_PIPELINE_FAILED
-    if any("wall-clock limit" in reason for reason in reasons):
-        return TerminationOutcome.MAX_EPISODE_DURATION
+    if any(reason.startswith(MASK_LEGAL_PURCHASE_REJECTED) for reason in reasons):
+        return TerminationOutcome.MASK_LEGAL_REJECTED
+    if any(reason.startswith(STALLED_REASON_PREFIX) for reason in reasons):
+        return TerminationOutcome.STALLED
     if next_state is None:
         return TerminationOutcome.UI_STATE_LOST
     if not next_state.valid or reasons:

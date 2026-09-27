@@ -5,9 +5,9 @@ window of recent run scalars rather than in a hidden state: section 2.3 of the
 candidate study argues this problem is much closer to fully observed than
 partially observed, and this is the backbone the project runs on.
 
-Three things come from the Atari 100k literature the study cites: an EMA target
-rather than a periodic hard copy, decoupled weight decay, and a replay ratio the
-training loop supplies.
+Four things come from the Atari 100k literature the study cites: an EMA target
+rather than a periodic hard copy, decoupled weight decay, a replay ratio the
+training loop supplies, and SR-SPR's periodic resets (`StackedDqnBackbone._reset`).
 """
 
 from __future__ import annotations
@@ -40,6 +40,21 @@ WAVE_SECONDS = 35.0
 #: What a running ez-greedy option takes while its own action is masked: the
 #: environment's no-op, always legal in an active run (docs/solution.md 7.2).
 WAIT_INDEX = action_index(WAIT)
+
+#: A reset's shrink-and-perturb of the trunk: trunk <- SHRINK * old + PERTURB *
+#: fresh. SR-SPR's 0.8 / 0.2 (`SR_SPR.gin` in the BBF code,
+#: github.com/google-research/google-research/tree/master/bigger_better_faster),
+#: not BBF's 0.5 / 0.5, which BBF takes because its 4x-wide network needs more
+#: regularisation; this one is 197k parameters (docs/solution.md 9.4).
+RESET_SHRINK = 0.8
+RESET_PERTURB = 0.2
+#: What a reset re-initialises outright, by `StackedPolicyNetwork` attribute:
+#: the core and the dueling heads, BBF's projection and head
+#: (`reset_projection`, `reset_head`). The trunk, BBF's encoder, is only
+#: shrunk and perturbed. The optimizer state of these parameters is cleared
+#: with them, as Nikishin et al. 2022 (arXiv 2205.07802) reset optimizer
+#: statistics with the layers they reset; the trunk's moments are kept.
+RESET_MODULES = ("core", "heads")
 
 
 @dataclass(frozen=True)
@@ -100,6 +115,14 @@ class StackedDqnConfig:
     #: once drawn, is repeated for a zeta-distributed number of decisions
     #: rather than for one. Acting only; off acts exactly as before.
     ez_greedy: bool = False
+    #: Gradient steps between SR-SPR-style resets (`StackedDqnBackbone._reset`),
+    #: or 0 for none, which is every run before M3-P014. Counted in the
+    #: learner's own steps, which a checkpoint carries.
+    reset_every_steps: int = 0
+    #: The last step a reset may happen at: BBF's `no_resets_after`, so the
+    #: network is never reset with less than one interval left to recover in.
+    #: The training script derives it from the budget.
+    last_reset_step: int = 0
     gradient_clip: float = 10.0
     huber_delta: float = 1.0
     seed: int | None = None
@@ -125,6 +148,10 @@ class StackedDqnConfig:
             raise ValueError("the n-step anneal cannot take a negative number of steps")
         if not 0.0 < self.target_ema_decay < 1.0:
             raise ValueError("target EMA decay must be within (0, 1)")
+        if self.reset_every_steps < 0:
+            raise ValueError("the reset interval cannot be negative")
+        if self.last_reset_step < 0:
+            raise ValueError("the last reset step cannot be negative")
 
     @property
     def books_reward_at_span_end(self) -> bool:
@@ -186,6 +213,11 @@ class StackedDqnBackbone:
     target: StackedPolicyNetwork = field(init=False)
     optimizer: torch.optim.Optimizer = field(init=False)
     _steps: int = field(default=0, init=False)
+    #: The step of the latest reset, 0 before any, and how many resets there
+    #: have been. The n-step anneal is counted from the former (BBF restarts it
+    #: after every reset); the latter seeds the next fresh network.
+    _steps_at_reset: int = field(default=0, init=False)
+    resets: int = field(default=0, init=False)
     _random: random.Random = field(init=False)
     #: The ez-greedy option running in this episode: its action, and how many
     #: more decisions it takes after the ones already taken (0 when none runs).
@@ -335,8 +367,9 @@ class StackedDqnBackbone:
                 target_q,
                 mask,
                 discounts=discounts,
-                # Taken before this step is counted, so the first step is t = 0.
-                n_step=self.config.n_step_at(self._steps),
+                # Taken before this step is counted, so the first step after
+                # the start or a reset is t = 0.
+                n_step=self.config.n_step_at(self._steps - self._steps_at_reset),
             )
             # Padding is filler that fills a window for a short episode. It is
             # never a target, so it leaves the loss and the priorities alone.
@@ -355,6 +388,9 @@ class StackedDqnBackbone:
         self.optimizer.step()
         self._steps += 1
         self._update_target()
+        every = self.config.reset_every_steps
+        if every and self._steps % every == 0 and self._steps <= self.config.last_reset_step:
+            self._reset()
 
         absolute = errors.abs().detach()
         with torch.no_grad():
@@ -395,6 +431,48 @@ class StackedDqnBackbone:
             ):
                 target_buffer.copy_(online_buffer)
 
+    def _reset(self) -> None:
+        """SR-SPR's reset, as the BBF code performs it (docs/solution.md 9.4).
+
+        Against a fresh network: the core and heads become its parameters, the
+        trunk moves a fifth of the way to them, the target becomes the online
+        network, the reset parameters' AdamW moments are dropped and the trunk's
+        kept, and the n-step anneal starts again from here.
+        """
+        fresh = self._fresh_network()
+        reset: list[torch.nn.Parameter] = []
+        with torch.no_grad():
+            for (name, online), replacement in zip(
+                self.online.named_parameters(), fresh.parameters(), strict=True
+            ):
+                if name.split(".")[0] in RESET_MODULES:
+                    online.copy_(replacement)
+                    reset.append(online)
+                else:
+                    online.mul_(RESET_SHRINK).add_(replacement, alpha=RESET_PERTURB)
+        self.target.load_state_dict(self.online.state_dict())
+        for parameter in reset:
+            # AdamW starts a parameter with no state over at step 0: zero
+            # moments and bias correction from the beginning.
+            self.optimizer.state.pop(parameter, None)
+        self.resets += 1
+        self._steps_at_reset = self._steps
+
+    def _fresh_network(self) -> StackedPolicyNetwork:
+        """A newly initialised network, seeded by the run seed and the reset count.
+
+        Built on the CPU inside a forked RNG, so a run's resets are reproducible
+        from its seed and draw nothing from the stream the rest of the run uses.
+        """
+        with torch.random.fork_rng(devices=[]):
+            if self.config.seed is not None:
+                seed = random.Random(f"{self.config.seed}/reset/{self.resets}").getrandbits(63)
+                torch.manual_seed(seed)
+            fresh = StackedPolicyNetwork(
+                self.network_config, history_length=self.config.history_length
+            )
+        return fresh.to(self.device)
+
     # -- persistence -------------------------------------------------------
 
     def state_dict(self) -> dict[str, Any]:
@@ -403,6 +481,8 @@ class StackedDqnBackbone:
             "target": self.target.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "steps": self._steps,
+            "steps_at_reset": self._steps_at_reset,
+            "resets": self.resets,
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -414,3 +494,7 @@ class StackedDqnBackbone:
         # would change how the next steps are taken without saying so.
         self.optimizer.load_state_dict(state["optimizer"])
         self._steps = int(state["steps"])
+        # Absent from every state written before resets existed, none of which
+        # was ever reset: its anneal counts from step 0 and no reset has seeded.
+        self._steps_at_reset = int(state.get("steps_at_reset", 0))
+        self.resets = int(state.get("resets", 0))

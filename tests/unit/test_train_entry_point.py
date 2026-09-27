@@ -2088,6 +2088,54 @@ def test_a_parameter_sync_of_several_episodes_is_refused_as_having_no_equivalent
         train.recorded_loop_settings({"parameter_sync_episodes": 3})
 
 
+def test_resets_stop_one_interval_before_the_steps_the_budget_buys(tmp_path: Path) -> None:
+    """BBF's `no_resets_after`: 1M decisions at 1.0 and 100k gives 9 resets."""
+    resetting = arguments(
+        tmp_path,
+        **{
+            "--budget-decisions": "1000000",
+            "--gradient-steps-per-decision": "1.0",
+            "--reset-every-steps": "100000",
+        },
+    )
+    _, learner, _ = train.build_backbone(resetting, torch.device("cpu"))
+
+    assert (learner.reset_every_steps, learner.last_reset_step) == (100_000, 900_000)
+    assert train.last_reset_step(arguments(tmp_path)) == 0
+
+
+def test_the_learner_resets_are_logged_as_they_happen(tmp_path: Path) -> None:
+    """A dip in the curve can be put against the reset that caused it."""
+    tracker = RecordingTracker()
+    summary = session(
+        tmp_path,
+        budget="200",
+        tracker=tracker,
+        settings={"--reset-every-steps": "5"},
+    )
+
+    logged = [
+        point.metrics["learner_resets"]
+        for point in tracker.runs[0].points
+        if "learner_resets" in point.metrics
+    ]
+    assert logged, "the run was long enough to reset"
+    # Once per change: an episode can span more than one reset.
+    assert logged == sorted(set(logged)) and logged[0] >= 1.0
+    resolved = summary["arm"]["resolved_config"]
+    # 200 decisions at 0.2 buy 40 steps, and the last interval is left alone.
+    assert (resolved["reset_every_steps"], resolved["last_reset_step"]) == (5, 35)
+    assert logged[-1] == 7.0
+
+
+def test_a_resume_is_held_to_its_reset_interval() -> None:
+    assert train.recorded_loop_settings({"reset_every_steps": 100_000}) == {
+        "reset_every_steps": 100_000
+    }
+    # A DreamerV3 run records it as None, and has nothing to compare.
+    assert train.recorded_loop_settings({"reset_every_steps": None}) == {}
+
+
 def test_a_checkpoint_from_before_the_adam_epsilon_resumes_at_its_own(tmp_path: Path) -> None:
     """Its optimizer state carries 1e-8, torch restores it, and the record says so.
 

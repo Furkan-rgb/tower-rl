@@ -576,3 +576,138 @@ def test_a_game_time_discount_of_0_999_reaches_the_target(
     assert torch.allclose(
         rewards[0].double(), (1.0 - 0.999**seconds) / (beta * 35.0), atol=1e-7
     )
+
+
+# --- SR-SPR-style resets: core and heads re-initialised, the trunk shrunk
+
+
+def _resetting(**overrides: object) -> StackedDqnBackbone:
+    settings: dict[str, object] = {"reset_every_steps": 2, "last_reset_step": 10}
+    settings.update(overrides)
+    return _backbone(**settings)
+
+
+def test_a_reset_reinitialises_core_and_heads_and_shrinks_the_trunk() -> None:
+    batch = collate((_sequence(length=16, burn_in=4),), (1.0,))
+    plain, resetting = _backbone(), _resetting()
+    # The fresh network the first reset draws: seeded by the run seed and a
+    # reset count of 0, which `plain` shares.
+    fresh = plain._fresh_network()
+    for _ in range(2):
+        plain.learn(batch)
+        resetting.learn(batch)
+
+    old = dict(plain.online.named_parameters())
+    new = dict(fresh.named_parameters())
+    assert resetting.resets == 1
+    for name, parameter in resetting.online.named_parameters():
+        if name.split(".")[0] in ("core", "heads"):
+            assert torch.equal(parameter, new[name]), name
+        else:
+            assert name.startswith("trunk."), name
+            expected = 0.8 * old[name] + 0.2 * new[name]
+            assert torch.allclose(parameter, expected, atol=1e-7), name
+    assert parameters_are_equal(resetting.target, resetting.online)
+
+
+def test_a_reset_clears_the_optimizer_state_of_the_reset_parameters_only() -> None:
+    batch = collate((_sequence(length=16, burn_in=4),), (1.0,))
+    plain, resetting = _backbone(), _resetting()
+    for _ in range(2):
+        plain.learn(batch)
+        resetting.learn(batch)
+
+    kept = {
+        name: plain.optimizer.state[parameter]
+        for name, parameter in plain.online.named_parameters()
+    }
+    for name, parameter in resetting.online.named_parameters():
+        state = resetting.optimizer.state.get(parameter)
+        if name.startswith("trunk."):
+            assert state is not None, name
+            assert torch.equal(state["exp_avg"], kept[name]["exp_avg"]), name
+            assert torch.equal(state["exp_avg_sq"], kept[name]["exp_avg_sq"]), name
+        else:
+            assert not state, name
+    # The next step runs, starting the reset parameters' moments over.
+    resetting.learn(batch)
+
+
+def test_the_fresh_network_is_seeded_by_the_run_seed_and_the_reset_count() -> None:
+    first, second = _backbone(), _backbone()
+    assert parameters_are_equal(first._fresh_network(), second._fresh_network())
+    second.resets = 1
+    assert not parameters_are_equal(first._fresh_network(), second._fresh_network())
+    assert not parameters_are_equal(_backbone(seed=1)._fresh_network(), first._fresh_network())
+
+
+def test_a_reset_restarts_the_n_step_anneal(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _record_n_steps(monkeypatch)
+    backbone = _annealed(n_step_anneal_steps=2, reset_every_steps=3, last_reset_step=3)
+    batch = collate((_sequence(length=16, burn_in=4),), (1.0,))
+
+    for _ in range(7):
+        backbone.learn(batch)
+
+    # A reset after step 3, and none after step 6, which is past the last.
+    assert seen == [10, 5, 3, 10, 5, 3, 3]
+    assert backbone.resets == 1
+
+
+def test_no_reset_happens_after_the_last_reset_step() -> None:
+    backbone = _resetting(reset_every_steps=1, last_reset_step=2)
+    batch = collate((_sequence(),), (1.0,))
+    for _ in range(5):
+        backbone.learn(batch)
+
+    assert backbone.resets == 2
+    assert backbone.state_dict()["steps_at_reset"] == 2
+
+
+def test_resets_are_off_by_default() -> None:
+    assert StackedDqnConfig().reset_every_steps == 0
+    batch = collate((_sequence(),), (1.0,))
+    default, explicit = _backbone(), _backbone(reset_every_steps=0, last_reset_step=10**6)
+    for _ in range(4):
+        default.learn(batch)
+        explicit.learn(batch)
+
+    assert default.resets == 0 and default.state_dict()["steps_at_reset"] == 0
+    assert parameters_are_equal(default.online, explicit.online)
+
+
+def test_a_resumed_learner_keeps_its_resets(monkeypatch: pytest.MonkeyPatch) -> None:
+    batch = collate((_sequence(length=16, burn_in=4),), (1.0,))
+    parent = _annealed(n_step_anneal_steps=4, reset_every_steps=3, last_reset_step=100)
+    for _ in range(4):
+        parent.learn(batch)
+
+    seen = _record_n_steps(monkeypatch)
+    resumed = _annealed(n_step_anneal_steps=4, reset_every_steps=3, last_reset_step=100)
+    resumed.load_state_dict(parent.state_dict())
+    resumed.learn(batch)
+
+    assert (resumed.resets, resumed.state_dict()["steps_at_reset"]) == (1, 3)
+    # One step past the reset, not four past the start.
+    assert seen == [parent.config.n_step_at(1)]
+    # The next reset draws the fresh network the uninterrupted run would.
+    assert parameters_are_equal(resumed._fresh_network(), parent._fresh_network())
+
+
+def test_a_state_from_before_resets_loads_as_never_reset() -> None:
+    parent = _backbone()
+    parent.learn(collate((_sequence(),), (1.0,)))
+    state = parent.state_dict()
+    del state["steps_at_reset"], state["resets"]
+
+    restored = _resetting()
+    restored.load_state_dict(state)
+
+    assert restored.resets == 0 and restored.state_dict()["steps_at_reset"] == 0
+    assert parameters_are_equal(restored.online, parent.online)
+
+
+@pytest.mark.parametrize("settings", [{"reset_every_steps": -1}, {"last_reset_step": -1}])
+def test_a_negative_reset_setting_is_refused(settings: dict[str, int]) -> None:
+    with pytest.raises(ValueError):
+        StackedDqnConfig(**settings)  # type: ignore[arg-type]

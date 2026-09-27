@@ -282,6 +282,8 @@ def build_backbone(
         ez_greedy=arguments.ez_greedy,
         learning_rate=arguments.learning_rate,
         target_ema_decay=arguments.target_ema_decay,
+        reset_every_steps=arguments.reset_every_steps,
+        last_reset_step=last_reset_step(arguments),
     )
     network = NetworkConfig()
     return (
@@ -293,6 +295,18 @@ def build_backbone(
         stacked,
         network,
     )
+
+
+def last_reset_step(arguments: argparse.Namespace) -> int:
+    """The last gradient step a reset may happen at: BBF's `no_resets_after`.
+
+    One interval before the steps the budget buys, so no reset is left without
+    an interval to recover in. 0, and so no reset, when resets are off.
+    """
+    if not arguments.reset_every_steps:
+        return 0
+    steps = int(arguments.budget_decisions * arguments.gradient_steps_per_decision)
+    return max(0, steps - int(arguments.reset_every_steps))
 
 
 def build_replay(arguments: argparse.Namespace) -> PrioritizedSequenceReplay:
@@ -555,9 +569,12 @@ def build_arm(
     # cannot recover afterwards, so the first optimisation step past the resume
     # point is reported when it happens.
     warmed = resume is None
+    # The learner's resets so far, logged as they change so a dip in the curve
+    # can be put against the reset that caused it (docs/solution.md 9.4).
+    logged_resets = backbone.resets if isinstance(backbone, StackedDqnBackbone) else 0
 
     def on_episode(report: TrainingProgressReport) -> None:
-        nonlocal warmed
+        nonlocal warmed, logged_resets
         if (
             not warmed
             and resume is not None
@@ -571,6 +588,16 @@ def build_arm(
             print(
                 f"[{name}] replay {'restored' if restored_from else 're-warmed'}; "
                 f"learning restarted at {report.decisions} decisions",
+                flush=True,
+            )
+        if isinstance(backbone, StackedDqnBackbone) and backbone.resets != logged_resets:
+            logged_resets = backbone.resets
+            arm.run.log_metrics(
+                {"learner_resets": float(logged_resets)}, decisions=report.decisions
+            )
+            print(
+                f"[{name}] learner reset {logged_resets} at step "
+                f"{report.optimisation_steps}, {report.decisions} decisions",
                 flush=True,
             )
         # The episode first: it is the tracked unit, and the window below it is
@@ -706,6 +733,7 @@ STACKED_ONLY_FLAGS = (
     "ez_greedy",
     "learning_rate",
     "target_ema_decay",
+    "reset_every_steps",
     # An epsilon anneal: DreamerV3 adds no exploration noise to anneal.
     "epsilon_anneal_decisions",
 )
@@ -816,6 +844,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "the replay ratio; 1.0 is M3-P009's value. M3-P010's 0.114 tracked "
             "M3-P009 within 2.5-4 waves at matched gradient steps but 9x slower "
             "in decisions (M3-P010, docs/experiments.md)"
+        ),
+    )
+    parser.add_argument(
+        "--reset-every-steps",
+        type=int,
+        default=0,
+        help=(
+            "gradient steps between SR-SPR-style resets of the core and heads, "
+            "with the trunk shrunk and perturbed; none within one interval of "
+            "the budget's end. 0 never resets (docs/solution.md 9.4)"
         ),
     )
     parser.add_argument("--warmup-sequences", type=int, default=100)
@@ -1153,6 +1191,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if arguments.n_step_anneal_steps < 0:
         raise SystemExit("--n-step-anneal-steps cannot be negative")
+    if arguments.reset_every_steps < 0:
+        raise SystemExit("--reset-every-steps cannot be negative")
     settle_dreamer_settings(parser, argv, arguments)
     if arguments.survival_time_reward and arguments.discount_per_game_second is None:
         # The reward is integrated under the game-time discount; per decision
@@ -1330,6 +1370,9 @@ def recorded_loop_settings(resolved: Mapping[str, object]) -> dict[str, object]:
         for name in ("gradient_steps_per_decision", "replay_capacity")
         if name in resolved
     }
+    # Only stacked-dqn resets, and a DreamerV3 run records it as None.
+    if resolved.get("reset_every_steps") is not None:
+        recorded["reset_every_steps"] = resolved["reset_every_steps"]
     if "parameter_sync_decisions" in resolved:
         recorded["parameter_sync_decisions"] = resolved["parameter_sync_decisions"]
     elif "parameter_sync_episodes" in resolved:
@@ -1344,7 +1387,7 @@ def recorded_loop_settings(resolved: Mapping[str, object]) -> dict[str, object]:
 
 
 def refuse_changed_loop_settings(arguments: argparse.Namespace, state: ResumeState) -> None:
-    """Refuse a resume whose replay ratio, buffer or parameter lag is not its parent's.
+    """Refuse a resume whose replay ratio, buffer, lag or reset interval is not its parent's.
 
     None of them is in the checkpoint's identity, and each defaults to what
     the current recipe uses, so a resume of an older run that did not repeat

@@ -74,7 +74,8 @@ recipe on the new baseline.
 | `M3-P010` | Under baseline v2, does `M3-P009`'s recipe bundled with six changes (longer horizon, lower replay ratio, larger replay, periodic parameter sync, AdamW ε default, left-padded opening decisions) hold or exceed `M3-P009`'s near-greedy period means? | `--discount-per-game-second 0.999` (was 0.997); `--gradient-steps-per-decision 0.114` (was 1.0); `--replay-capacity 25000` (was 4096); `--parameter-sync-decisions 100` (new); AdamW ε 1.5e-4 (code default); every episode left-padded (`#92`) | `M3-P009`: not a matched-budget comparator (stopped at 325,493/1,000,000 decisions); primary comparison is scripted/random at L5, both still to be measured at n=105 under v2 | not evaluated — stopped at 343,869/1,000,000 decisions | STOPPED by developer decision, before evaluation; the replay-ratio and AdamW ε changes isolated as the dominant regression | Near-greedy period means: 23.71 (n=147), 26.28 (53), 27.04 (48), 27.51 (49), 27.18 (50), 27.16 (50) — flat from period 2, well below `M3-P009` at matched periods; validity 799/834; matched-gradient-step and AdamW second-moment diagnostics point to the replay ratio (0.114 vs 1.0) as dominant, compounded by ε (1.5e-4 vs 1e-8); superseded by `M3-P011` (`#85`) rather than resumed | this commit (results) |
 | `M3-P011` | Does `M3-P009`'s recipe (replay ratio, capacity, AdamW ε reverted to `M3-P009`'s values) plus only γ 0.999, a 100-decision parameter-sync cadence, and left-padding hold `M3-P009`'s near-greedy trajectory, isolating `M3-P010`'s regression to its other three changes? | `--discount-per-game-second 0.999` (was 0.997); `--parameter-sync-decisions 100` (new); left-padding (`#92`, unconditional); `--gradient-steps-per-decision 1.0` and `--replay-capacity 4096` held at `M3-P009`'s values; AdamW ε held at `1e-8` | `M3-P009`'s near-greedy period means (table above), read as a screen | not evaluated — stopped on the pre-registered kill bar at 100,123/1,000,000 decisions | STOPPED — kill bar tripped (near-greedy mean 31.84 over (50000,100000], below 32.0), before evaluation | Period 1 (50,062 decisions) 25.35 (n=65), well below `M3-P009`'s matched 26.31 but inside the screen's stated noise floor; period 2 (100,123 decisions) 31.86 (n=43, one fewer than the 44 the kill-bar check itself counted), 3.9 waves below the pre-registered bar of 32 (`M3-P009`'s value minus 3-4) and below `M3-P009`'s matched 35.73; gradient norm ran higher (22.1/20.1 vs `M3-P009`'s 13.5/6.9) and value-fit lower (0.872/0.768 vs 0.919/0.882) at matched periods; wait share and purchases per episode were close to `M3-P009`'s. Validity 204/205, stage exit 0, cleanup verified. The three remaining changes from `M3-P009` are γ 0.999, refresh-100, and left-padding; a gradient norm above the clip of 10 and falling value-fit are consistent with γ 0.999's roughly 3x larger value scale (horizon ~1000 vs ~333 game-seconds), but this is a hypothesis, not isolated — the 3.9-wave gap is also near the screen's own stated ~5-6-wave resolution, so the stop honours the pre-registered rule without proving γ is the cause. Superseded by `M3-P012` (`#85`), which reverts γ to `M3-P009`'s 0.997 while keeping refresh-100 and left-padding | this commit (results) |
 | `M3-P012` | With `M3-P011`'s exact configuration (`M3-P009`'s recipe plus refresh-100 and left-padding), does reverting γ to `M3-P009`'s 0.997 recover `M3-P009`'s near-greedy trajectory? | `--discount-per-game-second 0.997` (was `M3-P011`'s 0.999; back to `M3-P009`'s value); `--parameter-sync-decisions 100` and left-padding held at `M3-P011`'s values | `M3-P009`'s near-greedy period means (table above), read as a screen; `M3-P011`'s stopped result (this table) as a secondary reference | not evaluated — stopped at 100,279/1,000,000 decisions | STOPPED by kill bar, before evaluation | Near-greedy mean over (50000,100000] was 28.44 (n=70), below the 32 bar; periods 26.14 (n=66)/28.55 (n=71); gradient norm 8.54/7.36 and value-fit 0.887/0.828 at 50k/100k, close to `M3-P009`'s 22.1/20.1 well-clipped norm and better than `M3-P011`'s — the mechanism check passed (γ is not clipping/value-fit-broken) but the wave score did not recover, so γ is not isolated as `M3-P011`'s cause; validity 255/257, stage exit 0, cleanup verified | this commit (results) |
-| `M3-P013` | Does `M3-P009`'s recipe with refresh-per-episode (`--parameter-sync-decisions 0`, reverting `M3-P011`/`M3-P012`'s refresh-100) hold `M3-P009`'s near-greedy trajectory at the full 1,000,000-decision budget? | `--parameter-sync-decisions 0` (was `M3-P011`/`M3-P012`'s 100); all other flags at `M3-P012`'s values (γ 0.997, replay ratio 1.0, capacity 4096, AdamW ε 1e-8, left-padding on) | `M3-P009`'s near-greedy period means (table above), read as a screen; collapse-only kill bars | pending | pending | this commit (pre-registration) |
+| `M3-P013` | Does `M3-P009`'s recipe with refresh-per-episode (`--parameter-sync-decisions 0`, reverting `M3-P011`/`M3-P012`'s refresh-100) hold `M3-P009`'s near-greedy trajectory at the full 1,000,000-decision budget? | `--parameter-sync-decisions 0` (was `M3-P011`/`M3-P012`'s 100); all other flags at `M3-P012`'s values (γ 0.997, replay ratio 1.0, capacity 4096, AdamW ε 1e-8, left-padding on) | `M3-P009`'s near-greedy period means (table above), read as a screen; collapse-only kill bars | not evaluated — stopped at 11,174/1,000,000 decisions | STOPPED by developer decision, before period 1 — no performance evidence | Superseded by the recipe revision (`M3-P014`: SR-SPR-style resets, refresh 10) rather than resumed; validity 46/47 | `02fa689` (pre-registration), this commit (results) |
+| `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | pending | pending | this commit (pre-registration) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -395,6 +396,159 @@ remains on rather than reverted to `M3-P009`'s unpadded openings, since
 the diagnosis found it mechanistically near-inert; if this run also
 under-performs `M3-P009`, left-padding cannot be ruled out purely by
 this run's design, though its inertness argument stands independently.
+
+**Timebox.** 18 h for training to the full budget; governed by the
+collapse-only kill bars otherwise.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
+
+### Stopped, as run
+
+**Verdict: STOPPED by developer decision, before period 1, not evaluated.**
+Run `state/runs/m3-p013-stackeddqn-v2-20260927T185504Z`, mlflow
+`9b9c8ecb923448ffad1d11986a7f6601`. Stopped by SIGINT at 19:09 UTC at
+**11,174** of the planned 1,000,000 decisions, before the first selection
+period closed, so the run holds no performance evidence either way. Validity
+46/47 collected episodes. Superseded by the recipe revision rather than
+resumed: `M3-P014` below.
+
+## M3-P014: stacked-dqn with SR-SPR-style resets and a 10-decision refresh at 1,000,000 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-27. Board `#85`. Single seed, single run.
+
+**Question.** The stacked-dqn recipe replays at 1.0 gradient steps per
+decision, a regime the data-efficient literature makes pay only with periodic
+network resets (Nikishin et al. 2022; D'Oro et al. 2023; BBF), which this
+learner has not had; `M3-P006` peaked at period 10 and declined, and
+`M3-P010` was flat from period 2. With the recipe re-derived in
+`docs/solution.md` §9.4 — SR-SPR-style resets every 100k gradient steps and a
+10-decision refresh — does the near-greedy curve recover after each reset and
+keep rising through the 1,000,000-decision budget, at or above `M3-P009`'s
+trajectory?
+
+**Recipe.** `M3-P013`'s command (above) with these changes:
+
+- `--parameter-sync-decisions 10` (was `M3-P013`'s 0): at most ~70 updates of
+  parameter lag, about Ape-X's;
+- `--reset-every-steps 100000` (new, board #85): at gradient steps 100k,
+  200k, …, 900k — the last one interval before the 1,000,000 steps the budget
+  buys, so 9 resets — `core` and `heads` are re-initialised, the trunk
+  becomes 0.8 · old + 0.2 · fresh, the target becomes the online network,
+  AdamW state is cleared for core and heads only, and the 10 → 3 n-step
+  anneal restarts. Each reset is logged as `learner_resets`;
+- `--batch-size 8` and `--early-stop-patience-periods 0` stated explicitly
+  (both are the defaults): a plateau rule would read the post-reset dips as
+  decline;
+- kill bars moved to windows that end before the first reset or start after
+  a recovered one (below).
+
+Everything else is `M3-P013`'s: γ 0.997 per game-second, replay ratio 1.0,
+`--replay-capacity 4096` (an inherited default, under derivation; held here
+until a derived value exists), AdamW lr 1e-4, ε 1e-8, weight decay 1e-5, EMA
+τ 0.005, R2D2 PER, left-padding, seed 0.
+
+    export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/workshop-render-interval-16
+    scripts/run_stage.sh --name m3-p014-stackeddqn-v2-train --instances 7 \
+      --log-directory state/runs/m3-p014-stackeddqn-v2-<UTC stamp>/logs -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 1000000 --checkpoint-every-decisions 25000 \
+      --selection-period-decisions 50000 --epsilon-anneal-decisions 8000 --seed 0 \
+      --gradient-steps-per-decision 1.0 --batch-size 8 --n-step 10 --n-step-final 3 \
+      --n-step-anneal-steps 10000 --kill-bar 50000:25000:25 \
+      --kill-bar 100000:50000:27 --kill-bar 200000:150000:29 \
+      --kill-bar 300000:250000:30 \
+      --frame-game-ms 100 --discount-per-game-second 0.997 --survival-time-reward \
+      --ez-greedy --replay-capacity 4096 --workshop-level 5 \
+      --parameter-sync-decisions 10 --reset-every-steps 100000 \
+      --early-stop-patience-periods 0 \
+      --run-name m3-p014-stackeddqn-v2-<UTC stamp>
+
+**Kill bars — collapse guards only, on pre-reset or recovered windows.**
+Semantics unchanged from `M3-P013`. Gradient steps trail decisions by the
+~4.3k-decision warm-up, so reset k lands near decision 100,000·k + 4,300.
+Every bar's window lies wholly before the first reset or starts ~46k decisions
+— about twice the measured recovery R — after the latest one:
+`50000:25000:25` and `100000:50000:27` (pre-reset), `200000:150000:29`
+(46k-96k decisions after reset 1), `300000:250000:30` (46k-96k after reset 2).
+The minimums are `M3-P013`'s collapse floors.
+
+**Arm rule.** `docs/solution.md` §9.2b, unchanged from `M3-P010`/`M3-P011`/`M3-P012`/`M3-P013`:
+the best near-greedy selection-period mean, counting periods 2 and later,
+ties broken to the earlier period. Every period close from 150,000 decisions
+on falls 46k-96k decisions after the latest reset, so every candidate
+checkpoint after period 2's is a network recovered by R's measure.
+
+**Evaluation.** Unchanged from `M3-P010`/`M3-P011`/`M3-P012`/`M3-P013`'s
+evaluation protocol: the arm, on the `workshop-default` build, n=105 (7×15),
+`--upgrade-availability all --frame-game-ms 100 --workshop-level 5`, once
+the run reaches an arm worth evaluating (i.e., not skipped on a kill bar).
+
+**The reset judgement, and its evidence.** Resets are adopted on the
+literature and one offline measurement, not on a run of this project's; this
+run is their first test here. The evidence (desk and offline, 2026-09-27, no
+device time):
+
+- the sources, verified in BBF's text (Schwarzer et al. 2023, arXiv
+  2305.19452) and official code (`BBF.gin`, `SR_SPR.gin`); D'Oro et al.'s own
+  PDF could not be retrieved, so SR-SPR's values are as BBF's code states
+  them. BBF resets every 40k updates, restarts the n-step anneal after each
+  reset, and its ablation (Fig. 5) shows resets matter; `SR_SPR.gin` shrinks
+  0.8 and perturbs 0.2 at replay ratio 8; Nikishin et al. 2022 (arXiv
+  2205.07802) find the benefit of resets grows with the replay ratio, and
+  reset the optimiser statistics with the layers;
+- offline recovery after an SR-SPR-style reset of `M3-P009`'s 300k-decision
+  checkpoint, trained on `M3-P009`'s own replay (uniform, batch 8) and compared
+  with the pre-reset network on 128 held-out windows (reference: `M3-P009`'s
+  own 325k-vs-300k agreement 0.733, Q correlation 0.951):
+
+  | updates | greedy agreement / Q corr, n fixed at 3 | n 10 → 3 restarted |
+  | --- | --- | --- |
+  | 1k | 0.33 / 0.13 | 0.33 / 0.37 |
+  | 5k | 0.28 / 0.31 | 0.43 / 0.60 |
+  | 10k | 0.29 / 0.58 | 0.33 / 0.77 |
+  | 20k | 0.45 / 0.78 | 0.53 / 0.81 |
+  | 30k | — | 0.68 / 0.80 |
+  | 40k | — | 0.67 / 0.80 |
+
+  so R ≈ 20-30k updates, and restarting the anneal speeds recovery;
+- gradient noise scale B_simple (McCandlish et al. 2018, arXiv 1812.06162) on
+  `M3-P009`'s replay from 384 single-window gradients: 3.5 windows at 20.9k
+  steps and 15.6 at 296k (heavy-tailed; order of magnitude only), with 10.3 and
+  1.1 of a window's ~73 positions effectively independent;
+- isolated learner-step cost on the idle RTX 4090 over `M3-P012`'s replay,
+  median of 50: 10.2 ms at batch 8 (collate 4.8, learn 5.3), 15.3 ms at 16,
+  29.3 ms at 32, 56.5 ms at 64 — collate is ~0.6 ms per window; in-run steps
+  cost ~2.8× that (`M3-P009`/`M3-P012`/`M3-P013` mlflow
+  `decision_wall_ms_learner_step`); publishing online, target and AdamW
+  moments to an actor takes 0.57 ms, so a 10-decision refresh is cheap.
+
+**Readings to record,** each against the `learner_resets` marks:
+
+1. the depth and duration of the `(100000, 150000]` dip against
+   `(50000, 100000]`: the near-greedy mean of each 10,000-decision bin after
+   reset 1, the lowest bin's shortfall below the `(50000, 100000]` mean, and
+   the number of bins below that mean;
+2. the post-reset recovery time in decisions, for every reset: from the
+   reset's mark to the end of the first 10,000-decision bin whose near-greedy
+   mean reaches the mean of the 50,000 decisions before the reset.
+
+A failure of the reset hypothesis — the curve does not recover within an
+interval, or post-reset periods never exceed pre-reset ones — is recorded,
+not acted on mid-run; only the collapse-only kill bars stop the run.
+
+**Known confounds, stated in advance.** One seed (0), n=1: the path SD between
+single runs of one configuration is an estimated 3-4 waves (the diagnosis
+above), so a difference from `M3-P009` of that size is not evidence either
+way. Two changes are bundled (resets, refresh 10) and are not separately
+attributable. Left-padding remains on, as in `M3-P013`.
 
 **Timebox.** 18 h for training to the full budget; governed by the
 collapse-only kill bars otherwise.

@@ -52,6 +52,16 @@ actors' valid episodes that ended in (START, AT] must average at least MIN
 waves, or the run stops there and the summary records which bar stopped it. A
 window with no such episode measures nothing and does not stop the run.
 
+Each run lives in one folder, `state/runs/<run name>/` (the layout is in
+`tower_rl.experiment.run_folder`): its manifest, checkpoints, saved replay, a
+summary and log per segment, the stage logs pointed there, and the evaluations
+of its checkpoints. `--run-name` names it, so a supervisor's log can be pointed
+into it before launch; by default it is `<backbone>-<UTC start>`.
+
+    name=stacked-dqn-$(date -u +%Y%m%dT%H%M%SZ)
+    uv run --extra tracking python scripts/train.py \\
+        --run-name "$name" --budget-decisions 60000
+
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
 budget. The weights, the optimizer moments, the decision and game-time counters
 and every schedule and cadence derived from them come back from the file.
@@ -64,8 +74,14 @@ replay from another point in time (move `replay/` aside to re-warm instead).
 A run with no saved buffer re-warms it under the loaded policy before learning
 restarts. `--budget-decisions` stays the whole run's total.
 
+A resume from a run folder's own `latest.pt` continues in that folder as its
+next segment, `segments/<n>/`, listed in the manifest's `segments`. A resume from
+anything else - a numbered checkpoint, or a run from before run folders
+(`state/runs/session-*/<run>/`) - starts a new folder that names it as the
+parent, and leaves the folder it came from as it was.
+
     uv run --extra tracking python scripts/train.py \\
-        --resume state/runs/<session>/<run>/checkpoints/latest.pt \\
+        --resume state/runs/<run name>/checkpoints/latest.pt \\
         --budget-decisions 120000
 
 The run records itself to the local MLflow store under `state/`;
@@ -79,9 +95,12 @@ import argparse
 import json
 import sys
 import time
-from collections.abc import Callable, Sequence
+import traceback
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -104,6 +123,17 @@ from tower_rl.environment.run_port import RunPortError  # noqa: E402
 from tower_rl.environment.upgrade_setup import (  # noqa: E402
     UpgradeSetup,
     UpgradeSetupReference,
+)
+from tower_rl.experiment.run_folder import (  # noqa: E402
+    MANIFEST,
+    SEGMENT_LOG,
+    SEGMENT_SUMMARY,
+    continues_in_place,
+    new_run_name,
+    recorded_segments,
+    run_folder_of,
+    segment_directory,
+    utc_stamp,
 )
 from tower_rl.experiment.run_identity import (  # noqa: E402
     RunIdentity,
@@ -281,18 +311,19 @@ def build_arm(
     instances: Sequence[ActorInstance],
     device: torch.device,
     profile_id: str,
-    parent: Path,
+    run_dir: Path,
+    segment: int,
     revision: str,
     started: float,
     tracker: ExperimentTracker,
     tags: dict[str, str],
     resume: ResumeState | None = None,
 ) -> tuple[TrainingReport, Callable[[bool], EvaluationReport]]:
-    # Identity first: the run id every artefact is filed under, and the
-    # compatibility key its checkpoints are written with, derived from it in the
-    # one place that knows which schemas this code is. A resumed segment gets a
-    # run id and a directory of its own - it must not overwrite the resume point
-    # it was started from - and says which checkpoint it continues instead.
+    # Identity first: the run id this segment's checkpoints and tracked run are
+    # named by, and the compatibility key its checkpoints are written with,
+    # derived from it in the one place that knows which schemas this code is.
+    # A resumed segment gets a run id of its own and says which checkpoint it
+    # continues; the manifest's `segments` ties its run id to the run folder.
     # The cadence is the run's, not an instance's: one argument fixes it for
     # every actor, for the identity its checkpoints are keyed on and for the
     # snapshot it records. Reading it back off an instance would let a fleet
@@ -313,7 +344,6 @@ def build_arm(
         workshop_level=workshop_level,
     )
     run_id = identity.run_id
-    run_dir = parent / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     if arguments.backbone == DREAMERV3:
@@ -557,8 +587,20 @@ def build_arm(
     arm.training.numbered_checkpoint = arm.numbered_checkpoint
     arm.training.on_episode = on_episode
     arm.training.on_withdrawal = on_withdrawal
-    manifest = run_dir / "manifest.json"
-    write_manifest(manifest, {"run_id": run_id, **resolved})
+    manifest = run_dir / MANIFEST
+    base = run_manifest(
+        run_dir,
+        run_id=run_id,
+        resolved=resolved,
+        segment={
+            "segment": segment,
+            "run_id": run_id,
+            "started_utc": utc_stamp(),
+            "parent_checkpoint": None if resume is None else resume.parent_checkpoint,
+            "resumed_from_decisions": progress.decisions,
+        },
+    )
+    write_manifest(manifest, base)
     run.log_artifact(manifest)
 
     def record_setup(first: UpgradeSetup) -> None:
@@ -569,8 +611,7 @@ def build_arm(
         write_manifest(
             manifest,
             {
-                "run_id": run_id,
-                **resolved,
+                **base,
                 "upgrade_setup": first.to_record(),
                 "upgrade_setup_digest": first.digest,
             },
@@ -606,6 +647,36 @@ def build_arm(
     # records what an evaluation produced, and the session decides when the one
     # pre-registered evaluation is taken.
     return arm, run_evaluation
+
+
+def run_manifest(
+    run_dir: Path,
+    *,
+    run_id: str,
+    resolved: dict[str, object],
+    segment: dict[str, object],
+) -> dict[str, object]:
+    """The run folder's manifest as this segment starts, before its setup is pinned.
+
+    The configuration is this segment's, and `segments` is every earlier
+    segment's entry with this one appended. The upgrade setup an earlier segment
+    recorded is carried over: this segment is held to the same one, and writes
+    it again once its own first episode has read it back.
+    """
+    previous: dict[str, object] = {}
+    if (run_dir / MANIFEST).exists():
+        previous = json.loads((run_dir / MANIFEST).read_text())
+    carried = {
+        key: previous[key]
+        for key in ("upgrade_setup", "upgrade_setup_digest")
+        if key in previous
+    }
+    return {
+        "run_id": run_id,
+        **resolved,
+        **carried,
+        "segments": [*recorded_segments(run_dir), segment],
+    }
 
 
 #: Replay sequences before DreamerV3's first update. The official loop trains
@@ -956,8 +1027,17 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=state_directory() / "runs",
         help=(
-            "the project's git-ignored state directory; checkpoints and "
-            "reports are never committed"
+            "where run folders are made, in the project's git-ignored state "
+            "directory; the MLflow store sits beside it"
+        ),
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help=(
+            "the run folder this run writes into, under --run-dir; by default "
+            "<backbone>-<UTC start> for a new run, or the folder of the "
+            "latest.pt a resume continues"
         ),
     )
     parser.add_argument(
@@ -1064,7 +1144,36 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             f"burn-in {arguments.stacked_burn_in} leaves no learning steps "
             f"in a sequence of {arguments.sequence_length}"
         )
+    arguments.run_folder = choose_run_folder(arguments)
     return arguments
+
+
+def choose_run_folder(arguments: argparse.Namespace) -> Path:
+    """The run folder this segment writes into, refused here if it holds another run.
+
+    `--run-name` names it outright. Without one, a resume from a run folder's
+    own `latest.pt` continues in that folder, and anything else is a new folder
+    named for the backbone and the time. A folder that already holds a manifest
+    is written into only as the continuation of its own `latest.pt`: a second
+    run, or a branch from one of its numbered checkpoints, would overwrite what
+    is there.
+    """
+    if arguments.run_name is not None:
+        folder: Path = arguments.run_dir / arguments.run_name
+    elif arguments.resume is not None and continues_in_place(
+        run_folder_of(arguments.resume), arguments.resume
+    ):
+        folder = run_folder_of(arguments.resume)
+    else:
+        folder = arguments.run_dir / new_run_name(arguments.backbone)
+    if (folder / MANIFEST).exists() and not (
+        arguments.resume is not None and continues_in_place(folder, arguments.resume)
+    ):
+        raise SystemExit(
+            f"{folder} already holds a run; only a --resume from its own "
+            "checkpoints/latest.pt continues it. Name another folder with --run-name."
+        )
+    return folder
 
 
 def resume_point(
@@ -1239,6 +1348,49 @@ def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:
     )
 
 
+class _Tee:
+    """A text stream that writes through to another and to a log file."""
+
+    def __init__(self, stream: TextIO, log: TextIO) -> None:
+        self.stream = stream
+        self.log = log
+
+    def write(self, text: str) -> int:
+        self.log.write(text)
+        return self.stream.write(text)
+
+    def flush(self) -> None:
+        self.log.flush()
+        self.stream.flush()
+
+    def __getattr__(self, name: str) -> object:
+        # Anything else a caller asks of a console stream - its encoding,
+        # whether it is a terminal - is the console's.
+        return getattr(self.stream, name)
+
+
+@contextmanager
+def segment_log(path: Path) -> Iterator[None]:
+    """Copy everything this process prints into the segment's `train.log`.
+
+    The console output is kept as it is - `run_stage.sh` captures it into the
+    stage log - so the run folder holds the training log whatever launched it.
+    An error that ends the segment is written into the log before it leaves.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as log:
+        streams = sys.stdout, sys.stderr
+        sys.stdout = _Tee(sys.stdout, log)
+        sys.stderr = _Tee(sys.stderr, log)
+        try:
+            yield
+        except BaseException:
+            traceback.print_exc(file=log)
+            raise
+        finally:
+            sys.stdout, sys.stderr = streams
+
+
 def train_session(
     arguments: argparse.Namespace,
     instances: Sequence[ActorInstance],
@@ -1251,140 +1403,147 @@ def train_session(
     bring_up_failures: Sequence[str] = (),
     resume: ResumeState | None = None,
 ) -> dict[str, object]:
-    """Train the arm to its budget and return the session report.
+    """Train the arm to its budget as the next segment of its run folder, and report.
+
+    The report is also the segment's `segments/<n>/summary.json`, and everything
+    printed meanwhile is copied into the segment's `train.log` beside it.
 
     The instances are a parameter rather than something built here, so the one
     place a bridge to a real device is opened is `main`. Nothing else decides
     what the arm is talking to.
     """
-    started = time.monotonic()
-    session = arguments.run_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}"
-    recorder = NoExperimentTracker() if tracker is None else tracker
-    tags = {
-        "source_revision": revision,
-        "profile_id": profile_id,
-        "session": session.name,
-        "device_serial": ",".join(instance.serial for instance in instances),
-        # The fleet the arm collected with, as it actually came up: an instance
-        # that failed its bring-up is not one of these.
-        "actors": str(len(instances)),
-    }
-    if bridge_version is not None:
-        tags["bridge_version"] = bridge_version
-    arm, run_evaluation = build_arm(
-        arguments.backbone,
-        arguments,
-        instances=instances,
-        device=device,
-        profile_id=profile_id,
-        parent=session,
-        revision=revision,
-        started=started,
-        tracker=recorder,
-        tags=tags,
-        resume=resume,
-    )
-
-    # Whether the run's end has written its resume point, so that however it
-    # ends - here, or through an exception or an interrupt - it is written once.
-    resume_point_written = False
-    try:
-        # To the whole run's budget: a resumed run starts with part of it spent.
-        arm.training.run()
-
-        killed = arm.training.killed_by
-        if killed is not None:
-            bar = killed.bar
-            print(
-                f"[{arm.name}] stopped at {killed.decisions} decisions on the kill "
-                f"bar at {bar.at_decisions}: the near-greedy mean final wave over "
-                f"({bar.window_start_decisions}, {bar.at_decisions}] was "
-                f"{killed.mean_final_wave:.2f} over {killed.near_greedy_episodes} "
-                f"episodes, below {bar.min_mean_final_wave}",
-                flush=True,
-            )
-        elif arm.training.stopped_early:
-            plateau = arm.training.report.plateau
-            # An early stop is the run's own decision and is invisible in the
-            # counters alone - a run that stopped at 30,000 of 60,000
-            # decisions looks like one that was interrupted.
-            print(
-                f"[{arm.name}] stopped early at selection period "
-                f"{plateau.stopped_at_period}: the near-greedy curve did not "
-                f"improve on {plateau.best_mean_final_wave:.2f} waves for "
-                f"{arguments.early_stop_patience_periods} periods",
-                flush=True,
-            )
-
-        # Before the final evaluation, which takes hours and changes neither
-        # the weights nor replay: the resume point is on disk the moment the
-        # budget is spent.
-        resume_point_written = True
-        arm.save_resume_point()
-        # The one pre-registered measurement of the run: exploration-free, on
-        # the final weights, sized so its standard error can resolve a real
-        # difference against the scripted floor. Taken after the budget is
-        # spent, so it costs none of the budget and cannot be chosen after
-        # the fact from a series of mid-run points.
-        # Skipped for a run stopped on a kill bar: whether a killed run's arm
-        # is evaluated is its pre-registration's decision (solution.md 9.2b),
-        # and this evaluation costs hours of device time (2.28 h in run 3).
-        # The summary records the skip. A plateau stop still evaluates.
-        if killed is not None:
-            print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
-        else:
-            try:
-                run_evaluation(True)
-            except (RunPortError, ValueError) as failure:
-                # Losing the headline measurement must not lose the run: the
-                # collection curve and the checkpoints are already on disk.
-                arm.training.report.evaluation_failures.append(str(failure))
-                print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
-
-        summary = arm.summary()
-        report: dict[str, object] = {
-            "session": str(session),
-            "profile_id": profile_id,
+    run_folder: Path = arguments.run_folder
+    segment = len(recorded_segments(run_folder)) + 1
+    with segment_log(segment_directory(run_folder, segment) / SEGMENT_LOG):
+        print(f"run folder {run_folder}, segment {segment}", flush=True)
+        started = time.monotonic()
+        recorder = NoExperimentTracker() if tracker is None else tracker
+        tags = {
             "source_revision": revision,
-            "budget_decisions": arguments.budget_decisions,
-            "actors": len(instances),
-            "actor_serials": [instance.serial for instance in instances],
-            # Instances that never came up at all, which cost the fleet an actor
-            # before a single episode was collected.
-            "bring_up_failures": list(bring_up_failures),
-            "wall_seconds": round(time.monotonic() - started, 1),
-            # Repeated at the top of the report as well as inside each arm: the
-            # curve is meaningless without the floors it is read against.
-            "reference_final_waves": reference_final_waves(workshop_level_from(arguments)),
-            # One arm. The session used to carry a list of them, from a
-            # comparison of several backbones that was retired: this project
-            # trains one backbone and compares it against the non-learned floors
-            # afterwards, through `report_arms.py`, not inside a session.
-            "arm": summary,
+            "profile_id": profile_id,
+            "run_folder": run_folder.name,
+            "device_serial": ",".join(instance.serial for instance in instances),
+            # The fleet the arm collected with, as it actually came up: an instance
+            # that failed its bring-up is not one of these.
+            "actors": str(len(instances)),
         }
-        session.mkdir(parents=True, exist_ok=True)
-        (session / "summary.json").write_text(json.dumps(report, indent=2, default=str))
-        # The arm's summary holds its learning curve and the per-episode
-        # evaluation records, so it is what a tracked run is read from.
-        path = arm.run_dir / "summary.json"
-        path.write_text(json.dumps(summary, indent=2, default=str))
-        arm.run.log_artifact(path)
-        return report
-    finally:
+        if bridge_version is not None:
+            tags["bridge_version"] = bridge_version
+        arm, run_evaluation = build_arm(
+            arguments.backbone,
+            arguments,
+            instances=instances,
+            device=device,
+            profile_id=profile_id,
+            run_dir=run_folder,
+            segment=segment,
+            revision=revision,
+            started=started,
+            tracker=recorder,
+            tags=tags,
+            resume=resume,
+        )
+
+        # Whether the run's end has written its resume point, so that however it
+        # ends - here, or through an exception or an interrupt - it is written once.
+        resume_point_written = False
         try:
-            if not resume_point_written:
-                # The run ended on an exception or an interrupt, which is on
-                # its way out of here: the resume point is written first, and
-                # a failure to write it is reported rather than raised, so it
-                # cannot replace the error that ended the run.
+            # To the whole run's budget: a resumed run starts with part of it spent.
+            arm.training.run()
+
+            killed = arm.training.killed_by
+            if killed is not None:
+                bar = killed.bar
+                print(
+                    f"[{arm.name}] stopped at {killed.decisions} decisions on the kill "
+                    f"bar at {bar.at_decisions}: the near-greedy mean final wave over "
+                    f"({bar.window_start_decisions}, {bar.at_decisions}] was "
+                    f"{killed.mean_final_wave:.2f} over {killed.near_greedy_episodes} "
+                    f"episodes, below {bar.min_mean_final_wave}",
+                    flush=True,
+                )
+            elif arm.training.stopped_early:
+                plateau = arm.training.report.plateau
+                # An early stop is the run's own decision and is invisible in the
+                # counters alone - a run that stopped at 30,000 of 60,000
+                # decisions looks like one that was interrupted.
+                print(
+                    f"[{arm.name}] stopped early at selection period "
+                    f"{plateau.stopped_at_period}: the near-greedy curve did not "
+                    f"improve on {plateau.best_mean_final_wave:.2f} waves for "
+                    f"{arguments.early_stop_patience_periods} periods",
+                    flush=True,
+                )
+
+            # Before the final evaluation, which takes hours and changes neither
+            # the weights nor replay: the resume point is on disk the moment the
+            # budget is spent.
+            resume_point_written = True
+            arm.save_resume_point()
+            # The one pre-registered measurement of the run: exploration-free, on
+            # the final weights, sized so its standard error can resolve a real
+            # difference against the scripted floor. Taken after the budget is
+            # spent, so it costs none of the budget and cannot be chosen after
+            # the fact from a series of mid-run points.
+            # Skipped for a run stopped on a kill bar: whether a killed run's arm
+            # is evaluated is its pre-registration's decision (solution.md 9.2b),
+            # and this evaluation costs hours of device time (2.28 h in run 3).
+            # The summary records the skip. A plateau stop still evaluates.
+            if killed is not None:
+                print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
+            else:
                 try:
-                    arm.save_resume_point(after_failure=True)
-                except Exception as failure:  # noqa: BLE001 - must not mask the original
-                    print(f"[{arm.name}] resume point not written: {failure}", flush=True)
+                    run_evaluation(True)
+                except (RunPortError, ValueError) as failure:
+                    # Losing the headline measurement must not lose the run: the
+                    # collection curve and the checkpoints are already on disk.
+                    arm.training.report.evaluation_failures.append(str(failure))
+                    print(f"[{arm.name}] final evaluation failed: {failure}", flush=True)
+
+            summary = arm.summary()
+            report: dict[str, object] = {
+                "run_folder": str(run_folder),
+                "segment": segment,
+                "profile_id": profile_id,
+                "source_revision": revision,
+                "budget_decisions": arguments.budget_decisions,
+                "actors": len(instances),
+                "actor_serials": [instance.serial for instance in instances],
+                # Instances that never came up at all, which cost the fleet an actor
+                # before a single episode was collected.
+                "bring_up_failures": list(bring_up_failures),
+                "wall_seconds": round(time.monotonic() - started, 1),
+                # Repeated at the top of the report as well as inside each arm: the
+                # curve is meaningless without the floors it is read against.
+                "reference_final_waves": reference_final_waves(workshop_level_from(arguments)),
+                # One arm. The session used to carry a list of them, from a
+                # comparison of several backbones that was retired: this project
+                # trains one backbone and compares it against the non-learned floors
+                # afterwards, through `report_arms.py`, not inside a session.
+                "arm": summary,
+            }
+            # The arm's summary holds its learning curve and the per-episode
+            # evaluation records, so it is what a tracked run is read from.
+            path = segment_directory(run_folder, segment) / SEGMENT_SUMMARY
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(report, indent=2, default=str))
+            arm.run.log_artifact(path)
+            return report
         finally:
-            # A run that ended badly is still a run that has to be closed, or
-            # it would sit open in the store forever.
-            arm.run.finish()
+            try:
+                if not resume_point_written:
+                    # The run ended on an exception or an interrupt, which is on
+                    # its way out of here: the resume point is written first, and
+                    # a failure to write it is reported rather than raised, so it
+                    # cannot replace the error that ended the run.
+                    try:
+                        arm.save_resume_point(after_failure=True)
+                    except Exception as failure:  # noqa: BLE001 - must not mask the original
+                        print(f"[{arm.name}] resume point not written: {failure}", flush=True)
+            finally:
+                # A run that ended badly is still a run that has to be closed, or
+                # it would sit open in the store forever.
+                arm.run.finish()
 
 
 def connect(
@@ -1412,6 +1571,7 @@ def main() -> int:
     # Built before the device is touched: a session that cannot be recorded
     # should fail now rather than an hour into collection.
     tracker = build_tracker(arguments)
+    print(f"run folder: {arguments.run_folder}", flush=True)
     print(f"tracking: {tracker.tracking_uri} experiment {arguments.experiment}", flush=True)
     if arguments.track:
         print(

@@ -13,8 +13,9 @@ evaluation directory as `run_actors.py --policy checkpoint:<path>` leaves it,
 holding one JSON record per actor.
 
     uv run python scripts/select_checkpoint.py \\
-        state/runs/session-.../stacked-dqn-... \\
-        /tmp/eval-d0015000 /tmp/eval-d0030000 /tmp/eval-d0045000
+        state/runs/<run name> \\
+        state/runs/<run name>/evaluations/checkpoint-d0015000-<time> \\
+        state/runs/<run name>/evaluations/checkpoint-d0030000-<time>
 
 The selection is by the highest interquartile mean of the final wave. The
 intervals are printed beside it, and when the leaders' intervals overlap that is
@@ -47,6 +48,7 @@ from tower_rl.experiment.arm_evaluation import (  # noqa: E402
     statistic_line,
 )
 from tower_rl.experiment.comparison import stratified_bootstrap  # noqa: E402
+from tower_rl.experiment.run_folder import run_ids  # noqa: E402
 from tower_rl.experiment.tracking import add_tracking_arguments, tracked_run  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, load  # noqa: E402
 
@@ -106,10 +108,11 @@ def candidate(directory: Path, run_directory: Path, checkpoints: dict[str, Path]
 
     Which run produced the model played here is read from the records, not from
     the file name they mention: `run_id` and the identity hash come from the
-    checkpoint's own `CheckpointIdentity`, and the run directory is named for
-    its run id. Two runs can leave files called exactly the same thing, so a
-    name check would accept another run's evaluation as this one's and the
-    selected file would then be reported as this run's work.
+    checkpoint's own `CheckpointIdentity`, and the run folder's manifest lists
+    the run id of every segment it holds (a folder of the old layout is named
+    for its one run id). Two runs can leave files called exactly the same
+    thing, so a name check would accept another run's evaluation as this one's
+    and the selected file would then be reported as this run's work.
 
     The file name is still what says *which* checkpoint of the run it is, and it
     has to be: the identity hash is constant across a run.
@@ -125,11 +128,12 @@ def candidate(directory: Path, run_directory: Path, checkpoints: dict[str, Path]
             f"{identity.get('name', 'an unnamed arm')!r}"
         )
     played_run = identity.get("run_id")
-    if played_run != run_directory.name:
+    if played_run not in run_ids(run_directory):
         raise SystemExit(
             f"{directory} played a checkpoint of run {played_run!r}, not of "
-            f"{run_directory.name!r}; two runs leave identically named files, "
-            "so the run id is what says whose checkpoint this is"
+            f"{run_directory.name!r} ({', '.join(run_ids(run_directory))}); two runs "
+            "leave identically named files, so the run id is what says whose "
+            "checkpoint this is"
         )
     digest = identity.get("checkpoint_identity")
     if not digest:
@@ -289,7 +293,7 @@ def main() -> int:
     # reads it back and refuses records that did not play this model, which is
     # what closes the gap between choosing on A and reporting on B.
     selection = {
-        "run_id": arguments.run_directory.name,
+        "run_id": (best.evaluation.policy_identity or {}).get("run_id"),
         "checkpoint": str(selected),
         "decisions": best.decisions,
         "checkpoint_identity": identity,

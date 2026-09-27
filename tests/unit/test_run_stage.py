@@ -805,3 +805,32 @@ def test_an_instance_listed_offline_with_no_process_left_has_exited(shims: Shims
         "stage test-stage: exit 0, cleanup ok, instances 0/1 cleaned, 1 exited during teardown"
         in result.stdout
     )
+
+
+def test_a_log_directory_moves_the_stage_log_but_not_the_emulator_logs(
+    shims: Shims, tmp_path: Path
+) -> None:
+    """A training stage writes its log into its run folder (board #90).
+
+    The emulators' own logs are captured where `bring_up` puts them whatever
+    the stage log's directory, so a failed stage still surfaces their lines.
+    """
+    bring_up(shims, "emulator-5556")
+    shims.logs.mkdir(parents=True, exist_ok=True)
+    (shims.logs / "tower-rl-emulator-emulator-5556.log").write_text("ColorBuffer::create failed\n")
+    run_logs = tmp_path / "runs" / "stacked-dqn-20260927T000000Z" / "logs"
+    stage = shims.stage("exit 3")
+
+    result = subprocess.run(
+        [str(RUN_STAGE), "--name", "test-stage", "--instances", "1",
+         "--shutdown-grace", "10", "--log-directory", str(run_logs), "--", str(stage)],
+        env=shims.environment, capture_output=True, text=True, timeout=90, check=False,
+    )
+
+    assert result.returncode == 3
+    (log,) = run_logs.glob("test-stage-*.log")
+    written = log.read_text()
+    assert "crash-lines: emulator-5556" in written
+    assert "ColorBuffer::create failed" in written
+    assert (run_logs / "test-stage-emulator-5556-logcat.txt").exists()
+    assert not list(shims.logs.glob("test-stage-*.log"))

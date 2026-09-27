@@ -203,7 +203,7 @@ def test_a_run_records_its_first_setup_in_the_manifest_and_checkpoints(
     tmp_path: Path,
 ) -> None:
     report = numbered(tmp_path, 200)
-    run_dir = Path(report["session"]) / report["arm"]["run_id"]
+    run_dir = Path(report["run_folder"])
     manifest = json.loads((run_dir / "manifest.json").read_text())
     digests = {episode["upgrade_setup_digest"] for episode in report["arm"]["collected_episodes"]}
 

@@ -14,7 +14,13 @@ for a checkpoint a training run left behind, which is rebuilt into the backbone
 that wrote it and played greedily. Every record says which it was.
 
     ./scripts/run_episodes.py --episodes 50 \\
-        --policy checkpoint:state/runs/.../checkpoint-d0015000.pt
+        --policy checkpoint:state/runs/<run name>/checkpoints/checkpoint-d0015000.pt
+
+A checkpoint's record is filed with the run that wrote it by default, in
+`<run folder>/evaluations/<name>/<serial>.json`; `--evaluation-name` names it
+(default: the checkpoint and the UTC time) and `--output` puts it anywhere else.
+A floor's record goes to `state/records/episodes.json` unless `--output` says
+otherwise.
 """
 
 from __future__ import annotations
@@ -57,6 +63,7 @@ from tower_rl.environment.upgrade_setup import (  # noqa: E402
     UpgradeSetupRefused,
 )
 from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows  # noqa: E402
+from tower_rl.experiment.run_folder import evaluation_directory, utc_stamp  # noqa: E402
 from tower_rl.learning.actor import ActorConfig  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, identity_hash  # noqa: E402
 from tower_rl.learning.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
@@ -147,6 +154,65 @@ def policy_from(
         # before the setup was recorded.
         "upgrade_setup_digest": identity.upgrade_setup_digest,
     }
+
+
+def add_evaluation_name_argument(parser: argparse.ArgumentParser) -> None:
+    """`--evaluation-name`: the directory a checkpoint's evaluation is filed under."""
+    parser.add_argument(
+        "--evaluation-name",
+        default=None,
+        help=(
+            "with a checkpoint policy and no output given, the evaluation is "
+            "written to <its run folder>/evaluations/<this name>/; default "
+            "<checkpoint>-<UTC time>"
+        ),
+    )
+
+
+def checkpoint_evaluation_directory(selector: str, name: str | None) -> Path | None:
+    """Where an evaluation of a checkpoint arm is filed by default; None for a floor.
+
+    The run is the folder the checkpoint sits in (`tower_rl.experiment.run_folder`).
+    The default name carries the time, so two evaluations of one checkpoint
+    never share a directory: a directory is read back as one arm's records, and
+    two sets pooled into it would be read as one.
+    """
+    if not selector.startswith(CHECKPOINT_SELECTOR):
+        return None
+    checkpoint = Path(selector[len(CHECKPOINT_SELECTOR) :]).expanduser()
+    return evaluation_directory(checkpoint, name or f"{checkpoint.stem}-{utc_stamp()}")
+
+
+def refuse_an_unused_evaluation_name(arguments: argparse.Namespace, *outputs: str) -> None:
+    """`--evaluation-name` names the default directory only; given otherwise, it is refused."""
+    if arguments.evaluation_name is None:
+        return
+    if not arguments.policy.startswith(CHECKPOINT_SELECTOR):
+        raise SystemExit("--evaluation-name names an evaluation of a checkpoint policy")
+    given = [output for output in outputs if getattr(arguments, output) is not None]
+    if given:
+        raise SystemExit(
+            f"--evaluation-name names the default output directory, which "
+            f"--{given[0].replace('_', '-')} replaces; give one or the other"
+        )
+
+
+def settle_output(arguments: argparse.Namespace) -> None:
+    """Fill in where the record goes, when `--output` was not given.
+
+    `<run folder>/evaluations/<name>/<serial>.json` for a checkpoint, the file
+    `run_actors.py` would have named for this instance; `state/records/` for a
+    floor.
+    """
+    refuse_an_unused_evaluation_name(arguments, "output")
+    if arguments.output is not None:
+        return
+    directory = checkpoint_evaluation_directory(arguments.policy, arguments.evaluation_name)
+    arguments.output = (
+        state_directory() / "records" / "episodes.json"
+        if directory is None
+        else directory / f"{arguments.serial}.json"
+    )
 
 
 def actor_record(
@@ -451,12 +517,21 @@ def main() -> int:
         "the runway profile once first and print its before/after report (ADR 0012)",
     )
     parser.add_argument(
-        "--output", type=Path, default=state_directory() / "records" / "episodes.json"
+        "--output",
+        type=Path,
+        default=None,
+        help=(
+            "where the record is written; default <run folder>/evaluations/"
+            "<name>/<serial>.json for a checkpoint, state/records/episodes.json "
+            "for a floor"
+        ),
     )
+    add_evaluation_name_argument(parser)
     arguments = parser.parse_args()
 
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to run against the canonical evaluation AVD")
+    settle_output(arguments)
 
     # Before the device is touched: a checkpoint that cannot be rebuilt should
     # fail now, not after an emulator has been brought up for it.
@@ -523,6 +598,7 @@ def main() -> int:
         labels=labels,
         upgrade_setup=environment.setup_reference.first,
     )
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(json.dumps(record, indent=2))
     print(report.summary_line(), flush=True)
     print(json.dumps(record, indent=2), flush=True)

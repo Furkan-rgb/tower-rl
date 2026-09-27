@@ -254,7 +254,7 @@ def test_provenance_travels_with_the_run(recorded: RecordedRun) -> None:
     assert tags["profile_id"] == PROFILE
     assert tags["backbone"] == "stacked-dqn"
     assert tags["actors"] == "1"
-    assert tags["session"].startswith("session-")
+    assert tags["run_folder"].startswith("stacked-dqn-")
     assert tags["run_id"] == recorded.name
 
 
@@ -510,7 +510,7 @@ def test_the_numbered_checkpoints_land_on_the_run_that_reported_the_episodes(
 ) -> None:
     """One run id carries both, or the candidate cannot be found from the curve."""
     recorded, report = per_episode
-    run_dir = Path(report["session"]) / report["arm"]["run_id"]
+    run_dir = Path(report["run_folder"])
     numbered = sorted((run_dir / "checkpoints").glob("checkpoint-*.pt"))
     uploaded = [path for path, _ in recorded.artifacts if path.name.startswith("checkpoint-")]
 

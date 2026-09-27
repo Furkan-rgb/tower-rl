@@ -9,8 +9,10 @@ produces says which checkpoint it was.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 import run_actors
@@ -19,6 +21,7 @@ import torch
 from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.features import StateFeatures
+from tower_rl.environment.project_state import state_directory
 from tower_rl.environment.run_environment import (
     CadenceConfig,
     DecisionCadence,
@@ -386,3 +389,78 @@ def test_an_arm_the_session_cannot_play_is_refused_before_the_episodes(
             upgrade_availability=UpgradeAvailability.ALL,
             workshop_level=0,
         )
+
+
+# -- where an evaluation of a checkpoint is filed (board #90) -----------------
+
+
+def fleet_arguments(**given: Any) -> argparse.Namespace:
+    settings: dict[str, Any] = {
+        "policy": "scripted",
+        "evaluation_name": None,
+        "output_directory": None,
+        "output": None,
+    }
+    settings.update(given)
+    return argparse.Namespace(**settings)
+
+
+def test_an_evaluation_of_a_checkpoint_is_filed_with_its_run_by_default(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "runs" / "seed-1" / "checkpoints" / "checkpoint-d0015000.pt"
+    named = fleet_arguments(policy=f"checkpoint:{checkpoint}", evaluation_name="set-a")
+
+    run_actors.settle_outputs(named)
+
+    evaluation = tmp_path / "runs" / "seed-1" / "evaluations" / "set-a"
+    assert named.output_directory == evaluation
+    assert named.output == evaluation / "fleet.json"
+
+    unnamed = fleet_arguments(policy=f"checkpoint:{checkpoint}")
+    run_actors.settle_outputs(unnamed)
+    assert unnamed.output_directory.parent == tmp_path / "runs" / "seed-1" / "evaluations"
+    assert unnamed.output_directory.name.startswith("checkpoint-d0015000-")
+
+    one = argparse.Namespace(
+        policy=f"checkpoint:{checkpoint}",
+        evaluation_name="set-a",
+        output=None,
+        serial="emulator-5556",
+    )
+    run_episodes.settle_output(one)
+    assert one.output == evaluation / "emulator-5556.json"
+
+
+def test_a_floor_and_an_explicit_output_keep_the_records_directory(tmp_path: Path) -> None:
+    """What `test_state_directory` checks of every other writing default."""
+    floor = fleet_arguments()
+    run_actors.settle_outputs(floor)
+    assert floor.output_directory == state_directory() / "records" / "actors"
+    assert floor.output == state_directory() / "records" / "actors.json"
+
+    checkpoint = tmp_path / "run" / "checkpoints" / "latest.pt"
+    explicit = fleet_arguments(
+        policy=f"checkpoint:{checkpoint}", output_directory=tmp_path / "eval-arm"
+    )
+    run_actors.settle_outputs(explicit)
+    assert explicit.output_directory == tmp_path / "eval-arm"
+
+    with pytest.raises(SystemExit, match="--output-directory replaces"):
+        run_actors.settle_outputs(
+            fleet_arguments(
+                policy=f"checkpoint:{checkpoint}",
+                evaluation_name="set-a",
+                output_directory=tmp_path / "eval-arm",
+            )
+        )
+    with pytest.raises(SystemExit, match="evaluation of a checkpoint policy"):
+        run_actors.settle_outputs(fleet_arguments(evaluation_name="set-a"))
+
+
+def test_a_floor_played_alone_is_recorded_in_the_records_directory() -> None:
+    one = argparse.Namespace(
+        policy="scripted", evaluation_name=None, output=None, serial="emulator-5556"
+    )
+    run_episodes.settle_output(one)
+    assert one.output == state_directory() / "records" / "episodes.json"

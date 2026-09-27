@@ -42,10 +42,11 @@ FORMER_LOCATION = ".local/state/tower-rl"
 #: The argument defaults that name a place this project writes to. Each is an
 #: entry point and the arguments of its that must resolve through the state
 #: directory; an entry point writing somewhere else is the thing this catches.
+#: `run_actors.py` and `run_episodes.py` are not here: their outputs default to
+#: None and are settled after parsing - into the checkpoint's run folder, or into
+#: `state/records/` for a floor - and `test_checkpoint_arm.py` checks that.
 WRITING_ARGUMENTS = {
     "train.py": {"--run-dir"},
-    "run_actors.py": {"--output", "--output-directory"},
-    "run_episodes.py": {"--output"},
     "report_arms.py": {"--output", "--output-directory"},
     "select_checkpoint.py": {"--output"},
     "spectate.py": {"--output-directory"},

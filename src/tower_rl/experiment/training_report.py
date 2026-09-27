@@ -14,6 +14,7 @@ behind.
 
 from __future__ import annotations
 
+import shutil
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
@@ -201,6 +202,9 @@ class TrainingReport:
         for both, so the checkpoint and the buffer describe the same moment and
         a resume can require one to match the other.
 
+        A dump already in the run folder is an earlier segment's, which this
+        segment resumed from; it is replaced, since `latest.pt` has moved past it.
+
         A failed replay save is reported and not raised: the checkpoint is
         already written, and a resume from it re-warms replay exactly as it did
         before replay was saved at all.
@@ -229,6 +233,11 @@ class TrainingReport:
             )
             started = time.monotonic()
             try:
+                if self.replay_path.exists():
+                    # The dump an earlier segment of this run folder saved and
+                    # this one resumed from: `latest.pt` was just written past
+                    # it, so it no longer describes the resume point.
+                    shutil.rmtree(self.replay_path)
                 size = self.replay.save_to(
                     self.replay_path,
                     run={"decisions": report.decisions, "identity": asdict(self.identity)},

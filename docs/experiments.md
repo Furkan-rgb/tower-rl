@@ -70,7 +70,8 @@ recipe on the new baseline.
 | `M3-P006` | Does ~8× more training (1,000,000 decisions vs 120,712) with the adopted `M3-P005` recipe cross the wave 20-21 wall? | `--budget-decisions 1000000` (plus `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--replay-capacity 4096` explicit, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2`) on top of `M3-P005`'s exact recipe | `M3-P005` 16.346, SD 4.368, n=104 | 17.010, SD 4.163, n=104, P(≥20)=0.500 (52/104) | "More training did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule; run early-stopped at 752,118 decisions (period 15/20) | Eval mean indistinguishable from `M3-P005` (bootstrap +0.663 [-0.490,+1.808]); arm from period 10 (500,143 decisions), curve peaked there then declined; one training episode (near-greedy actor, index 1791/3650) completed wave 21 and reached wave 22 — the project's first, not reproduced elsewhere in training or in eval | `f6ad3d1` (pre-registration) |
 | `M3-P007` | At the same 1,000,000-decision budget and early-stop rule as `M3-P006`, does DreamerV3 (a model-based learner) cross the wave 20-21 wall that stacked-dqn did not? | `--backbone dreamerv3`, `--budget-decisions 1000000`, `--replay-capacity 40000` (scaled from `M3-P002`'s default 4096, which would FIFO at ≈13% of this budget), `--selection-period-decisions 50000`, `--checkpoint-every-decisions 25000`, `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` — identical periods/early-stop to `M3-P006`; `train_ratio=512` (0.5 gradient steps/decision) per `DreamerConfig`'s default | `M3-P002` 12.676, SD 2.392, n=105; context: `M3-P006` 17.010, SD 4.163, n=104 | 15.695, SD 3.533, n=105, P(≥20)=0.181 (19/105) | "DreamerV3 did not cross the wall under this recipe" (eval P(≥22)=0.000), per the pre-registered rule | Deviation: early stopping was dropped mid-run by developer decision, training to the full 1,000,000-decision budget instead of stopping at period 16 (800,124 decisions); a resume (r3-cont) restarted replay empty, predating `#87`; arm from period 11 (550,069 decisions, predates the resume); vs `M3-P006` (single run each): -1.32, Welch 95% CI ≈ [-2.36, -0.27]; bimodal eval distribution (35/105 die at waves 11-12, 19/105 reach 20); no wave ≥22 episode anywhere in training or eval | `ce9c2e0` (pre-registration), `f263b7b` (amendment), this commit (results) |
 | `M3-P008` | With `M3-P006`'s exact recipe unchanged, does always-on R2D2 prioritized replay (α=0.9, β=0.6, η=0.9) plus no early stop move the eval mean or the P(≥22) wall-crossed reading? | `M3-P006`'s command verbatim minus `--early-stop-patience-periods 5 --early-stop-min-improvement 0.2` (full `--budget-decisions 1000000`); PER always-on (`aadf8f4`) and replay persistence across resume (`#87`) are both active with no flag | `M3-P006` 17.010, SD 4.163, n=104 | not evaluated — stopped at 278,966/1,000,000 decisions | STOPPED by developer decision, before evaluation | Near-greedy period means for periods 1-5: 8.38, 13.36, 15.22, 15.01, 16.14; the SIGINT replay dump (4096 sequences, 0.85 GB, 7.7 s) was the first on-device confirmation of `#87`; superseded by `M3-P009` under baseline v2 (`#80`, ADR 0012) rather than resumed | this commit (results) |
-| `M3-P009` | Under baseline v2 (Workshop level 5, the 11 ADR 0012 rows), does `M3-P008`'s exact recipe (stacked-dqn, always-on R2D2 PER, no early stop) reach the ceiling model's predicted wave range? | `M3-P008`'s command verbatim plus `--workshop-level 5` | none — single run, not comparable with any v1 result | pending | pending | pending | this commit (pre-registration) |
+| `M3-P009` | Under baseline v2 (Workshop level 5, the 11 ADR 0012 rows), does `M3-P008`'s exact recipe (stacked-dqn, always-on R2D2 PER, no early stop) reach the ceiling model's predicted wave range? | `M3-P008`'s command verbatim plus `--workshop-level 5` | none — single run, not comparable with any v1 result | not evaluated — stopped at 325,493/1,000,000 decisions | STOPPED by developer decision, before evaluation | Near-greedy period means: P1 26.31 (n=65, 50,108 decisions), P2 35.73 (n=41, 100,569), P3 37.74 (n=35, 150,249), P4 37.92 (n=37, 200,670), P5 34.48 (n=40, 250,192), P6 41.85 (n=33, 300,621) — well above the scripted L5 reference (21, 21, 21); validity 535/556 (12 invalid episodes, all with unrecoverable reasons since `summary.json` is not written on SIGINT, `#91`); superseded by `M3-P010` (`#92`/`#93`) rather than resumed | this commit (results) |
+| `M3-P010` | Under baseline v2, does `M3-P009`'s recipe bundled with six changes (longer horizon, lower replay ratio, larger replay, periodic parameter sync, AdamW ε default, left-padded opening decisions) hold or exceed `M3-P009`'s near-greedy period means? | `--discount-per-game-second 0.999` (was 0.997); `--gradient-steps-per-decision 0.114` (was 1.0); `--replay-capacity 25000` (was 4096); `--parameter-sync-decisions 100` (new); AdamW ε 1.5e-4 (code default); every episode left-padded (`#92`) | `M3-P009`: not a matched-budget comparator (stopped at 325,493/1,000,000 decisions); primary comparison is scripted/random at L5, both still to be measured at n=105 under v2 | pending | pending | pending | this commit (pre-registration) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -199,6 +200,131 @@ the environment configuration itself (Workshop level 5), so this run's
 result is not comparable to any `M3-P00[1-8]` result run under baseline
 v1 — it is a single-run check of `M3-P008`'s recipe on the new baseline,
 not a controlled A/B against it.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins/permanent-progression changes (in-run purchases
+fine). Every device stage under `scripts/run_stage.sh` with full cleanup
+and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
+after. Stop after three consecutive unexplained failures.
+`state/bridge/current` is never repointed. One device stage at a time; no
+polling loops.
+
+### Stopped, as run
+
+**Verdict: STOPPED by developer decision, not evaluated.** Deliberately
+stopped at **325,493** of the planned 1,000,000 decisions (`SIGINT` at
+14:23:13, exit 130, cleanup verified). Superseded by `M3-P010` (`#92`/`#93`,
+below), which changes the training recipe again; this run is not resumed.
+
+**Near-greedy selection-period means** (mean final wave; n = near-greedy
+episodes in the period; decisions at the period's close):
+
+| period | decisions | mean final wave | n |
+| --- | --- | --- | --- |
+| 1 | 50,108 | 26.31 | 65 |
+| 2 | 100,569 | 35.73 | 41 |
+| 3 | 150,249 | 37.74 | 35 |
+| 4 | 200,670 | 37.92 | 37 |
+| 5 | 250,192 | 34.48 | 40 |
+| 6 | 300,621 | 41.85 | 33 |
+
+**Validity.** 535/556 collected episodes valid. Seven invalid episodes came
+during bring-up (decisions ≤ 3,527); a further five were invalid within
+decisions 293,367-293,418. All twelve invalid reasons are unrecoverable: no
+`summary.json` was written on `SIGINT` for this run (`#91`), so the
+per-episode termination detail cannot be read back.
+
+**No evaluation.** The checkpoints are kept for `#65`, not evaluated here.
+
+**Reference.** Scripted policy at Workshop L5 reached final wave 21, 21, 21
+across three episodes (Workshop runway device verification, above); this
+run's near-greedy period means (26-42 waves) are well above that reference.
+
+**Artifacts.** Log
+`state/logs/m3-p009-stackeddqn-per-v2-train-20260927-102256.log`; run
+directory
+`state/runs/session-20260927-102908/stacked-dqn-20260927-102908-d1e705/`.
+
+## M3-P010: stacked-dqn with PER on baseline v2, six recipe changes bundled, 1,000,000 decisions (pre-registered, written before the run)
+
+**Date:** 2026-09-27. Board `#85`. Single seed, single run; not a
+matched-budget comparator against `M3-P009` (stopped at 325,493/1,000,000
+decisions) or any `M3-P00[1-8]` run (baseline v1).
+
+**Question.** Under baseline v2 (Workshop level 5, availability `all`),
+does stacked-dqn with always-on R2D2 prioritized replay, trained under six
+changes to `M3-P009`'s recipe at once (below), hold or exceed `M3-P009`'s
+near-greedy period means?
+
+**Recipe.** `M3-P009`'s command exactly (see above), with exactly these
+changes:
+
+- `--discount-per-game-second 0.999` (was `0.997`);
+- `--gradient-steps-per-decision 0.114` (was `1.0`);
+- `--replay-capacity 25000` (was `4096`);
+- `--parameter-sync-decisions 100` (new; actors also refresh at every
+  episode start, `#93`);
+- AdamW ε `1.5e-4` (code default now, `docs/solution.md` §9.4);
+- every episode left-padded, so opening decisions train (`#92`).
+
+Rationale and citations for these values: `docs/solution.md` §6.10 and
+§9.4-9.6, not duplicated here. The arm rule is unchanged (`docs/solution.md`
+§9.2b).
+
+    export TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/workshop-render-interval-16
+    scripts/run_stage.sh --name m3-p010-stackeddqn-v2-train --instances 7 \
+      --log-directory state/runs/m3-p010-stackeddqn-v2-<UTC stamp>/logs -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 1000000 --checkpoint-every-decisions 25000 \
+      --selection-period-decisions 50000 --epsilon-anneal-decisions 8000 --seed 0 \
+      --gradient-steps-per-decision 0.114 --n-step 10 --n-step-final 3 \
+      --n-step-anneal-steps 10000 --kill-bar 12000:8000:6.1 --kill-bar 26262:8000:6.1 \
+      --frame-game-ms 100 --discount-per-game-second 0.999 --survival-time-reward \
+      --ez-greedy --replay-capacity 25000 --workshop-level 5 \
+      --parameter-sync-decisions 100 \
+      --run-name m3-p010-stackeddqn-v2-<UTC stamp>
+
+**Builds.** `workshop-render-interval-16` for training collection
+(`TOWER_BRIDGE_BUILD_DIR`, sha256
+`53d346ae26f721318dc24e67644b5834b01cc48cf195a9c3154cffac2b11c7d3`).
+Evaluation on `workshop-default` (sha256
+`33de682666eeac8fb8a2260ce18c5a6f7f57c941ff677fc209daaf2a658195e8`), not
+`state/bridge/current`.
+
+**Arm rule.** `docs/solution.md` §9.2b, unchanged: the best near-greedy
+selection-period mean, counting periods 2 and later, ties broken to the
+earlier period.
+
+**Evaluation.** The arm, on the `workshop-default` build, n=105 (7×15),
+`--upgrade-availability all --frame-game-ms 100 --workshop-level 5`, into
+the run folder's `evaluations/`:
+
+    uv run python scripts/run_actors.py --actors 7 --episodes 15 \
+        --policy checkpoint:<m3-p010 arm checkpoint> \
+        --upgrade-availability all --frame-game-ms 100 --workshop-level 5 \
+        --output-directory state/runs/m3-p010-stackeddqn-v2-<UTC stamp>/evaluations/eval-arm
+
+Report mean final wave ± 1.96·SD/√n, invalid-reason counts, and the
+final-wave histogram.
+
+**Primary comparison.** Scripted L5 and random L5, both still to be
+measured at n=105 under baseline v2 — not `M3-P009`, which is a stopped
+325,493-decision run, not a matched-budget comparator, and not any
+`M3-P00[1-8]` v1 run.
+
+**Known confounds, stated in advance.** One seed (0). This is a bundle of
+six changes against `M3-P009` at once, so no result from this run can be
+attributed to any single change among them.
+
+**Pre-registered expectation (the lead's prior; low confidence).** Early
+periods may climb more slowly than `M3-P009`'s (fewer gradient steps per
+decision, a longer discount horizon), and later periods should hold or
+exceed them. **Falsifier:** no period beats `M3-P009`'s best period mean,
+41.85, by the end of the 1,000,000-decision budget.
+
+**Timebox.** 18 h for training. No early stop.
 
 **Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
 console ports from 5556, `-read-only`, offline by interface, no taps, no

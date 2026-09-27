@@ -264,13 +264,13 @@ class TrainingConfig:
     batch_size: int = 8
     #: Gradient steps per environment decision. What matters is the replay
     #: ratio, transitions replayed per transition generated, which is this
-    #: times the learnable steps in a batch: batch 8 of 80-step sequences with
-    #: burn-in 7 learn 73 - n steps each, 560 per step at the final n of 3. So
-    #: 0.114 is 63.8:1 (57.5:1 while n is still 10), SPR's 64:1: without
-    #: network resets the gain from replaying more stops at about 32-64:1
-    #: (D'Oro et al. 2023), and BBF's 256:1 needs the resets this run does not
-    #: have (docs/solution.md 9.4).
-    gradient_steps_per_decision: float = 0.114
+    #: times the learnable steps in a batch. D'Oro et al. 2023's 32-64:1 bound
+    #: was derived in the Atari-100k batch-32 regime; at 0.114 (SPR's 64:1 on
+    #: this project's geometry), M3-P010 tracked M3-P009 within 2.5-4 waves at
+    #: matched gradient steps but reached them 9x slower in decisions, so it
+    #: never climbed the way M3-P009 did by 100k decisions (M3-P010,
+    #: docs/experiments.md). Reverted to M3-P009's 1.0.
+    gradient_steps_per_decision: float = 1.0
     #: Episodes per point of the collection curve. The curve is read from the
     #: collection episodes themselves rather than from exploration-free
     #: evaluations: at epsilon 0.05 they are almost on-policy, they cost no
@@ -312,14 +312,16 @@ class TrainingConfig:
     #: refresh restarts the count, so an episode never opens on parameters
     #: older than the previous one's last. 100 is Ape-X's 400 frames at an
     #: action repeat of 4 (Horgan et al. 2018). A fleet of seven at the
-    #: default 0.114 gradient steps per decision then acts on parameters at
-    #: most about 7 x 100 x 0.114 = 80 gradient steps old; refreshing once per
-    #: 550-decision episode instead would be about 7 x 550 x 0.114 = 440 (and
-    #: 3,850 at M3-P009's 1.0). Safe for a backbone whose carried state is its
-    #: own input history, as stacked-dqn's is. Zero refreshes at the start of
-    #: every episode only, never inside one: what a backbone whose carried
-    #: state the parameters themselves produced needs, which is DreamerV3's
-    #: recurrent latent (`scripts/train.py` fixes it there).
+    #: default 1.0 gradient steps per decision then acts on parameters at most
+    #: about 7 x 100 x 1.0 = 700 gradient steps old; refreshing once per
+    #: 550-decision episode instead would be about 7 x 550 x 1.0 = 3,850 -
+    #: which is the staleness M3-P009 won under, so staleness is not
+    #: first-order at or below it (M3-P010, docs/experiments.md). Safe for a
+    #: backbone whose carried state is its own input history, as stacked-dqn's
+    #: is. Zero refreshes at the start of every episode only, never inside
+    #: one: what a backbone whose carried state the parameters themselves
+    #: produced needs, which is DreamerV3's recurrent latent (`scripts/train.py`
+    #: fixes it there).
     parameter_sync_decisions: int = 100
     #: Pre-registered floors on the decision axis the run stops itself on; see
     #: `KillBar`. Empty is off, which is every run before run 4.

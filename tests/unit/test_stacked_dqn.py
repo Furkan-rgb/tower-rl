@@ -498,10 +498,10 @@ def test_the_window_advances_during_a_repeat(monkeypatch: pytest.MonkeyPatch) ->
     assert backbone.longest_option == 6
 
 
-# --- The optimiser's epsilon and the recipe's discount (board #93)
+# --- The optimiser's epsilon and the recipe's discount (board #93, reverted #85)
 
 
-def test_the_first_step_is_taken_at_an_adam_epsilon_of_1_5e_4() -> None:
+def test_the_first_step_is_taken_at_an_adam_epsilon_of_1e_8() -> None:
     """Read off the step itself, not the setting.
 
     AdamW's first step moves a parameter p with (clipped) gradient g by
@@ -540,11 +540,11 @@ def test_the_first_step_is_taken_at_an_adam_epsilon_of_1_5e_4() -> None:
     assert (small < 1.5e-5).any(), "no gradient small enough to tell the two apart"
     assert all(
         torch.allclose(actual, predicted, rtol=0.0, atol=1e-6)
-        for actual, predicted in zip(after, expected(1.5e-4), strict=True)
+        for actual, predicted in zip(after, expected(1e-8), strict=True)
     )
     assert not all(
         torch.allclose(actual, predicted, rtol=0.0, atol=1e-6)
-        for actual, predicted in zip(after, expected(1e-8), strict=True)
+        for actual, predicted in zip(after, expected(1.5e-4), strict=True)
     )
 
 

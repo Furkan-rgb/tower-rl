@@ -798,18 +798,25 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--replay-capacity",
         type=int,
-        default=25_000,
+        default=4096,
         help=(
-            "replay windows held; 25,000 at a stride of 40 is about a million "
-            "decisions, the whole budget (docs/solution.md 9.4)"
+            "replay windows held, shared with --backbone dreamerv3; 4096 is the "
+            "known-good value (M3-P009). Untested at 1M decisions and, with swap "
+            "already full, 25,000 would cost ~19 GiB while keeping the early "
+            "heavily-explored data forever (M3-P010, docs/experiments.md); "
+            "capacity is tested only as its own arm"
         ),
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
         "--gradient-steps-per-decision",
         type=float,
-        default=0.114,
-        help="the replay ratio; 0.114 is about 64 transitions replayed per generated",
+        default=1.0,
+        help=(
+            "the replay ratio; 1.0 is M3-P009's value. M3-P010's 0.114 tracked "
+            "M3-P009 within 2.5-4 waves at matched gradient steps but 9x slower "
+            "in decisions (M3-P010, docs/experiments.md)"
+        ),
     )
     parser.add_argument("--warmup-sequences", type=int, default=100)
     parser.add_argument("--sequence-length", type=int, default=80)

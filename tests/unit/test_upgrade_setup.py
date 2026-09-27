@@ -124,15 +124,15 @@ def test_the_digest_is_stable_and_canonical() -> None:
     assert _setup(environment).digest == one.digest
 
 
-def test_the_episode_record_carries_the_setup_and_its_digest() -> None:
+def test_an_episode_record_carries_only_the_digest() -> None:
     environment, _ = _environment()
     environment.reset()
     summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
     record = episode_record(0, summary)
 
     assert summary.upgrade_setup is not None
-    assert record["upgrade_setup"] == summary.upgrade_setup.to_record()
     assert record["upgrade_setup_digest"] == summary.upgrade_setup.digest
+    assert "upgrade_setup" not in record
     json.dumps(record)
 
 
@@ -153,6 +153,11 @@ def test_an_episode_on_another_setup_than_the_runs_first_is_invalid_by_name() ->
     assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
     assert not summary.valid
     assert any(UPGRADE_SETUP_DRIFT in text for text in summary.termination_detail)
+    # The drifted episode's record carries the setup it was played on.
+    assert summary.upgrade_setup_drifted and summary.upgrade_setup is not None
+    record = episode_record(0, summary)
+    assert record["upgrade_setup"] == summary.upgrade_setup.to_record()
+    assert setup_digest(record["upgrade_setup"]) == record["upgrade_setup_digest"]
     # The run's own setup is still the first episode's, and it stays valid.
     assert reference.first is not None
     assert first.reset().valid

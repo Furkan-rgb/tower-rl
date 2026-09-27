@@ -595,6 +595,7 @@ class InstrumentedRunEnvironment:
             workshop_level=self.workshop_level,
             workshop_rows=workshop_rows(self.workshop_level),
             upgrade_setup=self._setup,
+            upgrade_setup_drifted=self._setup_drift is not None,
             decision_cadence=str(self.decision_cadence),
             final_wave=self._tally.peak_wave,
             decisions=self._tally.decisions,

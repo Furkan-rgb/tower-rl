@@ -151,7 +151,6 @@ EPISODE_RECORD_KEYS = {
     "upgrade_availability",
     "workshop_level",
     "workshop_rows",
-    "upgrade_setup",
     "upgrade_setup_digest",
     "decisions",
     "advances",

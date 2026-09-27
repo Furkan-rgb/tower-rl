@@ -219,7 +219,8 @@ episode from three read-backs:
   every availability mode.
 - **`available_in_run`:** the row's in-run availability flag (`unlocked`) in
   the episode's first observation, read after the round start and after the
-  unlock under `all`.
+  unlock under `all`. Under `image` it is the availability at the episode's
+  first observation, which the game may change later in the episode.
 - **`workshop_level`:** the row's level in `RunPort.workshop_levels`, read once
   the round has started. That read is made only at N > 0; at N = 0 nothing is
   read, every row records 0, and `workshop_read_back` is false. A row missing
@@ -242,9 +243,16 @@ full record holds 48 rows (17 attack, 18 defense, 13 utility):
 
 The digest is the sha256 hex of that record as canonical JSON (sorted keys,
 separators `,` and `:`, ASCII). Every episode record (`episode_record`) carries
-`upgrade_setup` and `upgrade_setup_digest`. A training run's `manifest.json` is
-rewritten after its first episode with that episode's `upgrade_setup` and
-`upgrade_setup_digest`, and the digest joins `CheckpointIdentity` as
+only `upgrade_setup_digest`. The full `upgrade_setup` is written in three places:
+
+- in a training run's `manifest.json`, which is rewritten after the run's first
+  episode with that episode's `upgrade_setup` and `upgrade_setup_digest`;
+- once per evaluation output file (`run_episodes.py`, and therefore each
+  per-instance file of `run_actors.py`), at the file level beside
+  `upgrade_availability`: the setup of the file's first episode;
+- in the record of an episode that drifted, so the drift can be inspected.
+
+The digest joins `CheckpointIdentity` as
 `upgrade_setup_digest`: checked by `incompatibilities`, left out of
 `identity_hash`. A checkpoint without a digest, written before the record
 existed or before its run's first episode, is not refused on that field.

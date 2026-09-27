@@ -323,6 +323,8 @@ class EpisodeSummary:
     #: what was asked for; this says what was played on. None only for a
     #: summary assembled without an environment.
     upgrade_setup: UpgradeSetup | None = None
+    #: Whether that setup differed from the run's (`UPGRADE_SETUP_DRIFT`).
+    upgrade_setup_drifted: bool = False
     #: Which cadence stops the policy was asked at (ADR 0009), for the same
     #: reason: a decision means a different thing under each. Both are strings
     #: rather than the environment's own enums because this module is below

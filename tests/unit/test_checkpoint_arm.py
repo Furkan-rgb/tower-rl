@@ -265,6 +265,25 @@ def test_an_actor_record_names_the_checkpoint_that_produced_it(tmp_path: Path) -
     assert len(record["episodes"]) == 2
 
 
+def test_an_evaluation_file_carries_the_upgrade_setup_once() -> None:
+    """At the file level; each episode below it carries only the digest."""
+    played = environment()
+    report = evaluate(played, CheapestFirstPolicy(), episodes=2, profile_id=PROFILE)
+    setup = played.setup_reference.first
+    record = run_episodes.actor_record(
+        report, {"name": "scripted"}, frame_game_ms=100.0, max_quiet_game_ms=4000,
+        decision_cadence=DecisionCadence.CHOICE_POINTS,
+        upgrade_availability=UpgradeAvailability.IMAGE, workshop_level=0, wall_seconds=1.0,
+        upgrade_setup=setup,
+    )
+
+    assert setup is not None
+    assert record["upgrade_setup"] == setup.to_record()
+    assert record["upgrade_setup_digest"] == setup.digest
+    assert {episode["upgrade_setup_digest"] for episode in record["episodes"]} == {setup.digest}
+    assert all("upgrade_setup" not in episode for episode in record["episodes"])
+
+
 def test_the_fleet_report_carries_the_arm_its_actors_played(tmp_path: Path) -> None:
     """Resolved by the actors: the fleet process never loads the checkpoint."""
     path, _ = trained_checkpoint(tmp_path)

@@ -255,7 +255,7 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
     This is what `comparison.py`'s bootstrap intervals and Cohen's d consume —
     per-episode samples, not the aggregates above.
     """
-    return {
+    record: dict[str, Any] = {
         "episode_index": index,
         "valid": summary.valid,
         "final_wave": summary.final_wave,
@@ -271,10 +271,9 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "workshop_level": summary.workshop_level,
         "workshop_rows": list(summary.workshop_rows),
         # And the setup the game actually held, as it read it back: what the
-        # three fields above asked for is not always what was played on.
-        "upgrade_setup": (
-            None if summary.upgrade_setup is None else summary.upgrade_setup.to_record()
-        ),
+        # three fields above asked for is not always what was played on. The
+        # digest only; the setup itself is in the run manifest or once per
+        # evaluation file, and on an episode that drifted from it (below).
         "upgrade_setup_digest": summary.upgrade_setup_digest,
         "decisions": summary.decisions,
         # Decisions are choice points and advances are cadence slices, so both
@@ -333,6 +332,11 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "final_upgrade_levels": dict(summary.final_upgrade_levels),
         "final_cash": summary.final_cash,
     }
+    if summary.upgrade_setup_drifted and summary.upgrade_setup is not None:
+        # An episode played on another setup than the run's carries the setup
+        # it was played on, so the drift can be read rather than only counted.
+        record["upgrade_setup"] = summary.upgrade_setup.to_record()
+    return record
 
 
 def to_record(report: EvaluationReport) -> dict[str, Any]:

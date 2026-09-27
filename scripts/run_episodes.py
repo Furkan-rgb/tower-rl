@@ -52,6 +52,7 @@ from tower_rl.environment.run_environment import (  # noqa: E402
 )
 from tower_rl.environment.run_state import RunStateBuilder  # noqa: E402
 from tower_rl.environment.upgrade_setup import (  # noqa: E402
+    UpgradeSetup,
     UpgradeSetupReference,
     UpgradeSetupRefused,
 )
@@ -159,6 +160,7 @@ def actor_record(
     workshop_level: int,
     wall_seconds: float,
     labels: Sequence[UpgradeSlotLabel] = (),
+    upgrade_setup: UpgradeSetup | None = None,
 ) -> dict[str, Any]:
     """One actor's durable record: the episodes, and which arm produced them.
 
@@ -183,6 +185,11 @@ def actor_record(
     # profile's rows at this level otherwise (ADR 0012).
     record["workshop_level"] = workshop_level
     record["workshop_rows"] = list(workshop_rows(workshop_level))
+    # What the game actually held for these episodes, as it read it back, once
+    # for the file: each episode below carries only the digest, and one that
+    # drifted from this setup carries its own.
+    record["upgrade_setup"] = None if upgrade_setup is None else upgrade_setup.to_record()
+    record["upgrade_setup_digest"] = None if upgrade_setup is None else upgrade_setup.digest
     record["wall_seconds"] = round(wall_seconds, 1)
     # What the game calls each slot the actions address, so the human reading
     # this record afterwards can tell what `attack:3` was. Never an input: the
@@ -514,6 +521,7 @@ def main() -> int:
         workshop_level=workshop_level_from(arguments),
         wall_seconds=time.monotonic() - started,
         labels=labels,
+        upgrade_setup=environment.setup_reference.first,
     )
     arguments.output.write_text(json.dumps(record, indent=2))
     print(report.summary_line(), flush=True)

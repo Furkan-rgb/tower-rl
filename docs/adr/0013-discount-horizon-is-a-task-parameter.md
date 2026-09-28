@@ -75,11 +75,27 @@ stage-1 target (Defense Absolute paired with Thorns): Thorn spend share and
 Thorn purchase rate at waves 30/40 rising clearly above `M3-P014`'s 3.1% /
 1.1%, plus `M3-P014`'s collapse guards (`docs/experiments.md`).
 
-### When to re-derive
+### Why 0.999 is fixed, not tracking
 
-τ grows with survival, so re-derive (toward the ≈0.9995 optimum) once
-near-greedy deaths routinely reach wave ≥55. Re-derive also if the game setup
-changes (Workshop level, game version).
+0.999 per game-second is the protocol's discount horizon: a task parameter,
+held fixed for the benchmark, not a quantity that tracks the agent's
+performance. Two reasons:
+
+- **The derived optimum is flat.** 0.999 keeps ≥69% (mean 88%) of the best
+  signal-to-noise ratio across the measured τ range (1050–1630 s), and a
+  longer τ moves the optimum only slowly (γ* ≈ 0.9994 at τ 1630 s vs the
+  optimum at τ 1050 s, both close to 0.999's own SNR share). There is no
+  point in the measured range where 0.999 is a poor choice.
+- **Changing the horizon with performance would break comparability.** If the
+  discount moved as the agent's survival improved, the task each run and
+  learner is compared against would drift, and the protocol would no longer
+  be measuring policies against the same problem.
+
+Re-derivation is triggered only by a change to the task itself: game version,
+Workshop level or profile, upgrade availability, decision cadence, or reward
+definition — not by how well an agent is doing. That the SNR optimum sits
+near 0.9994 (§ Derivation, above) is evidence for why 0.999 was chosen, not a
+planned future value.
 
 ## Evidence
 

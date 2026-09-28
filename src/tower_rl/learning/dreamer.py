@@ -717,7 +717,10 @@ class DreamerBackbone:
             "dreamer_predicted_continue": _mean(torch.sigmoid(continue_logits), transition),
             "dreamer_true_continue": _mean(continue_target, transition),
             "dreamer_mask_false_valid_rate": (
-                (decoded & invalid).sum() / invalid.sum().clamp(min=1)
+                # 1 - precision: of the entries imagination may sample, the
+                # share the game would refuse. Not over every invalid entry,
+                # which rows locked all run would dilute.
+                (decoded & invalid).sum() / (decoded & steps).sum().clamp(min=1)
             ).float(),
             "dreamer_mask_false_invalid_rate": (
                 (~decoded & valid).sum() / valid.sum().clamp(min=1)

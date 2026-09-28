@@ -439,8 +439,9 @@ def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
     seconds = torch.tensor([[0.0, 1.0, 2.0, 5.0]])
     # Two real steps and one of padding. Both real steps allow WAIT and 4; the
     # decoded mask adds 9 to both and drops 4 from the second. Padding is
-    # decoded all-valid and counts for nothing.
-    mask = torch.zeros(1, 3, ACTIONS, dtype=torch.bool)
+    # decoded all-valid and counts for nothing. Of the 5 decoded-valid entries
+    # (WAIT, 4, 9; WAIT, 9) 2 are invalid; of the 4 valid ones 1 is dropped.
+    mask =torch.zeros(1, 3, ACTIONS, dtype=torch.bool)
     mask[..., [WAIT_INDEX, 4]] = True
     logits = torch.full((1, 3, ACTIONS), -1.0)
     logits[0, 0, [4, 9]] = 1.0
@@ -459,7 +460,7 @@ def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
         (0.999**2 + 0.999**4 + 0.3) / 3, rel=1e-6
     )
     assert measured["dreamer_true_continue"] == pytest.approx((0.999 + 0.999**2) / 3, rel=1e-6)
-    assert measured["dreamer_mask_false_valid_rate"] == pytest.approx(2 / (2 * (ACTIONS - 2)))
+    assert measured["dreamer_mask_false_valid_rate"] == pytest.approx(2 / 5)
     assert measured["dreamer_mask_false_invalid_rate"] == pytest.approx(1 / 4)
 
 

@@ -1765,9 +1765,11 @@ logged per learn window, as a mean over the last hundred updates, as
   over every trained transition (`dreamer_predicted_continue`,
   `dreamer_true_continue`);
 - *decoded mask*, as imagination reads it (logit > 0, WAIT valid), on real
-  steps: the share of truly invalid (step, action) entries decoded valid
-  (`dreamer_mask_false_valid_rate`, the harmful direction), and of truly valid
-  entries decoded invalid (`dreamer_mask_false_invalid_rate`).
+  steps: the share of decoded-valid (step, action) entries that are truly
+  invalid, 1 − precision (`dreamer_mask_false_valid_rate`, the harmful
+  direction: what imagination may sample but the game would refuse; not over
+  every invalid entry, which rows locked all run would dilute), and the share
+  of truly valid entries decoded invalid (`dreamer_mask_false_invalid_rate`).
 
 **Step time.** At batch 16 the learner was bound by launching kernels, not by
 arithmetic: an update launched about 14,800 kernels, and the GPU was busy for

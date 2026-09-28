@@ -54,9 +54,9 @@ from tower_rl.learning.replay import (
     ReplayStep,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import V_REF, StackedDqnBackbone
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone
 from tower_rl.learning.training import TrainingRun
-from tower_rl.learning.value_learning import n_step_targets
+from tower_rl.learning.value_learning import V_REF, n_step_targets
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -288,10 +288,44 @@ SMALL_DREAMER: dict[str, Any] = dict(
 )
 
 
+#: The protocol's discount horizon (ADR 0013), which a DreamerV3 run must give.
+DREAMER_DISCOUNT = ("--discount-per-game-second", "0.999")
+
+
 def dreamer_arguments(run_dir: Path, *flags: str) -> argparse.Namespace:
     return train.parse_arguments(
-        ["--budget-decisions", "1000", "--run-dir", str(run_dir), "--backbone", "dreamerv3", *flags]
+        [
+            "--budget-decisions", "1000", "--run-dir", str(run_dir), "--backbone", "dreamerv3",
+            *DREAMER_DISCOUNT, *flags,
+        ]
     )
+
+
+def dreamer_session(run_dir: Path, *flags: str) -> dict[str, Any]:
+    """One DreamerV3 session at a size that trains in seconds, on the fake fleet."""
+    from tower_rl.learning.dreamer import DreamerConfig
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
+        )
+        patch.setattr(train, "DREAMER_WARMUP_SEQUENCES", 2)
+        parsed = dreamer_arguments(
+            run_dir,
+            "--budget-decisions", "200",
+            "--replay-capacity", "64",
+            "--evaluate-every-episodes", "1",
+            "--evaluation-episodes", "2",
+            "--collection-window-episodes", "2",
+            "--checkpoint-every-episodes", "2",
+            "--serial", "fake-0",
+            "--max-quiet-game-ms", "4000",
+            *flags,
+        )
+        report: dict[str, Any] = train.train_session(
+            parsed, fleet(1), profile_id=PROFILE, revision="test", device=torch.device("cpu")
+        )
+    return report
 
 
 def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
@@ -361,26 +395,7 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     from tower_rl.environment.run_actions import RUN_ACTIONS
     from tower_rl.learning.dreamer import DreamerBackbone, DreamerConfig
 
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(
-            train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
-        )
-        patch.setattr(train, "DREAMER_WARMUP_SEQUENCES", 2)
-        parsed = dreamer_arguments(
-            tmp_path,
-            "--budget-decisions", "200",
-            "--replay-capacity", "64",
-            "--evaluate-every-episodes", "1",
-            "--evaluation-episodes", "2",
-            "--collection-window-episodes", "2",
-            "--checkpoint-every-episodes", "2",
-            "--serial", "fake-0",
-            "--max-quiet-game-ms", "4000",
-        )
-        report = train.train_session(
-            parsed, fleet(1), profile_id=PROFILE, revision="test", device=torch.device("cpu")
-        )
-
+    report = dreamer_session(tmp_path)
     arm = report["arm"]
     assert arm["backbone"] == "dreamerv3"
     assert arm["decisions"] >= 200 and arm["optimisation_steps"] > 0
@@ -394,6 +409,11 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     assert (resolved["priority_alpha"], resolved["importance_beta"]) == (0.0, 0.0)
     for stacked in ("history_length", "n_step", "discount", "learning_rate", "network_hidden"):
         assert resolved[stacked] is None, stacked
+    # The task's discount and reward, under the keys stacked-dqn records them under.
+    assert resolved["discount_per_game_second"] == 0.999
+    assert resolved["survival_time_reward"] is False
+    assert resolved["survival_reward_bound"] is None
+    assert "dreamer_horizon" not in resolved
 
     latest = Path(report["run_folder"]) / "checkpoints" / "latest.pt"
     policy, identity = checkpoint_policy(
@@ -404,7 +424,9 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     )
     assert identity.backbone == "dreamerv3"
     assert isinstance(policy, DreamerBackbone)
-    assert policy.config == DreamerConfig(**SMALL_DREAMER, seed=0)
+    assert policy.config == DreamerConfig(
+        **SMALL_DREAMER, seed=0, discount_per_game_second=0.999
+    )
     assert policy.model_version == arm["optimisation_steps"]
     assert not any(parameter.requires_grad for parameter in policy.actor.parameters())
 
@@ -1717,10 +1739,15 @@ def test_the_two_discounts_are_refused_together(tmp_path: Path) -> None:
         arguments(tmp_path, **{"--discount": "0.99", "--discount-per-game-second": "0.997"})
 
 
-def test_the_game_time_discount_is_refused_under_dreamerv3(tmp_path: Path) -> None:
-    """T8: DreamerV3 keeps its published per-step discount."""
-    with pytest.raises(SystemExit, match="stacked-dqn setting"):
-        dreamer_arguments(tmp_path, "--discount-per-game-second", "0.997")
+def test_dreamerv3_takes_the_game_time_discount_and_refuses_to_run_without_it(
+    tmp_path: Path,
+) -> None:
+    """ADR 0013: the discount is the task's, and DreamerV3 has no per-step one of its own."""
+    assert dreamer_arguments(tmp_path).discount_per_game_second == 0.999
+    with pytest.raises(SystemExit, match="needs --discount-per-game-second"):
+        train.parse_arguments(
+            ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--backbone", "dreamerv3"]
+        )
 
 
 def test_a_game_time_run_records_its_discount_and_its_checkpoint_plays(tmp_path: Path) -> None:
@@ -1823,9 +1850,65 @@ def test_the_survival_time_reward_is_refused_without_the_game_time_discount(
         arguments(tmp_path, **{"--survival-time-reward": None})
 
 
-def test_the_survival_time_reward_is_refused_under_dreamerv3(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="stacked-dqn setting"):
-        dreamer_arguments(tmp_path, "--survival-time-reward")
+def test_dreamerv3_takes_the_survival_time_reward(tmp_path: Path) -> None:
+    """The reward is the task's (ADR 0013): the flag means what it means for stacked-dqn."""
+    assert dreamer_arguments(tmp_path, "--survival-time-reward").survival_time_reward
+
+
+def dreamer_resume(run_dir: Path, checkpoint: Path, *flags: str) -> Any:
+    """A second `dreamer_session` segment's `--resume` of this checkpoint, under these flags."""
+    from tower_rl.learning.dreamer import DreamerConfig
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
+        )
+        return train.resume_point(
+            dreamer_arguments(
+                run_dir, "--budget-decisions", "400", "--replay-capacity", "64",
+                "--resume", str(checkpoint), *flags,
+            ),
+            profile_id=PROFILE,
+            revision="test",
+        )
+
+
+def test_a_dreamerv3_run_resumes_only_under_its_own_discount_and_reward(
+    tmp_path: Path,
+) -> None:
+    checkpoint = latest_checkpoint(dreamer_session(tmp_path / "first"))
+
+    assert dreamer_resume(tmp_path / "second", checkpoint).decisions > 0
+    with pytest.raises(SystemExit, match="a different target"):
+        dreamer_resume(tmp_path / "third", checkpoint, "--discount-per-game-second", "0.997")
+    with pytest.raises(SystemExit, match="a different target"):
+        dreamer_resume(tmp_path / "fourth", checkpoint, "--survival-time-reward")
+
+    # A checkpoint from before the game-time discount: a per-step horizon.
+    parent = load(checkpoint)
+    settings = {
+        key: value
+        for key, value in parent.resolved_config.items()
+        if key not in ("dreamer_discount_per_game_second", "dreamer_survival_time_reward")
+    }
+    settings.update(
+        dreamer_horizon=333,
+        discount_per_game_second=None,
+        survival_time_reward=None,
+        survival_reward_bound=None,
+    )
+    older = tmp_path / "older.pt"
+    save(replace(parent, resolved_config=settings), older)
+    with pytest.raises(SystemExit, match="per-step horizon 333"):
+        dreamer_resume(tmp_path / "fifth", older)
+    # It still plays: acting reads no discount.
+    policy, _ = checkpoint_policy(
+        older,
+        decision_cadence=settings["decision_cadence"],
+        upgrade_availability=settings["upgrade_availability"],
+        workshop_level=0,
+    )
+    assert policy.config.discount_per_game_second is None
 
 
 def survival_resume(run_dir: Path, checkpoint: Path, **flags: str | None) -> Any:

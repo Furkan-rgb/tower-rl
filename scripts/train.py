@@ -182,12 +182,7 @@ from tower_rl.learning.replay import (  # noqa: E402
     ReplayDumpError,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import (  # noqa: E402
-    V_REF,
-    WAVE_SECONDS,
-    StackedDqnBackbone,
-    StackedDqnConfig,
-)
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
     KillBar,
@@ -196,6 +191,7 @@ from tower_rl.learning.training import (  # noqa: E402
     TrainingProgressReport,
     TrainingRun,
 )
+from tower_rl.learning.value_learning import V_REF, WAVE_SECONDS  # noqa: E402
 from tower_rl.simulation.bridge import (  # noqa: E402
     bridge_build_directory,
     compatibility,
@@ -370,7 +366,12 @@ def build_arm(
 
     if arguments.backbone == DREAMERV3:
         backbone: Backbone = DreamerBackbone(
-            config=DreamerConfig(seed=arguments.seed), device=device
+            config=DreamerConfig(
+                seed=arguments.seed,
+                discount_per_game_second=arguments.discount_per_game_second,
+                survival_time_reward=arguments.survival_time_reward,
+            ),
+            device=device,
         )
         # Only for `resolved_config`'s signature: `dreamer_resolved_config`
         # records every stacked-dqn setting of a DreamerV3 run as None.
@@ -734,9 +735,8 @@ STACKED_ONLY_FLAGS = (
     "n_step",
     "n_step_final",
     "n_step_anneal_steps",
+    # The per-decision discount: DreamerV3 discounts by game time only.
     "discount",
-    "discount_per_game_second",
-    "survival_time_reward",
     "ez_greedy",
     "learning_rate",
     "target_ema_decay",
@@ -915,7 +915,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "spans t game-seconds is discounted by this ** t, so a purchase "
             "costs no discount (docs/solution.md 9.4d); the protocol's value is "
             "0.999 (ADR 0013); unset discounts per decision, and --discount may "
-            "not be given with it"
+            "not be given with it; required under --backbone dreamerv3"
         ),
     )
     parser.add_argument(
@@ -1133,8 +1133,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
-    if arguments.discount is not None and arguments.discount_per_game_second is not None:
+    if (
+        arguments.backbone != DREAMERV3
+        and arguments.discount is not None
+        and arguments.discount_per_game_second is not None
+    ):
         # Two definitions of one discount: neither may be silently unused.
+        # DreamerV3 refuses --discount outright (`settle_dreamer_settings`).
         raise SystemExit(
             "--discount and --discount-per-game-second each define the discount; "
             "give one or the other"
@@ -1204,10 +1209,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     if arguments.reset_every_steps < 0:
         raise SystemExit("--reset-every-steps cannot be negative")
     settle_dreamer_settings(parser, argv, arguments)
+    if arguments.backbone == DREAMERV3 and arguments.discount_per_game_second is None:
+        # The discount is a task parameter (ADR 0013) and has no code default;
+        # DreamerV3 has no per-decision one to fall back on.
+        raise SystemExit(
+            "--backbone dreamerv3 discounts by game time and needs "
+            "--discount-per-game-second (the protocol's is 0.999, ADR 0013)"
+        )
     if arguments.survival_time_reward and arguments.discount_per_game_second is None:
         # The reward is integrated under the game-time discount; per decision
-        # a span has no length to integrate over. After the DreamerV3 check, so
-        # that backbone is told it does not read the flag at all.
+        # a span has no length to integrate over.
         raise SystemExit("--survival-time-reward needs --discount-per-game-second")
     if (
         arguments.backbone == BACKBONE
@@ -1302,9 +1313,19 @@ def resume_point(
             "checkpoint from the game-time budget era: it is for evaluation "
             "only and cannot be resumed under --budget-decisions"
         )
-    if arguments.backbone == BACKBONE and "discount" in state.resolved_config:
-        # The discount defines the target. Resuming under another one would
-        # train one set of weights towards two value scales without a word.
+    if arguments.backbone == DREAMERV3 and "dreamer_horizon" in state.resolved_config:
+        # From before the game-time discount: its continue head and critic
+        # learned a per-step discount, another target than any this run has.
+        horizon = state.resolved_config["dreamer_horizon"]
+        raise SystemExit(
+            f"--resume {arguments.resume} was trained with DreamerV3's per-step "
+            f"horizon {horizon}, before the game-time discount; it cannot be "
+            f"resumed under --discount-per-game-second {arguments.discount_per_game_second}"
+        )
+    if "discount" in state.resolved_config:
+        # The discount defines the target, under either backbone. Resuming
+        # under another one would train one set of weights towards two value
+        # scales without a word.
         # A file that recorded no settings at all has nothing to compare; one
         # from before the game-time discount has no per-second key, which
         # reads as None - per decision, which is what it was trained under.

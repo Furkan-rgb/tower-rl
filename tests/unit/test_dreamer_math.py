@@ -111,6 +111,28 @@ def test_the_lambda_return_matches_hand_computed_values() -> None:
     ]
 
 
+def test_the_lambda_return_takes_each_transitions_own_discount() -> None:
+    """Per-transition d, flags-style: d at step t is the transition into t; step 0's is unread.
+
+    Hand computed, lambda 0.5, d = (-, 1, 0.5, 0.25):
+    R2 = 3 + 0.25 * (0.5 * 40 + 0.5 * 40) = 13;
+    R1 = 2 + 0.5 * (0.5 * 30 + 0.5 * 13) = 12.75;
+    R0 = 1 + 1.0 * (0.5 * 20 + 0.5 * 12.75) = 17.375.
+    """
+    reward = torch.tensor([[0.0, 1.0, 2.0, 3.0]])
+    value = torch.tensor([[10.0, 20.0, 30.0, 40.0]])
+    zeros = torch.zeros(1, 4)
+    discount = torch.tensor([[99.0, 1.0, 0.5, 0.25]])
+    assert lambda_return(zeros, zeros, reward, value, discount, 0.5).tolist() == [
+        [17.375, 12.75, 13.0]
+    ]
+    # A constant tensor is the constant discount.
+    assert torch.equal(
+        lambda_return(zeros, zeros, reward, value, torch.full((1, 4), 0.5), 0.5),
+        lambda_return(zeros, zeros, reward, value, 0.5, 0.5),
+    )
+
+
 def test_the_lambda_return_matches_the_recursive_definition() -> None:
     generator = numpy.random.default_rng(0)
     batch, time, discount, lam = 3, 9, 0.9, 0.8

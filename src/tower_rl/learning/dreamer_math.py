@@ -144,17 +144,20 @@ def lambda_return(
     term: Tensor,
     reward: Tensor,
     boot: Tensor,
-    discount: float,
+    discount: Tensor | float,
     lam: float,
 ) -> Tensor:
     """TD(lambda) returns over [batch, time], one fewer step than the inputs.
 
     `agent.py` `lambda_return`, step for step. `last` cuts the recursion (the
     return at the step before it bootstraps entirely from `boot`); `term` zeroes
-    the bootstrap. Reward and flags at step t belong to the transition into t.
-    The official signature also takes a `val` it only checks the shape of; it
-    is left out here.
+    the bootstrap. Reward and flags at step t belong to the transition into t,
+    and so does `discount` when it is a tensor: each transition's own d, where
+    the official `disc` is one constant. The official signature also takes a
+    `val` it only checks the shape of; it is left out here.
     """
+    if isinstance(discount, Tensor):
+        discount = discount[:, 1:].to(reward.dtype)
     live = (1.0 - term.to(reward.dtype))[:, 1:] * discount
     cont = (1.0 - last.to(reward.dtype))[:, 1:] * lam
     interm = reward[:, 1:] + (1.0 - cont) * live * boot[:, 1:]

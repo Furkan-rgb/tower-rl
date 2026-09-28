@@ -10,7 +10,8 @@ from __future__ import annotations
 import copy as copying
 import itertools
 import random
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import numpy
@@ -51,6 +52,10 @@ class LearnMetrics:
     #: survival-time reward's `V_REF`) is read from live. `None` for a learner
     #: that does not report it.
     taken_q_max: float | None = None
+    #: A backbone's own monitors of this batch, by name: DreamerV3's checks of
+    #: its continue head and decoded mask (`DreamerBackbone.learn`). Empty for
+    #: a learner that has none.
+    diagnostics: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

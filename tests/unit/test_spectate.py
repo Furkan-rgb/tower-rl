@@ -1063,3 +1063,24 @@ def test_a_record_says_where_the_recording_and_its_track_are() -> None:
         frame_game_ms=100.0,
         decision_cadence="choice-points", upgrade_availability="image", wall_seconds=1.0,
     ), "a session that recorded nothing says nothing about a recording"
+
+
+def test_a_session_gives_the_policy_the_row_names_before_it_watches() -> None:
+    """`--policy turtle` buys by row name, so `run` must bind the labels first.
+
+    Read from `run`'s own source: `run` needs a real instance brought up, and
+    what is checked is only that the binding precedes the watching.
+    """
+    source = ast.parse((REPOSITORY / "scripts" / "spectate.py").read_text())
+    (function,) = [
+        node
+        for node in ast.walk(source)
+        if isinstance(node, ast.FunctionDef) and node.name == "run"
+    ]
+    calls = {
+        node.func.id: node.lineno
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert calls["bind_row_names"] < calls["watch"]

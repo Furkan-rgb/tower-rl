@@ -85,6 +85,7 @@ from run_episodes import (  # noqa: E402
     add_cadence_arguments,
     add_upgrade_availability_argument,
     add_workshop_level_argument,
+    bind_row_names,
     decision_cadence_from,
     open_environment,
     policy_from,
@@ -1165,6 +1166,7 @@ def run(arguments: argparse.Namespace) -> int:
             # told their names now rather than being built with them.
             track.labels = labels
         try:
+            bind_row_names(policy, labels)
             watch(
                 environment, policy, spectator, summaries, arguments, identity, labels, track
             )

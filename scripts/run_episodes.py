@@ -71,6 +71,7 @@ from tower_rl.learning.policies import (  # noqa: E402
     CheapestFirstPolicy,
     Policy,
     RandomPolicy,
+    TurtlePolicy,
     WaitOnlyPolicy,
     checkpoint_policy,
 )
@@ -91,6 +92,7 @@ POLICIES = {
     "scripted": CheapestFirstPolicy,
     "random": RandomPolicy,
     "wait": WaitOnlyPolicy,
+    "turtle": TurtlePolicy,
 }
 
 #: How a checkpoint is named as an arm, beside the names above.
@@ -154,6 +156,16 @@ def policy_from(
         # before the setup was recorded.
         "upgrade_setup_digest": identity.upgrade_setup_digest,
     }
+
+
+def bind_row_names(policy: Policy, labels: Sequence[UpgradeSlotLabel]) -> None:
+    """Give a policy that buys rows by name the game's labels; any other is left alone.
+
+    `turtle` addresses rows by the game's own names, resolved from these labels,
+    and a name the game does not report stops the session here, loudly.
+    """
+    if isinstance(policy, TurtlePolicy):
+        policy.bind_row_names(labels)
 
 
 def add_evaluation_name_argument(parser: argparse.ArgumentParser) -> None:
@@ -573,6 +585,7 @@ def main() -> int:
     )
     started = time.monotonic()
     try:
+        bind_row_names(policy, labels)
         report = evaluate(
             environment,
             policy,

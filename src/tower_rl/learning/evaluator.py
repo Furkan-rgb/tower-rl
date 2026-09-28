@@ -97,6 +97,9 @@ class EvaluationReport:
     #: continued a leftover run instead of starting fresh. Not excluded, only
     #: counted, so contamination stays visible in an unattended run.
     episodes_not_started_fresh: int = 0
+    #: What the policy said about each episode in `episodes`, index for index
+    #: (`EpisodeResult.policy_detail`); an empty mapping where it said nothing.
+    policy_details: tuple[dict[str, Any], ...] = ()
 
     @property
     def invalid_rate(self) -> float:
@@ -183,6 +186,7 @@ def evaluate(
     valid: list[EpisodeSummary] = []
     invalid: list[EpisodeSummary] = []
     attempted: list[EpisodeSummary] = []
+    details: list[dict[str, Any]] = []
     decisions = 0
     wall = 0.0
     frames = 0
@@ -204,6 +208,7 @@ def evaluate(
             cut_short += summary.advances_cut_short
             speed = summary.game_speed
             attempted.append(summary)
+            details.append(result.policy_detail)
             (valid if summary.valid else invalid).append(summary)
     finally:
         environment.profile = borrowed
@@ -245,6 +250,7 @@ def evaluate(
         total_advance_wall_seconds=round(advance_wall, 3),
         advances_cut_short=cut_short,
         episodes=tuple(attempted),
+        policy_details=tuple(details),
         episodes_not_started_fresh=sum(1 for summary in attempted if summary.starting_wave > 1),
     )
 
@@ -371,6 +377,16 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "speedup": round(report.speedup, 3),
         "episodes_not_started_fresh": report.episodes_not_started_fresh,
         "episodes": [
-            episode_record(index, summary) for index, summary in enumerate(report.episodes)
+            _with_policy_detail(episode_record(index, summary), report, index)
+            for index, summary in enumerate(report.episodes)
         ],
     }
+
+
+def _with_policy_detail(
+    record: dict[str, Any], report: EvaluationReport, index: int
+) -> dict[str, Any]:
+    """An episode record, with what its policy said about it when it said anything."""
+    if index < len(report.policy_details) and report.policy_details[index]:
+        record["policy_detail"] = dict(report.policy_details[index])
+    return record

@@ -71,6 +71,7 @@ from tower_rl.learning.policies import (  # noqa: E402
     CheapestFirstPolicy,
     Policy,
     RandomPolicy,
+    TurtlePolicy,
     WaitOnlyPolicy,
     checkpoint_policy,
 )
@@ -91,6 +92,7 @@ POLICIES = {
     "scripted": CheapestFirstPolicy,
     "random": RandomPolicy,
     "wait": WaitOnlyPolicy,
+    "turtle": TurtlePolicy,
 }
 
 #: How a checkpoint is named as an arm, beside the names above.
@@ -573,6 +575,10 @@ def main() -> int:
     )
     started = time.monotonic()
     try:
+        if isinstance(policy, TurtlePolicy):
+            # It buys rows by the game's own names, resolved from these labels;
+            # a name the game does not report stops the run here, loudly.
+            policy.bind_row_names(labels)
         report = evaluate(
             environment,
             policy,

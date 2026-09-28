@@ -75,7 +75,7 @@ recipe on the new baseline.
 | `M3-P011` | Does `M3-P009`'s recipe (replay ratio, capacity, AdamW ε reverted to `M3-P009`'s values) plus only γ 0.999, a 100-decision parameter-sync cadence, and left-padding hold `M3-P009`'s near-greedy trajectory, isolating `M3-P010`'s regression to its other three changes? | `--discount-per-game-second 0.999` (was 0.997); `--parameter-sync-decisions 100` (new); left-padding (`#92`, unconditional); `--gradient-steps-per-decision 1.0` and `--replay-capacity 4096` held at `M3-P009`'s values; AdamW ε held at `1e-8` | `M3-P009`'s near-greedy period means (table above), read as a screen | not evaluated — stopped on the pre-registered kill bar at 100,123/1,000,000 decisions | STOPPED — kill bar tripped (near-greedy mean 31.84 over (50000,100000], below 32.0), before evaluation | Period 1 (50,062 decisions) 25.35 (n=65), well below `M3-P009`'s matched 26.31 but inside the screen's stated noise floor; period 2 (100,123 decisions) 31.86 (n=43, one fewer than the 44 the kill-bar check itself counted), 3.9 waves below the pre-registered bar of 32 (`M3-P009`'s value minus 3-4) and below `M3-P009`'s matched 35.73; gradient norm ran higher (22.1/20.1 vs `M3-P009`'s 13.5/6.9) and value-fit lower (0.872/0.768 vs 0.919/0.882) at matched periods; wait share and purchases per episode were close to `M3-P009`'s. Validity 204/205, stage exit 0, cleanup verified. The three remaining changes from `M3-P009` are γ 0.999, refresh-100, and left-padding; a gradient norm above the clip of 10 and falling value-fit are consistent with γ 0.999's roughly 3x larger value scale (horizon ~1000 vs ~333 game-seconds), but this is a hypothesis, not isolated — the 3.9-wave gap is also near the screen's own stated ~5-6-wave resolution, so the stop honours the pre-registered rule without proving γ is the cause. Superseded by `M3-P012` (`#85`), which reverts γ to `M3-P009`'s 0.997 while keeping refresh-100 and left-padding | this commit (results) |
 | `M3-P012` | With `M3-P011`'s exact configuration (`M3-P009`'s recipe plus refresh-100 and left-padding), does reverting γ to `M3-P009`'s 0.997 recover `M3-P009`'s near-greedy trajectory? | `--discount-per-game-second 0.997` (was `M3-P011`'s 0.999; back to `M3-P009`'s value); `--parameter-sync-decisions 100` and left-padding held at `M3-P011`'s values | `M3-P009`'s near-greedy period means (table above), read as a screen; `M3-P011`'s stopped result (this table) as a secondary reference | not evaluated — stopped at 100,279/1,000,000 decisions | STOPPED by kill bar, before evaluation | Near-greedy mean over (50000,100000] was 28.44 (n=70), below the 32 bar; periods 26.14 (n=66)/28.55 (n=71); gradient norm 8.54/7.36 and value-fit 0.887/0.828 at 50k/100k, close to `M3-P009`'s 13.5/6.9 well-clipped norm and better than `M3-P011`'s — the mechanism check passed (γ is not clipping/value-fit-broken) but the wave score did not recover, so γ is not isolated as `M3-P011`'s cause; validity 255/257, stage exit 0, cleanup verified | this commit (results) |
 | `M3-P013` | Does `M3-P009`'s recipe with refresh-per-episode (`--parameter-sync-decisions 0`, reverting `M3-P011`/`M3-P012`'s refresh-100) hold `M3-P009`'s near-greedy trajectory at the full 1,000,000-decision budget? | `--parameter-sync-decisions 0` (was `M3-P011`/`M3-P012`'s 100); all other flags at `M3-P012`'s values (γ 0.997, replay ratio 1.0, capacity 4096, AdamW ε 1e-8, left-padding on) | `M3-P009`'s near-greedy period means (table above), read as a screen; collapse-only kill bars | not evaluated — stopped at 11,174/1,000,000 decisions | STOPPED by developer decision, before period 1 — no performance evidence | Superseded by the recipe revision (`M3-P014`: SR-SPR-style resets, refresh 10) rather than resumed; validity 46/47 | `02fa689` (pre-registration), this commit (results) |
-| `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | pending | pending | this commit (pre-registration) |
+| `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | PROVISIONAL: arm-n10 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83] (n=105 pending) | STOPPED by SIGINT at 1,005,709/1,000,000 decisions, during the built-in final evaluation; arm read at period 16 (near-greedy mean 55.28, n=29) | Well above `M3-P009`'s ~35-38-wave level on the provisional n=10 read; offline diagnosis finds a learner-limited, reactive Defense-Absolute/cash-hoarding strategy (spend share 58%/73% from wave 30 in Defense Absolute vs 3.1%/1.1% in Thorns, damage frozen at 57.3 from wave 30, no upgrade near max, post-100k final-wave SD 12.9 range 11-72), not an account ceiling | this commit (results) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -575,6 +575,46 @@ and host verification (no qemu via `/proc/*/exe`, empty `adb devices`)
 after. Stop after three consecutive unexplained failures.
 `state/bridge/current` is never repointed. One device stage at a time; no
 polling loops.
+
+### Stopped, as run
+
+**Stopped at 1,005,709 decisions (2026-09-28 09:01:08 UTC),** by SIGINT
+(developer decision) during `train.py`'s built-in 30-episode final
+evaluation, which started after "replay saved" (~08:22 UTC). Stage exit
+130, cleanup verified on 7/7 instances. No `summary.json` was written
+(the `#91` pattern for a SIGINT stop). The resume point (`latest.pt`,
+replay 4096 sequences) exists.
+
+**Arm** (`docs/solution.md` §9.2b rule): period 16, checkpoint
+`checkpoint-d0800213.pt`, near-greedy period mean 55.28 (n=29).
+
+**Evaluation `arm-n10`** (`workshop-default` build, Workshop L5,
+`--upgrade-availability all --frame-game-ms 100`, 5 actors × 2 episodes
+— a developer-decided n=10 deviation from the pre-registered n=105, so
+this result is **PROVISIONAL**; the benchmark-grade n=105 evaluation
+remains pending):
+
+Final waves: 54, 52, 55, 52, 63, 55, 56, 60, 54, 56. n=10, mean 55.70,
+SD 3.43, 95% CI [53.57, 57.83]. 10/10 valid. Cleanup verified (libunity
+SHA, versionCode 1199, installer, 0 mounts, empty `adb devices`, 0
+qemu).
+
+**Plateau diagnosis** (specialist offline analysis, 2026-09-28; full
+detail and evidence in the specialist's scratchpad, not duplicated
+here — `p014-plateau.md`): near-greedy final waves after 100k decisions
+had SD 12.9, range 11-72 — wide and multi-modal, not a tight ceiling.
+Spend share at purchase concentrated in Defense Absolute (58% overall,
+73% from wave 30 on) while Thorns stayed marginal (3.1% overall, 1.1%
+from wave 30 on); damage at wave entry froze at 57.3 from wave 30 on;
+and no upgrade reached anywhere near its level cap in any recorded
+death. The diagnosis reads this as a learner-limited, reactive
+Defense-Absolute-tracking and cash-hoarding strategy rather than an
+account-ceiling limit, but whether a damage-investing strategy beats
+this turtle wall is unproven offline and needs a device run.
+
+Full tables: specialist scratchpad `c85-p014-eval.md` (training/arm/
+evaluation facts) and `p014-plateau.md` (offline diagnostics,
+2026-09-28).
 
 ## M3-P011: `M3-P009`'s configuration plus γ 0.999, refresh every 100 decisions, left-padding (pre-registered, written before the run)
 

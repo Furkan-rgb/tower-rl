@@ -46,6 +46,11 @@ class LearnMetrics:
     #: steps of this batch whose episode ended inside the stored sequence.
     #: `None` when the batch holds too few such steps to correlate.
     value_fit_correlation: float | None = None
+    #: The largest online Q of a taken action over the batch's real steps,
+    #: before this step's update: what a value overshooting its bound (the
+    #: survival-time reward's `V_REF`) is read from live. `None` for a learner
+    #: that does not report it.
+    taken_q_max: float | None = None
 
 
 @dataclass(frozen=True)

@@ -76,6 +76,7 @@ recipe on the new baseline.
 | `M3-P012` | With `M3-P011`'s exact configuration (`M3-P009`'s recipe plus refresh-100 and left-padding), does reverting γ to `M3-P009`'s 0.997 recover `M3-P009`'s near-greedy trajectory? | `--discount-per-game-second 0.997` (was `M3-P011`'s 0.999; back to `M3-P009`'s value); `--parameter-sync-decisions 100` and left-padding held at `M3-P011`'s values | `M3-P009`'s near-greedy period means (table above), read as a screen; `M3-P011`'s stopped result (this table) as a secondary reference | not evaluated — stopped at 100,279/1,000,000 decisions | STOPPED by kill bar, before evaluation | Near-greedy mean over (50000,100000] was 28.44 (n=70), below the 32 bar; periods 26.14 (n=66)/28.55 (n=71); gradient norm 8.54/7.36 and value-fit 0.887/0.828 at 50k/100k, close to `M3-P009`'s 13.5/6.9 well-clipped norm and better than `M3-P011`'s — the mechanism check passed (γ is not clipping/value-fit-broken) but the wave score did not recover, so γ is not isolated as `M3-P011`'s cause; validity 255/257, stage exit 0, cleanup verified | this commit (results) |
 | `M3-P013` | Does `M3-P009`'s recipe with refresh-per-episode (`--parameter-sync-decisions 0`, reverting `M3-P011`/`M3-P012`'s refresh-100) hold `M3-P009`'s near-greedy trajectory at the full 1,000,000-decision budget? | `--parameter-sync-decisions 0` (was `M3-P011`/`M3-P012`'s 100); all other flags at `M3-P012`'s values (γ 0.997, replay ratio 1.0, capacity 4096, AdamW ε 1e-8, left-padding on) | `M3-P009`'s near-greedy period means (table above), read as a screen; collapse-only kill bars | not evaluated — stopped at 11,174/1,000,000 decisions | STOPPED by developer decision, before period 1 — no performance evidence | Superseded by the recipe revision (`M3-P014`: SR-SPR-style resets, refresh 10) rather than resumed; validity 46/47 | `02fa689` (pre-registration), this commit (results) |
 | `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | PROVISIONAL: arm-n10 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83] (n=105 pending) | STOPPED by SIGINT at 1,005,709/1,000,000 decisions, during the built-in final evaluation; arm read at period 16 (near-greedy mean 55.28, n=29) | Well above `M3-P009`'s ~35-38-wave level on the provisional n=10 read; offline diagnosis finds a learner-limited, reactive Defense-Absolute/cash-hoarding strategy (spend share 58%/73% from wave 30 in Defense Absolute vs 3.1%/1.1% in Thorns, damage frozen at 57.3 from wave 30, no upgrade near max, post-100k final-wave SD 12.9 range 11-72), not an account ceiling | this commit (results) |
+| `M3-P015` | With `M3-P014`'s exact recipe and the discount horizon at the protocol's 0.999 per game-second (ADR 0013), survival reward scaled to hold the maximum return at V_REF, does the policy pair Defense Absolute with Thorns rather than turtling on Defense Absolute alone? | `--discount-per-game-second 0.999` (was 0.997); survival-time reward scaled to (1 − d) · V_REF (identical to `M3-P014`'s at 0.997, a third of the unscaled one at 0.999) | `M3-P014` (mlflow `156c54ce`), matched decisions; n=1 | pending | pending | pending | this commit (pre-registration) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -615,6 +616,117 @@ this turtle wall is unproven offline and needs a device run.
 Full tables: specialist scratchpad `c85-p014-eval.md` (training/arm/
 evaluation facts) and `p014-plateau.md` (offline diagnostics,
 2026-09-28).
+
+## M3-P015: `M3-P014`'s recipe at the protocol discount horizon, 0.999 per game-second, with the survival reward scaled to V_REF (pre-registered, written before the run)
+
+**Date:** 2026-09-28. Board `#85`. Single seed, single run.
+
+**Question.** `M3-P014`'s policy turtles: 73% of its spend from wave 30 on
+went to Defense Absolute and 1.1% to Thorns (plateau diagnosis above). The
+specialist derivation behind ADR 0013 measured the credit delay of the
+purchases that would break that pattern at 1050-1630 game-seconds (Thorn
+Damage median purchase-to-death 1264 s), where 0.997 per game-second keeps at
+most 26% of the optimal signal-to-noise ratio and 0.999 at least 69%. With
+only the discount horizon moved to the protocol's 0.999 (ADR 0013), and the
+survival reward scaled so the value scale does not move with it, does the
+policy pair Defense Absolute with Thorns — the developer's stage 1 — rather
+than holding Defense Absolute alone?
+
+**Recipe.** `M3-P014`'s command exactly (above), with exactly these changes:
+
+- `--discount-per-game-second 0.999` (was 0.997): the protocol's discount
+  horizon, ADR 0013;
+- the survival-time reward scaled (in code, no flag; board `#85`, this
+  commit): a transition carries (1 − d) · V_REF with
+  V_REF = 1/(35 · −ln 0.997) ≈ 9.51, so a return is V_REF · (1 − γ^T),
+  bounded by V_REF at any γ (`docs/solution.md` §9.4e). At 0.997 it is
+  `M3-P014`'s reward to float rounding; at 0.999 it is the unscaled reward
+  × 0.333, so the Huber delta 1, gradient clip 10 and the |TD| and gradient-norm
+  monitors stay at the scale they were calibrated at. Recorded in the
+  resolved config as `survival_reward_bound`; a pre-scaling survival-time
+  checkpoint at 0.999 is refused on resume.
+
+Everything else is `M3-P014`'s: n-step 10 → 3 over 10k gradient steps
+(restarted at each reset), batch 8, replay ratio 1.0, `--replay-capacity
+4096`, refresh every 10 decisions, resets every 100k gradient steps, AdamW lr
+1e-4, ε 1e-8, weight decay 1e-5, EMA τ 0.005, R2D2 PER, ez-greedy, ladder
+exploration, left-padding, Workshop level 5, availability `all`, choice
+points, seed 0, budget 1,000,000 decisions.
+
+    export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/workshop-render-interval-16
+    scripts/run_stage.sh --name m3-p015-stackeddqn-v2-train --instances 7 \
+      --log-directory state/runs/m3-p015-stackeddqn-v2-<UTC stamp>/logs -- \
+      uv run --extra tracking python scripts/train.py --actors 7 --renderer host \
+      --frame-rate-hz 120 --decision-cadence choice-points --upgrade-availability all \
+      --exploration ladder --budget-decisions 1000000 --checkpoint-every-decisions 25000 \
+      --selection-period-decisions 50000 --epsilon-anneal-decisions 8000 --seed 0 \
+      --gradient-steps-per-decision 1.0 --batch-size 8 --n-step 10 --n-step-final 3 \
+      --n-step-anneal-steps 10000 --kill-bar 50000:25000:25 \
+      --kill-bar 100000:50000:27 --kill-bar 200000:150000:29 \
+      --kill-bar 300000:250000:30 \
+      --frame-game-ms 100 --discount-per-game-second 0.999 --survival-time-reward \
+      --ez-greedy --replay-capacity 4096 --workshop-level 5 \
+      --parameter-sync-decisions 10 --reset-every-steps 100000 \
+      --early-stop-patience-periods 0 \
+      --run-name m3-p015-stackeddqn-v2-<UTC stamp>
+
+**Primary criterion — the developer's stage 1: Defense Absolute paired with
+Thorns.** Read at run end from the replay dump, on the near-greedy actors'
+complete episodes over the same model-version range as `M3-P014`'s
+diagnosis (831k-1M), with the same script:
+
+- Thorn Damage's share of spend (cost at purchase) at least twice
+  `M3-P014`'s: ≥ 6.2% overall (was 3.1%) and ≥ 2.2% from wave 30 on (was
+  1.1%);
+- Thorn Damage's share of purchases at waves 30-39 and at 40 and later above
+  `M3-P014`'s, computed from its dump by the same script at read time;
+- and Defense Absolute still held: its median value at wave-30 and wave-40
+  entry not below `M3-P014`'s (33.8 and 56.6).
+
+"At least twice" is this pre-registration's reading of "clearly above",
+fixed before the run. Met, stage 1 is reached; the spend shares are measured
+on ~10⁵ states, so this is the high-power reading, unlike the waves below.
+
+**Waves criterion (secondary, n=1).** Success: the mean final wave of actors
+5-6 (the two lowest-ε ladder actors) over `(100000, 1000000]` decisions
+≥ ~55, against `M3-P014`'s ~44.6 at matched decisions. One run against one
+run, at a post-100k final-wave SD of 12.9: this can detect a gap of 10-14
+waves or more and nothing smaller. A smaller difference either way is not
+evidence.
+
+**Kill criteria.** Unchanged collapse bars from `M3-P014`, enforced by
+`train.py`: `50000:25000:25`, `100000:50000:27`, `200000:150000:29`,
+`300000:250000:30`. Two more, read by the operator from MLflow and not
+enforced by code:
+
+- **gradient norm:** the median of `learner_gradient_norm` (a trailing mean
+  of the last 100 pre-clip norms, logged per episode) above 20 over any
+  10,000-decision window after the first 20,000 decisions. `M3-P011` at 0.999
+  unscaled ran 17-22; scaled, the expectation is `M3-P012`'s 5-8;
+- **value overshoot:** Q above 1.1 · V_REF (10.46) on more than 1% of replay
+  states. Live, `learner_taken_q_max` (the largest taken-action online Q over
+  the last 100 batches, logged per episode) is the screen: while it stays at
+  or below 10.46 the criterion cannot be met. If it rises above, the fraction
+  is measured offline by running the latest numbered checkpoint over the
+  replay dump of `M3-P014` (the run's own replay persists only at run end),
+  and the run is stopped only if that fraction exceeds 1%. `M3-P014` has no
+  live value of this metric to compare with.
+
+**Evaluation.** The arm (`docs/solution.md` §9.2b rule, unchanged) on the
+`workshop-default` build, Workshop level 5, `--upgrade-availability all
+--frame-game-ms 100`, n=10 (5 actors × 2 episodes): the developer's
+reduction from the protocol's n=105, so the result is **PROVISIONAL**, as
+`M3-P014`'s arm-n10 is.
+
+**Known confounds, stated in advance.** One seed (0), n=1. The discount and
+the reward scale move together by design (the scaling is what keeps the value
+scale fixed), and are not separately attributable. Recovery after each reset
+may slow (181 rather than 60 bootstrap hops per horizon at n=3): watch the
+post-reset cycle, recorded, not acted on mid-run. The per-episode Thorns and
+Defense Absolute spend is not observable live (episode records persist only
+at run end, `#91`); the primary criterion is read after the run.
+
+**Timebox and safety.** As `M3-P014`.
 
 ## M3-P011: `M3-P009`'s configuration plus γ 0.999, refresh every 100 decisions, left-padding (pre-registered, written before the run)
 

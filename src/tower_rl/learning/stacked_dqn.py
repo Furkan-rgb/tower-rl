@@ -31,11 +31,20 @@ from tower_rl.learning.value_learning import (
     weighted_sequence_loss,
 )
 
-#: One wave in game-seconds: the unit the survival-time reward is paid in.
-#: Waves are clock-driven, and every completed wave 2..19 of the M3-P003
-#: evaluation lasted 34.88-35.20 s (docs/solution.md 9.4e). It only sets the
-#: scale - a positive scale on the whole reward leaves the optimum unchanged.
+#: One wave in game-seconds: the unit the survival-time reward's bound,
+#: `V_REF`, is expressed in. Waves are clock-driven: every completed wave
+#: 2..19 of the M3-P003 evaluation lasted 34.88-35.20 s (docs/solution.md
+#: 9.4e), and waves 2-74 of the M3-P014 replay dump 35.0 s (ADR 0013).
 WAVE_SECONDS = 35.0
+
+#: The survival-time reward's maximum return, in waves, whatever the discount:
+#: an immortal policy's return at the 0.997 per game-second every survival-time
+#: run before M3-P015 used, about 9.51. The reward is scaled to it so the value
+#: scale - and with it the Huber delta, the gradient clip and the |TD| and
+#: gradient-norm monitors calibrated at it - does not move with the discount
+#: horizon (ADR 0013, Reward scaling). At 0.997 the scaled reward is the
+#: unscaled one of those runs.
+V_REF = 1.0 / (WAVE_SECONDS * -math.log(0.997))
 
 #: What a running ez-greedy option takes while its own action is masked: the
 #: environment's no-op, always legal in an active run (docs/solution.md 7.2).
@@ -74,13 +83,15 @@ class StackedDqnConfig:
     #: discounted by this ** t: a purchase takes no game time and costs no
     #: discount, and the horizon is fixed in waves rather than in however many
     #: choice points a policy makes (docs/solution.md 9.4d). When set,
-    #: `discount` is not read. The recipe's value is 0.999, a horizon of 1,000
-    #: game-seconds or about 28 waves, which covers the tens of waves a
-    #: purchase now pays off over at baseline v2.
+    #: `discount` is not read. Not a code default: the protocol's discount
+    #: horizon is 0.999, a horizon of 1,000 game-seconds or about 28.5 waves,
+    #: a task parameter held identical across learners from M3-P015 on (ADR
+    #: 0013); M3-P003 to M3-P014 ran at 0.997 or 0.999 as a tuned choice.
     discount_per_game_second: float | None = None
     #: Replace the wave reward, in the learner only, with game time survived in
-    #: waves, integrated exactly under the game-time discount
-    #: (docs/solution.md 9.4e). Dying later in a wave then scores higher, which
+    #: waves, integrated exactly under the game-time discount and scaled so
+    #: the return is bounded by `V_REF` (docs/solution.md 9.4e, ADR 0013).
+    #: Dying later in a wave then scores higher, which
     #: the wave reward cannot express. Needs `discount_per_game_second`.
     survival_time_reward: bool = False
     #: About 21.7 decisions pass per wave, and the whole reward is the wave
@@ -176,18 +187,19 @@ class StackedDqnConfig:
         return torch.pow(self.discount_per_game_second, seconds)
 
     def survival_rewards(self, discounts: torch.Tensor) -> torch.Tensor:
-        """Game time each transition survived, in waves, valued at its start.
+        """Game time each transition survived, valued at its start: (1 - d) * V_REF.
 
-        A reward of 1/WAVE_SECONDS per game-second, integrated over a span of
-        t seconds under gamma_s ** t: (1 - d) / (beta * WAVE_SECONDS), with
-        beta = -ln gamma_s (Bradtke & Duff 1995, Eq. 12). A span of no game
-        time - a purchase, or padding - earns exactly 0. float64, as
-        `discounts` is.
+        A constant reward per game-second, integrated over a span of t seconds
+        under gamma_s ** t (Bradtke & Duff 1995, Eq. 12), scaled so an immortal
+        policy's return is `V_REF`: a return is V_REF * (1 - gamma_s ** T),
+        bounded by V_REF whatever gamma_s is (ADR 0013). At gamma_s 0.997 this
+        is the (1 - d) / (beta * WAVE_SECONDS), beta = -ln gamma_s, of every
+        survival-time run before M3-P015. A span of no game time - a purchase,
+        or padding - earns exactly 0. float64, as `discounts` is.
         """
         if self.discount_per_game_second is None:
             raise ValueError("the survival-time reward needs a discount per game-second")
-        beta = -math.log(self.discount_per_game_second)
-        return (1.0 - discounts) / (beta * WAVE_SECONDS)
+        return (1.0 - discounts) * V_REF
 
     def n_step_at(self, gradient_steps: int) -> int:
         """The n the target is built with after this many gradient steps.
@@ -402,6 +414,7 @@ class StackedDqnBackbone:
                 real,
                 discounts=discounts,
             )
+        taken = chosen.detach()[real > 0]
         return LearnMetrics(
             weighted_loss=float(loss.detach().item()),
             unweighted_mean_absolute_td_error=float(
@@ -410,6 +423,7 @@ class StackedDqnBackbone:
             gradient_norm=float(gradient_norm.item()),
             td_errors=real_step_td_errors(absolute, real),
             value_fit_correlation=fit,
+            taken_q_max=float(taken.max().item()) if taken.numel() else None,
         )
 
     def _update_target(self) -> None:

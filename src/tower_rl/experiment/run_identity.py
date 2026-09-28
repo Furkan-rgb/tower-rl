@@ -35,7 +35,7 @@ from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import StackedDqnConfig
+from tower_rl.learning.stacked_dqn import V_REF, StackedDqnConfig
 from tower_rl.learning.training import TrainingConfig
 
 #: The measured floors a learning curve has to be read against, carried in every
@@ -229,6 +229,11 @@ def resolved_config(
         "discount_per_game_second": learner.discount_per_game_second,
         # False learns from the wave reward, which is every run before board #82.
         "survival_time_reward": learner.survival_time_reward,
+        # The survival-time reward's maximum return, which fixes its scale
+        # (ADR 0013), or None under the wave reward. Absent from every file
+        # before M3-P015, whose survival-time reward was bounded by
+        # 1 / (-ln gamma_s * WAVE_SECONDS) at its own discount instead.
+        "survival_reward_bound": V_REF if learner.survival_time_reward else None,
         # False explores one decision at a time, which is every run before
         # board #83.
         "ez_greedy": learner.ez_greedy,

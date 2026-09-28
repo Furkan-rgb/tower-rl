@@ -93,6 +93,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import threading
 import time
@@ -181,7 +182,12 @@ from tower_rl.learning.replay import (  # noqa: E402
     ReplayDumpError,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
+from tower_rl.learning.stacked_dqn import (  # noqa: E402
+    V_REF,
+    WAVE_SECONDS,
+    StackedDqnBackbone,
+    StackedDqnConfig,
+)
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
     KillBar,
@@ -907,17 +913,19 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "discount by game time instead of per decision: a transition that "
             "spans t game-seconds is discounted by this ** t, so a purchase "
-            "costs no discount (docs/solution.md 9.4d); unset discounts per "
-            "decision, and --discount may not be given with it"
+            "costs no discount (docs/solution.md 9.4d); the protocol's value is "
+            "0.999 (ADR 0013); unset discounts per decision, and --discount may "
+            "not be given with it"
         ),
     )
     parser.add_argument(
         "--survival-time-reward",
         action="store_true",
         help=(
-            "learn from game time survived, in waves, instead of the wave reward, "
-            "so dying later in a wave scores higher (docs/solution.md 9.4e); "
-            "needs --discount-per-game-second"
+            "learn from game time survived, instead of the wave reward, so dying "
+            "later in a wave scores higher, scaled so the return is bounded by "
+            "V_REF (about 9.51) whatever the discount (docs/solution.md 9.4e, "
+            "ADR 0013); needs --discount-per-game-second"
         ),
     )
     parser.add_argument(
@@ -1300,24 +1308,38 @@ def resume_point(
         # A file that recorded no settings at all has nothing to compare; one
         # from before the game-time discount has no per-second key, which
         # reads as None - per decision, which is what it was trained under.
+        recorded_per_second = state.resolved_config.get("discount_per_game_second")
+        # Likewise the reward: a file from before the survival-time reward
+        # has no key, which reads as off - the wave reward it learned from.
+        recorded_survival = state.resolved_config.get("survival_time_reward", False)
         recorded = (
             state.resolved_config.get("discount"),
-            state.resolved_config.get("discount_per_game_second"),
-            # Likewise the reward: a file from before the survival-time reward
-            # has no key, which reads as off - the wave reward it learned from.
-            state.resolved_config.get("survival_time_reward", False),
+            recorded_per_second,
+            recorded_survival,
+            # And its scale: a survival-time file from before ADR 0013 has no
+            # bound recorded, and its unscaled reward was bounded by
+            # 1 / (-ln gamma_s * WAVE_SECONDS). At 0.997 that is V_REF, the same
+            # reward; at any other discount it is another value scale.
+            state.resolved_config.get(
+                "survival_reward_bound",
+                1.0 / (WAVE_SECONDS * -math.log(recorded_per_second))
+                if recorded_survival and recorded_per_second is not None
+                else None,
+            ),
         )
         requested = (
             None if arguments.discount_per_game_second is not None else arguments.discount,
             arguments.discount_per_game_second,
             arguments.survival_time_reward,
+            V_REF if arguments.survival_time_reward else None,
         )
         if recorded != requested:
             raise SystemExit(
                 f"--resume {arguments.resume} was trained with discount {recorded[0]}, "
-                f"discount per game-second {recorded[1]} and survival-time reward "
-                f"{recorded[2]}; this run asks for {requested[0]}, {requested[1]} "
-                f"and {requested[2]}, a different target"
+                f"discount per game-second {recorded[1]}, survival-time reward "
+                f"{recorded[2]} and survival reward bound {recorded[3]}; this run asks "
+                f"for {requested[0]}, {requested[1]}, {requested[2]} and "
+                f"{requested[3]}, a different target"
             )
     if arguments.backbone == BACKBONE and (
         state.resolved_config.get("ez_greedy", False) != arguments.ez_greedy

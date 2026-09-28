@@ -317,6 +317,45 @@ def test_a_seventeen_second_span_earns_its_discounted_share_of_a_wave() -> None:
     assert config.survival_rewards(discounts).item() == pytest.approx(0.47352, rel=1e-5)
 
 
+def test_the_survival_reward_at_0_997_is_the_unscaled_reward_of_every_run_before() -> None:
+    """(1 - d) * V_REF equals M3-P004..M3-P014's (1 - d) / (-ln 0.997 * 35) at 0.997."""
+    config = StackedDqnConfig(discount_per_game_second=0.997, survival_time_reward=True)
+    seconds = torch.tensor([[0.0, 0.5, 1.85, 17.0, 35.0, 1000.0, 1e6]], dtype=torch.float64)
+    discounts = config.transition_discounts(seconds * 1000.0)
+
+    unscaled = (1.0 - discounts) / (-math.log(0.997) * 35.0)
+    assert abs(stacked_dqn.V_REF - 9.51) < 0.005
+    assert torch.allclose(config.survival_rewards(discounts), unscaled, rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.parametrize("discount_per_game_second", [0.997, 0.999, 0.9994])
+def test_the_survival_return_is_bounded_by_v_ref_whatever_the_discount(
+    discount_per_game_second: float,
+) -> None:
+    """A never-ending life's return, summed span by span, approaches V_REF from below."""
+    config = StackedDqnConfig(
+        discount_per_game_second=discount_per_game_second, survival_time_reward=True
+    )
+    # 200,000 spans of 1.85 s, about 10,600 waves: gamma ** T is negligible.
+    spans = torch.full((200_000,), 1850.0, dtype=torch.float64)
+    discounts = config.transition_discounts(spans)
+    rewards = config.survival_rewards(discounts)
+    # Each reward valued at the start of its own span, discounted back to 0.
+    before = torch.cat((torch.ones(1, dtype=torch.float64), discounts.cumprod(0)[:-1]))
+    maximum = float((before * rewards).sum())
+
+    assert maximum <= stacked_dqn.V_REF * (1.0 + 1e-9)
+    assert maximum == pytest.approx(stacked_dqn.V_REF, rel=1e-6)
+
+
+def test_a_learning_step_reports_the_largest_taken_action_q() -> None:
+    """The live read of the value against V_REF: a finite number, from real steps."""
+    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
+    metrics = _backbone().learn(collate((_timed_sequence(spans),), (1.0,)))
+
+    assert metrics.taken_q_max is not None and math.isfinite(metrics.taken_q_max)
+
+
 @pytest.mark.parametrize("discount_per_game_second", [None, 0.997])
 def test_learning_with_the_survival_time_reward_off_is_bit_identical(
     discount_per_game_second: float | None,
@@ -554,8 +593,8 @@ def test_a_game_time_discount_of_0_999_reaches_the_target(
     """The discounts and rewards the n-step target is built from, at the recipe's value.
 
     0.999 ** seconds per transition, and under the survival-time reward
-    (1 - d) / (beta * 35) with beta = -ln 0.999: a policy that never dies is
-    worth 1 / (beta * 35), about 28.6 waves, where 0.997 made it 9.5.
+    (1 - d) * V_REF: a policy that never dies is worth V_REF, about 9.51 waves,
+    as it was at 0.997, where the unscaled reward made it 28.6 (ADR 0013).
     """
     spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
     batch = collate((_timed_sequence(spans),), (1.0,))
@@ -571,10 +610,9 @@ def test_a_game_time_discount_of_0_999_reaches_the_target(
 
     ((rewards, discounts),) = captured
     seconds = torch.tensor(spans[batch.burn_in :], dtype=torch.float64) / 1000.0
-    beta = -math.log(0.999)
     assert torch.allclose(discounts[0], 0.999**seconds)
     assert torch.allclose(
-        rewards[0].double(), (1.0 - 0.999**seconds) / (beta * 35.0), atol=1e-7
+        rewards[0].double(), (1.0 - 0.999**seconds) * stacked_dqn.V_REF, atol=1e-7
     )
 
 

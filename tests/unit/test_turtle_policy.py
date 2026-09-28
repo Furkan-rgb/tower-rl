@@ -1,4 +1,4 @@
-"""The scripted turtle-then-blender build: its rule, its switch, and its row names."""
+"""The scripted turtle build: Thorns/Defense Absolute alternation, and row names."""
 
 from __future__ import annotations
 
@@ -6,10 +6,8 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pytest
-from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.features import (
     ROW_COUNT,
@@ -19,24 +17,10 @@ from tower_rl.environment.features import (
     StateFeatures,
 )
 from tower_rl.environment.run_actions import action_index, upgrade_action
-from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
-from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.learning.evaluator import evaluate, to_record
 from tower_rl.learning.policies import (
-    CASH_PER_WAVE,
     DEFENSE_ABSOLUTE,
-    DEFENSE_PERCENT,
-    HEALTH,
-    KNOCKBACK_CHANCE,
-    KNOCKBACK_FORCE,
-    ORB_SPEED,
-    ORBS,
     THORN_DAMAGE,
-    CheapestFirstPolicy,
     TurtlePolicy,
-    defense_absolute_margin,
-    hits_to_kill,
-    next_thorn_breakpoint,
     turtle_row_indices,
 )
 
@@ -119,10 +103,7 @@ DAMAGE = _slot("attack", 0)
 def _features(
     *,
     wave: int = 10,
-    health: float = 1.0,
-    base_damage: float = 10.0,
-    defense_absolute: float = 100.0,
-    thorns: float = 60.0,
+    thorns: float = 0.0,
     rows: dict[int, dict[str, float]] | None = None,
 ) -> StateFeatures:
     """A state whose every row is unlocked, unmaxed, priced 100 and unaffordable
@@ -130,9 +111,7 @@ def _features(
     scalars = [0.0] * len(SCALAR_FEATURES)
     for name, value in (
         ("wave_log", math.log1p(wave)),
-        ("health_fraction", health),
-        ("wave_base_damage_log", math.log1p(base_damage)),
-        ("defense_absolute_log", math.log1p(defense_absolute)),
+        ("health_fraction", 1.0),
         ("thorn_damage_log", math.log1p(thorns)),
     ):
         scalars[SCALAR_FEATURES.index(name)] = value
@@ -164,53 +143,13 @@ def _buyable(*names: str, costs: dict[str, float] | None = None) -> dict[int, di
     }
 
 
-# -- the margin and the breakpoints ------------------------------------------
-
-
-def test_hits_to_kill_is_ceil_of_one_over_thorns_capped() -> None:
-    assert hits_to_kill(0.0) == 50
-    assert hits_to_kill(1.0) == 50
-    assert hits_to_kill(5.0) == 20
-    assert hits_to_kill(10.0) == 10
-    assert hits_to_kill(11.0) == 10
-    assert hits_to_kill(21.0) == 5
-    assert hits_to_kill(26.0) == 4
-    assert hits_to_kill(34.0) == 3
-    assert hits_to_kill(51.0) == 2
-    assert hits_to_kill(100.0) == 1
-
-
-def test_the_margin_is_the_heat_up_of_every_hit_before_the_last() -> None:
-    assert defense_absolute_margin(0.0) == pytest.approx(1.04**49)
-    assert defense_absolute_margin(5.0) == pytest.approx(1.04**19)
-    assert defense_absolute_margin(51.0) == pytest.approx(1.04)
-    assert defense_absolute_margin(100.0) == 1.0
-
-
-def test_the_next_breakpoint_is_the_first_one_above_the_reading() -> None:
-    assert next_thorn_breakpoint(0.0) == 11.0
-    assert next_thorn_breakpoint(10.99) == 11.0
-    assert next_thorn_breakpoint(11.0) == 21.0
-    assert next_thorn_breakpoint(25.0) == 26.0
-    assert next_thorn_breakpoint(33.0) == 34.0
-    assert next_thorn_breakpoint(50.0) == 51.0
-    assert next_thorn_breakpoint(51.0) is None
-
-
 # -- row names ----------------------------------------------------------------
 
 
 def test_row_names_resolve_to_the_recorded_device_slots() -> None:
     expected = {
-        HEALTH: _slot("defense", 0),
-        DEFENSE_PERCENT: _slot("defense", 2),
         DEFENSE_ABSOLUTE: _slot("defense", 3),
         THORN_DAMAGE: _slot("defense", 4),
-        KNOCKBACK_CHANCE: _slot("defense", 6),
-        KNOCKBACK_FORCE: _slot("defense", 7),
-        ORB_SPEED: _slot("defense", 8),
-        ORBS: _slot("defense", 9),
-        CASH_PER_WAVE: _slot("utility", 1),
     }
     assert expected == ROWS
 
@@ -231,7 +170,7 @@ def test_a_missing_row_name_fails_loudly() -> None:
 
 def test_a_row_named_twice_fails_loudly() -> None:
     with pytest.raises(ValueError, match="two rows"):
-        turtle_row_indices([*LABELS, Label("defense", 19, ORBS)])
+        turtle_row_indices([*LABELS, Label("defense", 19, THORN_DAMAGE)])
 
 
 def test_an_unbound_turtle_refuses_to_act() -> None:
@@ -241,182 +180,76 @@ def test_an_unbound_turtle_refuses_to_act() -> None:
         policy.act(_features(), None)
 
 
-# -- the turtle phase ---------------------------------------------------------
+# -- alternation below the breakpoint ------------------------------------------
 
 
-def test_defense_absolute_comes_first_when_it_does_not_hold() -> None:
-    # thorns 5 % -> 20 hits -> margin 1.04**19 ~ 2.11; 20 < 2.11 * 10.
-    state = _features(
-        wave=3, defense_absolute=20.0, thorns=5.0,
-        rows=_buyable(DEFENSE_ABSOLUTE, CASH_PER_WAVE, THORN_DAMAGE),
-    )
-    assert _policy().act(state, None)[0] == ROWS[DEFENSE_ABSOLUTE]
+def test_purchases_alternate_thorns_then_defense_absolute_below_the_breakpoint() -> None:
+    rows = _buyable(THORN_DAMAGE, DEFENSE_ABSOLUTE)
+    policy = _policy()
+    state = _features(thorns=10.0, rows=rows)
+    assert policy.act(state, None)[0] == ROWS[THORN_DAMAGE]
+    assert policy.act(state, None)[0] == ROWS[DEFENSE_ABSOLUTE]
+    assert policy.act(state, None)[0] == ROWS[THORN_DAMAGE]
+    assert policy.act(state, None)[0] == ROWS[DEFENSE_ABSOLUTE]
 
 
-def test_an_unaffordable_defense_absolute_is_saved_for() -> None:
-    state = _features(
-        wave=3, defense_absolute=20.0, thorns=5.0, rows=_buyable(CASH_PER_WAVE, THORN_DAMAGE)
-    )
-    assert _policy().act(state, None)[0] == 0
+def test_an_unaffordable_row_is_waited_for_rather_than_skipped() -> None:
+    # Only Defense Absolute is affordable, but it is not Thorns's turn yet.
+    rows = _buyable(DEFENSE_ABSOLUTE)
+    policy = _policy()
+    state = _features(thorns=10.0, rows=rows)
+    assert policy.act(state, None)[0] == 0
+    assert policy.act(state, None)[0] == 0
+    # Thorns becomes affordable; its turn is still owed.
+    rows = _buyable(THORN_DAMAGE, DEFENSE_ABSOLUTE)
+    assert policy.act(_features(thorns=10.0, rows=rows), None)[0] == ROWS[THORN_DAMAGE]
 
 
-def test_cash_per_wave_is_bought_through_wave_eight_once_defense_holds() -> None:
-    rows = _buyable(DEFENSE_ABSOLUTE, CASH_PER_WAVE, THORN_DAMAGE)
-    holding = {"defense_absolute": 22.0, "thorns": 5.0}  # 22 >= 2.11 * 10
-    assert _policy().act(_features(wave=8, rows=rows, **holding), None)[0] == ROWS[CASH_PER_WAVE]
-    assert _policy().act(_features(wave=9, rows=rows, **holding), None)[0] == ROWS[THORN_DAMAGE]
+# -- the handover at the breakpoint --------------------------------------------
 
 
-def test_thorns_rise_until_the_last_breakpoint() -> None:
-    rows = _buyable(THORN_DAMAGE, DEFENSE_PERCENT, HEALTH)
-    assert _policy().act(_features(wave=20, thorns=50.0, rows=rows), None)[0] == ROWS[THORN_DAMAGE]
-    past = _policy().act(_features(wave=20, thorns=51.0, rows=rows), None)[0]
-    assert past in (ROWS[DEFENSE_PERCENT], ROWS[HEALTH])
+def test_only_defense_absolute_is_bought_from_the_breakpoint_on() -> None:
+    rows = _buyable(THORN_DAMAGE, DEFENSE_ABSOLUTE)
+    policy = _policy()
+    assert policy.act(_features(thorns=34.0, rows=rows), None)[0] == ROWS[DEFENSE_ABSOLUTE]
+    assert policy.act(_features(thorns=40.0, rows=rows), None)[0] == ROWS[DEFENSE_ABSOLUTE]
 
 
-def test_past_thorns_the_cheaper_of_defense_percent_and_health_is_bought() -> None:
-    rows = _buyable(DEFENSE_PERCENT, HEALTH, costs={DEFENSE_PERCENT: 50.0, HEALTH: 80.0})
-    assert _policy().act(_features(wave=20, rows=rows), None)[0] == ROWS[DEFENSE_PERCENT]
-    rows = _buyable(DEFENSE_PERCENT, HEALTH, costs={DEFENSE_PERCENT: 90.0, HEALTH: 80.0})
-    assert _policy().act(_features(wave=20, rows=rows), None)[0] == ROWS[HEALTH]
-
-
-def test_a_maxed_row_is_passed_over() -> None:
-    rows = _buyable(THORN_DAMAGE, HEALTH, costs={HEALTH: 50.0})
+def test_a_maxed_thorns_below_the_breakpoint_goes_straight_to_defense_absolute() -> None:
+    rows = _buyable(THORN_DAMAGE, DEFENSE_ABSOLUTE)
     rows[ROWS[THORN_DAMAGE]]["maxed"] = 1.0
     rows[ROWS[THORN_DAMAGE]]["available"] = 0.0
-    assert _policy().act(_features(wave=20, thorns=30.0, rows=rows), None)[0] == ROWS[HEALTH]
+    policy = _policy()
+    assert policy.act(_features(thorns=10.0, rows=rows), None)[0] == ROWS[DEFENSE_ABSOLUTE]
 
 
-def test_damage_is_never_bought_however_cheap() -> None:
+def test_a_locked_thorns_below_the_breakpoint_goes_straight_to_defense_absolute() -> None:
+    rows = _buyable(DEFENSE_ABSOLUTE)
+    rows[ROWS[THORN_DAMAGE]] = {"unlocked": 0.0}
+    policy = _policy()
+    assert policy.act(_features(thorns=10.0, rows=rows), None)[0] == ROWS[DEFENSE_ABSOLUTE]
+
+
+def test_a_maxed_defense_absolute_waits() -> None:
+    rows = _buyable(THORN_DAMAGE)
+    rows[ROWS[DEFENSE_ABSOLUTE]] = {"maxed": 1.0, "unlocked": 1.0}
+    policy = _policy()
+    assert policy.act(_features(thorns=40.0, rows=rows), None)[0] == 0
+
+
+def test_no_row_besides_thorns_and_defense_absolute_is_ever_bought() -> None:
     rows = {DAMAGE: {"available": 1.0, "cost_log": math.log1p(1.0)}}
-    assert _policy().act(_features(wave=20, rows=rows), None)[0] == 0
+    assert _policy().act(_features(thorns=40.0, rows=rows), None)[0] == 0
 
 
-# -- the switch -----------------------------------------------------------------
+# -- reset between episodes ----------------------------------------------------
 
 
-def _failing(wave: int, **kwargs: Any) -> StateFeatures:
-    return _features(wave=wave, defense_absolute=1.0, thorns=5.0, **kwargs)
-
-
-def test_defense_failing_at_two_consecutive_wave_starts_switches_to_blender() -> None:
+def test_the_turn_resets_to_thorns_first_at_the_start_of_each_episode() -> None:
+    rows = _buyable(THORN_DAMAGE, DEFENSE_ABSOLUTE)
     policy = _policy()
-    rows = _buyable(DEFENSE_ABSOLUTE, KNOCKBACK_CHANCE, THORN_DAMAGE)
-    assert policy.act(_failing(10, rows=rows), None)[0] == ROWS[DEFENSE_ABSOLUTE]
-    assert policy.switch_wave is None
-    choice = policy.act(_failing(11, rows=rows), None)[0]
-    assert policy.switch_wave == 11
-    # Blender buys no more Defense Absolute: Thorns (5 %) comes first.
-    assert choice == ROWS[THORN_DAMAGE]
-    assert policy.episode_detail == {"switch_wave": 11}
-
-
-def test_a_wave_where_defense_held_breaks_the_run_of_failures() -> None:
-    policy = _policy()
-    policy.act(_failing(10), None)
-    policy.act(_features(wave=11, defense_absolute=100.0, thorns=5.0), None)
-    policy.act(_failing(12), None)
-    assert policy.switch_wave is None
-
-
-def test_failures_must_be_at_consecutive_waves() -> None:
-    policy = _policy()
-    policy.act(_failing(10), None)
-    policy.act(_failing(12), None)
-    assert policy.switch_wave is None
-
-
-def test_only_the_first_decision_of_a_wave_is_its_start() -> None:
-    policy = _policy()
-    policy.act(_features(wave=10, defense_absolute=100.0, thorns=5.0), None)
-    policy.act(_failing(10), None)  # mid-wave: not a wave start
-    policy.act(_failing(11), None)
-    assert policy.switch_wave is None
-
-
-def test_health_below_the_threshold_switches_at_once() -> None:
-    policy = _policy()
-    policy.act(_features(wave=7, health=0.81), None)
-    assert policy.switch_wave is None
-    policy.act(_features(wave=7, health=0.79), None)
-    assert policy.switch_wave == 7
-
-
-def test_the_switch_is_one_way_and_reset_per_episode() -> None:
-    policy = _policy()
-    policy.act(_features(wave=7, health=0.5), None)
-    policy.act(_features(wave=8, health=1.0), None)
-    assert policy.switch_wave == 7
+    state = _features(thorns=10.0, rows=rows)
+    assert policy.act(state, None)[0] == ROWS[THORN_DAMAGE]
+    assert policy.act(state, None)[0] == ROWS[DEFENSE_ABSOLUTE]
     policy.initial_state()
-    assert policy.switch_wave is None
-    assert policy.episode_detail == {"switch_wave": None}
-
-
-# -- the blender phase -------------------------------------------------------------
-
-
-def _blending() -> TurtlePolicy:
-    policy = _policy()
-    policy.act(_features(wave=30, health=0.5), None)
-    return policy
-
-
-def test_blender_raises_thorns_to_the_last_breakpoint_first() -> None:
-    rows = _buyable(THORN_DAMAGE, KNOCKBACK_CHANCE, costs={KNOCKBACK_CHANCE: 1.0})
-    state = _features(wave=30, thorns=40.0, rows=rows)
-    assert _blending().act(state, None)[0] == ROWS[THORN_DAMAGE]
-
-
-def test_blender_buys_the_cheapest_affordable_knockback_or_orb_row() -> None:
-    costs = {KNOCKBACK_CHANCE: 90.0, KNOCKBACK_FORCE: 70.0, ORBS: 80.0, ORB_SPEED: 60.0}
-    rows = _buyable(KNOCKBACK_CHANCE, KNOCKBACK_FORCE, ORBS, HEALTH, costs=costs)
-    # Orb Speed is cheapest but unaffordable, so the cheapest affordable one wins.
-    rows[ROWS[ORB_SPEED]] = {"cost_log": math.log1p(60.0)}
-    assert _blending().act(_features(wave=30, rows=rows), None)[0] == ROWS[KNOCKBACK_FORCE]
-
-
-def test_blender_falls_back_to_health_and_defense_percent() -> None:
-    rows = _buyable(HEALTH, DEFENSE_PERCENT, DEFENSE_ABSOLUTE, costs={HEALTH: 10.0})
-    assert _blending().act(_features(wave=30, rows=rows), None)[0] == ROWS[HEALTH]
-
-
-# -- the episode record ------------------------------------------------------------
-
-
-@dataclass
-class _SayingPolicy(CheapestFirstPolicy):
-    """Any policy with an `episode_detail`: the record carries it per episode."""
-
-    episodes: int = 0
-
-    def initial_state(self) -> None:
-        self.episodes += 1
-
-    @property
-    def episode_detail(self) -> dict[str, Any]:
-        return {"switch_wave": self.episodes}
-
-
-def test_the_episode_record_carries_what_the_policy_said() -> None:
-    environment = InstrumentedRunEnvironment(
-        port=FakeRunPort(damage_per_second=1.0),  # type: ignore[arg-type]
-        builder=RunStateBuilder(profile_id="fake-profile-v1"),
-        cadence=CadenceConfig(max_quiet_game_ms=1000),
-    )
-    report = evaluate(environment, _SayingPolicy(), episodes=2, profile_id="fake-profile-v1")
-    episodes = to_record(report)["episodes"]
-    assert [episode["policy_detail"] for episode in episodes] == [
-        {"switch_wave": 1},
-        {"switch_wave": 2},
-    ]
-
-
-def test_a_policy_that_says_nothing_adds_nothing_to_the_record() -> None:
-    environment = InstrumentedRunEnvironment(
-        port=FakeRunPort(damage_per_second=1.0),  # type: ignore[arg-type]
-        builder=RunStateBuilder(profile_id="fake-profile-v1"),
-        cadence=CadenceConfig(max_quiet_game_ms=1000),
-    )
-    report = evaluate(environment, CheapestFirstPolicy(), episodes=1, profile_id="fake-profile-v1")
-    assert "policy_detail" not in to_record(report)["episodes"][0]
+    assert policy.act(state, None)[0] == ROWS[THORN_DAMAGE]

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from tower_rl.environment.decision_time import (
     OBSERVATION_DECODE,
@@ -82,10 +81,6 @@ class EpisodeResult:
     #: them, and for stacked-dqn with ez-greedy off.
     options_started: int = 0
     longest_option: int = 0
-    #: What a scripted policy says about its own episode, for the episode
-    #: record (`TurtlePolicy.episode_detail`: the wave it switched build in).
-    #: Empty for a policy that says nothing.
-    policy_detail: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -165,7 +160,6 @@ class Actor:
             # `initial_state` above started the counts for this episode.
             options_started=int(getattr(self.policy, "options_started", 0)),
             longest_option=int(getattr(self.policy, "longest_option", 0)),
-            policy_detail=dict(getattr(self.policy, "episode_detail", {})),
         )
 
     def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:

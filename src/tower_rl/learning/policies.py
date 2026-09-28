@@ -112,64 +112,14 @@ class CheapestFirstPolicy:
 #: slots itself, so it never assumes a slot index.
 DEFENSE_ABSOLUTE = "Defense Absolute"
 THORN_DAMAGE = "Thorn Damage"
-DEFENSE_PERCENT = "Defense %"
-HEALTH = "Health"
-CASH_PER_WAVE = "Cash / Wave"
-KNOCKBACK_CHANCE = "Knockback Chance"
-KNOCKBACK_FORCE = "Knockback Force"
-ORBS = "Orbs"
-ORB_SPEED = "Orb Speed"
 TURTLE_ROWS: tuple[str, ...] = (
     DEFENSE_ABSOLUTE,
     THORN_DAMAGE,
-    DEFENSE_PERCENT,
-    HEALTH,
-    CASH_PER_WAVE,
-    KNOCKBACK_CHANCE,
-    KNOCKBACK_FORCE,
-    ORBS,
-    ORB_SPEED,
 )
 
-#: Each successive hit from the same enemy is this much stronger ("heat-up";
-#: fandom Beginner Guide and fandom "Defense Absolute" page, game-vault guide).
-HEAT_UP_PER_HIT = 1.04
-#: Thorn Damage, in percent, at which a normal enemy dies one hit sooner:
-#: 11 % -> 10 hits, 21 -> 5, 26 -> 4, 34 -> 3, 51 -> 2 (fandom Beginner Guide,
-#: Discord T1 guide: "keep 1 % above a fraction").
-THORN_BREAKPOINTS_PERCENT: tuple[float, ...] = (11.0, 21.0, 26.0, 34.0, 51.0)
-#: Hits-to-kill used when Thorns is (near) zero and would otherwise be
-#: unbounded; the spec's cap. Reached below 2 % Thorns.
-HITS_TO_KILL_CAP = 50
-#: Cash / Wave is bought through this wave (fandom Beginner Guide: economy in
-#: the first 5-9 waves).
-EARLY_ECONOMY_LAST_WAVE = 8
-#: Health fraction below which damage is taken to be getting through Defense
-#: Absolute, and the build switches to blender (fandom Beginner Guide's in-run
-#: trigger, made observable).
-SWITCH_HEALTH_FRACTION = 0.8
-
-
-def hits_to_kill(thorn_percent: float) -> int:
-    """Tower hits a normal enemy survives Thorns for: ceil(1 / thorn), capped."""
-    if thorn_percent <= 0.0:
-        return HITS_TO_KILL_CAP
-    return min(HITS_TO_KILL_CAP, math.ceil(100.0 / thorn_percent))
-
-
-def defense_absolute_margin(thorn_percent: float) -> float:
-    """How far above the base hit Defense Absolute must stand to hold.
-
-    An enemy's last hit before Thorns kills it has heated up `hits - 1` times,
-    so the margin comes from the same heat-up the guides cite, not a tuned
-    constant.
-    """
-    return HEAT_UP_PER_HIT ** (hits_to_kill(thorn_percent) - 1)
-
-
-def next_thorn_breakpoint(thorn_percent: float) -> float | None:
-    """The next Thorns breakpoint above the current reading; None past the last."""
-    return next((bp for bp in THORN_BREAKPOINTS_PERCENT if thorn_percent < bp), None)
+#: developer's stated T1 turtle: Thorns to the 3-hit breakpoint, then all
+#: Defense Absolute.
+THORNS_TARGET_PERCENT = 34.0
 
 
 def turtle_row_indices(labels: Sequence[UpgradeSlotLabelLike]) -> dict[str, int]:
@@ -202,66 +152,44 @@ class TurtleReading:
     reads 5.0 at wave 1).
     """
 
-    wave: int
-    health_fraction: float
-    base_damage: float
-    defense_absolute: float
     thorn_percent: float
 
     @classmethod
     def of(cls, features: StateFeatures) -> TurtleReading:
-        def hud(name: str) -> float:
-            # Rounded so an exact 51 % does not come back as 50.99999999.
-            return round(math.expm1(features.scalars[SCALAR_FEATURES.index(name)]), 6)
-
-        return cls(
-            wave=round(hud("wave_log")),
-            health_fraction=features.scalars[SCALAR_FEATURES.index("health_fraction")],
-            base_damage=hud("wave_base_damage_log"),
-            defense_absolute=hud("defense_absolute_log"),
-            thorn_percent=hud("thorn_damage_log"),
+        # Rounded so an exact 34 % does not come back as 33.99999999.
+        thorn_percent = round(
+            math.expm1(features.scalars[SCALAR_FEATURES.index("thorn_damage_log")]), 6
         )
-
-    @property
-    def defense_absolute_holds(self) -> bool:
-        margin = defense_absolute_margin(self.thorn_percent)
-        return self.defense_absolute >= margin * self.base_damage
+        return cls(thorn_percent=thorn_percent)
 
 
 @dataclass
 class TurtlePolicy:
-    """A hand-written turtle-then-blender build: the community's reference play.
+    """The developer's stated T1 turtle build: Thorns and Defense Absolute.
 
-    Turtle: Defense Absolute until it holds against the heated-up base hit, Cash
-    / Wave through wave 8, Thorns to its last breakpoint, then the cheaper of
-    Defense % and Health. Once Defense Absolute stops holding at the start of
-    two consecutive waves, or health falls below 0.8, it switches for good to
-    blender: Thorns to 51 %, Knockback and Orbs, then Health and Defense %. It
-    buys no Damage or Attack Speed in either phase, deliberately.
+    While Thorns is below the 3-hit breakpoint (`THORNS_TARGET_PERCENT`) and
+    still buyable, purchases alternate round robin between Thorn Damage and
+    Defense Absolute, Thorns first. Once Thorns reaches the breakpoint, or is
+    maxed or locked before it, every purchase goes to Defense Absolute alone;
+    if Defense Absolute is maxed too, it WAITs. Whenever the row whose turn
+    it is cannot be afforded, it WAITs and keeps that row's turn rather than
+    buying the other one, so it saves up for it instead of skipping ahead.
 
     It addresses rows by name, so it has to be given the game's labels
-    (`bind_row_names`) before it can act. Its phase is per-episode memory kept
-    on the instance and reset by `initial_state`, like `StackedDqnBackbone`'s
-    option counts; `episode_detail` is what the episode record carries.
+    (`bind_row_names`) before it can act. Whose turn it is next is per-episode
+    memory kept on the instance and reset by `initial_state`.
     """
 
     rows: dict[str, int] | None = None
-    #: The wave the build switched to blender in, this episode; None if it did not.
-    switch_wave: int | None = field(default=None, init=False)
-    _last_wave_seen: int | None = field(default=None, init=False)
-    _last_wave_failed: int | None = field(default=None, init=False)
+    #: The row alternation will try next, while it is still alternating.
+    #: Thorns goes first, per the developer's rule.
+    _next_row: str = field(default=THORN_DAMAGE, init=False)
 
     def bind_row_names(self, labels: Sequence[UpgradeSlotLabelLike]) -> None:
         self.rows = turtle_row_indices(labels)
 
-    @property
-    def episode_detail(self) -> dict[str, Any]:
-        return {"switch_wave": self.switch_wave}
-
     def initial_state(self) -> None:
-        self.switch_wave = None
-        self._last_wave_seen = None
-        self._last_wave_failed = None
+        self._next_row = THORN_DAMAGE
         return None
 
     def act(
@@ -272,52 +200,16 @@ class TurtlePolicy:
         if not valid_actions(features):
             raise ValueError("no action is available in this state")
         reading = TurtleReading.of(features)
-        if self.switch_wave is None:
-            self._check_switch(reading)
-        chosen = (
-            self._turtle(features, reading)
-            if self.switch_wave is None
-            else self._blender(features, reading)
+        alternating = reading.thorn_percent < THORNS_TARGET_PERCENT and self._offered(
+            features, THORN_DAMAGE
         )
+        if not alternating:
+            return self._buy(features, DEFENSE_ABSOLUTE), None
+        row = self._next_row
+        chosen = self._buy(features, row)
+        if chosen != 0:
+            self._next_row = DEFENSE_ABSOLUTE if row == THORN_DAMAGE else THORN_DAMAGE
         return chosen, None
-
-    def _check_switch(self, reading: TurtleReading) -> None:
-        # The first decision seen in a wave is its start as this policy sees it.
-        if reading.wave != self._last_wave_seen:
-            self._last_wave_seen = reading.wave
-            if reading.defense_absolute_holds:
-                self._last_wave_failed = None
-            else:
-                if self._last_wave_failed == reading.wave - 1:
-                    self.switch_wave = reading.wave
-                self._last_wave_failed = reading.wave
-        if reading.health_fraction < SWITCH_HEALTH_FRACTION:
-            self.switch_wave = reading.wave
-
-    def _turtle(self, features: StateFeatures, reading: TurtleReading) -> int:
-        if not reading.defense_absolute_holds and self._offered(features, DEFENSE_ABSOLUTE):
-            return self._buy(features, DEFENSE_ABSOLUTE)
-        if reading.wave <= EARLY_ECONOMY_LAST_WAVE and self._offered(features, CASH_PER_WAVE):
-            return self._buy(features, CASH_PER_WAVE)
-        if next_thorn_breakpoint(reading.thorn_percent) is not None and self._offered(
-            features, THORN_DAMAGE
-        ):
-            return self._buy(features, THORN_DAMAGE)
-        return self._buy(features, DEFENSE_PERCENT, HEALTH)
-
-    def _blender(self, features: StateFeatures, reading: TurtleReading) -> int:
-        if next_thorn_breakpoint(reading.thorn_percent) is not None and self._offered(
-            features, THORN_DAMAGE
-        ):
-            return self._buy(features, THORN_DAMAGE)
-        affordable = [
-            name
-            for name in (KNOCKBACK_CHANCE, KNOCKBACK_FORCE, ORBS, ORB_SPEED)
-            if features.mask[self._index(name)]
-        ]
-        if affordable:
-            return self._buy(features, *affordable)
-        return self._buy(features, HEALTH, DEFENSE_PERCENT)
 
     def _buy(self, features: StateFeatures, *names: str) -> int:
         """The cheapest offered row of `names`, or WAIT when it is not affordable."""

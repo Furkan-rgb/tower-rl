@@ -1777,7 +1777,11 @@ game time instead, as a semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
 
 The chosen value is γ_s = 0.999 per game-second: a horizon of 1/(1 − γ_s) ≈
 1000 game-seconds, about 28 waves of 35 s. It is not a code default: the run's
-command line passes `--discount-per-game-second 0.999`. M3-P003 to M3-P009 used
+command line passes `--discount-per-game-second 0.999`. From `M3-P015` this
+is the protocol's discount horizon, held identical across learners as a task
+parameter rather than chosen per algorithm; see
+[ADR 0013](adr/0013-discount-horizon-is-a-task-parameter.md) for the
+derivation and its adoption status. M3-P003 to M3-P009 used
 0.997, a horizon of 333 s (about 9.5 waves), chosen as the smallest round
 horizon covering the 8–10 waves to the next boss wall, on the ground that a
 planning horizon shorter than the true one plans better with a model estimated

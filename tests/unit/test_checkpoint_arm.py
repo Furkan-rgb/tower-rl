@@ -481,22 +481,15 @@ def test_turtle_is_an_arm_bound_to_the_games_row_names() -> None:
     labels = [
         UpgradeSlotLabel(family, index, name, "")
         for family, index, name in (
-            ("defense", 0, "Health"),
-            ("defense", 2, "Defense %"),
             ("defense", 3, "Defense Absolute"),
             ("defense", 4, "Thorn Damage"),
-            ("defense", 6, "Knockback Chance"),
-            ("defense", 7, "Knockback Force"),
-            ("defense", 8, "Orb Speed"),
-            ("defense", 9, "Orbs"),
-            ("utility", 1, "Cash / Wave"),
         )
     ]
     run_episodes.bind_row_names(policy, labels)
     assert policy.rows is not None and policy.rows["Defense Absolute"] == 24
 
     # Loudly, on a row the game does not name.
-    with pytest.raises(ValueError, match="Orbs"):
-        run_episodes.bind_row_names(TurtlePolicy(), labels[:-2])
+    with pytest.raises(ValueError, match="Thorn Damage"):
+        run_episodes.bind_row_names(TurtlePolicy(), labels[:-1])
     # And a policy that addresses slots by index is left as it was.
     run_episodes.bind_row_names(CheapestFirstPolicy(), labels)

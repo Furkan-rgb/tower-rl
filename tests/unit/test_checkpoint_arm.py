@@ -39,8 +39,9 @@ from tower_rl.learning.checkpoint import (
 )
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.policies import CheapestFirstPolicy, checkpoint_policy
+from tower_rl.learning.policies import CheapestFirstPolicy, TurtlePolicy, checkpoint_policy
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel
 
 PROFILE = "fake-profile-v1"
 
@@ -464,3 +465,38 @@ def test_a_floor_played_alone_is_recorded_in_the_records_directory() -> None:
     )
     run_episodes.settle_output(one)
     assert one.output == state_directory() / "records" / "episodes.json"
+
+
+def test_turtle_is_an_arm_bound_to_the_games_row_names() -> None:
+    """A selector for a policy that buys by name, and the binding both runners share."""
+    policy, identity = run_episodes.policy_from(
+        "turtle",
+        decision_cadence=DecisionCadence.CHOICE_POINTS,
+        upgrade_availability=UpgradeAvailability.ALL,
+        workshop_level=5,
+    )
+    assert isinstance(policy, TurtlePolicy)
+    assert identity == {"name": "turtle"}
+
+    labels = [
+        UpgradeSlotLabel(family, index, name, "")
+        for family, index, name in (
+            ("defense", 0, "Health"),
+            ("defense", 2, "Defense %"),
+            ("defense", 3, "Defense Absolute"),
+            ("defense", 4, "Thorn Damage"),
+            ("defense", 6, "Knockback Chance"),
+            ("defense", 7, "Knockback Force"),
+            ("defense", 8, "Orb Speed"),
+            ("defense", 9, "Orbs"),
+            ("utility", 1, "Cash / Wave"),
+        )
+    ]
+    run_episodes.bind_row_names(policy, labels)
+    assert policy.rows is not None and policy.rows["Defense Absolute"] == 24
+
+    # Loudly, on a row the game does not name.
+    with pytest.raises(ValueError, match="Orbs"):
+        run_episodes.bind_row_names(TurtlePolicy(), labels[:-2])
+    # And a policy that addresses slots by index is left as it was.
+    run_episodes.bind_row_names(CheapestFirstPolicy(), labels)

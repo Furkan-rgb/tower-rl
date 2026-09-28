@@ -158,6 +158,16 @@ def policy_from(
     }
 
 
+def bind_row_names(policy: Policy, labels: Sequence[UpgradeSlotLabel]) -> None:
+    """Give a policy that buys rows by name the game's labels; any other is left alone.
+
+    `turtle` addresses rows by the game's own names, resolved from these labels,
+    and a name the game does not report stops the session here, loudly.
+    """
+    if isinstance(policy, TurtlePolicy):
+        policy.bind_row_names(labels)
+
+
 def add_evaluation_name_argument(parser: argparse.ArgumentParser) -> None:
     """`--evaluation-name`: the directory a checkpoint's evaluation is filed under."""
     parser.add_argument(
@@ -575,10 +585,7 @@ def main() -> int:
     )
     started = time.monotonic()
     try:
-        if isinstance(policy, TurtlePolicy):
-            # It buys rows by the game's own names, resolved from these labels;
-            # a name the game does not report stops the run here, loudly.
-            policy.bind_row_names(labels)
+        bind_row_names(policy, labels)
         report = evaluate(
             environment,
             policy,

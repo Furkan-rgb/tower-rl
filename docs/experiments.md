@@ -671,21 +671,29 @@ points, seed 0, budget 1,000,000 decisions.
       --run-name m3-p015-stackeddqn-v2-<UTC stamp>
 
 **Primary criterion — the developer's stage 1: Defense Absolute paired with
-Thorns.** Read at run end from the replay dump, on the near-greedy actors'
-complete episodes over the same model-version range as `M3-P014`'s
-diagnosis (831k-1M), with the same script:
+Thorns.** Evaluated at run end only, from each run's end-of-run replay dump
+(below: nothing of it is observable live). For every complete near-greedy
+episode of each run — `M3-P015`'s and, recomputed by the same script,
+`M3-P014`'s — take Thorn Damage's share of that episode's spend (cost at
+purchase), overall and from wave 30 on. Two parts, both required:
 
-- Thorn Damage's share of spend (cost at purchase) at least twice
-  `M3-P014`'s: ≥ 6.2% overall (was 3.1%) and ≥ 2.2% from wave 30 on (was
-  1.1%);
-- Thorn Damage's share of purchases at waves 30-39 and at 40 and later above
-  `M3-P014`'s, computed from its dump by the same script at read time;
-- and Defense Absolute still held: its median value at wave-30 and wave-40
-  entry not below `M3-P014`'s (33.8 and 56.6).
+- **Thorns paired in:** `M3-P015`'s mean per-episode Thorns spend share
+  exceeds `M3-P014`'s, with the episode-level bootstrap 95% CI of the
+  difference (resampling episodes within each run) excluding 0 — for the
+  overall share and for the wave ≥ 30 share (`M3-P014`'s pooled figures were
+  3.1% and 1.1%);
+- **Defense Absolute held:** in `M3-P015`, the median of defenseAbs /
+  currentWaveBaseDamage at wave-30 entry and at wave-40 entry is ≥ 1.0 each
+  (`M3-P014` measured 1.05-1.26). A ratio, not `M3-P014`'s absolute Defense
+  Absolute levels: pairing Thorns in may lower Defense Absolute's level while
+  it still covers the enemy's damage.
 
-"At least twice" is this pre-registration's reading of "clearly above",
-fixed before the run. Met, stage 1 is reached; the spend shares are measured
-on ~10⁵ states, so this is the high-power reading, unlike the waves below.
+**What one run can show.** The bootstrap CI is over episodes of one run, so
+it measures whether the mechanism appeared in this run, not that γ causes
+it. The strategy mix varies between runs of near-identical recipes: Defense
+Absolute's spend share was 37% in `M3-P009`, 12% in `M3-P012` and 58% in
+`M3-P014`. A run-to-run difference in Thorns share is therefore n=1 evidence,
+whatever its episode-level CI.
 
 **Waves criterion (secondary, n=1).** Success: the mean final wave of actors
 5-6 (the two lowest-ε ladder actors) over `(100000, 1000000]` decisions
@@ -694,23 +702,37 @@ run, at a post-100k final-wave SD of 12.9: this can detect a gap of 10-14
 waves or more and nothing smaller. A smaller difference either way is not
 evidence.
 
-**Kill criteria.** Unchanged collapse bars from `M3-P014`, enforced by
-`train.py`: `50000:25000:25`, `100000:50000:27`, `200000:150000:29`,
-`300000:250000:30`. Two more, read by the operator from MLflow and not
-enforced by code:
+**No live mechanism check.** Per-episode Thorns and Defense Absolute spend is
+not observable during the run — episode records persist only at run end
+(`#91`) — so there is no mechanism check at 300k or at any point before the
+end; the mechanism criteria above are evaluated once, from the replay dump.
+The live kills are the three below, and nothing else stops the run.
 
-- **gradient norm:** the median of `learner_gradient_norm` (a trailing mean
-  of the last 100 pre-clip norms, logged per episode) above 20 over any
-  10,000-decision window after the first 20,000 decisions. `M3-P011` at 0.999
-  unscaled ran 17-22; scaled, the expectation is `M3-P012`'s 5-8;
-- **value overshoot:** Q above 1.1 · V_REF (10.46) on more than 1% of replay
-  states. Live, `learner_taken_q_max` (the largest taken-action online Q over
-  the last 100 batches, logged per episode) is the screen: while it stays at
-  or below 10.46 the criterion cannot be met. If it rises above, the fraction
-  is measured offline by running the latest numbered checkpoint over the
-  replay dump of `M3-P014` (the run's own replay persists only at run end),
-  and the run is stopped only if that fraction exceeds 1%. `M3-P014` has no
-  live value of this metric to compare with.
+**Kill criteria (live).** The collapse bars, unchanged from `M3-P014` and
+enforced by `train.py`: `50000:25000:25`, `100000:50000:27`,
+`200000:150000:29`, `300000:250000:30`. Two more, read by the operator from
+MLflow and not enforced by code:
+
+- **gradient norm:** the median of the logged per-episode
+  `learner_gradient_norm` values (each a trailing mean of the last 100
+  pre-clip norms) above 20 over any 10,000-step window after warm-up.
+  `M3-P011` at 0.999 unscaled ran 17-22; scaled, the expectation is
+  `M3-P012`'s 5-8;
+- **Q divergence:** `learner_taken_q_max` (the largest taken-action online Q
+  over the last 100 batches, logged per episode) above 2 · V_REF (19.02)
+  sustained over 10,000 steps after warm-up.
+
+**Q warning (reported, not a kill).** `learner_taken_q_max` above
+1.1 · V_REF (10.46) is recorded as a warning with the decisions it occurred
+at. It is not a kill: `M3-P014` already overestimated the realised return by
++0.65 to +2.0 (plateau diagnosis above) and has no live baseline of this
+metric.
+
+**M3-P014 baseline measurement (offline, not a criterion).** For context on
+the warning, the fraction of `M3-P014`'s replay-dump states on which its
+final network's Q exceeds 1.1 · V_REF is measured offline on CPU. It is
+`M3-P014`'s baseline only, and says nothing about `M3-P015`'s states; the
+same fraction for `M3-P015` is measured from its own replay dump at run end.
 
 **Evaluation.** The arm (`docs/solution.md` §9.2b rule, unchanged) on the
 `workshop-default` build, Workshop level 5, `--upgrade-availability all
@@ -722,9 +744,7 @@ reduction from the protocol's n=105, so the result is **PROVISIONAL**, as
 the reward scale move together by design (the scaling is what keeps the value
 scale fixed), and are not separately attributable. Recovery after each reset
 may slow (181 rather than 60 bootstrap hops per horizon at n=3): watch the
-post-reset cycle, recorded, not acted on mid-run. The per-episode Thorns and
-Defense Absolute spend is not observable live (episode records persist only
-at run end, `#91`); the primary criterion is read after the run.
+post-reset cycle, recorded, not acted on mid-run.
 
 **Timebox and safety.** As `M3-P014`.
 

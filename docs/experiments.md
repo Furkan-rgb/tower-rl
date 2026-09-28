@@ -711,16 +711,21 @@ The live kills are the three below, and nothing else stops the run.
 **Kill criteria (live).** The collapse bars, unchanged from `M3-P014` and
 enforced by `train.py`: `50000:25000:25`, `100000:50000:27`,
 `200000:150000:29`, `300000:250000:30`. Two more, read by the operator from
-MLflow and not enforced by code:
+MLflow and not enforced by code. Each is read on its own MLflow series, one
+value logged per episode and keyed by decisions: a kill fires when the
+median of that series' values over any 10,000-decision window after warm-up
+(the first ≈4.3k decisions, before the first gradient step) exceeds its
+threshold. The window is in decisions because MLflow logs by decisions; at
+replay ratio 1.0 it is ≈10,000 gradient steps. "Sustained" means exactly
+this median, for both:
 
-- **gradient norm:** the median of the logged per-episode
-  `learner_gradient_norm` values (each a trailing mean of the last 100
-  pre-clip norms) above 20 over any 10,000-step window after warm-up.
+- **gradient norm:** the median of the logged `learner_gradient_norm` values
+  (each a trailing mean of the last 100 pre-clip norms) above 20.
   `M3-P011` at 0.999 unscaled ran 17-22; scaled, the expectation is
   `M3-P012`'s 5-8;
-- **Q divergence:** `learner_taken_q_max` (the largest taken-action online Q
-  over the last 100 batches, logged per episode) above 2 · V_REF (19.02)
-  sustained over 10,000 steps after warm-up.
+- **Q divergence:** the median of the logged `learner_taken_q_max` values
+  (each the largest taken-action online Q over the last 100 batches) above
+  2 · V_REF (19.02).
 
 **Q warning (reported, not a kill).** `learner_taken_q_max` above
 1.1 · V_REF (10.46) is recorded as a warning with the decisions it occurred

@@ -1881,6 +1881,18 @@ def test_a_checkpoint_from_before_the_survival_time_reward_resumes_with_it_off(
     assert resume_from(tmp_path / "second", older, 400).decisions > 0
 
 
+def test_a_scaled_survival_run_at_0_999_resumes_under_the_same_flags(tmp_path: Path) -> None:
+    """M3-P015's own resume path: a scaled 0.999 checkpoint continues at 0.999."""
+    flags = {**SURVIVAL, "--discount-per-game-second": "0.999"}
+    report = numbered(tmp_path / "first", 50, **flags)
+    resolved = report["arm"]["resolved_config"]
+    assert resolved["discount_per_game_second"] == 0.999
+    assert resolved["survival_reward_bound"] == V_REF
+
+    resumed = survival_resume(tmp_path / "second", latest_checkpoint(report), **flags)
+    assert resumed is not None and resumed.decisions > 0
+
+
 def _before_the_reward_bound(tmp_path: Path, per_second: str) -> Path:
     """A survival-time checkpoint as a run before ADR 0013 wrote it: no bound key."""
     flags = {**SURVIVAL, "--discount-per-game-second": per_second}

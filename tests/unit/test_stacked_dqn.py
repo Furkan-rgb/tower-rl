@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -348,12 +349,42 @@ def test_the_survival_return_is_bounded_by_v_ref_whatever_the_discount(
     assert maximum == pytest.approx(stacked_dqn.V_REF, rel=1e-6)
 
 
-def test_a_learning_step_reports_the_largest_taken_action_q() -> None:
-    """The live read of the value against V_REF: a finite number, from real steps."""
-    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
-    metrics = _backbone().learn(collate((_timed_sequence(spans),), (1.0,)))
+def test_a_learning_step_reports_the_largest_taken_action_q_of_real_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live read of the value against V_REF: the max taken-action Q, padding left out.
 
-    assert metrics.taken_q_max is not None and math.isfinite(metrics.taken_q_max)
+    The last three steps are padding after the terminal one, and their Q is
+    pushed 100 above every real step's, so a maximum that let them in would
+    show it.
+    """
+    spans = (2000.0, 0.0, 5000.0, 0.0, 1733.0, 0.0, 17000.0, 2300.0, 0.0, 900.0)
+    sequence = _timed_sequence(spans)
+    padded_from = len(spans) - 3
+    steps = tuple(
+        replace(step, done=index == padded_from - 1, padding=index >= padded_from)
+        for index, step in enumerate(sequence.steps)
+    )
+    batch = collate((replace(sequence, steps=steps),), (1.0,))
+    backbone = _backbone()
+    padding = batch.padding[:, batch.burn_in :]
+    assert padding.any() and (~padding).any()
+    forward = backbone.online.forward
+    seen: list[torch.Tensor] = []
+
+    def inflating_padding(*args: Any, **kwargs: Any) -> Any:
+        q, state = forward(*args, **kwargs)
+        q = q + 100.0 * padding.unsqueeze(-1).to(q.dtype)
+        seen.append(q.detach().clone())
+        return q, state
+
+    monkeypatch.setattr(backbone.online, "forward", inflating_padding)
+    metrics = backbone.learn(batch)
+
+    (q,) = seen
+    taken = q.gather(-1, batch.actions[:, batch.burn_in :].unsqueeze(-1)).squeeze(-1)
+    assert metrics.taken_q_max == pytest.approx(float(taken[~padding].max()))
+    assert metrics.taken_q_max < float(taken[padding].min())
 
 
 @pytest.mark.parametrize("discount_per_game_second", [None, 0.997])

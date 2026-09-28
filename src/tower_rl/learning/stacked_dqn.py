@@ -37,9 +37,12 @@ from tower_rl.learning.value_learning import (
 #: 9.4e), and waves 2-74 of the M3-P014 replay dump 35.0 s (ADR 0013).
 WAVE_SECONDS = 35.0
 
-#: The survival-time reward's maximum return, in waves, whatever the discount:
-#: an immortal policy's return at the 0.997 per game-second every survival-time
-#: run before M3-P015 used, about 9.51. The reward is scaled to it so the value
+#: The survival-time reward's maximum return, whatever the discount: an
+#: immortal policy's return, about 9.51 waves, at the 0.997 per game-second
+#: every survival-time run before M3-P015 used. Only at 0.997 is a return in
+#: waves; at any other discount it is in units of that 0.997 horizon, the
+#: return a policy surviving for ever would have had there. The reward is
+#: scaled to it so the value
 #: scale - and with it the Huber delta, the gradient clip and the |TD| and
 #: gradient-norm monitors calibrated at it - does not move with the discount
 #: horizon (ADR 0013, Reward scaling). At 0.997 the scaled reward is the

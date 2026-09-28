@@ -1873,7 +1873,7 @@ to game hold while waves are clock-driven. That was measured at this baseline on
 evaluation metric, the final wave, is unchanged.
 
 The flag is off by default, and learning without it is identical to the bit. It
-is refused without `--discount-per-game-second`, since β and d come from it, and
+is refused without `--discount-per-game-second`, since each span's d comes from it, and
 under `--backbone dreamerv3`. The stored rewards are unchanged and stay
 `reward-v1`. The shaping is identified by `survival_time_reward` and its scale
 by `survival_reward_bound` (V_REF, or None under the wave reward) in the

@@ -227,6 +227,12 @@ def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
         # A maximum, not a mean: an overshoot of the value's bound is what it
         # is read for, and a mean would hide one.
         "learner_taken_q_max": report.recent_taken_q_max,
+        # The backbone's own monitors, each a mean over the same window.
+        **{
+            f"learner_{name}": sum(values) / len(values)
+            for name, values in report.recent_diagnostics.items()
+            if values
+        },
     }
     return {name: value for name, value in measured.items() if value is not None}
 

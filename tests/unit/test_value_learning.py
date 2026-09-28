@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.stacked_dqn import StackedDqnConfig
+from tower_rl.learning.stacked_dqn import StackedDqnConfig, survival_rewards
 from tower_rl.learning.value_learning import n_step_targets, value_fit_correlation
 
 ACTIONS = len(RUN_ACTIONS)
@@ -315,7 +315,7 @@ def _survived(
     """The n-step target over the whole sequence, and whether it is learnable."""
     time = len(seconds)
     discounts = SURVIVAL.transition_discounts(torch.tensor([seconds]) * 1000.0)
-    step_rewards = SURVIVAL.survival_rewards(discounts).float()
+    step_rewards = survival_rewards(discounts).float()
     dones = torch.zeros(1, time, dtype=torch.bool)
     for index in dones_at:
         dones[0, index] = True
@@ -362,7 +362,7 @@ def test_a_truncated_end_still_bootstraps_under_the_survival_reward() -> None:
     """Not done is not dead: the window's end is valued, and the open tail is not learned."""
     seconds = [3.0, 0.0, 4.0]
     discounts = SURVIVAL.transition_discounts(torch.tensor([seconds]) * 1000.0)
-    step_rewards = SURVIVAL.survival_rewards(discounts).float()
+    step_rewards = survival_rewards(discounts).float()
     dones = torch.zeros(1, 3, dtype=torch.bool)
     q = torch.full((1, 3, ACTIONS), BOOTSTRAP)
     mask = torch.ones(1, 3, ACTIONS, dtype=torch.bool)
@@ -382,7 +382,7 @@ def test_padding_adds_exactly_nothing_to_the_survival_reward() -> None:
     padded_discounts = SURVIVAL.transition_discounts(
         torch.tensor([[0.0, 0.0, 1.0, 2.0, 3.0]]) * 1000.0
     )
-    padded_rewards = SURVIVAL.survival_rewards(padded_discounts)
+    padded_rewards = survival_rewards(padded_discounts)
     assert torch.equal(padded_rewards[:, :2], torch.zeros(1, 2, dtype=torch.float64))
 
     def targets(discounts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -391,7 +391,7 @@ def test_padding_adds_exactly_nothing_to_the_survival_reward() -> None:
         dones[0, -1] = True
         q = torch.full((1, time, ACTIONS), BOOTSTRAP)
         mask = torch.ones(1, time, ACTIONS, dtype=torch.bool)
-        rewards = SURVIVAL.survival_rewards(discounts).float()
+        rewards = survival_rewards(discounts).float()
         return n_step_targets(rewards, dones, q, q, mask, discounts=discounts, n_step=3)
 
     ended, ended_learnable = targets(ended_discounts)

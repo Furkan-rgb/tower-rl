@@ -14,7 +14,7 @@ from tower_rl.learning import stacked_dqn
 from tower_rl.learning.backbone import collate
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork
 from tower_rl.learning.replay import ReplaySequence, ReplayStep, SequenceMetadata
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig, survival_rewards
 from tower_rl.learning.value_learning import n_step_targets
 
 ACTIONS = len(RUN_ACTIONS)
@@ -307,7 +307,7 @@ def test_a_span_of_no_game_time_survives_exactly_nothing() -> None:
     config = StackedDqnConfig(discount_per_game_second=0.997, survival_time_reward=True)
     discounts = config.transition_discounts(torch.zeros(1, 3))
 
-    assert torch.equal(config.survival_rewards(discounts), torch.zeros(1, 3, dtype=torch.float64))
+    assert torch.equal(survival_rewards(discounts), torch.zeros(1, 3, dtype=torch.float64))
 
 
 def test_a_seventeen_second_span_earns_its_discounted_share_of_a_wave() -> None:
@@ -315,7 +315,7 @@ def test_a_seventeen_second_span_earns_its_discounted_share_of_a_wave() -> None:
     config = StackedDqnConfig(discount_per_game_second=0.997, survival_time_reward=True)
     discounts = config.transition_discounts(torch.tensor([[17000.0]]))
 
-    assert config.survival_rewards(discounts).item() == pytest.approx(0.47352, rel=1e-5)
+    assert survival_rewards(discounts).item() == pytest.approx(0.47352, rel=1e-5)
 
 
 def test_the_survival_reward_at_0_997_is_the_unscaled_reward_of_every_run_before() -> None:
@@ -326,7 +326,7 @@ def test_the_survival_reward_at_0_997_is_the_unscaled_reward_of_every_run_before
 
     unscaled = (1.0 - discounts) / (-math.log(0.997) * 35.0)
     assert abs(stacked_dqn.V_REF - 9.51) < 0.005
-    assert torch.allclose(config.survival_rewards(discounts), unscaled, rtol=1e-12, atol=0.0)
+    assert torch.allclose(survival_rewards(discounts), unscaled, rtol=1e-12, atol=0.0)
 
 
 @pytest.mark.parametrize("discount_per_game_second", [0.997, 0.999, 0.9994])
@@ -340,7 +340,7 @@ def test_the_survival_return_is_bounded_by_v_ref_whatever_the_discount(
     # 200,000 spans of 1.85 s, about 10,600 waves: gamma ** T is negligible.
     spans = torch.full((200_000,), 1850.0, dtype=torch.float64)
     discounts = config.transition_discounts(spans)
-    rewards = config.survival_rewards(discounts)
+    rewards = survival_rewards(discounts)
     # Each reward valued at the start of its own span, discounted back to 0.
     before = torch.cat((torch.ones(1, dtype=torch.float64), discounts.cumprod(0)[:-1]))
     maximum = float((before * rewards).sum())
@@ -425,7 +425,7 @@ def test_learning_with_the_survival_time_reward_on_learns_from_it(
     metrics = survival.learn(batch)
 
     config = survival.config
-    expected = config.survival_rewards(
+    expected = survival_rewards(
         config.transition_discounts(batch.game_ms[:, batch.burn_in :])
     ).to(batch.rewards.dtype)
     assert len(captured) == 1

@@ -42,7 +42,10 @@ expressed per game-second, and held identical across every learner.**
   (~1.85, `M3-P014` replay dump). Example: DreamerV3's published discount
   0.997 per environment step is ≈620 game-seconds ≈18 waves here — short of
   the task horizon below — so under this ADR Dreamer is given the task
-  horizon converted to its own step, not its paper default.
+  horizon, not its paper default. It takes it per transition rather than
+  converted to a step: `--discount-per-game-second` is required for it, and
+  each transition's d = γ_s^Δt is its continue target's discount (the official
+  `contdisc`) and its replay-value return's (`docs/solution.md` §9.4c).
 
 ### Derivation
 

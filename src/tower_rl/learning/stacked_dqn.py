@@ -49,6 +49,31 @@ WAVE_SECONDS = 35.0
 #: unscaled one of those runs.
 V_REF = 1.0 / (WAVE_SECONDS * -math.log(0.997))
 
+
+def game_time_discounts(per_game_second: float, game_ms: torch.Tensor) -> torch.Tensor:
+    """Each transition's own discount d = gamma_s ** t, t the game-seconds it spanned.
+
+    A purchase, and padding, span no game time and get exactly 1. float64, so
+    a product of many ds is exact to far below the value's resolution. Every
+    learner that discounts by game time takes its d from here (ADR 0013).
+    """
+    return torch.pow(per_game_second, game_ms.to(torch.float64) / 1000.0)
+
+
+def survival_rewards(discounts: torch.Tensor) -> torch.Tensor:
+    """Game time each transition survived, valued at its start: (1 - d) * V_REF.
+
+    A constant reward per game-second, integrated over a span of t seconds
+    under gamma_s ** t (Bradtke & Duff 1995, Eq. 12), scaled so an immortal
+    policy's return is `V_REF`: a return is V_REF * (1 - gamma_s ** T),
+    bounded by V_REF whatever gamma_s is (ADR 0013). At gamma_s 0.997 this
+    is the (1 - d) / (beta * WAVE_SECONDS), beta = -ln gamma_s, of every
+    survival-time run before M3-P015. A span of no game time - a purchase,
+    or padding - earns exactly 0. The survival-time reward of every learner
+    that takes `--survival-time-reward` (docs/solution.md 9.4e).
+    """
+    return (1.0 - discounts) * V_REF
+
 #: What a running ez-greedy option takes while its own action is masked: the
 #: environment's no-op, always legal in an active run (docs/solution.md 7.2).
 WAIT_INDEX = action_index(WAIT)
@@ -186,23 +211,7 @@ class StackedDqnConfig:
         """
         if self.discount_per_game_second is None:
             return torch.full_like(game_ms, self.discount, dtype=torch.float64)
-        seconds = game_ms.to(torch.float64) / 1000.0
-        return torch.pow(self.discount_per_game_second, seconds)
-
-    def survival_rewards(self, discounts: torch.Tensor) -> torch.Tensor:
-        """Game time each transition survived, valued at its start: (1 - d) * V_REF.
-
-        A constant reward per game-second, integrated over a span of t seconds
-        under gamma_s ** t (Bradtke & Duff 1995, Eq. 12), scaled so an immortal
-        policy's return is `V_REF`: a return is V_REF * (1 - gamma_s ** T),
-        bounded by V_REF whatever gamma_s is (ADR 0013). At gamma_s 0.997 this
-        is the (1 - d) / (beta * WAVE_SECONDS), beta = -ln gamma_s, of every
-        survival-time run before M3-P015. A span of no game time - a purchase,
-        or padding - earns exactly 0. float64, as `discounts` is.
-        """
-        if self.discount_per_game_second is None:
-            raise ValueError("the survival-time reward needs a discount per game-second")
-        return (1.0 - discounts) * V_REF
+        return game_time_discounts(self.discount_per_game_second, game_ms)
 
     def n_step_at(self, gradient_steps: int) -> int:
         """The n the target is built with after this many gradient steps.
@@ -362,7 +371,7 @@ class StackedDqnBackbone:
         # change, or under the survival-time reward the game time the span
         # survived, which replaces it here and nowhere else (solution.md 9.4e).
         if self.config.survival_time_reward:
-            step_rewards = self.config.survival_rewards(discounts).to(rewards.dtype)
+            step_rewards = survival_rewards(discounts).to(rewards.dtype)
         else:
             step_rewards = (
                 rewards * discounts.to(rewards.dtype)

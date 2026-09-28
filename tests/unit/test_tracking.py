@@ -26,6 +26,7 @@ from test_train_entry_point import (
 )
 
 from tower_rl.environment.project_state import repository_root, state_directory
+from tower_rl.experiment.metrics import learner_metrics
 from tower_rl.experiment.run_identity import REFERENCE_FINAL_WAVES, SCRIPTED_REFERENCE
 from tower_rl.experiment.tracking import (
     ExperimentTracker,
@@ -35,6 +36,7 @@ from tower_rl.experiment.tracking import (
     tracking_uri,
 )
 from tower_rl.learning.exploration import ape_x_floors
+from tower_rl.learning.training import TrainingProgressReport
 
 REPOSITORY = Path(train.__file__).resolve().parents[1]
 
@@ -663,3 +665,13 @@ def test_each_episode_logs_the_rate_the_actor_that_played_it_explored_at(
         assert point.metrics["episode_epsilon"] == pytest.approx(rungs[actor])
         seen.add(actor)
     assert seen == {0, 1}, "both rungs of the ladder collected"
+
+
+def test_a_backbones_diagnostics_are_logged_as_window_means() -> None:
+    """DreamerV3's monitors reach the store beside the learner's own, one mean each."""
+    report = TrainingProgressReport(
+        recent_diagnostics={"dreamer_true_dt_seconds": [1.0, 2.0], "dreamer_unseen": []}
+    )
+    logged = learner_metrics(report)
+    assert logged["learner_dreamer_true_dt_seconds"] == 1.5
+    assert "learner_dreamer_unseen" not in logged

@@ -56,6 +56,7 @@ from tower_rl.learning.dreamer_math import (
     twohot_mean,
     unimix_probs,
 )
+from tower_rl.learning.stacked_dqn import game_time_discounts, survival_rewards
 from tower_rl.learning.value_learning import real_step_td_errors, value_fit_correlation
 
 #: The name a run, its checkpoints and `--backbone` file this backbone under.
@@ -106,7 +107,6 @@ class DreamerConfig:
     #: Replayed steps per collected decision.
     train_ratio: float = 512.0
     imagination_horizon: int = 15
-    horizon: int = 333
     return_lambda: float = 0.95
     entropy_scale: float = 3e-4
     slow_critic_rate: float = 0.02
@@ -133,8 +133,26 @@ class DreamerConfig:
     agc_floor: float = 1e-3
     warmup: int = 1000
     seed: int | None = None
+    # The task, not the algorithm (ADR 0013): held identical across learners.
+    #: Discount per second of game time, in place of the official per-step
+    #: `horizon: 333`. A transition that spans t game-seconds is discounted by
+    #: this ** t, which the continue target carries (`contdisc`); a purchase
+    #: spans none and is not discounted (docs/solution.md 9.4c, 9.4d). Not a
+    #: code default: the protocol's is 0.999, and the run sets it. None only
+    #: rebuilds, to act, a policy from a checkpoint from before it; `learn`
+    #: refuses it.
+    discount_per_game_second: float | None = None
+    #: Learn from game time survived, (1 - d) * V_REF, instead of the wave
+    #: reward: stacked-dqn's `survival_rewards` (docs/solution.md 9.4e).
+    survival_time_reward: bool = False
 
     def __post_init__(self) -> None:
+        if self.discount_per_game_second is not None and not (
+            0.0 < self.discount_per_game_second < 1.0
+        ):
+            raise ValueError("discount per game-second must be within (0, 1)")
+        if self.survival_time_reward and self.discount_per_game_second is None:
+            raise ValueError("the survival-time reward needs a discount per game-second")
         if self.deter % self.blocks:
             raise ValueError("the deterministic state must split evenly into blocks")
         if self.hidden < 1 or self.units < 1:
@@ -146,10 +164,6 @@ class DreamerConfig:
     def gradient_steps_per_decision(self) -> float:
         """The train ratio as this project counts it: one step replays a whole batch."""
         return self.train_ratio / (self.batch_size * self.batch_length)
-
-    @property
-    def discount(self) -> float:
-        return 1.0 - 1.0 / self.horizon
 
 
 # -- layers ------------------------------------------------------------------
@@ -283,10 +297,14 @@ class WorldModel(nn.Module):
 
     def decoded_mask(self, feature: Tensor) -> Tensor:
         """The mask the model believes a state has, WAIT always included."""
-        logits: Tensor = self.decode_mask(self.decoder(feature))
-        valid = logits > 0.0
-        valid[..., WAIT_INDEX] = True
-        return valid
+        return _valid_actions(self.decode_mask(self.decoder(feature)))
+
+
+def _valid_actions(mask_logits: Tensor) -> Tensor:
+    """The decoded mask's logits read as a mask: logit > 0, WAIT always valid."""
+    valid = mask_logits > 0.0
+    valid[..., WAIT_INDEX] = True
+    return valid
 
 
 # -- the backbone --------------------------------------------------------------
@@ -420,6 +438,8 @@ class DreamerBackbone:
         c = self.config
         if batch.burn_in != 0:
             raise ValueError("DreamerV3 starts every window from the zero state; burn-in is 0")
+        if c.discount_per_game_second is None:
+            raise ValueError("DreamerV3 learns under the game-time discount, and has none")
         length = int(batch.scalars.shape[1])
         if (batch.batch_size, length) != (c.batch_size, c.batch_length):
             raise ValueError(
@@ -430,8 +450,20 @@ class DreamerBackbone:
             # A new iteration for the CUDA graphs: the last update's graph
             # outputs are no longer read.
             torch.compiler.cudagraph_mark_step_begin()  # type: ignore[no-untyped-call]
+        # Each transition's own d and the reward it carries, valued at its
+        # start, in replay's layout: exactly stacked-dqn's
+        # (`StackedDqnBackbone.learn`). The survival-time reward replaces the
+        # wave change; the wave change, booked where its span ends, is d * r.
+        discounts = game_time_discounts(c.discount_per_game_second, batch.game_ms)
+        if c.survival_time_reward:
+            step_rewards = survival_rewards(discounts).to(batch.rewards.dtype)
+        else:
+            step_rewards = batch.rewards * discounts.to(batch.rewards.dtype)
+        discounts = discounts.to(batch.rewards.dtype)
         with torch.autocast(self.device.type, torch.bfloat16, enabled=bool(self.mixed_precision)):
-            loss, replay_returns, replay_value, replay_weight = self._loss(batch)
+            loss, replay_returns, replay_value, replay_weight, checks = self._loss(
+                batch, discounts, step_rewards
+            )
         observed = (~batch.padding).to(torch.float32)
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -456,10 +488,18 @@ class DreamerBackbone:
             fit = value_fit_correlation(
                 replay_value[:, :length, None].expand(-1, -1, ACTIONS),
                 batch.mask,
-                batch.rewards,
+                step_rewards,
                 batch.dones,
                 observed,
-                discounts=torch.full_like(batch.rewards, c.discount),
+                discounts=discounts,
+            )
+            measured = dict(
+                zip(checks, torch.stack(list(checks.values())).tolist(), strict=True)
+            )
+        # A ratio of two means, reported only where the batch has game time.
+        if measured["dreamer_true_dt_seconds"] > 0.0:
+            measured["dreamer_implied_to_true_dt"] = (
+                measured["dreamer_implied_dt_seconds"] / measured["dreamer_true_dt_seconds"]
             )
         return LearnMetrics(
             weighted_loss=float(loss.detach().item()),
@@ -469,16 +509,20 @@ class DreamerBackbone:
             gradient_norm=float(gradient_norm.item()),
             td_errors=td_errors,
             value_fit_correlation=fit,
+            diagnostics=measured,
         )
 
-    def _loss(self, batch: SequenceBatch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def _loss(
+        self, batch: SequenceBatch, discounts: Tensor, step_rewards: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, dict[str, Tensor]]:
         """The whole loss of one update: Dreamer's layout, the world model, imagination, critics.
 
-        Every head's output is taken to float32 before it enters a
-        distribution or a loss, as the official `outs.py` does, so under
-        bfloat16 compute only the networks' own layers run in bfloat16.
-        Returns the loss and what `learn` reports from: the replay-value
-        returns, values and weights.
+        `discounts` and `step_rewards` are each stored transition's d and
+        reward, in replay's layout. Every head's output is taken to float32
+        before it enters a distribution or a loss, as the official `outs.py`
+        does, so under bfloat16 compute only the networks' own layers run in
+        bfloat16. Returns the loss and what `learn` reports from: the
+        replay-value returns, values and weights, and `_checks`.
         """
         c = self.config
         length = c.batch_length
@@ -489,8 +533,10 @@ class DreamerBackbone:
         ends = batch.dones[:, -1] & real[:, -1]
 
         # Dreamer's layout, one step longer than the window: step t carries the
-        # action, reward and termination of the transition into t, and step
-        # `length` is the phantom after the window's last step.
+        # action, reward, termination, game time and discount of the transition
+        # into t, and step `length` is the phantom after the window's last step.
+        # The window's first step gets d 1 and 0 s, never read: its continue is
+        # masked and the lambda-return starts from the transition after it.
         zero = torch.zeros(size, 1, device=device)
         previous = torch.cat(
             (
@@ -499,8 +545,10 @@ class DreamerBackbone:
             ),
             1,
         )
-        reward_in = torch.cat((zero, batch.rewards), 1)
+        reward_in = torch.cat((zero, step_rewards), 1)
         terminal_in = torch.cat((zero, batch.dones.to(torch.float32)), 1)
+        discount_in = torch.cat((zero + 1.0, discounts), 1)
+        seconds_in = torch.cat((zero, batch.game_ms / 1000.0), 1)
         # is_first: the window's first step, and the first real step after padding.
         reset = torch.cat(
             (torch.ones(size, 1, dtype=torch.bool, device=device), batch.padding[:, :-1]), 1
@@ -525,13 +573,18 @@ class DreamerBackbone:
         rows_loss = (
             (world.decode_rows(decoded).float() - symlog(batch.rows.flatten(-2))).square().sum(-1)
         )
+        mask_logits = world.decode_mask(decoded).float()
         mask_loss = functional.binary_cross_entropy_with_logits(
-            world.decode_mask(decoded).float(), batch.mask.to(torch.float32), reduction="none"
+            mask_logits, batch.mask.to(torch.float32), reduction="none"
         ).sum(-1)
         reward_loss = twohot_loss(world.reward(feature).float(), reward_in, self._bins)
-        continue_target = (1.0 - terminal_in) * c.discount
+        # contdisc, per transition: the continue head predicts (1 - terminal)
+        # * gamma_s ** t, 1 for a purchase, where the official target is
+        # (1 - terminal) * (1 - 1 / horizon).
+        continue_target = (1.0 - terminal_in) * discount_in
+        continue_logits = world.cont(feature).float().squeeze(-1)
         continue_loss = functional.binary_cross_entropy_with_logits(
-            world.cont(feature).float().squeeze(-1), continue_target, reduction="none"
+            continue_logits, continue_target, reduction="none"
         )
         observed = real.to(torch.float32)
         # Reward and continue: not at the window's first step, whose stored
@@ -559,7 +612,8 @@ class DreamerBackbone:
         )
         value_logits = self.critic(imagined).float()
         value = twohot_mean(value_logits, self._bins).detach()
-        # contdisc: the continue head already carries the discount.
+        # contdisc: the continue head already carries the discount, so the
+        # return applies none of its own on top of it.
         returns = lambda_return(
             torch.zeros_like(imagined_continue),
             1.0 - imagined_continue,
@@ -595,8 +649,10 @@ class DreamerBackbone:
         last = torch.zeros(size, length + 1, dtype=torch.bool, device=device)
         last[:, length] = True
         last[:, length - 1] = ~ends
+        # The stored transitions' own d, where the official code has its
+        # constant `disc`; `terminal_in` zeroes the bootstrap past a death.
         replay_returns = lambda_return(
-            last, terminal_in, reward_in, boot, c.discount, c.return_lambda
+            last, terminal_in, reward_in, boot, discount_in, c.return_lambda
         )
         replay_weight = (real & ~last[:, :length]).to(torch.float32)
         replay_loss = twohot_loss(
@@ -620,7 +676,53 @@ class DreamerBackbone:
             + c.value_scale * _mean(value_loss, starting)
             + c.replay_value_scale * _mean(replay_loss, replay_weight)
         )
-        return loss, replay_returns, replay_value, replay_weight
+        with torch.no_grad():
+            checks = self._checks(
+                continue_logits, continue_target, seconds_in, terminal_in, transition,
+                mask_logits, batch.mask, observed,
+            )
+        return loss, replay_returns, replay_value, replay_weight, checks
+
+    def _checks(
+        self,
+        continue_logits: Tensor,
+        continue_target: Tensor,
+        seconds_in: Tensor,
+        terminal_in: Tensor,
+        transition: Tensor,
+        mask_logits: Tensor,
+        mask: Tensor,
+        observed: Tensor,
+    ) -> dict[str, Tensor]:
+        """Whether the continue head has learned game time, and the decoded mask the true one.
+
+        From tensors the loss already holds, over the steps its losses train.
+        The continue head carries d = gamma_s ** t, so on a real transition
+        that did not end the episode it implies a game time log(c) / log
+        gamma_s, read against the one stored. The decoded mask is what
+        imagination samples under: a false valid lets the actor be credited
+        for an action the game would refuse.
+        """
+        per_second = self.config.discount_per_game_second
+        assert per_second is not None  # `learn` refuses a config without one
+        live = transition * (1.0 - terminal_in)
+        implied = functional.logsigmoid(continue_logits) / math.log(per_second)
+        decoded = _valid_actions(mask_logits)
+        steps = observed.bool()[..., None]
+        invalid = ~mask & steps
+        valid = mask & steps
+        return {
+            "dreamer_implied_dt_seconds": _mean(implied, live),
+            "dreamer_true_dt_seconds": _mean(seconds_in, live),
+            "dreamer_predicted_continue": _mean(torch.sigmoid(continue_logits), transition),
+            "dreamer_true_continue": _mean(continue_target, transition),
+            "dreamer_mask_false_valid_rate": (
+                (decoded & invalid).sum() / invalid.sum().clamp(min=1)
+            ).float(),
+            "dreamer_mask_false_invalid_rate": (
+                (~decoded & valid).sum() / valid.sum().clamp(min=1)
+            ).float(),
+        }
 
     def _observe(
         self, tokens: Tensor, previous: Tensor, reset: Tensor, uniform: Tensor

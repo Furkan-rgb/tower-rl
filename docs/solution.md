@@ -1680,6 +1680,16 @@ refused, and so is a flag only stacked-dqn reads. The manifest records every
 and network keys as None. `checkpoint_policy` rebuilds the policy from the
 `dreamer_*` keys.
 
+**The discount and the reward are the task's** (ADR 0013), not DreamerV3's.
+`--discount-per-game-second` is required: there is no per-step discount to
+fall back on, and `--discount` is refused. `--survival-time-reward` means what
+it means for stacked-dqn (§9.4e). Both are `DreamerConfig` fields and are also
+recorded under stacked-dqn's keys (`discount_per_game_second`,
+`survival_time_reward`, `survival_reward_bound`), so the one resume guard
+compares them for either backbone. A checkpoint from before the game-time
+discount records `dreamer_horizon` instead; it is refused as a resume and still
+plays as a policy, which reads no discount.
+
 **Acting and evaluation sample the policy.** The official agent always samples
 its actor, and its exploration is the policy's own entropy. Here,
 "exploration-free" (§6.11, §9.2b) means no *added* exploration noise.
@@ -1703,6 +1713,15 @@ that shift:
   continue heads, and it is the replay-value loss's terminal target.
 - Every window starts from the zero state.
 
+Replay stores each step's game time and reward with the transition out of it,
+so each transition's d = γ_s^Δt (§9.4d) and its reward shift with its
+termination: the continue flag at step t, its d and its reward all describe
+the transition into t. The reward is stacked-dqn's, valued at the span's
+start: (1 − d)·V_REF under `--survival-time-reward` (`survival_rewards`, the
+one function both backbones call), else the wave change d·r. The window's
+first step gets d = 1, which nothing reads. The first real step after front
+padding gets the padding's d = 1 (0 s).
+
 A window that does not end its episode is cut after its own last step, so its
 replay-value returns are exactly the official ones. Padding enters no loss:
 every loss is a mean over the steps its weight keeps.
@@ -1719,9 +1738,10 @@ every loss is a mean over the steps its weight keeps.
 | terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
 | reward/continue loss at the window's first step | trained. `_annotate_batch` forces `is_first` on a sampled window's first step but keeps its stored reward and `is_terminal` (`embodied/core/replay.py:283-286`) | **masked** | Under the shift, the reward and termination at that step are the previous stored step's, which lies outside the window. Masking is simpler than carrying one extra step. |
 | actor unimix | the paper's 1%; the code lists 0.01, but its categorical head never applies it | **1% uniform over the valid actions** | The paper is followed here. |
+| discount | `horizon: 333`, one per-step discount 1 − 1/333, folded into the continue target by `contdisc`: (1 − is_terminal)·(1 − 1/333); the replay-value return discounts by that constant `disc` | **per transition, d = γ_s^Δt at the task's γ_s** (`--discount-per-game-second`, 0.999 by protocol). The continue target is (1 − terminal)·d, 1 for a purchase. Imagination's return and weights discount only by the predicted continue, as the official code's do (`disc = 1` there). The replay-value return discounts by each stored transition's d. | ADR 0013: the discount horizon is a task parameter, per game-second, identical across learners. The official per-step 0.997 is about 620 game-seconds here, and a purchase spans no game time. This is the official `contdisc` mechanism with Δt-dependent d. |
 | optimizer | LaProp, lr 4e-5, β1 0.9, **β2 0.999**, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from a rate of 0 | same | The paper's text says β2 0.99. The code is followed. |
 | precision | bfloat16 compute (configs.yaml `jax.compute_dtype: bfloat16`); float32 parameters and optimiser state (`embodied/jax/opt.py` 129, 149), norms computed in float32 (`nets.py` `Norm`, `x = f32(x)`), every output distribution and loss in float32 (`outs.py`: `f32(logits)`, `f32(mean)`; `opt.py` 37 asserts a float32 loss), return normaliser in float32 (`utils.py` 45) | same, on CUDA: `torch.autocast` bfloat16 over the loss; every head's output is taken to float32 before a distribution or loss; `_RMSNorm` computes in float32; the recurrent deterministic state is carried in float32 (the official carry is bfloat16). On the CPU (tests), float32. The manifest records it as `dreamer_compute_dtype`. | 2026-09-26: matches the official code and, with compilation, is what makes the learner fast enough for a 1M-decision run (below). Until then the port computed in float32. |
-| RSSM, KL, heads, twohot, return normaliser, imagination horizon 15, λ 0.95, horizon 333, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | none |
+| RSSM, KL, heads, twohot, return normaliser, imagination horizon 15, λ 0.95, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | none |
 | prioritised replay signal | not used | `td_errors` are \|replay-value return − value\| over the replay-value steps, and are unused at α 0 | The protocol requires one. |
 
 Recorded minor differences, not in the table:
@@ -1732,6 +1752,22 @@ Recorded minor differences, not in the table:
 - The actor's entropy is taken over the valid actions only.
 
 The deviations, the rows in bold, and these differences are the whole list.
+
+**Monitors.** Each update reports, from tensors its loss already holds, over
+the replayed steps its losses train (`DreamerBackbone._checks`). They are
+logged per learn window, as a mean over the last hundred updates, as
+`learner_dreamer_*`:
+
+- *continue head vs game time*: on real transitions that did not end the
+  episode, the implied Δt = log ĉ / log γ_s (`dreamer_implied_dt_seconds`),
+  the stored Δt (`dreamer_true_dt_seconds`) and their ratio
+  (`dreamer_implied_to_true_dt`), and the mean predicted and target continue
+  over every trained transition (`dreamer_predicted_continue`,
+  `dreamer_true_continue`);
+- *decoded mask*, as imagination reads it (logit > 0, WAIT valid), on real
+  steps: the share of truly invalid (step, action) entries decoded valid
+  (`dreamer_mask_false_valid_rate`, the harmful direction), and of truly valid
+  entries decoded invalid (`dreamer_mask_false_invalid_rate`).
 
 **Step time.** At batch 16 the learner was bound by launching kernels, not by
 arithmetic: an update launched about 14,800 kernels, and the GPU was busy for
@@ -1801,8 +1837,8 @@ for unclipped rewards in the thousands, not for returns of this size.
 
 Unset, the discount is `--discount` per decision (0.99), with targets identical
 to the bit to those before the flag existed; the two flags are refused
-together, and the flag is refused under `--backbone dreamerv3`, which keeps its
-published per-step discount. The flag is recorded in the resolved config, and a
+together. Under `--backbone dreamerv3` the flag is required, and d is carried
+by its continue target (§9.4c). The flag is recorded in the resolved config, and a
 resume under a different discount than its checkpoint's is refused. Within a
 multi-advance span a wave reward is booked at the span's end rather than when
 it occurred, which understates it by at most 1 − γ_s^(span seconds) - about
@@ -1873,8 +1909,9 @@ to game hold while waves are clock-driven. That was measured at this baseline on
 evaluation metric, the final wave, is unchanged.
 
 The flag is off by default, and learning without it is identical to the bit. It
-is refused without `--discount-per-game-second`, since each span's d comes from it, and
-under `--backbone dreamerv3`. The stored rewards are unchanged and stay
+is refused without `--discount-per-game-second`, since each span's d comes from it.
+Under `--backbone dreamerv3` it means the same: DreamerV3 learns from the same
+(1 − d)·V_REF, from the same `survival_rewards` (§9.4c). The stored rewards are unchanged and stay
 `reward-v1`. The shaping is identified by `survival_time_reward` and its scale
 by `survival_reward_bound` (V_REF, or None under the wave reward) in the
 resolved config (manifest and MLflow), and a resume under a different setting

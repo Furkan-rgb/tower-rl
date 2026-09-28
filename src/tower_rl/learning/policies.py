@@ -365,8 +365,17 @@ def _dreamer_policy(
     draw the same uniforms from the run's seed.
     """
     settings = checkpoint.resolved_config
+    # Acting reads neither task setting. A checkpoint from before the game-time
+    # discount recorded neither, and a per-step `dreamer_horizon` in its place,
+    # which nothing reads now; it rebuilds as a policy with no discount.
+    task = {"discount_per_game_second": None, "survival_time_reward": False}
     config = DreamerConfig(
-        **{name.name: settings[f"dreamer_{name.name}"] for name in fields(DreamerConfig)}
+        **{
+            name.name: settings.get(f"dreamer_{name.name}", task[name.name])
+            if name.name in task
+            else settings[f"dreamer_{name.name}"]
+            for name in fields(DreamerConfig)
+        }
     )
     backbone = DreamerBackbone(config=config, device=device or torch.device("cpu"))
     backbone.load_state_dict(dict(checkpoint.backbone_state))

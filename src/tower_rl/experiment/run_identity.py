@@ -327,11 +327,22 @@ def dreamer_resolved_config(
     `dreamer_compute_dtype` is the learner's compute precision (bfloat16 on
     CUDA, `DreamerBackbone.mixed_precision`); it is no `DreamerConfig` field,
     so the rebuild never reads it.
+
+    The discount and the reward are the task's, not stacked-dqn's (ADR 0013),
+    so they are recorded under the keys stacked-dqn records them under, which
+    the resume guard compares for either backbone. A file from before the
+    game-time discount has `dreamer_horizon` instead, and None there.
     """
     stacked = {item.name for item in fields(StackedDqnConfig)} - {"seed"}
     stacked |= {f"network_{item.name}" for item in fields(NetworkConfig)}
     return {
         **{key: None if key in stacked else value for key, value in resolved.items()},
+        # The per-decision discount is not read, as under stacked-dqn's
+        # game-time discount.
+        "discount": None,
+        "discount_per_game_second": config.discount_per_game_second,
+        "survival_time_reward": config.survival_time_reward,
+        "survival_reward_bound": V_REF if config.survival_time_reward else None,
         **{f"dreamer_{key}": value for key, value in asdict(config).items()},
         "dreamer_compute_dtype": "bfloat16" if mixed_precision else "float32",
     }

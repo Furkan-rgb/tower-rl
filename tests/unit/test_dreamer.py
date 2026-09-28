@@ -10,11 +10,13 @@ from __future__ import annotations
 import io
 import math
 from dataclasses import replace
+from typing import Any
 
 import pytest
 import torch
 from fakes.backbone_equality import parameters_are_equal
 from fakes.fake_run_port import FakeRunPort
+from torch.nn import functional
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
@@ -36,7 +38,7 @@ ACTIONS = len(RUN_ACTIONS)
 LENGTH = 6
 SMALL = DreamerConfig(
     deter=16, hidden=8, classes=4, units=8, stoch=4, blocks=2,
-    batch_size=2, batch_length=LENGTH, warmup=2, seed=0,
+    batch_size=2, batch_length=LENGTH, warmup=2, seed=0, discount_per_game_second=0.999,
 )
 
 
@@ -122,7 +124,17 @@ def test_the_published_configuration_is_the_one_documented() -> None:
     )
     assert (published.batch_size, published.batch_length) == (16, 64)
     assert published.gradient_steps_per_decision == 0.5
-    assert published.discount == pytest.approx(1 - 1 / 333)
+    # The discount is the task's, set by the run (ADR 0013), not a code default.
+    assert published.discount_per_game_second is None
+    assert not published.survival_time_reward
+
+
+def test_learning_refuses_a_config_without_the_game_time_discount() -> None:
+    backbone = _backbone(replace(SMALL, discount_per_game_second=None))
+    with pytest.raises(ValueError, match="game-time discount"):
+        backbone.learn(_batch())
+    with pytest.raises(ValueError, match="survival-time reward needs"):
+        replace(SMALL, discount_per_game_second=None, survival_time_reward=True)
 
 
 def test_learning_refuses_a_batch_of_another_shape_or_with_burn_in() -> None:
@@ -316,3 +328,154 @@ def test_a_short_training_run_on_the_fake_port_takes_finite_optimisation_steps()
     assert report.optimisation_steps > 0
     assert backbone.model_version == report.optimisation_steps
     assert all(math.isfinite(loss) for loss in report.recent_weighted_losses)
+
+
+# -- the game-time discount (ADR 0013) -----------------------------------------
+
+#: Game time of each stored transition, in replay's layout (the transition out
+#: of each step): a purchase, a 17 s WAIT, a purchase, 2 s, 1 s, and 1 s into
+#: the death that ends the window.
+SPANS_MS = (0.0, 17000.0, 0.0, 2000.0, 1000.0, 1000.0)
+
+
+def _timed_batch(*, wave_reward: float = 0.0) -> SequenceBatch:
+    """Two windows whose transitions span `SPANS_MS`; the first ends its episode."""
+    def window(done: bool) -> ReplaySequence:
+        sequence = _sequence(done=done)
+        steps = tuple(
+            replace(step, game_ms=span, reward=wave_reward)
+            for step, span in zip(sequence.steps, SPANS_MS, strict=True)
+        )
+        return replace(sequence, steps=steps)
+
+    return collate((window(True), window(False)), (1.0, 1.0))
+
+
+def _continue_targets(
+    backbone: DreamerBackbone, batch: SequenceBatch, monkeypatch: pytest.MonkeyPatch
+) -> torch.Tensor:
+    """The continue head's target in one update: the only [B, T + 1] cross-entropy target."""
+    seen: list[torch.Tensor] = []
+    original = functional.binary_cross_entropy_with_logits
+
+    def recording(logits: torch.Tensor, target: torch.Tensor, **options: object) -> torch.Tensor:
+        if tuple(target.shape) == (batch.batch_size, LENGTH + 1):
+            seen.append(target.detach().clone())
+        return original(logits, target, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(functional, "binary_cross_entropy_with_logits", recording)
+    backbone.learn(batch)
+    assert len(seen) == 1
+    return seen[0]
+
+
+def test_the_continue_target_carries_each_transitions_own_game_time_discount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """contdisc per transition: 1 for a purchase, 0.999 ** t for t s, 0 for a death.
+
+    Dreamer's step t carries the transition into it, so the stored step t - 1's
+    game time, and the phantom after a window that ends its episode is the
+    death.
+    """
+    targets = _continue_targets(_backbone(), _timed_batch(), monkeypatch)
+    ended, running = targets.tolist()
+    expected = [1.0, 1.0, 0.999**17, 1.0, 0.999**2, 0.999, 0.999]
+    assert running == pytest.approx(expected, rel=1e-6)
+    # The window's first step is never trained (d 1 there is a placeholder);
+    # the death's step - the phantom - is 0.
+    assert ended == pytest.approx([*expected[:-1], 0.0], rel=1e-6)
+
+
+def _learn_rewards(learn: Any, batch: SequenceBatch, module: Any) -> torch.Tensor:
+    """The per-transition rewards a learner's `learn` takes its return from, in replay's layout.
+
+    Both backbones hand exactly these to `value_fit_correlation`.
+    """
+    seen: list[torch.Tensor] = []
+    original = module.value_fit_correlation
+
+    def recording(values: Any, mask: Any, rewards: torch.Tensor, *rest: Any, **options: Any) -> Any:
+        seen.append(rewards.detach().clone())
+        return original(values, mask, rewards, *rest, **options)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "value_fit_correlation", recording)
+        learn(batch)
+    return seen[0]
+
+
+@pytest.mark.parametrize("survival", [True, False])
+def test_dreamer_learns_from_exactly_stacked_dqns_reward(survival: bool) -> None:
+    """One task reward (ADR 0013): (1 - d) * V_REF, or the wave change d * r, for the same spans."""
+    from tower_rl.learning import dreamer, stacked_dqn
+
+    batch = _timed_batch(wave_reward=1.0)
+    stacked = stacked_dqn.StackedDqnBackbone(
+        config=stacked_dqn.StackedDqnConfig(
+            history_length=1, discount_per_game_second=0.999, survival_time_reward=survival
+        )
+    )
+    learner = _backbone(replace(SMALL, survival_time_reward=survival))
+
+    ours = _learn_rewards(learner.learn, batch, dreamer)
+    theirs = _learn_rewards(stacked.learn, batch, stacked_dqn)
+    assert torch.equal(ours, theirs)
+    discounts = 0.999 ** (torch.tensor(SPANS_MS, dtype=torch.float64) / 1000.0)
+    expected = (1.0 - discounts) * stacked_dqn.V_REF if survival else discounts
+    assert torch.allclose(ours[0].double(), expected, rtol=1e-6, atol=0.0)
+    # A purchase earns no survival time; its wave change is not discounted.
+    assert ours[0, 0].item() == (0.0 if survival else 1.0)
+
+
+def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
+    """Implied game time log(c) / log 0.999 against the stored, and the mask's two error rates."""
+    backbone = _backbone()
+    predicted = torch.tensor([[0.5, 0.999**2, 0.999**4, 0.3]])
+    target = torch.tensor([[1.0, 0.999, 0.999**2, 0.0]])
+    # Two real transitions and a death; the first step is not trained.
+    transition = torch.tensor([[0.0, 1.0, 1.0, 1.0]])
+    terminal = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+    seconds = torch.tensor([[0.0, 1.0, 2.0, 5.0]])
+    # Two real steps and one of padding. Both real steps allow WAIT and 4; the
+    # decoded mask adds 9 to both and drops 4 from the second. Padding is
+    # decoded all-valid and counts for nothing.
+    mask = torch.zeros(1, 3, ACTIONS, dtype=torch.bool)
+    mask[..., [WAIT_INDEX, 4]] = True
+    logits = torch.full((1, 3, ACTIONS), -1.0)
+    logits[0, 0, [4, 9]] = 1.0
+    logits[0, 1, 9] = 1.0
+    logits[0, 2] = 1.0
+    observed = torch.tensor([[1.0, 1.0, 0.0]])
+
+    checks = backbone._checks(
+        torch.logit(predicted.double()).float(), target, seconds, terminal, transition,
+        logits, mask, observed,
+    )
+    measured = {name: value.item() for name, value in checks.items()}
+    assert measured["dreamer_implied_dt_seconds"] == pytest.approx(3.0, rel=1e-4)
+    assert measured["dreamer_true_dt_seconds"] == pytest.approx(1.5)
+    assert measured["dreamer_predicted_continue"] == pytest.approx(
+        (0.999**2 + 0.999**4 + 0.3) / 3, rel=1e-6
+    )
+    assert measured["dreamer_true_continue"] == pytest.approx((0.999 + 0.999**2) / 3, rel=1e-6)
+    assert measured["dreamer_mask_false_valid_rate"] == pytest.approx(2 / (2 * (ACTIONS - 2)))
+    assert measured["dreamer_mask_false_invalid_rate"] == pytest.approx(1 / 4)
+
+
+def test_learning_reports_the_diagnostics_and_their_ratio() -> None:
+    metrics = _backbone().learn(_timed_batch())
+    assert set(metrics.diagnostics) == {
+        "dreamer_implied_dt_seconds",
+        "dreamer_true_dt_seconds",
+        "dreamer_implied_to_true_dt",
+        "dreamer_predicted_continue",
+        "dreamer_true_continue",
+        "dreamer_mask_false_valid_rate",
+        "dreamer_mask_false_invalid_rate",
+    }
+    assert metrics.diagnostics["dreamer_implied_to_true_dt"] == pytest.approx(
+        metrics.diagnostics["dreamer_implied_dt_seconds"]
+        / metrics.diagnostics["dreamer_true_dt_seconds"]
+    )
+    assert all(math.isfinite(value) for value in metrics.diagnostics.values())

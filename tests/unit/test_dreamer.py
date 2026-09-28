@@ -408,7 +408,7 @@ def _learn_rewards(learn: Any, batch: SequenceBatch, module: Any) -> torch.Tenso
 @pytest.mark.parametrize("survival", [True, False])
 def test_dreamer_learns_from_exactly_stacked_dqns_reward(survival: bool) -> None:
     """One task reward (ADR 0013): (1 - d) * V_REF, or the wave change d * r, for the same spans."""
-    from tower_rl.learning import dreamer, stacked_dqn
+    from tower_rl.learning import dreamer, stacked_dqn, value_learning
 
     batch = _timed_batch(wave_reward=1.0)
     stacked = stacked_dqn.StackedDqnBackbone(
@@ -422,7 +422,7 @@ def test_dreamer_learns_from_exactly_stacked_dqns_reward(survival: bool) -> None
     theirs = _learn_rewards(stacked.learn, batch, stacked_dqn)
     assert torch.equal(ours, theirs)
     discounts = 0.999 ** (torch.tensor(SPANS_MS, dtype=torch.float64) / 1000.0)
-    expected = (1.0 - discounts) * stacked_dqn.V_REF if survival else discounts
+    expected = (1.0 - discounts) * value_learning.V_REF if survival else discounts
     assert torch.allclose(ours[0].double(), expected, rtol=1e-6, atol=0.0)
     # A purchase earns no survival time; its wave change is not discounted.
     assert ours[0, 0].item() == (0.0 if survival else 1.0)
@@ -431,7 +431,7 @@ def test_dreamer_learns_from_exactly_stacked_dqns_reward(survival: bool) -> None
 def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
     """Implied game time log(c) / log 0.999 against the stored, and the mask's two error rates."""
     backbone = _backbone()
-    predicted = torch.tensor([[0.5, 0.999**2, 0.999**4, 0.3]])
+    predicted = torch.tensor([[0.5, 0.999**2, 0.999**3, 0.3]])
     target = torch.tensor([[1.0, 0.999, 0.999**2, 0.0]])
     # Two real transitions and a death; the first step is not trained.
     transition = torch.tensor([[0.0, 1.0, 1.0, 1.0]])
@@ -441,7 +441,7 @@ def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
     # decoded mask adds 9 to both and drops 4 from the second. Padding is
     # decoded all-valid and counts for nothing. Of the 5 decoded-valid entries
     # (WAIT, 4, 9; WAIT, 9) 2 are invalid; of the 4 valid ones 1 is dropped.
-    mask =torch.zeros(1, 3, ACTIONS, dtype=torch.bool)
+    mask = torch.zeros(1, 3, ACTIONS, dtype=torch.bool)
     mask[..., [WAIT_INDEX, 4]] = True
     logits = torch.full((1, 3, ACTIONS), -1.0)
     logits[0, 0, [4, 9]] = 1.0
@@ -454,10 +454,12 @@ def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
         logits, mask, observed,
     )
     measured = {name: value.item() for name, value in checks.items()}
-    assert measured["dreamer_implied_dt_seconds"] == pytest.approx(3.0, rel=1e-4)
+    assert measured["dreamer_implied_dt_seconds"] == pytest.approx(2.5, rel=1e-4)
+    # |2 - 1| / 1 and |3 - 2| / 2: the per-transition error the ratio of means hides.
+    assert measured["dreamer_implied_dt_relative_error"] == pytest.approx(0.75, rel=1e-3)
     assert measured["dreamer_true_dt_seconds"] == pytest.approx(1.5)
     assert measured["dreamer_predicted_continue"] == pytest.approx(
-        (0.999**2 + 0.999**4 + 0.3) / 3, rel=1e-6
+        (0.999**2 + 0.999**3 + 0.3) / 3, rel=1e-6
     )
     assert measured["dreamer_true_continue"] == pytest.approx((0.999 + 0.999**2) / 3, rel=1e-6)
     assert measured["dreamer_mask_false_valid_rate"] == pytest.approx(2 / 5)
@@ -468,6 +470,7 @@ def test_learning_reports_the_diagnostics_and_their_ratio() -> None:
     metrics = _backbone().learn(_timed_batch())
     assert set(metrics.diagnostics) == {
         "dreamer_implied_dt_seconds",
+        "dreamer_implied_dt_relative_error",
         "dreamer_true_dt_seconds",
         "dreamer_implied_to_true_dt",
         "dreamer_predicted_continue",

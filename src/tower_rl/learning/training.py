@@ -684,7 +684,7 @@ class TrainingProgressReport:
     #: could compute one. The strongest evidence that the learner works at all.
     recent_value_fits: list[float] = field(default_factory=list)
     #: The largest taken-action online Q per step that reported one, to be read
-    #: against the value's bound (`stacked_dqn.V_REF`) while the run is live.
+    #: against the value's bound (`value_learning.V_REF`) while the run is live.
     recent_taken_q_maxes: list[float] = field(default_factory=list)
     #: Each backbone diagnostic (`LearnMetrics.diagnostics`) per step that
     #: reported it, by name, over the same window.

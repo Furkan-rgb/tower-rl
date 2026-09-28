@@ -56,8 +56,12 @@ from tower_rl.learning.dreamer_math import (
     twohot_mean,
     unimix_probs,
 )
-from tower_rl.learning.stacked_dqn import game_time_discounts, survival_rewards
-from tower_rl.learning.value_learning import real_step_td_errors, value_fit_correlation
+from tower_rl.learning.value_learning import (
+    game_time_discounts,
+    real_step_td_errors,
+    survival_rewards,
+    value_fit_correlation,
+)
 
 #: The name a run, its checkpoints and `--backbone` file this backbone under.
 DREAMERV3 = "dreamerv3"
@@ -143,7 +147,7 @@ class DreamerConfig:
     #: refuses it.
     discount_per_game_second: float | None = None
     #: Learn from game time survived, (1 - d) * V_REF, instead of the wave
-    #: reward: stacked-dqn's `survival_rewards` (docs/solution.md 9.4e).
+    #: reward: `value_learning.survival_rewards` (docs/solution.md 9.4e).
     survival_time_reward: bool = False
 
     def __post_init__(self) -> None:
@@ -493,9 +497,13 @@ class DreamerBackbone:
                 observed,
                 discounts=discounts,
             )
-            measured = dict(
-                zip(checks, torch.stack(list(checks.values())).tolist(), strict=True)
-            )
+            measured = {
+                name: value
+                for name, value in zip(
+                    checks, torch.stack(list(checks.values())).tolist(), strict=True
+                )
+                if not math.isnan(value)
+            }
         # A ratio of two means, reported only where the batch has game time.
         if measured["dreamer_true_dt_seconds"] > 0.0:
             measured["dreamer_implied_to_true_dt"] = (
@@ -707,6 +715,13 @@ class DreamerBackbone:
         assert per_second is not None  # `learn` refuses a config without one
         live = transition * (1.0 - terminal_in)
         implied = functional.logsigmoid(continue_logits) / math.log(per_second)
+        # Per transition, where a relative error is defined: at least 1 s of
+        # game time. NaN, which `learn` leaves unreported, where none is.
+        timed = live * (seconds_in >= 1.0).to(live.dtype)
+        relative = (implied - seconds_in).abs() / seconds_in.clamp(min=1.0)
+        relative_error = torch.where(
+            timed.sum() > 0, _mean(relative, timed), torch.full_like(timed.sum(), math.nan)
+        )
         decoded = _valid_actions(mask_logits)
         steps = observed.bool()[..., None]
         invalid = ~mask & steps
@@ -714,6 +729,7 @@ class DreamerBackbone:
         return {
             "dreamer_implied_dt_seconds": _mean(implied, live),
             "dreamer_true_dt_seconds": _mean(seconds_in, live),
+            "dreamer_implied_dt_relative_error": relative_error,
             "dreamer_predicted_continue": _mean(torch.sigmoid(continue_logits), transition),
             "dreamer_true_continue": _mean(continue_target, transition),
             "dreamer_mask_false_valid_rate": (

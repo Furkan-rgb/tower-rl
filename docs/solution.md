@@ -1717,7 +1717,7 @@ Replay stores each step's game time and reward with the transition out of it,
 so each transition's d = γ_s^Δt (§9.4d) and its reward shift with its
 termination: the continue flag at step t, its d and its reward all describe
 the transition into t. The reward is stacked-dqn's, valued at the span's
-start: (1 − d)·V_REF under `--survival-time-reward` (`survival_rewards`, the
+start: (1 − d)·V_REF under `--survival-time-reward` (`value_learning.survival_rewards`, the
 one function both backbones call), else the wave change d·r. The window's
 first step gets d = 1, which nothing reads. The first real step after front
 padding gets the padding's d = 1 (0 s).
@@ -1761,7 +1761,9 @@ logged per learn window, as a mean over the last hundred updates, as
 - *continue head vs game time*: on real transitions that did not end the
   episode, the implied Δt = log ĉ / log γ_s (`dreamer_implied_dt_seconds`),
   the stored Δt (`dreamer_true_dt_seconds`) and their ratio
-  (`dreamer_implied_to_true_dt`), and the mean predicted and target continue
+  (`dreamer_implied_to_true_dt`, which shows bias), the mean per-transition
+  |implied − true| / true over those with true Δt ≥ 1 s
+  (`dreamer_implied_dt_relative_error`, the acceptance check), and the mean predicted and target continue
   over every trained transition (`dreamer_predicted_continue`,
   `dreamer_true_continue`);
 - *decoded mask*, as imagination reads it (logit > 0, WAIT valid), on real
@@ -1866,7 +1868,7 @@ only, the wave reward with game time survived, measured in waves:
 
 - a transition spanning Δt game-seconds, with d = γ_s^Δt from §9.4d, carries
   r̃ = (1 − d) · V_REF, where V_REF = 1 / (35 · −ln 0.997) ≈ 9.51
-  (`stacked_dqn.V_REF`). This is a constant reward per game-second integrated
+  (`value_learning.V_REF`). This is a constant reward per game-second integrated
   exactly under the game-time discount (Bradtke & Duff 1995, Eq. 12), so it is
   valued at the span's start with no end-of-span booking and adds no instance
   of §9.4d's bias. A return is V_REF · (1 − γ_s^T), bounded by V_REF whatever

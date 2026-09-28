@@ -35,8 +35,9 @@ from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import V_REF, StackedDqnConfig
+from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.learning.training import TrainingConfig
+from tower_rl.learning.value_learning import V_REF
 
 #: The measured floors a learning curve has to be read against, carried in every
 #: report so the curve is legible without a second document. Mean final wave over
@@ -337,9 +338,6 @@ def dreamer_resolved_config(
     stacked |= {f"network_{item.name}" for item in fields(NetworkConfig)}
     return {
         **{key: None if key in stacked else value for key, value in resolved.items()},
-        # The per-decision discount is not read, as under stacked-dqn's
-        # game-time discount.
-        "discount": None,
         "discount_per_game_second": config.discount_per_game_second,
         "survival_time_reward": config.survival_time_reward,
         "survival_reward_bound": V_REF if config.survival_time_reward else None,

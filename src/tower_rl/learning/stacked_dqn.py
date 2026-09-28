@@ -12,7 +12,6 @@ training loop supplies, and SR-SPR's periodic resets (`StackedDqnBackbone._reset
 
 from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,54 +24,13 @@ from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
 from tower_rl.learning.exploration import zeta_duration
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork, StackedState
 from tower_rl.learning.value_learning import (
+    game_time_discounts,
     n_step_targets,
     real_step_td_errors,
+    survival_rewards,
     value_fit_correlation,
     weighted_sequence_loss,
 )
-
-#: One wave in game-seconds: the unit the survival-time reward's bound,
-#: `V_REF`, is expressed in. Waves are clock-driven: every completed wave
-#: 2..19 of the M3-P003 evaluation lasted 34.88-35.20 s (docs/solution.md
-#: 9.4e), and waves 2-74 of the M3-P014 replay dump 35.0 s (ADR 0013).
-WAVE_SECONDS = 35.0
-
-#: The survival-time reward's maximum return, whatever the discount: an
-#: immortal policy's return, about 9.51 waves, at the 0.997 per game-second
-#: every survival-time run before M3-P015 used. Only at 0.997 is a return in
-#: waves; at any other discount it is in units of that 0.997 horizon, the
-#: return a policy surviving for ever would have had there. The reward is
-#: scaled to it so the value
-#: scale - and with it the Huber delta, the gradient clip and the |TD| and
-#: gradient-norm monitors calibrated at it - does not move with the discount
-#: horizon (ADR 0013, Reward scaling). At 0.997 the scaled reward is the
-#: unscaled one of those runs.
-V_REF = 1.0 / (WAVE_SECONDS * -math.log(0.997))
-
-
-def game_time_discounts(per_game_second: float, game_ms: torch.Tensor) -> torch.Tensor:
-    """Each transition's own discount d = gamma_s ** t, t the game-seconds it spanned.
-
-    A purchase, and padding, span no game time and get exactly 1. float64, so
-    a product of many ds is exact to far below the value's resolution. Every
-    learner that discounts by game time takes its d from here (ADR 0013).
-    """
-    return torch.pow(per_game_second, game_ms.to(torch.float64) / 1000.0)
-
-
-def survival_rewards(discounts: torch.Tensor) -> torch.Tensor:
-    """Game time each transition survived, valued at its start: (1 - d) * V_REF.
-
-    A constant reward per game-second, integrated over a span of t seconds
-    under gamma_s ** t (Bradtke & Duff 1995, Eq. 12), scaled so an immortal
-    policy's return is `V_REF`: a return is V_REF * (1 - gamma_s ** T),
-    bounded by V_REF whatever gamma_s is (ADR 0013). At gamma_s 0.997 this
-    is the (1 - d) / (beta * WAVE_SECONDS), beta = -ln gamma_s, of every
-    survival-time run before M3-P015. A span of no game time - a purchase,
-    or padding - earns exactly 0. The survival-time reward of every learner
-    that takes `--survival-time-reward` (docs/solution.md 9.4e).
-    """
-    return (1.0 - discounts) * V_REF
 
 #: What a running ez-greedy option takes while its own action is masked: the
 #: environment's no-op, always legal in an active run (docs/solution.md 7.2).

@@ -182,12 +182,7 @@ from tower_rl.learning.replay import (  # noqa: E402
     ReplayDumpError,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import (  # noqa: E402
-    V_REF,
-    WAVE_SECONDS,
-    StackedDqnBackbone,
-    StackedDqnConfig,
-)
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
     KillBar,
@@ -196,6 +191,7 @@ from tower_rl.learning.training import (  # noqa: E402
     TrainingProgressReport,
     TrainingRun,
 )
+from tower_rl.learning.value_learning import V_REF, WAVE_SECONDS  # noqa: E402
 from tower_rl.simulation.bridge import (  # noqa: E402
     bridge_build_directory,
     compatibility,
@@ -1222,8 +1218,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if arguments.survival_time_reward and arguments.discount_per_game_second is None:
         # The reward is integrated under the game-time discount; per decision
-        # a span has no length to integrate over. After the DreamerV3 check, so
-        # that backbone is told it does not read the flag at all.
+        # a span has no length to integrate over.
         raise SystemExit("--survival-time-reward needs --discount-per-game-second")
     if (
         arguments.backbone == BACKBONE

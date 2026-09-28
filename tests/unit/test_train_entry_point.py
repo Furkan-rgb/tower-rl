@@ -54,9 +54,9 @@ from tower_rl.learning.replay import (
     ReplayStep,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import V_REF, StackedDqnBackbone
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone
 from tower_rl.learning.training import TrainingRun
-from tower_rl.learning.value_learning import n_step_targets
+from tower_rl.learning.value_learning import V_REF, n_step_targets
 from tower_rl.simulation.instance import CloneInstance
 
 #: Tensors this small spend their time handing work between threads rather than
@@ -1901,6 +1901,14 @@ def test_a_dreamerv3_run_resumes_only_under_its_own_discount_and_reward(
     save(replace(parent, resolved_config=settings), older)
     with pytest.raises(SystemExit, match="per-step horizon 333"):
         dreamer_resume(tmp_path / "fifth", older)
+    # It still plays: acting reads no discount.
+    policy, _ = checkpoint_policy(
+        older,
+        decision_cadence=settings["decision_cadence"],
+        upgrade_availability=settings["upgrade_availability"],
+        workshop_level=0,
+    )
+    assert policy.config.discount_per_game_second is None
 
 
 def survival_resume(run_dir: Path, checkpoint: Path, **flags: str | None) -> Any:

@@ -14,8 +14,8 @@ from tower_rl.learning import stacked_dqn
 from tower_rl.learning.backbone import collate
 from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork
 from tower_rl.learning.replay import ReplaySequence, ReplayStep, SequenceMetadata
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig, survival_rewards
-from tower_rl.learning.value_learning import n_step_targets
+from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.value_learning import V_REF, n_step_targets, survival_rewards
 
 ACTIONS = len(RUN_ACTIONS)
 SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
@@ -325,7 +325,7 @@ def test_the_survival_reward_at_0_997_is_the_unscaled_reward_of_every_run_before
     discounts = config.transition_discounts(seconds * 1000.0)
 
     unscaled = (1.0 - discounts) / (-math.log(0.997) * 35.0)
-    assert abs(stacked_dqn.V_REF - 9.51) < 0.005
+    assert abs(V_REF - 9.51) < 0.005
     assert torch.allclose(survival_rewards(discounts), unscaled, rtol=1e-12, atol=0.0)
 
 
@@ -345,8 +345,8 @@ def test_the_survival_return_is_bounded_by_v_ref_whatever_the_discount(
     before = torch.cat((torch.ones(1, dtype=torch.float64), discounts.cumprod(0)[:-1]))
     maximum = float((before * rewards).sum())
 
-    assert maximum <= stacked_dqn.V_REF * (1.0 + 1e-9)
-    assert maximum == pytest.approx(stacked_dqn.V_REF, rel=1e-6)
+    assert maximum <= V_REF * (1.0 + 1e-9)
+    assert maximum == pytest.approx(V_REF, rel=1e-6)
 
 
 def test_a_learning_step_reports_the_largest_taken_action_q_of_real_steps(
@@ -643,7 +643,7 @@ def test_a_game_time_discount_of_0_999_reaches_the_target(
     seconds = torch.tensor(spans[batch.burn_in :], dtype=torch.float64) / 1000.0
     assert torch.allclose(discounts[0], 0.999**seconds)
     assert torch.allclose(
-        rewards[0].double(), (1.0 - 0.999**seconds) * stacked_dqn.V_REF, atol=1e-7
+        rewards[0].double(), (1.0 - 0.999**seconds) * V_REF, atol=1e-7
     )
 
 

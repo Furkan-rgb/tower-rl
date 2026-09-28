@@ -224,6 +224,9 @@ def learner_metrics(report: TrainingProgressReport) -> dict[str, float]:
         ),
         "learner_gradient_norm": report.mean_recent_gradient_norm,
         "learner_value_fit_correlation": report.mean_recent_value_fit_correlation,
+        # A maximum, not a mean: an overshoot of the value's bound is what it
+        # is read for, and a mean would hide one.
+        "learner_taken_q_max": report.recent_taken_q_max,
     }
     return {name: value for name, value in measured.items() if value is not None}
 

@@ -1792,11 +1792,12 @@ several walls later sits at 0.997^(35·20) ≈ 0.12 of its value and is barely
 visible; at 0.999 it is 0.50. 0.999 is still the shortest round horizon that
 reaches that far, keeping Jiang et al.'s argument for not going longer, and it
 is within the 0.997-0.9997 range R2D2, Agent57 and MuZero use per step
-(Kapturowski et al. 2019; Badia et al. 2020; Schrittwieser et al. 2020). The
-values it bootstraps are bounded by V_max ≈ 28.6 (§9.4e); the Huber loss stays
-and no value rescaling (Pohlen et al. 2018) is added, because R2D2 needed that
-rescaling for unclipped rewards in the thousands, not for returns of this
-size.
+(Kapturowski et al. 2019; Badia et al. 2020; Schrittwieser et al. 2020).
+Under the survival-time reward the values it bootstraps are bounded by
+V_REF ≈ 9.51 whatever γ_s, because that reward is scaled linearly to hold it
+there (§9.4e, ADR 0013); the Huber loss stays and no non-linear value
+rescaling (Pohlen et al. 2018) is added, because R2D2 needed that rescaling
+for unclipped rewards in the thousands, not for returns of this size.
 
 Unset, the discount is `--discount` per decision (0.99), with targets identical
 to the bit to those before the flag existed; the two flags are refused
@@ -1826,12 +1827,19 @@ term.
 only, the wave reward with game time survived, measured in waves:
 
 - a transition spanning Δt game-seconds, with d = γ_s^Δt from §9.4d, carries
-  r̃ = (1 − d) / (β · 35), where β = −ln γ_s. This is a reward of 1/35 per
-  game-second integrated exactly under the game-time discount (Bradtke & Duff
-  1995, Eq. 12), so it is valued at the span's start with no end-of-span booking
-  and adds no instance of §9.4d's bias;
+  r̃ = (1 − d) · V_REF, where V_REF = 1 / (35 · −ln 0.997) ≈ 9.51
+  (`stacked_dqn.V_REF`). This is a constant reward per game-second integrated
+  exactly under the game-time discount (Bradtke & Duff 1995, Eq. 12), so it is
+  valued at the span's start with no end-of-span booking and adds no instance
+  of §9.4d's bias. A return is V_REF · (1 − γ_s^T), bounded by V_REF whatever
+  γ_s is, so the value scale that the Huber delta, the gradient clip and the
+  |TD| and gradient-norm monitors were calibrated at does not move with the
+  discount horizon (ADR 0013). Up to `M3-P014` the reward was unscaled,
+  (1 − d) / (β · 35) with β = −ln γ_s, a reward of 1/35 per game-second; at
+  0.997 the two are the same reward, and at 0.999 the scaled one is a third of
+  the unscaled;
 - the n-step target is unchanged. Within a window the rewards telescope to
-  (1 − D)/(β · 35), with D the product of the window's ds, however the window is
+  (1 − D) · V_REF, with D the product of the window's ds, however the window is
   cut into decisions and purchases. The dying span accrues up to the death, and
   nothing after `done` counts;
 - a purchase and padding span 0 s, so d = 1 and they earn exactly 0. A truncated,
@@ -1843,12 +1851,14 @@ clock-driven. In the M3-P003 evaluation records
 all 1,585 completed waves from wave 2 on, boss waves included, lasted
 34.88–35.20 game-s; wave 1 lasted 33.7–34.6 s. The 43 deaths in wave 20 came
 0.7–34.7 s into it. So game time survived is, to within 0.2 s per wave, 35 ×
-waves passed plus the time into the final wave. With γ_s = 0.999, from the start
-of a wave, a death at 5 s is worth 0.143 and a death at 30 s is worth 0.844.
-Under the wave reward both are worth the same. An immortal policy is worth
-V_max = 1/(β · 35) = 28.56, against 28.06 under the wave reward, and the longest
-span (about 17 s) earns 0.482. (At the earlier 0.997: 0.142, 0.820, 9.51 against
-9.02, and 0.474.)
+waves passed plus the time into the final wave. Unscaled, with γ_s = 0.999,
+from the start of a wave, a death at 5 s is worth 0.143 and a death at 30 s is
+worth 0.844. Under the wave reward both are worth the same. An immortal policy
+is worth V_max = 1/(β · 35) = 28.56, against 28.06 under the wave reward, and
+the longest span (about 17 s) earns 0.482. (At the earlier 0.997: 0.142, 0.820,
+9.51 against 9.02, and 0.474.) Scaled, every one of the 0.999 figures is
+multiplied by V_REF / 28.56 ≈ 0.333, and the immortal policy is worth V_REF at
+any γ_s.
 
 This changes the optimised objective, by a bounded amount; section 7.5 of
 `docs/task.md` records the developer's acceptance. Undiscounted, a trajectory's
@@ -1863,11 +1873,15 @@ to game hold while waves are clock-driven. That was measured at this baseline on
 evaluation metric, the final wave, is unchanged.
 
 The flag is off by default, and learning without it is identical to the bit. It
-is refused without `--discount-per-game-second`, since β and d come from it, and
+is refused without `--discount-per-game-second`, since each span's d comes from it, and
 under `--backbone dreamerv3`. The stored rewards are unchanged and stay
-`reward-v1`. The shaping is identified by `survival_time_reward` in the resolved
-config (manifest and MLflow), and a resume under a different setting than its
-checkpoint's is refused. A checkpoint from before the flag reads as off. The
+`reward-v1`. The shaping is identified by `survival_time_reward` and its scale
+by `survival_reward_bound` (V_REF, or None under the wave reward) in the
+resolved config (manifest and MLflow), and a resume under a different setting
+than its checkpoint's is refused. A checkpoint from before the flag reads as
+off; a survival-time checkpoint from before the scaling reads as bounded by
+1/(β · 35) at its own γ_s, so one at 0.997 resumes and one at 0.999 is
+refused. The
 value-fit correlation is computed against this reward's return, a smooth function
 of remaining survival rather than a staircase, so its 0.8 threshold is not
 comparable with a wave-reward run's.

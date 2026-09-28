@@ -300,8 +300,9 @@ def test_a_window_past_the_end_is_learnable_only_if_it_terminated() -> None:
 
 # -- the survival-time reward (board #82) -----------------------------------
 #
-# Under --survival-time-reward a transition carries (1 - d) / (beta * 35), the
-# game time it survived in waves, valued at its start; n_step_targets is the
+# Under --survival-time-reward a transition carries (1 - d) * V_REF, which at
+# the 0.997 used here is (1 - d) / (beta * 35), the game time it survived in
+# waves, valued at its start (ADR 0013); n_step_targets is the
 # same function. With no bootstrap value, a target is exactly the reward.
 
 SURVIVAL = StackedDqnConfig(discount_per_game_second=GAMMA_S, survival_time_reward=True)

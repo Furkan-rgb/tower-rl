@@ -418,6 +418,8 @@ LEARNER_KEYS = {
     "learner_weighted_loss",
     "learner_unweighted_mean_absolute_td_error",
     "learner_gradient_norm",
+    # Read against V_REF for the Q-overshoot kill criterion (ADR 0013).
+    "learner_taken_q_max",
 }
 
 #: Long enough for the arm to play about ten episodes against the fake port.

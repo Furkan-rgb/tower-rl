@@ -54,7 +54,7 @@ from tower_rl.learning.replay import (
     ReplayStep,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone
+from tower_rl.learning.stacked_dqn import V_REF, StackedDqnBackbone
 from tower_rl.learning.training import TrainingRun
 from tower_rl.learning.value_learning import n_step_targets
 from tower_rl.simulation.instance import CloneInstance
@@ -1845,6 +1845,7 @@ def test_a_survival_time_run_records_its_reward_and_resumes_only_under_it(
     """The key is in the run's identity, and a resume must ask for the same reward."""
     report = session(tmp_path, settings=SURVIVAL)
     assert report["arm"]["resolved_config"]["survival_time_reward"] is True
+    assert report["arm"]["resolved_config"]["survival_reward_bound"] == V_REF
     checkpoint = latest_checkpoint(report)
 
     resumed = survival_resume(tmp_path / "second", checkpoint, **SURVIVAL)
@@ -1878,6 +1879,49 @@ def test_a_checkpoint_from_before_the_survival_time_reward_resumes_with_it_off(
     save(replace(parent, resolved_config=settings), older)
 
     assert resume_from(tmp_path / "second", older, 400).decisions > 0
+
+
+def test_a_scaled_survival_run_at_0_999_resumes_under_the_same_flags(tmp_path: Path) -> None:
+    """M3-P015's own resume path: a scaled 0.999 checkpoint continues at 0.999."""
+    flags = {**SURVIVAL, "--discount-per-game-second": "0.999"}
+    report = numbered(tmp_path / "first", 50, **flags)
+    resolved = report["arm"]["resolved_config"]
+    assert resolved["discount_per_game_second"] == 0.999
+    assert resolved["survival_reward_bound"] == V_REF
+
+    resumed = survival_resume(tmp_path / "second", latest_checkpoint(report), **flags)
+    assert resumed is not None and resumed.decisions > 0
+
+
+def _before_the_reward_bound(tmp_path: Path, per_second: str) -> Path:
+    """A survival-time checkpoint as a run before ADR 0013 wrote it: no bound key."""
+    flags = {**SURVIVAL, "--discount-per-game-second": per_second}
+    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50, **flags)))
+    older = tmp_path / "older.pt"
+    settings = dict(parent.resolved_config)
+    del settings["survival_reward_bound"]
+    save(replace(parent, resolved_config=settings), older)
+    return older
+
+
+def test_an_unscaled_survival_checkpoint_at_0_997_resumes_under_the_scaled_reward(
+    tmp_path: Path,
+) -> None:
+    """At 0.997 the scaled reward is the unscaled one: nothing is mixed."""
+    older = _before_the_reward_bound(tmp_path, "0.997")
+
+    assert survival_resume(tmp_path / "second", older, **SURVIVAL).decisions > 0
+
+
+def test_an_unscaled_survival_checkpoint_at_0_999_is_not_resumed_under_the_scaled_reward(
+    tmp_path: Path,
+) -> None:
+    """Its value scale was 28.6, the scaled reward's is V_REF: two scales, one network."""
+    older = _before_the_reward_bound(tmp_path, "0.999")
+    flags = {**SURVIVAL, "--discount-per-game-second": "0.999"}
+
+    with pytest.raises(SystemExit, match="a different target"):
+        survival_resume(tmp_path / "second", older, **flags)
 
 
 # -- ez-greedy (board #83) ---------------------------------------------------

@@ -683,6 +683,9 @@ class TrainingProgressReport:
     #: Correlation between predicted value and realised return, per step that
     #: could compute one. The strongest evidence that the learner works at all.
     recent_value_fits: list[float] = field(default_factory=list)
+    #: The largest taken-action online Q per step that reported one, to be read
+    #: against the value's bound (`stacked_dqn.V_REF`) while the run is live.
+    recent_taken_q_maxes: list[float] = field(default_factory=list)
     evaluations: list[EvaluationReport] = field(default_factory=list)
     checkpoints_written: int = 0
     #: Where the exploration schedule had reached, and the importance-sampling
@@ -763,6 +766,11 @@ class TrainingProgressReport:
     def mean_recent_value_fit_correlation(self) -> float | None:
         """Mean value-fit correlation over the same window, or None before any."""
         return _mean(self.recent_value_fits)
+
+    @property
+    def recent_taken_q_max(self) -> float | None:
+        """The largest taken-action Q over the same window, or None before any."""
+        return max(self.recent_taken_q_maxes, default=None)
 
     def episodes_of(self, actor_id: str) -> list[CollectedEpisode]:
         """The episodes one actor collected, in the order it completed them."""
@@ -1296,11 +1304,14 @@ class TrainingRun:
                 # correlation rather than a zero that would look like a
                 # learner predicting nothing.
                 report.recent_value_fits.append(metrics.value_fit_correlation)
+            if metrics.taken_q_max is not None:
+                report.recent_taken_q_maxes.append(metrics.taken_q_max)
             for window in (
                 report.recent_weighted_losses,
                 report.recent_unweighted_td_errors,
                 report.recent_gradient_norms,
                 report.recent_value_fits,
+                report.recent_taken_q_maxes,
             ):
                 del window[:-100]
             self._owed -= 1.0

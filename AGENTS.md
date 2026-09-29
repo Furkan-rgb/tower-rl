@@ -94,4 +94,4 @@ The final handoff must include supported versions, selected actor count, through
 
 ## Board discipline
 
-Task board: GitHub Projects #3, owner `Furkan-rgb`, skill `board-github-projects`; open items are injected each turn by the hook in `.claude/settings.json`. Task state is not prose.
+Task board: GitHub Projects #3, owner `Furkan-rgb`, through the `task-ledger` skill (`.ledger/config.json`); the hooks in `.claude/settings.json` show the open items at session start and changes after. Task state is not prose.

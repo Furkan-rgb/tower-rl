@@ -1,14 +1,14 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [{"type": "command", "command": "~/.claude/skills/task-ledger/ledger brief", "timeout": 10}]
+      }
+    ],
     "UserPromptSubmit": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/board-state.sh",
-            "timeout": 5
-          }
-        ]
+        "hooks": [{"type": "command", "command": "~/.claude/skills/task-ledger/ledger brief --changes", "timeout": 10}]
       }
     ]
   }

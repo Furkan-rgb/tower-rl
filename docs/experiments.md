@@ -1160,6 +1160,97 @@ decisions means the run is stopped with SIGINT). The launch
 command is the one above with `TOWER_BRIDGE_BUILD_DIR` set to
 `state/bridge/builds/workshop-render-interval-16-nodelay`.
 
+### Stopped, third attempt, as run (2026-09-30, `#58`)
+
+**Verdict: STOPPED under the 500k rule, applied late; not evaluated.** Run
+`state/runs/m3-p016-dreamerv3-v2-20260930T121539Z`, three segments. Segment 3
+(train.py, 7 actors, build `workshop-render-interval-16-nodelay`, source
+revision `1b2d730`) was stopped with one SIGINT at **637,729** of the planned
+1,000,000 decisions, after 5 h 59 min in that segment. It exited through its
+graceful path: `summary.json` has `interrupted: true` and the log says "final
+evaluation skipped: stopped by SIGINT". The stage exited 0 with "cleanup ok";
+on all seven actors the cleanup checks passed (`libunity.so` SHA-256
+`ffc1f3ef…0040`, versionCode 1199, installer `com.android.vending`, 0
+mounts), and the stage verified no qemu process and no adb device. The resume
+pair is written: `checkpoints/latest.pt` and `replay/d0637729` (19,335
+sequences, 3.03 GB). No arm-n10 evaluation was run.
+
+**The 500k rule fired at period 10 and was applied 137,395 decisions late.**
+The amendment above says best < 39.4 at 500,000 decisions stops the run with
+SIGINT. Period 10 closed at 500,334 decisions with best 36.34 (set at period
+9), so the rule fired then. The lead did not act on it, and the run continued
+to 637,729. That was a lead oversight, not a protocol choice. Periods 11 and
+12 are after the rule and do not change the verdict: best stayed 36.34.
+
+**Near-greedy selection-period means** (`train.log` period lines, agreeing
+with `summary.json`; 12 periods closed, the last at 600,365):
+
+| period | decisions | mean final wave | n episodes | best so far |
+| --- | --- | --- | --- | --- |
+| 1 | 50,038 | 24.96 | 55 | 24.96 |
+| 2 | 100,589 | 27.47 | 93 | 27.47 |
+| 3 | 150,251 | 25.28 | 93 | 27.47 |
+| 4 | 200,044 | 26.87 | 85 | 27.47 |
+| 5 | 250,052 | 30.35 | 74 | 30.35 |
+| 6 | 300,055 | 31.85 | 71 | 31.85 |
+| 7 | 350,531 | 34.27 | 67 | 34.27 |
+| 8 | 400,216 | 32.09 | 68 | 34.27 |
+| 9 | 450,082 | 36.34 | 64 | 36.34 |
+| 10 | 500,334 | 25.73 | 88 | 36.34 |
+| 11 | 550,132 | 32.16 | 70 | 36.34 |
+| 12 | 600,365 | 29.72 | 75 | 36.34 |
+
+The three collapse kill bars (100k, 200k, 300k, at 21.0) did not trip: 27.41,
+27.00 and 31.77.
+
+**Context, stated as facts.**
+- Attempt 1 (`…20260929T201403Z`, killed by systemd-oomd at 425,078
+  decisions) had best 43.09 at period 8 (400,200 decisions). It ran the
+  actor-thread learner on the older bridge build, so it is not a like-for-like
+  comparison with this attempt.
+- The turtle scripted policy's fixed-policy final wave is 39.4-39.5 (the
+  bridge-transport entry above). That is a different evaluation set and
+  protocol from a near-greedy period mean, so the two are not directly
+  comparable.
+
+**Invalid episodes, segments 1-3** (from the "invalid episode" lines of each
+segment's `train.log`; episodes from its "episode N decisions" lines, 113 + 5
++ 988 = 1,106, which equals `summary.json`'s `episodes`; segment 3's
+`health` block counts 986 of its 988, which is not explained): **34 of
+1,106** (3.1%). Segment 1 has 1, segment 2 has 0, segment 3 has 33.
+
+| reason | count |
+| --- | --- |
+| `mask_legal_rejected`: a mask-legal purchase was rejected by the bridge: `precondition_failed` | 16 |
+| `observation_invalid`: the bridge and the host disagree about the decision event | 9 |
+| `observation_invalid`: the game simulated less time than the advance budgeted (round clock 0.963x ×3, 0.990x ×5, 0.989x ×1) | 9 |
+
+| actor | episodes | invalid | purchase rejected | event disagree | game time short |
+| --- | --- | --- | --- | --- | --- |
+| emulator-5556 | 154 | 2 | 1 | 0 | 1 |
+| emulator-5558 | 153 | 4 | 0 | 1 | 3 |
+| emulator-5560 | 159 | 3 | 2 | 0 | 1 |
+| emulator-5562 | 155 | 5 | 3 | 1 | 1 |
+| emulator-5564 | 163 | **11** | 4 | 4 | 3 |
+| emulator-5566 | 165 | 3 | 3 | 0 | 0 |
+| emulator-5568 | 157 | 6 | 3 | 3 | 0 |
+
+**emulator-5564 has 11 of the 34 invalid episodes**, against an even share of
+4.9 (6.7% of its episodes, against 2.4% for the other six together). The
+excess is in all three reasons (4 of 16, 4 of 9, 3 of 9), not one. The cause
+is not established. Segment 3's `health` block also records 464 advances cut
+short and 34 actor retirements (958 s of wall in retirements).
+
+**Throughput and learner.** Segment 3 collected 612,820 decisions in 21,244 s:
+103,849 decisions/hour for the fleet, about 14,900 per actor. (The amendment
+above expected about 144,000 from collection alone and a learner cap near
+119,000.) The learner took 319,079 gradient steps over 637,729 decisions,
+0.500 per decision. Its debt sat at its bound (256 steps) in 403 of 405
+30-second intervals, the learner was busy 97.7% on average, and an actor spent
+about 92 ms of its ~274 ms per decision blocked (bridge 128 ms, policy 20 ms
+in `summary.json`). The run was learner-bound. Peak memory (anon + shmem) is
+not recorded in `train.log`, `stage.out` or `summary.json`.
+
 ## M3-P015: `M3-P014`'s recipe at the protocol discount horizon, 0.999 per game-second, with the survival reward scaled to V_REF (pre-registered, written before the run)
 
 **Date:** 2026-09-28. Board `#85`. Single seed, single run.

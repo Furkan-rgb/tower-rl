@@ -2169,16 +2169,25 @@ IQM of their greedy evaluations; it is a checkpoint-evaluation tool, not the
 M2 arm rule.
 
 `--resume <checkpoint.pt>` continues a run's budget in a second sitting (`#32`):
-the weights, the optimizer moments and the counters come back, and epsilon,
-the selection periods and the checkpoint cadence are derived from them,
-so the segment carries on where a run that never stopped would have been.
-Replay is saved once as the run ends, however it ends short of a hard kill,
-beside a final `latest.pt` at the same decision count, in `<run_dir>/replay/`
-(`.npy` arrays and a JSON header), so a resumed run continues on the replay it
-had. A resume from that `latest.pt` reloads it and learns on without
-re-warming; a resume from another checkpoint of the run is refused while the
-dump is there (move it aside to re-warm instead); with no dump, replay
-re-warms under the loaded policy.
+the weights, the optimizer moments, the counters and the process's random
+streams come back, and epsilon, the selection periods and the checkpoint
+cadence are derived from them, so the segment carries on where a run that
+never stopped would have been. Every `latest.pt` is written with its replay
+buffer at the same decision count - every `--checkpoint-every-episodes`,
+beside every numbered checkpoint, and as the run ends - as
+`<run_dir>/replay/d<decisions>/` (`.npy` arrays and a JSON header, priorities
+and sampler state included), which `latest.pt` names. The dump is complete
+before the `latest.pt` naming it replaces the old one, so a kill at any
+moment, an OOM kill included, leaves a pair that resumes together; only the
+latest dump is kept (ADR 0014; about 12 s and 0.2 GB of extra memory per save
+at 1,000,000 steps, `docs/experiments.md`, "Crash-safe resume point"). A
+resume from that `latest.pt` reloads the buffer and learns on without
+re-warming, and is refused if the dump it names is missing or at another
+decision count; a resume from another checkpoint reloads a dump at its own
+decision count and is refused while only others are there (move `replay/`
+aside to re-warm instead); with no `replay/`, replay re-warms under the
+loaded policy. Episodes in flight at a kill are lost, and a resumed run is
+not claimed to be bit-identical to one that never stopped.
 `--budget-decisions` stays the whole run's total; a checkpoint whose identity
 names another arm, profile or schema, one that has already spent the budget,
 and one in a game-time-era format (before format 4, which evaluates only) are
@@ -2550,7 +2559,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
 | Recurrent replay-based learner | Learner + replay | Math tests and resolved run config |
-| Resume-safe training | Artifact/checkpoint manager | interruption and round-trip tests |
+| Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014) | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |
 | Diagnostics and documentation | Telemetry + docs | failure injection and clean setup rehearsal |

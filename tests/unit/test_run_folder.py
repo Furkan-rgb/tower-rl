@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,8 @@ from test_train_entry_point import (
 
 from tower_rl.experiment.run_folder import run_ids
 from tower_rl.experiment.training_report import REPLAY_BACKUP_DIRECTORY, REPLAY_DIRECTORY
-from tower_rl.learning.checkpoint import load
-from tower_rl.learning.replay import PrioritizedSequenceReplay, read_replay_metadata
+from tower_rl.learning.checkpoint import load, save
+from tower_rl.learning.replay import REPLAY_DUMP_METADATA, ReplayImage, read_replay_metadata
 
 
 def manifest_of(folder: Path) -> dict[str, Any]:
@@ -44,7 +45,7 @@ def resumed(run_dir: Path, checkpoint: Path, budget: int, **flags: str) -> dict[
             "--resume": str(checkpoint),
             **flags,
         },
-        resume=resume_from(run_dir, checkpoint, budget),
+        resume=resume_from(run_dir, checkpoint, budget, **flags),
     )
 
 
@@ -125,11 +126,15 @@ def test_a_resume_from_latest_continues_in_the_same_folder_as_a_second_segment(
     assert set(first_numbered) < set(later)
     # The replay the second segment reloaded is replaced by the one it ended with,
     # at the decision count of the latest.pt beside it.
-    restored = second["arm"]["resolved_config"]["replay_restored_from"]
-    assert restored == str(folder / REPLAY_DIRECTORY)
-    decisions = load(latest).progress.environment_decisions
+    restored = Path(second["arm"]["resolved_config"]["replay_restored_from"])
+    assert restored.parent == folder / REPLAY_DIRECTORY
+    checkpoint = load(latest)
+    decisions = checkpoint.progress.environment_decisions
     assert decisions == second["arm"]["decisions"]
-    assert read_replay_metadata(folder / REPLAY_DIRECTORY)["run"]["decisions"] == decisions
+    assert checkpoint.paired_replay is not None
+    ended_with = folder / checkpoint.paired_replay
+    assert read_replay_metadata(ended_with)["run"]["decisions"] == decisions
+    assert list((folder / REPLAY_DIRECTORY).iterdir()) == [ended_with]
 
 
 def test_a_resume_from_a_numbered_checkpoint_branches_into_a_new_folder(
@@ -192,7 +197,9 @@ def test_a_checkpoint_of_the_old_layout_still_resumes_into_a_new_folder(
     assert folder.name.startswith("stacked-dqn-")
     assert second["arm"]["decisions"] >= 400
     # The saved replay beside the old checkpoint was reloaded, not moved.
-    assert second["arm"]["resolved_config"]["replay_restored_from"] == str(old / REPLAY_DIRECTORY)
+    paired = load(latest).paired_replay
+    assert paired is not None
+    assert second["arm"]["resolved_config"]["replay_restored_from"] == str(old / paired)
     (segment,) = manifest_of(folder)["segments"]
     assert segment["parent_checkpoint"].startswith(str(latest))
     assert segment["resumed_from_decisions"] == first["arm"]["decisions"]
@@ -205,28 +212,73 @@ def test_a_checkpoint_of_the_old_layout_still_resumes_into_a_new_folder(
     assert run_ids(old) == [first["arm"]["run_id"]]
 
 
+def test_a_run_saved_as_before_format_5_resumes_in_place_with_its_replay(
+    tmp_path: Path,
+) -> None:
+    """M3-P015's layout: one dump as `replay/` itself, a `latest.pt` naming none."""
+    first = numbered(tmp_path, 200)
+    folder = Path(first["run_folder"])
+    latest = latest_checkpoint(first)
+    checkpoint = load(latest)
+    assert checkpoint.paired_replay is not None
+    # Rebuilt as that run left it: the dump's files straight under `replay/`,
+    # in dump format 1, which had no sampler state.
+    replays = folder / REPLAY_DIRECTORY
+    staged = shutil.move(folder / checkpoint.paired_replay, folder / "staged")
+    replays.rmdir()
+    Path(staged).rename(replays)
+    metadata = read_replay_metadata(replays)
+    del metadata["sampler_state"]
+    metadata["format_version"] = 1
+    (replays / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata))
+    save(replace(checkpoint, paired_replay=None, rng_state=None, format_version=4), latest)
+
+    second = resumed(tmp_path, latest, 400)
+
+    assert Path(second["run_folder"]) == folder
+    assert second["arm"]["resolved_config"]["replay_restored_from"] == str(replays)
+    # Its first resume point replaced the old dump with one of its own.
+    paired = load(latest).paired_replay
+    assert paired is not None
+    assert list(replays.iterdir()) == [folder / paired]
+
+
 def dump_bytes(dump: Path) -> dict[Path, bytes]:
     return {path.relative_to(dump): path.read_bytes() for path in dump.rglob("*") if path.is_file()}
 
 
-def test_a_replay_save_that_fails_leaves_the_earlier_dump_in_place(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_replay_save_that_fails_leaves_the_earlier_pair_in_place_and_is_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     first = numbered(tmp_path, 200)
     folder = Path(first["run_folder"])
-    dump = folder / REPLAY_DIRECTORY
-    before = dump_bytes(dump)
+    latest = latest_checkpoint(first)
+    before = (latest.read_bytes(), dump_bytes(folder / REPLAY_DIRECTORY))
 
-    def fails(self: PrioritizedSequenceReplay, directory: Path, **_: Any) -> int:
-        directory.mkdir()
-        (directory / "partial").write_bytes(b"half a dump")
+    def fails(self: ReplayImage, directory: Path, **_: Any) -> int:
+        partial = directory.with_name(directory.name + ".partial")
+        partial.mkdir()
+        (partial / "partial").write_bytes(b"half a dump")
         raise OSError("disk full")
 
-    monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", fails)
-    resumed(tmp_path, latest_checkpoint(first), 400)
+    monkeypatch.setattr(ReplayImage, "write", fails)
+    segment = resumed(tmp_path, latest, 400)
 
-    assert dump_bytes(dump) == before
-    assert not (folder / REPLAY_BACKUP_DIRECTORY).exists()
+    # A resume point that no longer advances is loud and counted, not silent.
+    failed = segment["arm"]["failed_resume_saves"]
+    assert failed >= 1
+    out = capsys.readouterr().out
+    assert out.count("RESUME POINT NOT SAVED") == failed
+    assert "decisions behind" in out
+
+    after = (latest.read_bytes(), dump_bytes(folder / REPLAY_DIRECTORY))
+    assert after[0] == before[0]
+    assert {path: data for path, data in after[1].items() if ".partial" not in str(path)} == (
+        before[1]
+    )
+    # And the pair still resumes, past what the failed save left.
+    monkeypatch.undo()
+    assert resume_from(tmp_path, latest, 600).replay_dump is not None
 
 
 def test_a_dump_left_aside_by_an_interrupted_save_refuses_the_resume(tmp_path: Path) -> None:

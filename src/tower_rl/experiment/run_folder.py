@@ -4,7 +4,7 @@
 state/runs/<run name>/
   manifest.json          the run's configuration and upgrade setup, and `segments`
   checkpoints/           latest.pt and the numbered checkpoints, every segment's
-  replay/                the buffer saved at latest.pt
+  replay/d<decisions>/   the buffer saved with latest.pt, which names it
   segments/<n>/          one per sitting: summary.json and train.log
   logs/                  run_stage.sh stage logs, pointed here by --log-directory
   evaluations/<name>/    per-actor records of a checkpoint of this run played greedily

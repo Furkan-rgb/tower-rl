@@ -63,16 +63,21 @@ into it before launch; by default it is `<backbone>-<UTC start>`.
         --run-name "$name" --budget-decisions 60000
 
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
-budget. The weights, the optimizer moments, the decision and game-time counters
-and every schedule and cadence derived from them come back from the file.
-However a run ends - budget, early stop, kill bar, interrupt or error - it
-writes `latest.pt` and saves its replay buffer beside it in `<run_dir>/replay/`
-at the same decision count. A resume from that `latest.pt` reloads the buffer
-and learns on without re-warming; a resume from any other checkpoint of that
-run is refused while the saved buffer is there, rather than continued on
-replay from another point in time (move `replay/` aside to re-warm instead).
-A run with no saved buffer re-warms it under the loaded policy before learning
-restarts. `--budget-decisions` stays the whole run's total.
+budget. The weights, the optimizer moments, the decision and game-time counters,
+every schedule and cadence derived from them and the process's random streams
+come back from the file. Every time a run writes `latest.pt` - every
+`--checkpoint-every-episodes`, beside every numbered checkpoint, and once more
+however it ends short of a hard kill - it saves its replay buffer with it, as
+`<run_dir>/replay/d<decisions>/`, and the pair survives a kill at any moment:
+the dump is complete before the `latest.pt` naming it replaces the old one. A
+resume from that `latest.pt` reloads the buffer, its priorities and its sampler
+and learns on without re-warming, and refuses a dump at another decision count.
+A resume from any other checkpoint reloads a dump saved at its own decision
+count and is refused while a dump from another point is there, rather than
+continued on replay from another point in time (move `replay/` aside to
+re-warm instead). A run with no saved buffer re-warms it under the loaded
+policy before learning restarts. `--budget-decisions` stays the whole run's
+total.
 
 A resume from a run folder's own `latest.pt` continues in that folder as its
 next segment, `segments/<n>/`, listed in the manifest's `segments`. A resume from
@@ -164,6 +169,7 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     CheckpointError,
     CheckpointIdentity,
     ResumeState,
+    restore_rng_state,
     resume_state,
     write_manifest,
 )
@@ -178,6 +184,7 @@ from tower_rl.learning.network import NetworkConfig  # noqa: E402
 from tower_rl.learning.replay import (  # noqa: E402
     R2D2_IMPORTANCE_SAMPLING_EXPONENT,
     R2D2_PRIORITY_EXPONENT,
+    REPLAY_DUMP_METADATA,
     PrioritizedSequenceReplay,
     ReplayDumpError,
     read_replay_metadata,
@@ -539,6 +546,19 @@ def build_arm(
         tracking_run_id=tracked_run_id,
         replay_restored_from=restored_from,
     )
+    if resume is not None:
+        # Last, once everything that seeds a stream as it is built - the
+        # backbone, the acting copies - has been built, so what is restored is
+        # not seeded over again. Not bit-exact reproduction: the actors'
+        # episodes in flight at the parent's end are not replayed.
+        if resume.rng_state is not None:
+            restore_rng_state(resume.rng_state)
+        else:
+            print(
+                f"[{name}] the parent checkpoint records no random streams; "
+                "they start again from the seed",
+                flush=True,
+            )
 
     def run_evaluation(pre_registered_final: bool = False) -> EvaluationReport:
         # Exploration-free, never written to replay; the evaluator enforces both.
@@ -813,8 +833,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "a checkpoint to continue a run's budget from: the weights, the "
             "optimizer, the decision and game-time counters and every schedule "
             "and cadence derived from them come back, and the replay buffer the "
-            "parent saved at this checkpoint's decision count is reloaded (with "
-            "none saved, it is re-warmed under the loaded policy). "
+            "parent saved at this checkpoint's decision count is reloaded with "
+            "its priorities and sampler (with none saved, it is re-warmed under "
+            "the loaded policy). "
             "--budget-decisions stays the whole run's total, so a checkpoint at "
             "or past it is refused"
         ),
@@ -1456,31 +1477,100 @@ def with_parent_replay(
 ) -> ResumeState:
     """Name the parent's saved replay buffer on `state`, when it may be reloaded.
 
-    The parent saves its buffer once, as it ends, in `<run_dir>/replay/` beside
-    the `checkpoints/` this checkpoint was read from, at the decision count its
-    last `latest.pt` holds. It is reloaded only into a resume from exactly that
-    point, and only into the buffer this run builds - the same capacity and
-    sampling - on the same identity. Anything else is refused rather than
+    The parent saves its buffer in `<run_dir>/replay/` beside the `checkpoints/`
+    this checkpoint was read from, as a dump per save that states its decision
+    count. A `latest.pt` names the dump it was written with, and nothing else
+    is reloaded with it: that dump missing from `replay/`, or at another
+    decision count, is a broken pair and refused by name. Any other checkpoint - a numbered one, or
+    a `latest.pt` from before format 5 - reloads a dump at exactly its decision
+    count. Either way only into the buffer this run builds - the same capacity
+    and sampling - on the same identity. Anything else is refused rather than
     skipped: replay from another point in time, mixed silently into a resume,
-    is experience the weights never saw at that point. No saved buffer is the
-    ordinary case of a run that has none, and it re-warms.
+    is experience the weights never saw at that point. No `replay/` at all is
+    the ordinary case of a run that saved none, or of an operator who moved it
+    aside to re-warm, and it re-warms.
     """
     # Resolved first: a bare `latest.pt` given from inside `checkpoints/` has
     # no parent of its parent to find the run directory by.
-    dump = arguments.resume.resolve().parent.parent / REPLAY_DIRECTORY
-    backup = dump.with_name(REPLAY_BACKUP_DIRECTORY)
+    run_folder = arguments.resume.resolve().parent.parent
+    replays = run_folder / REPLAY_DIRECTORY
+    backup = replays.with_name(REPLAY_BACKUP_DIRECTORY)
     if backup.exists():
         # A process killed while replacing its dump: which of the two, if
         # either, matches this checkpoint is not guessed at.
         raise SystemExit(
             f"--resume {arguments.resume}: {backup} is the replay dump an "
-            f"interrupted save was replacing. Delete it, and move {dump} aside too "
+            f"interrupted save was replacing. Delete it, and move {replays} aside too "
             "if the resume then refuses it, to resume with a re-warmed buffer"
         )
-    if not dump.exists():
+    remedy = f"move {replays} aside to resume with an empty, re-warmed buffer instead"
+    if state.paired_replay is not None and replays.is_dir():
+        dump = run_folder / state.paired_replay
+        if not (dump / REPLAY_DUMP_METADATA).exists():
+            raise SystemExit(
+                f"--resume {arguments.resume} was written with the replay saved at "
+                f"{dump}, which is not there: the resume point is broken; {remedy}"
+            )
+        return replace(state, replay_dump=_reloadable(arguments, dump, state, expected, remedy))
+    saved = saved_replays(replays)
+    if not saved:
         return state
+    at_this_point = [
+        dump for dump in saved if _saved_decisions(arguments, dump, remedy) == state.decisions
+    ]
+    if not at_this_point:
+        found = ", ".join(
+            f"{dump} at {_saved_decisions(arguments, dump, remedy)}" for dump in saved
+        )
+        raise SystemExit(
+            f"--resume {arguments.resume}: the parent's replay saved at {found} "
+            f"decisions, not this checkpoint's {state.decisions}: resume from the "
+            f"latest.pt it was saved with, or {remedy}"
+        )
+    chosen = _reloadable(arguments, at_this_point[-1], state, expected, remedy)
+    return replace(state, replay_dump=chosen)
+
+
+def saved_replays(replays: Path) -> list[Path]:
+    """The complete replay dumps in a run's `replay/`, by name.
+
+    Each save's own directory, and `replay/` itself for a run from before
+    format 5, which saved one dump there as it ended. A save a kill cut short
+    is still `<name>.partial`, which is not one even with its metadata written.
+    """
+    if not replays.is_dir():
+        return []
+    if (replays / REPLAY_DUMP_METADATA).exists():
+        return [replays]
+    return sorted(
+        entry
+        for entry in replays.iterdir()
+        if entry.is_dir()
+        and not entry.name.endswith(".partial")
+        and (entry / REPLAY_DUMP_METADATA).exists()
+    )
+
+
+def _saved_decisions(arguments: argparse.Namespace, dump: Path, remedy: str) -> object:
+    """The decision count a dump says it was saved at."""
+    try:
+        return read_replay_metadata(dump)["run"].get("decisions")
+    except (ReplayDumpError, KeyError, AttributeError) as failure:
+        raise SystemExit(
+            f"--resume {arguments.resume}: the parent's replay saved at {dump} cannot "
+            f"be reloaded: {failure!r}; {remedy}"
+        ) from failure
+
+
+def _reloadable(
+    arguments: argparse.Namespace,
+    dump: Path,
+    state: ResumeState,
+    expected: CheckpointIdentity,
+    remedy: str,
+) -> Path:
+    """`dump`, once it is known to be this checkpoint's pair and this run's buffer."""
     refusal = f"--resume {arguments.resume}: the parent's replay saved at {dump}"
-    remedy = f"move {dump} aside to resume with an empty, re-warmed buffer instead"
     try:
         metadata = read_replay_metadata(dump)
         build_replay(arguments).check_dump(metadata)
@@ -1491,12 +1581,13 @@ def with_parent_replay(
     if run.get("decisions") != state.decisions:
         raise SystemExit(
             f"{refusal} is at {run.get('decisions')} decisions, not this checkpoint's "
-            f"{state.decisions}: resume from the latest.pt it was saved with, or {remedy}"
+            f"{state.decisions}: the checkpoint and its replay are a mismatched pair "
+            "and are not resumed together"
         )
     reasons = saved.incompatibilities(expected)
     if reasons:
         raise SystemExit(f"{refusal} is another run's: {'; '.join(reasons)}; {remedy}")
-    return replace(state, replay_dump=dump)
+    return dump
 
 
 def build_tracker(arguments: argparse.Namespace) -> ExperimentTracker:

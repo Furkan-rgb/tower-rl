@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import random
 from dataclasses import asdict, replace
 from pathlib import Path
 
+import numpy
 import pytest
 import torch
 from fakes.backbone_equality import parameters_are_equal
@@ -15,9 +17,11 @@ from tower_rl.learning.checkpoint import (
     CheckpointError,
     CheckpointIdentity,
     TrainingProgress,
+    capture_rng_state,
     fingerprint,
     identity_hash,
     load,
+    restore_rng_state,
     resume_state,
     save,
     write_manifest,
@@ -112,6 +116,61 @@ def test_corrupted_payloads_are_refused_not_resumed(tmp_path: Path) -> None:
         load(path)
 
 
+def test_a_checkpoint_between_its_two_renames_still_passes_its_checksum(tmp_path: Path) -> None:
+    """A kill after the sidecar names both files, before or after the file's rename."""
+    path = tmp_path / "latest.pt"
+    save(Checkpoint(_identity(), TrainingProgress(episodes=1), _backbone().state_dict()), path)
+    old = (tmp_path / "latest.pt.sha256").read_text()
+    staged = tmp_path / "next.pt"
+    new = save(
+        Checkpoint(_identity(), TrainingProgress(episodes=2), _backbone().state_dict()), staged
+    )
+    (tmp_path / "latest.pt.sha256").write_text(f"{old}\n{new}")
+
+    assert load(path).progress.episodes == 1
+    staged.replace(path)
+    assert load(path).progress.episodes == 2
+    # And a file neither line names is still refused.
+    path.write_bytes(path.read_bytes() + b"tampered")
+    with pytest.raises(CheckpointError, match="failed its checksum"):
+        load(path)
+
+
+def test_a_checkpoint_carries_its_replay_and_its_random_streams(tmp_path: Path) -> None:
+    path = tmp_path / "latest.pt"
+    random.seed(1)
+    numpy.random.seed(1)
+    torch.manual_seed(1)
+    streams = capture_rng_state()
+    expected = (random.random(), numpy.random.random(), torch.rand(4))
+    save(
+        Checkpoint(
+            _identity(),
+            TrainingProgress(environment_decisions=5),
+            _backbone().state_dict(),
+            paired_replay="replay/d0000005",
+            rng_state=streams,
+        ),
+        path,
+    )
+
+    state = resume_state(path)
+    assert state.paired_replay == "replay/d0000005"
+    assert state.rng_state is not None
+    restore_rng_state(state.rng_state)
+    drawn = (random.random(), numpy.random.random(), torch.rand(4))
+    assert drawn[:2] == expected[:2]
+    assert torch.equal(drawn[2], expected[2])
+
+    # A file from before format 5 names neither, and says so as None.
+    older = tmp_path / "older.pt"
+    save(
+        Checkpoint(_identity(), TrainingProgress(), _backbone().state_dict(), format_version=4),
+        older,
+    )
+    assert (resume_state(older).paired_replay, resume_state(older).rng_state) == (None, None)
+
+
 def test_incompatible_checkpoints_cannot_be_resumed_into_a_running_job(tmp_path: Path) -> None:
     path = tmp_path / "latest.pt"
     save(Checkpoint(_identity(), TrainingProgress(), _backbone().state_dict()), path)
@@ -190,7 +249,7 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
     assert state.decisions == 900 and state.episodes == 12
     # Game time travels beside it as a statistic.
     assert state.game_ms == 1_800_000.0
-    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 4
+    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 5
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
     assert "optimizer" in state.backbone_state, "the moments travel with the weights"
@@ -232,8 +291,8 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
 
     # A version this code does not know is still refused rather than guessed at.
     future = tmp_path / "future.pt"
-    torch.save({"format_version": 5, "identity": {}}, future)
-    with pytest.raises(CheckpointError, match="format 5 is not supported"):
+    torch.save({"format_version": 6, "identity": {}}, future)
+    with pytest.raises(CheckpointError, match="format 6 is not supported"):
         load(future)
 
 

@@ -98,6 +98,29 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## DreamerV3 replay context 1: KL(full || window) rerun, synthetic (`#108`, 2026-09-30)
+
+**Question.** With replay context 1 and stored latents (ADR 0018), does a
+training window filter as acting did over the whole episode, where the old
+zero-start windows did not (the M3-P016 diagnosis's KL(full || window))?
+
+**Method.** `tests/unit/test_dreamer.py::test_the_restored_window_filters_as_the_full_episode_does`:
+a small untrained model (deter 16), an 18-step synthetic episode acted on,
+posteriors filtered over the whole episode against one 6-step window of it,
+with the same stochastic draws, from the context step's latent and from zero.
+Plus `test_a_window_restores_the_latent_acting_reached_at_its_context_step`:
+the learner's first deterministic state against the one the acting policy
+stored, through `DreamerReplay`.
+
+**Result.** From the context latent: KL 0.0 at every window step (exact). From
+zero: 0.027, 0.016, 0.008, 0.004, 0.001, 0.001 — the gap the old windows had,
+shrinking along the window. The window's first deterministic state matches
+the acted one within 1e-5.
+
+**Limits.** Synthetic, untrained and small; it shows the mechanism, not the
+size of the effect on a trained model, and not whether it changes learning.
+No device run.
+
 ## Fixed-policy throughput reference (`#101`, 2026-09-30)
 
 **Purpose.** Training decisions per hour follow the policy's game time per

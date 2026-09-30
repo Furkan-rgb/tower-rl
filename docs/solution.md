@@ -1710,18 +1710,23 @@ DreamerV3 (Hafner et al. 2023, arXiv:2301.04104) is a second backbone,
 code (danijar/dreamerv3 at e3f02248), which is followed where paper and code
 disagree unless a row says otherwise. Its network-free parts are in
 `learning/dreamer_math.py`, tested against formulas restated from that code
-(`tests/unit/test_dreamer_math.py`). Replay, the actor, `TrainingRun`, the
-checkpoint format and the evaluator are the ones every backbone uses.
+(`tests/unit/test_dreamer_math.py`). It has its own replay,
+`DreamerReplay` in `learning/dreamer_replay.py`, a port of the official
+`embodied/core/replay.py`; the actor, `TrainingRun`, the checkpoint format and
+the evaluator are the ones every backbone uses.
+
+The rule (ADR 0018): the port follows the official code's conventions, and a
+row differs only where this environment or protocol forces it, naming what
+forces it. Every row below is either "same" or such a deviation.
 
 Every DreamerV3 value lives in `DreamerConfig`. The loop settings it fixes —
-sequence length, burn-in, batch, replay ratio, warm-up and exploration — are
-set by `dreamer_loop_settings` in `scripts/train.py`. Its uniform replay is not
-a flag at all: `build_arm` builds `PrioritizedSequenceReplay.uniform` for it.
-A flag that repeats one of them is accepted. A flag that contradicts one is
-refused, and so is a flag only stacked-dqn reads. The manifest records every
-`DreamerConfig` value as `dreamer_<field>` and records the stacked-dqn learner
-and network keys as None. `checkpoint_policy` rebuilds the policy from the
-`dreamer_*` keys.
+sequence length, batch, replay ratio, warm-up, replay capacity and
+exploration — are set by `dreamer_loop_settings` in `scripts/train.py`, and
+`build_replay` builds `DreamerReplay` for it. A flag that repeats one of them
+is accepted. A flag that contradicts one is refused, and so is a flag only
+stacked-dqn reads. The manifest records every `DreamerConfig` value as
+`dreamer_<field>` and records the stacked-dqn learner and network keys as
+None. `checkpoint_policy` rebuilds the policy from the `dreamer_*` keys.
 
 **The discount and the reward are the task's** (ADR 0013), not DreamerV3's.
 `--discount-per-game-second` is required: there is no per-step discount to
@@ -1740,61 +1745,49 @@ Epsilon is ignored and is 0. Evaluation samples the same policy the arm
 collected with. Each acting copy draws its latents and its action from its own
 `random.Random` stream, reseeded per actor by `acting_copy`.
 
-**Replay layout.** Replay stores a step's own action and the reward and
-termination of the transition out of it. Dreamer's step carries those of the
-transition into it. `learn` shifts them by one, and three rules follow from
-that shift:
+**Replay layout: the official driver's.** A stored step is an observation,
+the action taken at it, the latent acting reached there, and the reward,
+termination and game time of the transition *into* it. An episode's last step
+is its final observation — the environment's terminal observation
+(`RunTransition.next_state`) when the run died — with action 0, as the
+official driver masks it. Each actor's episodes form one stream; every stream
+position starts an item of 65 steps (64 + the context), windows run across
+episode boundaries, and `_annotate_batch`'s `is_first`/`is_last` marks reset
+the model there. A window's first step is its context: only its stored latent
+and action are read (`_apply_replay_context`), and every later step trains
+every loss with its own stored targets. After each update the trained steps'
+posterior latents are written back. Each transition's d = γ_s^Δt (§9.4d) is
+read from the game time stored with it; the reward is stacked-dqn's, valued at
+the span's start: (1 − d)·V_REF under `--survival-time-reward`
+(`value_learning.survival_rewards`, the one function both backbones call),
+else the wave change d·r. Every loss is a plain mean, as the official one is.
 
-- The reward and continue losses are masked at a window's first step,
-  because the reward and termination the shift puts there belong to a step
-  outside the window. An episode's first step after front padding is trained
-  on the padding's reward 0 and no termination, which is the official
-  `is_first` target.
-- A window that ends an episode has no stored terminal observation. A
-  phantom step, predicted from the last state and action by the prior alone,
-  carries the terminal reward and termination. It trains only the reward and
-  continue heads, and it is the replay-value loss's terminal target.
-- Every window starts from the zero state.
+Storage (2026-09-30): ~10.6 KB per step, so ~10.6 GB at 1M decisions — scalars,
+rows and game time as float32 (~2.4 KB), the mask as bool, the latent's
+deterministic part as float32 (8 KB, the official entry's precision) and its
+stochastic sample as 32 int8 class indices, which hold the official float32
+one-hot (2 KB) exactly. The capacity of 5e6 items therefore binds only past
+~4M decisions (~53 GB).
 
-Replay stores each step's game time and reward with the transition out of it,
-so each transition's d = γ_s^Δt (§9.4d) and its reward shift with its
-termination: the continue flag at step t, its d and its reward all describe
-the transition into t. The reward is stacked-dqn's, valued at the span's
-start: (1 − d)·V_REF under `--survival-time-reward` (`value_learning.survival_rewards`, the
-one function both backbones call), else the wave change d·r. The window's
-first step gets d = 1, which nothing reads. The first real step after front
-padding gets the padding's d = 1 (0 s).
-
-A window that does not end its episode is cut after its own last step, so its
-replay-value returns are exactly the official ones. Padding enters no loss:
-every loss is a mean over the steps its weight keeps.
-
-| setting | official | ours | why |
+| setting | official (danijar/dreamerv3 at e3f02248) | ours | why |
 |---|---|---|---|
-| model size | `size12m`: deter 2048, hidden 256, classes 16, units 256 (configs.yaml `size12m`) | same; 10.1M parameters | The paper's size for vector-observation control. |
-| batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`) | same; stride 32, burn-in 0 | none |
-| train ratio | 512, Table 2's setting for the 500K-1M-step, vector-observation, 12M-model budget (Proprio Control 500K and Visual Control 1M rows; dv3.txt lines 869-870), matching the code's `crafter` preset (configs.yaml: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`, its only 1.1M-step single-environment preset) | 512, which is train_ratio/(batch_size·batch_length) = 512/(16·64) = 0.5 gradient steps per decision (`dreamer.py:143`). No flag overrides it. | 2026-09-25: this budget and model size is what the paper's own Table 2 specifies, and it is the code's own preset for a matching 1.1M-step, single-environment run. (Supersedes the earlier claim that the `atari100k` preset's 256 was "the published preset for the matching low-data, one-environment regime"; `atari100k` is a 400K-step, 100 discrete-action benchmark, not this one.) |
-| warm-up | trains once replay holds B·T steps (`embodied/run/train.py:71`), about 1,088 agent steps once the official replay's chunking is counted | 25 windows, about 1,008 decisions at stride 32 | A window count is what `TrainingConfig` expresses. 25 windows is the nearest to the official figure. |
-| replay | uniform, 5e6 steps, plus an online queue | uniform (`PrioritizedSequenceReplay.uniform`, not an option), 4096 windows by default, **no online queue** | The shared `--replay-capacity` default is 4096, derived for `stacked-dqn` in §9.4. 1M-decision DreamerV3 runs still pass `--replay-capacity 40000` so the buffer holds the whole run (the official `replay.size` is 5e6): at DreamerV3's shorter episodes (roughly 4 windows per 148-decision episode) that holds about 0.9M decisions. The fundamentals audit measured ~19.5 KB per stored step, so 40,000 windows at those ~37 decisions each is about 29 GB. DreamerV3's parameter refresh is fixed at every episode start (`--parameter-sync-decisions 0`, §6.10). An online queue would need a replay change. |
-| replay context | 1, with stored latents | **0**, the official code's own zero-context path | Replay stores no latents, and writing them back into replay would change replay. |
-| action mask | none | **the mask is an observation key.** It is encoded and decoded (binary cross-entropy). Acting samples under the true mask. Imagination samples under the decoded mask (logit > 0, WAIT always valid). | Invalid actions must never be chosen. In imagination the true mask is unknown, so the model's own belief of it is used. |
-| terminal step | the environment's terminal observation | **phantom terminal**, as above | Replay stores no terminal observation. |
-| reward/continue loss at the window's first step | trained. `_annotate_batch` forces `is_first` on a sampled window's first step but keeps its stored reward and `is_terminal` (`embodied/core/replay.py:283-286`) | **masked** | Under the shift, the reward and termination at that step are the previous stored step's, which lies outside the window. Masking is simpler than carrying one extra step. |
-| actor unimix | the paper's 1%; the code lists 0.01, but its categorical head never applies it | **1% uniform over the valid actions** | The paper is followed here. |
-| discount | `horizon: 333`, one per-step discount 1 − 1/333, folded into the continue target by `contdisc`: (1 − is_terminal)·(1 − 1/333); the replay-value return discounts by that constant `disc` | **per transition, d = γ_s^Δt at the task's γ_s** (`--discount-per-game-second`, 0.999 by protocol). The continue target is (1 − terminal)·d, 1 for a purchase. Imagination's return and weights discount only by the predicted continue, as the official code's do (`disc = 1` there). The replay-value return discounts by each stored transition's d. | ADR 0013: the discount horizon is a task parameter, per game-second, identical across learners. The official per-step 0.997 is about 620 game-seconds here, and a purchase spans no game time. This is the official `contdisc` mechanism with Δt-dependent d. |
-| optimizer | LaProp, lr 4e-5, β1 0.9, **β2 0.999**, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from a rate of 0 | same | The paper's text says β2 0.99. The code is followed. |
-| precision | bfloat16 compute (configs.yaml `jax.compute_dtype: bfloat16`); float32 parameters and optimiser state (`embodied/jax/opt.py` 129, 149), norms computed in float32 (`nets.py` `Norm`, `x = f32(x)`), every output distribution and loss in float32 (`outs.py`: `f32(logits)`, `f32(mean)`; `opt.py` 37 asserts a float32 loss), return normaliser in float32 (`utils.py` 45) | same, on CUDA: `torch.autocast` bfloat16 over the loss; every head's output is taken to float32 before a distribution or loss; `_RMSNorm` computes in float32; the recurrent deterministic state is carried in float32 (the official carry is bfloat16). On the CPU (tests), float32. The manifest records it as `dreamer_compute_dtype`. | 2026-09-26: matches the official code and, with compilation, is what makes the learner fast enough for a 1M-decision run (below). Until then the port computed in float32. |
-| RSSM, KL, heads, twohot, return normaliser, imagination horizon 15, λ 0.95, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | none |
-| prioritised replay signal | not used | `td_errors` are \|replay-value return − value\| over the replay-value steps, and are unused at α 0 | The protocol requires one. |
-
-Recorded minor differences, not in the table:
-
-- The mask enters the encoder as 0/1 floats, not as the one-hot the official
-  code gives a discrete observation key.
-- Every loss is a mean over the steps its weight keeps, not over all B·T steps.
-- The actor's entropy is taken over the valid actions only.
-
-The deviations, the rows in bold, and these differences are the whole list.
+| model size | `size12m`: deter 2048, hidden 256, classes 16, units 256 (configs.yaml `size12m`) | same; 10.1M parameters | — |
+| batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`), an item at every step (`replay.py` `add` 77-118) | same | — |
+| train ratio | 512 (configs.yaml `crafter` preset: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`; Table 2's vector-observation 12M row, dv3.txt 869-870) | same: 512/(16·64) = 0.5 gradient steps per decision | — |
+| warm-up | trains once `len(replay) >= batch_size * batch_length` items (`embodied/run/train.py` 71) | same: 1,024 items | — |
+| replay | uniform, `replay.size` 5e6 items, FIFO (`replay.py` `_insert`/`_remove` 171-191), online queue first (`add` 114-118, `_sample` 158-160) | same | — |
+| replay insertion | step by step as the driver steps | **a whole episode at its end** | ADR 0014 and ADR 0017: a counted episode is in replay whole or not at all, which the resume pair and the learner's debt are built on. |
+| inadmissible transitions | none | **the stream is cut at the first**, keeping the observation it left from | The environment's admissibility contract (docs/environment-contract.md): what an inadmissible transition led to may not be a valid observation. |
+| replay context | 1, stored `dyn` entries written back (`agent.py` `_apply_replay_context` 312-340, `train` 137-154; `replay.py` `update` 140-149) | same; the entry stored at float32, as `jax/agent.py` `_take_outs` 399-403 hands it over | — |
+| terminal step | the environment's terminal observation, action masked | same | — |
+| reward/continue at the window's first step | trained with its stored targets (`replay.py` `_annotate_batch` 278-292) | same | — |
+| actor unimix | none: `heads.py` `Head.categorical` builds a plain categorical; the 0.01 in configs.yaml is never applied | same: 0 | — |
+| action mask | none | **the mask is an observation key.** Encoded as 0/1 and decoded with binary cross-entropy. Acting samples under the true mask; imagination under the decoded mask (logit > 0, WAIT always valid); the actor's entropy is over the valid actions. | Invalid actions must never be chosen (docs/environment-contract.md); in imagination the true mask is unknown, so the model's belief of it is used. The 0/1 encoding rather than the official one-hot per discrete key is kept so older checkpoints still load for evaluation (ADR 0014) — the weakest of these reasons. |
+| discount | `horizon: 333`, (1 − is_terminal)·(1 − 1/333) by `contdisc`; the replay-value return discounts by that constant | **per transition, d = γ_s^Δt**: continue target (1 − terminal)·d, 1 for a purchase; imagination discounts only by the predicted continue, as the official code does; the replay-value return by each stored d | ADR 0013: the discount is a task parameter per game-second, identical across learners; a purchase spans no game time. The official `contdisc` mechanism with Δt-dependent d. |
+| optimizer | LaProp, lr 4e-5, β1 0.9, β2 0.999, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from 0 | same | — |
+| precision | bfloat16 compute (configs.yaml `jax.compute_dtype`); float32 parameters, optimiser state (`embodied/jax/opt.py` 129, 149), norms (`nets.py` `Norm`), output distributions and losses (`outs.py`; `opt.py` 37), return normaliser (`utils.py` 45) | same on CUDA (`torch.autocast`); the recurrent state is carried in float32 where the official carry is bfloat16; float32 on the CPU (tests) | The float32 carry is the stored entry's precision, which the official code converts to on the way out (`_take_outs`). |
+| RSSM, KL, heads, twohot, return normaliser, imagination from every replayed state (`imag_last: 0`), horizon 15, λ 0.95, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | — |
+| prioritised replay signal | not used | `td_errors` \|replay-value return − value\| are reported and unused (α 0) | The protocol's `Backbone.learn` contract requires one. |
 
 **Monitors.** Each update reports, from tensors its loss already holds, over
 the replayed steps its losses train (`DreamerBackbone._checks`). They are

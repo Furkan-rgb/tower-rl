@@ -203,6 +203,15 @@ environment and nothing that observes or drives it.
 - `value_learning.py` — n-step targets, the weighted sequence loss, TD errors.
 - `replay.py` — `PrioritizedSequenceReplay` over `ReplaySequence`, and
   `ReplayImage`, the buffer captured at one moment and written as a dump.
+  stacked-dqn's replay.
+- `dreamer_replay.py` — `DreamerReplay`, DreamerV3's own replay, ported from
+  the official `embodied/core/replay.py`: one step stream per actor holding
+  `EpisodeSteps` arrays (observation, action, the transition into each step,
+  the stored latent), an item at every step, the online queue, FIFO eviction,
+  and `write_back` of the learner's latents; `DreamerSample` is a sampled
+  batch and where its steps live; `DreamerReplayImage` is its dump
+  (`docs/solution.md` §9.4c, ADR 0018). The actor writes it through
+  `Actor._emit_stream`, stacked-dqn's through `Actor._emit`.
 - `actor.py` — `Actor`, which plays one episode against one
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `learner.py` — `Learner`, the one training copy of the network and how its
@@ -290,8 +299,9 @@ and `killed_by` names the bar. `scripts/train.py` skips the final evaluation
 after a kill-bar stop. A bar the parent run already passed is not rechecked
 on resume.
 
-**State.** `TrainingRun` owns everything the fleet shares: one
-`PrioritizedSequenceReplay` all actors write into, one `Backbone` inside
+**State.** `TrainingRun` owns everything the fleet shares: one replay all
+actors write into (`PrioritizedSequenceReplay`, or `DreamerReplay` for
+DreamerV3; `ArmReplay`), one `Backbone` inside
 `Learner`, one acting copy per actor in `acting`, the `TrainingProgressReport`,
 the `LearnerThread` that trains the `Learner`, `_since_sync`, and each actor's
 decisions credited to the learner in its current episode (`_credited`). The
@@ -308,10 +318,11 @@ lock, `Learner.lock` - each guarding one thing:
   one completed step and the report counts exactly the steps the weights took.
   The debt's condition variable behind it is a leaf: nothing else is taken
   while it is held.
-- `PrioritizedSequenceReplay.lock` guards the buffer, and is the one taken by
-  the *caller* rather than inside the methods. The learner thread takes it to
-  sample and again to update priorities, not across the step between them;
-  `update_priorities` follows the evictions actors made in between.
+- The replay's `lock` guards the buffer, and is the one taken by the
+  *caller* rather than inside the methods. The learner thread takes it to
+  sample and again to update priorities (`DreamerReplay`: to write latents
+  back), not across the step between them; both follow the evictions actors
+  made in between.
 - `Learner.lock` guards the training network. It is what keeps an optimisation
   step and a parameter publication from overlapping, so what an actor copies out
   is always some completed step and never half of one. A publication therefore
@@ -424,8 +435,8 @@ neither is part of a run:
 2. `connect` opens one `InstrumentedBridgeClient` per instance and wraps it as
    `InstrumentedRunAdapter` → `InstrumentedRunEnvironment`, appending each to the
    list `tear_down_fleet` will release.
-3. `build_arm` constructs the `PrioritizedSequenceReplay`, the
-   `StackedDqnBackbone`, one `Actor` per instance and the `TrainingRun`, with
+3. `build_arm` constructs the replay (`build_replay`: `DreamerReplay` for
+   DreamerV3), the backbone, one `Actor` per instance and the `TrainingRun`, with
    the `RunIdentity` resolved and stamped.
 4. `train_session` runs the arm until `--budget-decisions` is spent. The
    budget is **cumulative decisions across the fleet**, the one unit of
@@ -522,8 +533,9 @@ advances (`InstrumentedRunEnvironment.stop_requested`, which the run points at
 beside `EpisodeAbandoned`) and counts nothing. Before this, SIGINT raised `KeyboardInterrupt` in the
 join, and the run left past the code that writes its summary (`M3-P015`,
 `M3-P016`).
-Both go through `_write_resume_point`: `PrioritizedSequenceReplay.image()`,
-taken under the buffer's lock, is written by `ReplayImage.write` to
+Both go through `_write_resume_point`: the replay's `image()` (for
+DreamerV3 a `DreamerReplayImage`, dump format 3, beside checkpoint format 7),
+taken under the buffer's lock, is written by its `write` to
 `<run_dir>/replay/d<decisions>.partial/`, fsynced and renamed into place; then
 `latest.pt` is written naming it (`paired_replay`, with the process's random
 streams in `rng_state`); then every other entry in `replay/` is deleted. A

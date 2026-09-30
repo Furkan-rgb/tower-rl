@@ -276,7 +276,7 @@ Baseline v1 is the account at level 0. Baseline v2 is the same account with a ru
 
 At minimum, the project must record all visible permanent choices known to affect a run, the Workshop level and rows, the game/app version, device profile, display settings, in-game speed, and relevant configuration.
 
-Normal death-to-new-run navigation should preserve natural variation. A golden recovery state must restore actors that drift, become corrupted, enter an unsupported screen, or otherwise fail baseline verification. The implementation must not silently assume that repeated restoration produces suitable randomness; this must be tested.
+Normal death-to-new-run navigation should preserve natural variation. A golden recovery state must restore actors that drift, become corrupted, enter an unsupported screen, or otherwise fail baseline verification. The mechanism is a cold relaunch of the instance from its read-only base image, which discards every overlay write and so restores the golden baseline (ADR 0016). The implementation must not silently assume that repeated restoration produces suitable randomness; this must be tested.
 
 Training must halt or quarantine affected actors if the baseline cannot be verified.
 
@@ -417,7 +417,7 @@ Exit criteria:
 - one program-controlled APK instance can verify readiness, start Tier 1, capture observations, execute every supported semantic action, detect death, record the result, and start the next run;
 - calibration detects incompatible UI/device profiles rather than tapping blindly;
 - expected non-game screens and transient failures have classified handling;
-- baseline drift is detectable and golden recovery is demonstrably functional;
+- baseline drift is detectable and golden recovery (a cold relaunch from the read-only base image, ADR 0016) is demonstrably functional;
 - each supported purchase action has evidence that the intended control was activated;
 - a scripted controller completes at least 100 consecutive valid episodes without manual correction during development testing.
 

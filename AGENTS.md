@@ -43,7 +43,7 @@ Task state is not prose. It lives on the GitHub board (see Board discipline belo
 - Keep Android/UI integration separate from the environment and learner.
 - Use semantic actions; never make learned screen coordinates part of the policy.
 - Treat invalid observations, failed actions, navigation errors, game deaths, stalls, and baseline drift as distinct outcomes.
-- Use the game's normal death-to-new-run path for ordinary resets; use the golden baseline for recovery.
+- Use the game's normal death-to-new-run path for ordinary resets; recover an instance by a cold relaunch from its read-only image, which restores the golden baseline (ADR 0016).
 - Establish random and scripted baselines before interpreting learning performance.
 - Keep evaluation exploration-free and isolated from replay and training.
 - Make long-running work resumable and storage-bounded.

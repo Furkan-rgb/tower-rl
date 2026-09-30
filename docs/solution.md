@@ -66,6 +66,8 @@ licensing/integrity, edits saves, or automates transactional or competitive path
 
 Normal episode reset is the game's own death-to-new-Tier-1 flow. A golden device baseline is a recovery mechanism, not the default hot-path reset. This preserves naturally changing random state and avoids paying snapshot restoration cost after every death.
 
+ADR 0016 decides that recovery is a cold relaunch of the instance from its read-only base image, which restores the golden baseline by discarding every overlay write, and rejects snapshot restore. Decided, not yet implemented.
+
 ### 3.4 Use semantic actions
 
 The policy chooses actions such as `BUY_HEALTH`; it never predicts coordinates. An Android adapter owns tab selection, taps, timing, verification, and recovery.
@@ -911,6 +913,8 @@ Recovery is bounded and escalating:
 6. re-run baseline verification;
 7. quarantine the actor if verification still fails.
 
+ADR 0016 decides the mechanism of steps 3-5 as one bounded, counted cold relaunch of the instance from its read-only base image, after a time-bounded retirement of a live run. Decided, not yet implemented.
+
 Every recovery increments categorized metrics and captures a compact artifact bundle. Use retention limits so screenshots and logs cannot fill the disk.
 
 ### 8.5 Randomness validation
@@ -1172,6 +1176,8 @@ pause had settled cost two 78-episode device runs: a tower that died inside the
 settle window, which is where the last advance before a death always sits, left a
 terminal observation with the stream held behind it, and `begin_episode` polled
 that single reading to its timeout about once in every seven boundaries.
+
+ADR 0016 decides that the bridge itself enforces this hold after every command and at connect, and reports a measured `held` flag in every state, so the host stops mirroring it. Decided, not yet implemented.
 
 **Liveness is the bridge's silence, not the host's inattention.** The deadline
 only runs while the host is actually waiting on the socket: anything already

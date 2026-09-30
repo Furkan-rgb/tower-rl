@@ -9675,6 +9675,12 @@ instance that fails bring-up is never added to `started`, so
 with the bridge deployed after the 8-requested run exited 0, and was cleaned
 up by hand.
 
+**Correction (2026-09-30, `#100`):** that defect is fixed. `open_instance` in
+`scripts/train.py` appends the instance to `started` before bring-up is
+attempted, `run_actors.run_actor` tears its instance down in a `finally`, and
+`tear_down_fleet` puts down every `started` instance (the `train.py` append is
+commit `894c36d`).
+
 Source: session scratchpad `X812-SCALING-DETAIL.md`.
 
 ## M1B-E028 — Multi-actor scaling is linear to four actors

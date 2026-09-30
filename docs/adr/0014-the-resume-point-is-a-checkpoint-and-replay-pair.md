@@ -109,3 +109,6 @@ moment leaves one complete pair.**
   device run is where the fleet-wide cost is measured, from the per-save line.
 - Resuming `M3-P016` itself, which predates this, can only re-warm: its
   `latest.pt` is format 4 and it left no dump.
+  (Amended 2026-09-30, ADR 0017: format 4 and 5 checkpoints are now refused
+  for resume altogether, being from the actor-thread learner; `M3-P016` cannot
+  be continued. They still load for evaluation and selection.)

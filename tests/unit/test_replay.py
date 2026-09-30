@@ -309,17 +309,28 @@ def test_updates_for_indices_the_buffer_never_held_are_dropped() -> None:
     assert len(replay._priorities) == 1
 
 
-def test_priorities_cannot_be_updated_once_eviction_has_shifted_every_index() -> None:
-    """A stale index still lands - on the wrong sequence. That is refused."""
-    replay = PrioritizedSequenceReplay(capacity=2, seed=1)
-    replay.add(_sequence(episode_id="episode-0"))
-    replay.add(_sequence(episode_id="episode-1"))
-    indices, _, _ = replay.sample(1)
+def test_priorities_updated_after_evictions_land_on_the_sequences_sampled() -> None:
+    """The learner updates priorities after its step, and actors may add meanwhile.
 
-    replay.add(_sequence(episode_id="episode-2"))  # evicts, shifting indices down
+    Eviction shifts every index down by one, so an update must follow the shift
+    to reach the sequence it was sampled from, and drop one that was evicted.
+    """
+    replay = PrioritizedSequenceReplay(capacity=3, seed=1)
+    for episode in range(3):
+        replay.add(_sequence(episode_id=f"episode-{episode}"))
+    replay.sample(1)
+    sampled = (0, 1, 2)  # episode-0, episode-1, episode-2 at the sample
 
-    with pytest.raises(ReplayRejected, match="eviction"):
-        replay.update_priorities(indices, ((1.0,),))
+    replay.add(_sequence(episode_id="episode-3"))  # evicts episode-0
+
+    replay.update_priorities(sampled, ((7.0,), (5.0,), (3.0,)))
+    by_episode = {
+        item.metadata.episode_id: priority
+        for item, priority in zip(replay._items, replay._priorities, strict=True)
+    }
+    assert by_episode["episode-1"] == pytest.approx(5.0)
+    assert by_episode["episode-2"] == pytest.approx(3.0)
+    assert by_episode["episode-3"] != pytest.approx(7.0), "episode-0's error went nowhere"
 
 
 def test_a_new_sequence_enters_at_the_current_maximum_not_a_historical_one() -> None:

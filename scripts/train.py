@@ -184,6 +184,7 @@ from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
     DECISION_BUDGET_FORMAT_VERSION,
+    LEARNER_THREAD_FORMAT_VERSION,
     CheckpointError,
     CheckpointIdentity,
     ResumeState,
@@ -552,6 +553,13 @@ def build_arm(
             backbone=backbone,
             config=config,
             report=progress,
+            # Owed on the parent's buffer: a resume that re-warms starts owing
+            # nothing (ADR 0017).
+            resumed_debt_steps=(
+                resume.learner_debt_steps
+                if resume is not None and resume.replay_dump is not None
+                else 0.0
+            ),
             stop=threading.Event() if stop is None else stop,
         ),
         started=started,
@@ -624,8 +632,22 @@ def build_arm(
     # can be put against the reset that caused it (docs/solution.md 9.4).
     logged_resets = backbone.resets if isinstance(backbone, StackedDqnBackbone) else 0
 
+    def log_resets(report: TrainingProgressReport) -> None:
+        nonlocal logged_resets
+        if isinstance(backbone, StackedDqnBackbone) and backbone.resets != logged_resets:
+            logged_resets = backbone.resets
+            arm.run.log_metrics(
+                {"learner_resets": float(logged_resets)}, decisions=report.decisions
+            )
+            print(
+                f"[{name}] learner reset {logged_resets} at step "
+                f"{logged_resets * arguments.reset_every_steps}, "
+                f"{report.decisions} decisions",
+                flush=True,
+            )
+
     def on_episode(report: TrainingProgressReport) -> None:
-        nonlocal warmed, logged_resets
+        nonlocal warmed
         if (
             not warmed
             and resume is not None
@@ -641,17 +663,7 @@ def build_arm(
                 f"learning restarted at {report.decisions} decisions",
                 flush=True,
             )
-        if isinstance(backbone, StackedDqnBackbone) and backbone.resets != logged_resets:
-            logged_resets = backbone.resets
-            arm.run.log_metrics(
-                {"learner_resets": float(logged_resets)}, decisions=report.decisions
-            )
-            print(
-                f"[{name}] learner reset {logged_resets} at step "
-                f"{logged_resets * arguments.reset_every_steps}, "
-                f"{report.decisions} decisions",
-                flush=True,
-            )
+        log_resets(report)
         # The episode first: it is the tracked unit, and the window below it is
         # the smoothed view of the same series.
         arm.record_episodes()
@@ -674,6 +686,8 @@ def build_arm(
     # The candidates a post-hoc selection chooses among, beside the resume point.
     arm.training.numbered_checkpoint = arm.numbered_checkpoint
     arm.training.on_episode = on_episode
+    # The closing drain takes steps no episode follows, and a reset may be one.
+    arm.training.on_block_end = log_resets
     arm.training.on_withdrawal = on_withdrawal
     arm.training.on_failed_start = on_failed_start
     manifest = run_dir / MANIFEST
@@ -1321,13 +1335,16 @@ def resume_point(
 ) -> ResumeState | None:
     """The checkpoint this run continues, read and checked before a device is touched.
 
-    Three refusals, all here rather than an hour into collection. The identity
+    Four refusals, all here rather than an hour into collection. The identity
     is the checkpoint's own: a file from another arm, another device profile or
     another observation, action or reward schema is not experience this run can
     go on from, and `CheckpointIdentity.incompatibilities` names which. The
     format is the second: a file from before the decision budget (format below
     4) counted its selection periods in game time, so it is for evaluation
-    only. The budget is the third: `--budget-decisions` is the whole run's total, not
+    only. The learner is the third: a file from before the learner thread
+    (format below 6) was trained with its steps taken on the actors' threads,
+    and a run that went on under the other would be a mixed one. The budget is
+    the fourth: `--budget-decisions` is the whole run's total, not
     this segment's, so a checkpoint at 50,123 of 120,000 continues to 120,000
     and a larger budget extends the run - but a checkpoint that has already
     spent the budget is nothing this run can add to.
@@ -1361,6 +1378,13 @@ def resume_point(
             f"--resume {arguments.resume} is a format {state.format_version} "
             "checkpoint from the game-time budget era: it is for evaluation "
             "only and cannot be resumed under --budget-decisions"
+        )
+    if state.format_version < LEARNER_THREAD_FORMAT_VERSION:
+        raise SystemExit(
+            f"--resume {arguments.resume} is a format {state.format_version} "
+            "checkpoint: its run was trained under the actor-thread learner, and "
+            "continuing it on the learner thread (ADR 0017) would make it a mixed "
+            "run. It can still be evaluated or selected; start a new run instead"
         )
     if arguments.backbone == DREAMERV3 and "dreamer_horizon" in state.resolved_config:
         # From before the game-time discount: its continue head and critic

@@ -73,7 +73,7 @@ state/runs/<run name>/
                          time, parent checkpoint, decisions it resumed from)
   checkpoints/           latest.pt and every numbered checkpoint, all segments
   replay/                the buffer saved beside the final latest.pt
-  segments/<n>/          summary.json and train.log of sitting n
+  segments/<n>/          summary.json, train.log and episodes.jsonl of sitting n
   logs/                  run_stage.sh stage logs (--log-directory)
   evaluations/<name>/    per-actor records and fleet.json of a checkpoint's evaluation
 ```

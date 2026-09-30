@@ -38,7 +38,13 @@ moment leaves one complete pair.**
   new file alone. `load` accepts any line, so the file on disk always passes.
 - **Cadence.** The pair is written every `--checkpoint-every-episodes`
   (default 25), beside every numbered checkpoint, and once more as the run
-  ends. The write holds the progress lock and runs on the thread of the actor
+  ends. An operator's SIGINT ends the run as a kill bar does (amended
+  2026-09-30, board `#95`): the actors abandon their episodes between two
+  decisions and the join returns, so this last pair is written with the fleet
+  already stopped; a periodic save in flight at the SIGINT finishes first, and
+  the last pair is written after it. Before, SIGINT raised in the main
+  thread's join, the last pair was written while actors still collected, and
+  the run's summary was never written. The write holds the progress lock and runs on the thread of the actor
   whose episode triggered it: that actor's emulator idles for the save, and any
   other actor that finishes an episode meanwhile waits for the lock too, so
   learning and episode counting stop. The actors still mid-episode keep

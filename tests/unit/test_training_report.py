@@ -530,3 +530,32 @@ def test_the_summary_carries_the_periods_the_run_judged_itself_on(
     assert arm["early_stopping"]["closing_period_near_greedy_mean_final_wave"] == (
         periods[-1]["mean_final_wave"]
     )
+
+
+def test_an_invalid_episode_is_logged_and_streamed_as_it_ends(tmp_path: Path) -> None:
+    """Its reason is on disk before the run ends, not only in the summary it ends on."""
+    # Ordinal 1 is the first collected episode, which the fake leaves ambiguous.
+    report = session(tmp_path, ambiguous_advance_episodes=frozenset({1}))
+    segment = Path(report["run_folder"]) / "segments" / "1"
+    records = report["arm"]["collected_episodes"]
+    invalid = records[0]
+    assert not invalid["valid"] and invalid["termination_detail"]
+
+    log = (segment / "train.log").read_text()
+    assert (
+        f"invalid episode 0: actor {report['arm']['actors'][0]['actor_id']} "
+        f"decisions {invalid['decisions']} game_ms {invalid['round_ms']:.0f} "
+        f"starting_wave {invalid['starting_wave']} final_wave {invalid['final_wave']} "
+        f"termination action_pipeline_failed: {invalid['termination_detail'][0]}"
+    ) in log
+    # The window it fell in names its reason beside the count.
+    assert "(invalid 1 [action_pipeline_failed 1] " in log
+
+    streamed = [json.loads(line) for line in (segment / "episodes.jsonl").read_text().splitlines()]
+    # As the summary written at the end records them, once through JSON.
+    assert streamed == json.loads((segment / "summary.json").read_text())["arm"][
+        "collected_episodes"
+    ]
+    # The code the tracked series reads it by is on the run's manifest.
+    manifest = json.loads((Path(report["run_folder"]) / "manifest.json").read_text())
+    assert manifest["episode_termination_codes"]["5"] == "action_pipeline_failed"

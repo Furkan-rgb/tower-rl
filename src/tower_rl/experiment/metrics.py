@@ -19,7 +19,7 @@ from tower_rl.environment.decision_time import (
     EMPTY_BREAKDOWN,
     DecisionTimeBreakdown,
 )
-from tower_rl.environment.episode import EpisodeSummary
+from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.evaluator import EvaluationReport, episode_record
 from tower_rl.learning.training import (
@@ -161,6 +161,31 @@ def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
     return metrics
 
 
+#: A number for each way an episode can end, for the per-episode
+#: `episode_termination` metric: a metric store holds numbers, not names. Fixed
+#: here rather than taken from the enum's order, so a code logged once names the
+#: same outcome in every later run; a new outcome takes a new code and no code
+#: is ever reused. The mapping travels with each run in its manifest
+#: (`episode_termination_codes`), so the store can be read without this file.
+TERMINATION_CODES: Mapping[TerminationOutcome, int] = {
+    TerminationOutcome.GAME_OVER: 0,
+    TerminationOutcome.OPERATOR_STOP: 1,
+    TerminationOutcome.STALLED: 2,
+    TerminationOutcome.MASK_LEGAL_REJECTED: 3,
+    TerminationOutcome.OBSERVATION_INVALID: 4,
+    TerminationOutcome.ACTION_PIPELINE_FAILED: 5,
+    TerminationOutcome.UI_STATE_LOST: 6,
+    TerminationOutcome.DEVICE_FAILED: 7,
+    TerminationOutcome.BASELINE_DRIFT: 8,
+    TerminationOutcome.RECOVERY_FAILED: 9,
+}
+
+
+def termination_code_names() -> dict[str, str]:
+    """`TERMINATION_CODES` as the manifest records it: code, as text, to outcome."""
+    return {str(code): outcome.value for outcome, code in TERMINATION_CODES.items()}
+
+
 def episode_metrics(
     episode: CollectedEpisode,
     *,
@@ -179,6 +204,9 @@ def episode_metrics(
     `episode_valid` is a number rather than a flag because a metric store holds
     numbers; read as a rate over a window it is the run's honesty, which is
     exactly what an unattended overnight run has to be readable on.
+    `episode_termination` beside it says how each episode ended, as its
+    `TERMINATION_CODES` code, so an invalid one is attributed in the store as
+    it happens rather than only in the summary a run writes as it ends.
     """
     summary = episode.summary
     return {
@@ -193,6 +221,7 @@ def episode_metrics(
         "episode_wait_fraction": episode.wait_fraction,
         "episode_purchases": float(summary.purchases),
         "episode_valid": 1.0 if summary.valid else 0.0,
+        "episode_termination": float(TERMINATION_CODES[summary.termination]),
         # Which instance played it, as a number: a fleet's episodes are one
         # series, and an actor that starts trailing the others is invisible in
         # the aggregate until it withdraws.
@@ -338,35 +367,65 @@ def selection_period_line(period: SelectionPeriod) -> str:
 def window_line(window: CollectionWindow) -> str:
     error = "n/a" if window.standard_error is None else f"{window.standard_error:.2f}"
     health = window.health
+    reasons = ", ".join(
+        f"{reason} {count}" for reason, count in sorted(health.invalid_by_reason.items())
+    )
+    invalid = f"{health.invalid_episodes} [{reasons}]" if reasons else "0"
     return (
         f"window {window.index} decisions {window.decisions_at_end} "
         f"mean final wave {window.mean_final_wave:.2f} se {error} "
         f"over {window.episodes} collected episodes, "
         f"wait {window.wait_fraction:.1%} purchases/episode "
         f"{window.purchases_per_episode:.1f} "
-        f"(invalid {health.invalid_episodes} cut_short {health.advances_cut_short} "
+        f"(invalid {invalid} cut_short {health.advances_cut_short} "
         f"divergence {health.bridge_event_divergence})"
     )
 
 
-def collected_episode_records(report: TrainingProgressReport) -> list[dict[str, object]]:
-    """Every collected episode's record, reusing the evaluator's shape.
+def collected_episode_record(index: int, episode: CollectedEpisode) -> dict[str, object]:
+    """One collected episode's record, reusing the evaluator's shape.
 
     `episode_record` is what `run_episodes.py` already serialises per-episode
     records with; this is that same shape, plus the actor id, since a fleet's
     episodes are one series and a health problem must be traceable back to the
     instance that produced it, and the episode's ez-greedy options - always
-    present, 0 when the run explored without them.
+    present, 0 when the run explored without them. `index` is the episode's
+    place in the segment's `collected` series.
     """
+    return {
+        **episode_record(index, episode.summary),
+        "actor_id": episode.actor_id,
+        "options_started": episode.options_started,
+        "longest_option": episode.longest_option,
+    }
+
+
+def collected_episode_records(report: TrainingProgressReport) -> list[dict[str, object]]:
+    """Every collected episode's record (`collected_episode_record`), in order."""
     return [
-        {
-            **episode_record(index, episode.summary),
-            "actor_id": episode.actor_id,
-            "options_started": episode.options_started,
-            "longest_option": episode.longest_option,
-        }
+        collected_episode_record(index, episode)
         for index, episode in enumerate(report.collected)
     ]
+
+
+def invalid_episode_line(index: int, episode: CollectedEpisode) -> str:
+    """One invalid episode, as it ends, with the first reason it was invalid.
+
+    Printed when the episode ends rather than left to the summary a run writes
+    as it ends: twice a run ended abnormally and took its only record of why
+    its episodes were invalid with it. `index` is the episode's place in the
+    segment's `collected` series, the `episode_index` of its record.
+    """
+    summary = episode.summary
+    detail = summary.termination_detail
+    reason = detail[0] if detail else "no detail recorded"
+    more = f" (+{len(detail) - 1} more)" if len(detail) > 1 else ""
+    return (
+        f"invalid episode {index}: actor {episode.actor_id} decisions {summary.decisions} "
+        f"game_ms {summary.round_ms:.0f} starting_wave {summary.starting_wave} "
+        f"final_wave {summary.final_wave} termination {summary.termination.value}: "
+        f"{reason}{more}"
+    )
 
 
 def health_counters(summaries: Sequence[EpisodeSummary]) -> dict[str, object]:

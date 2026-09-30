@@ -464,10 +464,25 @@ kill at any moment leaves one whole pair (ADR 0014). `TrainingRun` calls
 `TrainingReport.checkpoint` under its progress lock every
 `--checkpoint-every-episodes`, and after every numbered checkpoint; however
 `train_session` ends short of a hard kill — budget, early stop, kill bar, an
-exception or an interrupt — `TrainingReport.save_resume_point` holds the fleet
+operator's stop, an exception or a forced interrupt — `TrainingReport.save_resume_point` holds the fleet
 still (`TrainingRun.held_still`: the progress lock, then the buffer's), writes
 the pair once more, and halts the run: actors still collecting after an
-interrupt return at their next lock, counting and checkpointing nothing more.
+exception return at their next lock, counting and checkpointing nothing more.
+
+**The operator's stop.** `scripts/train.py`'s `OperatorStop` handles SIGINT
+for the whole of `train_session`. The first sets `TrainingRun.stop`, an event
+handed to the run as it is built: each actor returns at its next progress lock,
+or abandons its episode before its next decision (`_before_decision` raises
+`EpisodeAbandoned`, which the collection loop catches; nothing of that episode
+is counted or added to replay), so the main thread's join returns and the run
+ends down the kill bar's path — resume point, final evaluation skipped,
+summary (`interrupted`, `final_evaluation_skipped: "interrupted"`). The main
+thread itself is never interrupted by that first SIGINT, except inside the
+final evaluation, a blocking call that polls nothing, where it raises
+`EvaluationAbandoned`. A second SIGINT raises `KeyboardInterrupt`: the
+exception path above. Before this, SIGINT raised `KeyboardInterrupt` in the
+join, and the run left past the code that writes its summary (`M3-P015`,
+`M3-P016`).
 Both go through `_write_resume_point`: `PrioritizedSequenceReplay.image()`,
 taken under the buffer's lock, is written by `ReplayImage.write` to
 `<run_dir>/replay/d<decisions>.partial/`, fsynced and renamed into place; then

@@ -65,6 +65,35 @@ def _describe_state(state: BridgeObservation) -> str:
     )
 
 
+#: What the bridge answers an advance when the engine clock it steps cannot be
+#: resolved: it presses nothing, so the world is as running as it was.
+CLOCK_UNAVAILABLE = "clock_unavailable"
+
+
+def _held_after(
+    command: Mapping[str, object], result: BridgeCommandResult, *, held_before: bool
+) -> bool:
+    """Whether the bridge holds the world after carrying `command`.
+
+    The bridge's own rule, restated: a refused command changes nothing; an
+    advance holds a world whose settled state is a run still in progress; a
+    lifecycle press holds it only if it was a confirmed `pause`, and every
+    other one - `unpause`, the speed presses, a round start - leaves it
+    running; anything else leaves the hold as it was, except that a run which
+    has ended is never held. The one advance that does not hold a live run is
+    the one the bridge could not run at all (`clock_unavailable`): it returns
+    before it presses `Pause`, and says `paused = false`.
+    """
+    if result.outcome == "rejected" and result.reason == "stale_or_duplicate":
+        return held_before
+    in_progress = isinstance(result.state, BridgeObservation) and not result.state.terminal
+    if command.get("kind") == "advance":
+        return in_progress and result.reason != CLOCK_UNAVAILABLE
+    if command.get("kind") == "lifecycle":
+        return command.get("action") == "pause" and result.outcome == "confirmed" and in_progress
+    return held_before and (result.state is None or in_progress)
+
+
 @dataclass
 class InstrumentedRunAdapter:
     """One rooted clone, presented to the environment as a semantic run port."""
@@ -82,6 +111,13 @@ class InstrumentedRunAdapter:
     #: observation sequence the next command must bind, so the adapter issues
     #: nothing of its own initiative: see `_command_between_rounds`.
     _round_in_progress: bool = field(default=False, init=False)
+    #: Whether the bridge is holding the world still (`RunPort.world_held`),
+    #: mirrored from the commands this adapter carries by the bridge's own
+    #: rule (`native/tower_bridge/tower_bridge.cpp`, `world_paused`). A bridge
+    #: session starts with the world running, so a connection that dropped -
+    #: and whatever connection replaces it - is not held until a `pause` is
+    #: confirmed on it.
+    world_held: bool = field(default=False, init=False)
     #: The upgrade-row names, once the session has asked for them.
     _labels: tuple[UpgradeSlotLabel, ...] | None = field(default=None, init=False)
 
@@ -106,8 +142,11 @@ class InstrumentedRunAdapter:
         try:
             return self.client.read_state()
         except BridgeStaleObservationError as stale:
+            # A stream whose sequence moved backwards is a new connection's.
+            self.world_held = False
             raise RunPortError(f"the bridge stream lost its sequence: {stale}") from stale
         except InstrumentedBridgeError as failure:
+            self.world_held = False
             raise RunPortError(
                 f"the bridge could not report the run state: "
                 f"{type(failure).__name__}: {failure}"
@@ -264,7 +303,26 @@ class InstrumentedRunAdapter:
         budgeted, which is what actually verifies the multiplier (M1B-E023).
         """
         self._pin_game_speed(sequence)
+        self._hold_the_world()
         self._round_in_progress = True
+
+    def _hold_the_world(self) -> None:
+        """Hand the round over paused, as every advance leaves it.
+
+        The speed presses are lifecycle controls, and every lifecycle control but
+        `pause` leaves the world running: the bridge then streams a fresh
+        observation every 250 ms. A policy that took longer than that to choose
+        the episode's first action bound a sequence already gone, and the
+        episode ended `stale_or_duplicate` at wave 1 with no game time played
+        (`#95`). `pause` is the game's own `Pause`, the one an advance presses
+        at its end, so the first decision now starts from the same held world,
+        sequence standing, that every later decision does - one hold per round,
+        not the per-slice pause-stepping `M1B-E006` withdrew.
+        """
+        state = self._latest_state()
+        if not isinstance(state, BridgeObservation):
+            raise RunPortError("the instance stopped reporting a run before it could be held")
+        self._press("pause", state.sequence)
 
     def _press(self, action: str, expected_sequence: int) -> BridgeCommandResult:
         """Press one of the game's own controls and require its own confirmation."""
@@ -390,14 +448,19 @@ class InstrumentedRunAdapter:
         an instance that has stopped answering costs its actor, not the fleet.
         """
         try:
-            return self.client.send_command(command)
+            result = self.client.send_command(command)
         except BridgeStaleObservationError as stale:
             raise RunPortError(f"the bridge refused a stale command: {stale}") from stale
         except InstrumentedBridgeError as failure:
+            # The client closes the connection on any of these, and a
+            # connection that replaces it starts with the world running.
+            self.world_held = False
             raise RunPortError(
                 f"the bridge did not carry out a command: "
                 f"{type(failure).__name__}: {failure}"
             ) from failure
+        self.world_held = _held_after(command, result, held_before=self.world_held)
+        return result
 
     def _command_between_rounds(self, command: Mapping[str, object]) -> BridgeCommandResult:
         """Send a command of the adapter's own initiative, only between rounds.

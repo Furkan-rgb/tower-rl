@@ -14,6 +14,7 @@ behind.
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from collections.abc import Iterable, Mapping
@@ -28,6 +29,7 @@ from tower_rl.experiment.metrics import (
     DECISION_TIME_INTERVAL_SECONDS,
     LearningCurvePoint,
     actor_summary,
+    collected_episode_record,
     collected_episode_records,
     curve_metrics,
     decision_time_line,
@@ -35,6 +37,7 @@ from tower_rl.experiment.metrics import (
     episode_metrics,
     fleet_decision_time,
     health_metrics,
+    invalid_episode_line,
     learner_metrics,
     per_hour,
     pooled,
@@ -192,6 +195,11 @@ class TrainingReport:
     #: succeeded, or where this segment resumed (0 for a run that has written
     #: none). What a failed save reports the run to be behind by.
     resume_point_decisions: int = field(init=False, default=0)
+    #: Where each collected episode's record is appended as it is reported,
+    #: one JSON line each, flushed as it is written: the records survive a
+    #: kill that the summary, written only as the run ends, does not. None
+    #: writes none.
+    episode_stream: Path | None = None
 
     def __post_init__(self) -> None:
         self.resume_point_decisions = self.resumed_decisions
@@ -235,10 +243,11 @@ class TrainingReport:
         However the run ends short of a hard kill: the actors stop at their
         next lock, so nothing is counted or checkpointed after it.
 
-        `after_failure` is the run ending on an exception or an interrupt, which
-        may have struck mid-update. Then a backbone holding a non-finite weight
-        or optimizer moment writes nothing: the last periodic resume point is a
-        better one than a broken one written over it.
+        `after_failure` is the run ending on an exception or a forced interrupt
+        (a second SIGINT), which may have struck mid-update. Then a backbone
+        holding a non-finite weight or optimizer moment writes nothing: the
+        last periodic resume point is a better one than a broken one written
+        over it.
         """
         with self.training.held_still():
             report = self.training.report
@@ -450,6 +459,10 @@ class TrainingReport:
         summaries go up on the same key, because a run with no mid-run
         evaluation would otherwise report them exactly once, at the end.
 
+        Each episode's record is also appended to `episode_stream`, and an
+        invalid episode is printed with its first reason, both as it is reported
+        here: what a run ending abnormally would otherwise take with it.
+
         Called per episode, on the collecting thread, under the run's progress
         lock. It reads what has already been measured and measures nothing.
         """
@@ -457,7 +470,16 @@ class TrainingReport:
         actors = self.training.actor_index
         exploration = self.training.config.exploration
         learner = learner_metrics(report)
-        for episode in report.collected[self.episodes_logged :]:
+        start = self.episodes_logged
+        for offset, episode in enumerate(report.collected[start:]):
+            index = start + offset
+            if self.episode_stream is not None:
+                with self.episode_stream.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        json.dumps(collected_episode_record(index, episode), default=str) + "\n"
+                    )
+            if not episode.summary.valid:
+                print(f"[{self.name}] {invalid_episode_line(index, episode)}", flush=True)
             # The decisions at the end of this episode, not the run's current
             # total: the two differ whenever more than one episode has arrived
             # since the last call, and a point on the wrong key is a point on
@@ -465,12 +487,12 @@ class TrainingReport:
             self.decisions_logged += episode.summary.decisions
             self.game_ms_logged += episode.summary.round_ms
             self.episodes_logged += 1
-            index = actors.get(episode.actor_id, -1)
+            actor = actors.get(episode.actor_id, -1)
             self.run.log_metrics(
                 {
                     **episode_metrics(
                         episode,
-                        actor_index=index,
+                        actor_index=actor,
                         # Game time spent by this episode's end, a statistic;
                         # the step below is decisions, the progress axis.
                         cumulative_game_ms=self.game_ms_logged,
@@ -480,8 +502,8 @@ class TrainingReport:
                         # actor's rung entirely.
                         epsilon=(
                             report.epsilon
-                            if index < 0
-                            else exploration.epsilon_for(index, self.decisions_logged)
+                            if actor < 0
+                            else exploration.epsilon_for(actor, self.decisions_logged)
                         ),
                     ),
                     **learner,
@@ -665,10 +687,19 @@ class TrainingReport:
                 asdict(self.final_point) if self.final_point is not None else None
             ),
             # Why there is no final evaluation, when it was skipped on purpose:
-            # a run stopped on a kill bar is not evaluated here.
+            # a run stopped on a kill bar is not evaluated here, nor one the
+            # operator stopped - before the evaluation or during it.
             "final_evaluation_skipped": (
-                "kill_bar" if self.training.killed_by is not None else None
+                "kill_bar"
+                if self.training.killed_by is not None
+                else "interrupted"
+                if self.training.interrupted
+                else None
             ),
+            # Stopped from outside (SIGINT) short of its budget: every actor
+            # abandoned the episode it was in, and the resume point was written
+            # as the run ended, as for any other stop.
+            "interrupted": self.training.interrupted,
             "learning_curve": [asdict(point) for point in self.learning_curve],
             "mean_recent_unweighted_absolute_td_error": (
                 report.mean_recent_unweighted_absolute_td_error

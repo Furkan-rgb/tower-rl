@@ -25,8 +25,9 @@ from test_train_entry_point import (
     session,
 )
 
+from tower_rl.environment.episode import TerminationOutcome
 from tower_rl.environment.project_state import repository_root, state_directory
-from tower_rl.experiment.metrics import learner_metrics
+from tower_rl.experiment.metrics import TERMINATION_CODES, learner_metrics
 from tower_rl.experiment.run_identity import REFERENCE_FINAL_WAVES, SCRIPTED_REFERENCE
 from tower_rl.experiment.tracking import (
     ExperimentTracker,
@@ -408,6 +409,7 @@ EPISODE_KEYS = {
     "episode_wait_fraction",
     "episode_purchases",
     "episode_valid",
+    "episode_termination",
     "episode_actor",
     "episode_epsilon",
 }
@@ -465,6 +467,8 @@ def test_every_collected_episode_is_one_tracked_point(
         assert point.metrics["episode_game_ms"] == pytest.approx(episode["round_ms"])
         assert point.metrics["episode_purchases"] == float(episode["purchases"])
         assert point.metrics["episode_valid"] in (0.0, 1.0)
+        # How it ended, as a code: game over for exactly the valid ones.
+        assert (point.metrics["episode_termination"] == 0.0) == episode["valid"]
         assert 0.0 <= point.metrics["episode_wait_fraction"] <= 1.0
         # One actor, so index zero; a fleet's episodes are one series and this
         # is what places each of them on an instance.
@@ -675,3 +679,11 @@ def test_a_backbones_diagnostics_are_logged_as_window_means() -> None:
     logged = learner_metrics(report)
     assert logged["learner_dreamer_true_dt_seconds"] == 1.5
     assert "learner_dreamer_unseen" not in logged
+
+
+def test_every_way_an_episode_ends_has_a_code_of_its_own() -> None:
+    """A termination without a code would fail the run at the episode; two sharing
+    one would make the tracked series ambiguous."""
+    assert set(TERMINATION_CODES) == set(TerminationOutcome)
+    assert len(set(TERMINATION_CODES.values())) == len(TERMINATION_CODES)
+    assert TERMINATION_CODES[TerminationOutcome.GAME_OVER] == 0

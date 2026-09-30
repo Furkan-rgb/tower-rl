@@ -548,10 +548,11 @@ def test_the_summary_records_the_wave_the_episode_actually_started_at() -> None:
 
 
 def test_a_leftover_run_is_recorded_rather_than_started_fresh() -> None:
-    """`begin_episode` refreshes a frozen leftover run but still continues it.
+    """A port that opens a run above wave 1 is recorded as such, not hidden.
 
-    Nothing here recovers from the contamination; the point is only that it
-    stays visible in the record.
+    Reset retires any run the previous episode left live (ADR 0015), so this
+    is a port misbehaving rather than the ordinary path; the point is only
+    that it stays visible in the record.
     """
     environment, _ = _environment(starting_wave=3)
     environment.reset()

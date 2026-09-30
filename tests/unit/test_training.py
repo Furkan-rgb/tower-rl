@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import statistics
+from dataclasses import replace
 
 import pytest
 import torch
@@ -11,14 +12,19 @@ from tower_rl.environment.episode import (
     EpisodeSummary,
     TerminationOutcome,
 )
+from tower_rl.environment.run_actions import WAIT
 from tower_rl.environment.run_environment import (
     BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
+    WORLD_NOT_HELD,
     CadenceConfig,
     InstrumentedRunEnvironment,
+    RetirementFailed,
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.metrics import failed_start_line, health_metrics, window_line
 from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
@@ -26,6 +32,7 @@ from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import R2D2_IMPORTANCE_SAMPLING_EXPONENT, PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 from tower_rl.learning.training import (
+    INVALID_REASONS,
     STALE_OR_DUPLICATE,
     CollectedEpisode,
     TrainingConfig,
@@ -448,6 +455,150 @@ def test_an_episode_the_port_refuses_is_counted_and_the_run_continues() -> None:
     assert report.episodes == len(report.episode_summaries) + report.failed_episodes
 
 
+def test_every_failed_start_is_reported_as_it_happens() -> None:
+    """A failed start leaves no episode record, so the run says so itself."""
+    training = _failing_run(budget_decisions=190)
+    seen: list[tuple[str, str]] = []
+    training.on_failed_start = lambda progress, failure: seen.append(
+        (progress.actor_id, str(failure))
+    )
+
+    report = training.run()
+
+    actor_id = training.actors[0].config.actor_id
+    assert seen == [(actor_id, failure) for failure in report.episode_failures]
+    assert len(seen) == 2
+
+
+def test_the_failed_start_line_names_the_actor_the_reason_and_what_retirement_cost() -> None:
+    retirement = RetirementFailed("the run left live did not end", 37, 301.5)
+
+    line = failed_start_line("actor-3", retirement)
+
+    assert line == (
+        "failed episode start: actor actor-3 reason the run left live did not end "
+        "retired_run_wave 37 retirement_wall_seconds 301.5"
+    )
+    assert failed_start_line("actor-3", RunPortError("no start")).endswith(
+        "retired_run_wave 0 retirement_wall_seconds 0.0"
+    )
+
+
+def test_a_retirement_that_fails_is_a_counted_failed_start() -> None:
+    training = _run(budget_decisions=190, max_consecutive_episode_failures=2)
+    environment = training.actors[0].environment
+    environment.cadence = CadenceConfig(max_quiet_game_ms=1000, stall_window_wall_seconds=0.0)
+    port = environment.port
+    assert isinstance(port, FakeRunPort)
+    port.damage_per_second = 0.1
+    port.continues_live_runs = True
+    environment.reset()
+    environment.step(WAIT)
+    real_advance = port.advance_until_event
+
+    def frozen_round_clock(**kwargs: object) -> object:
+        return replace(real_advance(**kwargs), round_ms=0.0)  # type: ignore[arg-type]
+
+    port.advance_until_event = frozen_round_clock  # type: ignore[method-assign]
+    seen: list[RunPortError] = []
+    training.on_failed_start = lambda progress, failure: seen.append(failure)
+
+    with pytest.raises(RunPortError):
+        training.run()
+
+    assert training.report.failed_episodes == 2
+    assert len(seen) == 2 and all(isinstance(failure, RetirementFailed) for failure in seen)
+    assert all("retired_run_wave" in text for text in training.report.episode_failures)
+
+
+def test_a_stop_during_an_evaluations_reset_ends_the_run_and_loses_only_the_point() -> None:
+    """The evaluation borrows an actor's environment, and with it the run's stop."""
+    training = _run(budget_decisions=190, evaluate_every_episodes=1)
+    environment = training.actors[0].environment
+    port = environment.port
+    assert isinstance(port, FakeRunPort)
+    real_advance = port.advance_until_event
+
+    def evaluate() -> EvaluationReport:
+        port.damage_per_second = 0.1
+        port.continues_live_runs = True
+        environment.reset()
+        environment.step(WAIT)
+
+        def stop_during_the_first_advance(**kwargs: object) -> object:
+            training.stop.set()
+            return real_advance(**kwargs)  # type: ignore[arg-type]
+
+        port.advance_until_event = stop_during_the_first_advance  # type: ignore[method-assign]
+        environment.reset()
+        raise AssertionError("the retirement was not abandoned")
+
+    training.evaluate = evaluate
+
+    report = training.run()
+
+    assert training.interrupted
+    assert report.evaluation_failures == [] and report.evaluations == []
+    assert report.episodes == 1
+
+
+def test_every_episode_reason_constant_is_a_named_invalid_reason() -> None:
+    """A reason that gains a name must be pooled, or it is invisible in every report."""
+    import tower_rl.environment.run_environment as run_environment
+    import tower_rl.environment.run_state as run_state
+    import tower_rl.environment.upgrade_setup as upgrade_setup
+
+    #: Named strings that are not an episode's invalid reason: span names, a
+    #: schema version, and the two start failures, which raise out of `reset`
+    #: and leave no episode to carry a reason.
+    not_reasons = {
+        "BRIDGE_ROUND_TRIP",
+        "OBSERVATION_DECODE",
+        "OBSERVATION_SCHEMA_VERSION",
+        "UNLOCK_NOT_APPLIED",
+        "WORKSHOP_NOT_APPLIED",
+    }
+    named = {
+        value
+        for module in (run_environment, run_state, upgrade_setup)
+        for name, value in vars(module).items()
+        if name.isupper()
+        and not name.startswith("_")
+        and isinstance(value, str)
+        and name not in not_reasons
+    }
+
+    assert named | {STALE_OR_DUPLICATE} == set(INVALID_REASONS.values())
+
+
+def test_a_stop_reaches_the_environment_and_ends_a_retirement_without_counting_it() -> None:
+    """The run's stop is what a retirement of minutes checks between its advances."""
+    training = _run(budget_decisions=190)
+    environment = training.actors[0].environment
+    assert environment.stop_requested == training.stop.is_set
+    port = environment.port
+    assert isinstance(port, FakeRunPort)
+    port.damage_per_second = 0.1
+    port.continues_live_runs = True
+    environment.reset()
+    environment.step(WAIT)
+    advance = port.advance_until_event
+
+    def stop_during_the_first_advance(**kwargs: object) -> object:
+        training.stop.set()
+        return advance(**kwargs)  # type: ignore[arg-type]
+
+    port.advance_until_event = stop_during_the_first_advance  # type: ignore[method-assign]
+    advances = port.advances
+
+    report = training.run()
+
+    assert port.advances == advances + 1, "the retirement went on after the stop"
+    assert port.active, "the run was abandoned live, for the next session to retire"
+    assert report.episodes == 0 and report.failed_episodes == 0
+    assert report.decisions == 0
+
+
 def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:
     """M1B-E024: the failure that used to kill an unattended overnight run.
 
@@ -709,16 +860,47 @@ def test_episode_health_counts_the_named_bridge_and_device_failures() -> None:
             valid=False,
             termination_detail=(f"{GAME_TIME_INFLATED}: round clock ran 1.4x",),
         ).summary,
+        _collected(
+            9,
+            valid=False,
+            termination_detail=(f"{GAME_TIME_DEFLATED}: round clock ran 0.5x",),
+        ).summary,
+        _collected(10, valid=False, termination_detail=(WORLD_NOT_HELD,)).summary,
     ]
 
     health = episode_health(summaries)
 
-    assert health.bridge_event_divergence == 1
-    assert health.stale_or_duplicate == 1
-    assert health.game_time_inflated == 1
+    assert health.invalid_reasons["game_time_deflated"] == 1
+    assert health.invalid_reasons["world_not_held"] == 1
+    assert set(health.invalid_reasons) == set(INVALID_REASONS), "every name, seen or not"
+    assert health.invalid_reasons["bridge_event_divergence"] == 1
+    assert health.invalid_reasons["stale_or_duplicate"] == 1
+    assert health.invalid_reasons["game_time_inflated"] == 1
     assert health.advances_cut_short == 0
     assert health.pin_restarts == 0
     assert health.episodes_not_started_fresh == 0
+
+
+def test_the_window_line_names_every_reason_it_counted_and_only_those() -> None:
+    windows = collection_windows(
+        [
+            _collected(4),
+            _collected(9, valid=False, termination_detail=(WORLD_NOT_HELD,)),
+            _collected(
+                8, valid=False, termination_detail=(f"{GAME_TIME_DEFLATED}: round clock ran 0.5x",)
+            ),
+            _collected(6),
+        ],
+        size=2,
+    )
+
+    line = window_line(windows[0])
+    metrics = health_metrics(windows[0].health, prefix="collection_")
+
+    assert "reasons [game_time_deflated 1, world_not_held 1]" in line
+    assert metrics["collection_world_not_held"] == 1.0
+    assert metrics["collection_game_time_deflated"] == 1.0
+    assert metrics["collection_stale_or_duplicate"] == 0.0
 
 
 def test_episode_health_counts_a_leftover_run_and_cut_short_advances() -> None:
@@ -731,6 +913,23 @@ def test_episode_health_counts_a_leftover_run_and_cut_short_advances() -> None:
 
     assert health.episodes_not_started_fresh == 1
     assert health.advances_cut_short == 2
+
+
+def test_episode_health_pools_the_runs_resets_retired_and_what_they_cost() -> None:
+    """ADR 0015: a reset that plays a leftover run out collects nothing meanwhile."""
+    summaries = [
+        replace(_collected(4).summary, retired_run_wave=12, retirement_wall_seconds=40.5),
+        _collected(6).summary,
+        replace(_collected(5).summary, retired_run_wave=3, retirement_wall_seconds=9.5),
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.retirements == 2
+    assert health.retirement_wall_seconds == pytest.approx(50.0)
+    metrics = health_metrics(health, prefix="window_")
+    assert metrics["window_retirements"] == 2.0
+    assert metrics["window_retirement_wall_seconds"] == pytest.approx(50.0)
 
 
 def test_episode_health_pools_the_pin_failures_the_boundaries_recovered_from() -> None:

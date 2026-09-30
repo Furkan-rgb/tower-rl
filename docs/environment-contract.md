@@ -435,6 +435,27 @@ later. Normal reset follows the game's death-to-new-run path. Golden snapshot
 restore is recovery only and must re-verify the fixed baseline before the next
 episode.
 
+An episode never inherits a run (ADR 0015). An end other than `game_over` can
+leave the game's run live. The next `reset` then plays that run out with `WAIT`
+until the game ends it, and only then begins a fresh round at wave 1. The
+Workshop, availability and setup are written and checked again, just as after a
+death. The retired run is no episode: none of its advances is tallied,
+transitioned or emitted, so none can reach replay. The next summary records it
+only as `retired_run_wave` (0 when there was none) and
+`retirement_wall_seconds`. A retirement whose round clock does not move for the
+stall window, or that takes more than 300 s in all, fails the `reset` with
+`RunPortError` (`RetirementFailed`, which carries the same two numbers). Retiring
+a cut at waves 7-12 took 19-30 s on the device ("Invalid cuts no longer
+cascade" in `docs/experiments.md`); deeper cuts are estimated at 1-3 minutes.
+
+The agent decides only on a held world. `RunPort.world_held` says whether the
+world stands still. Every return of control to the agent, at the end of `reset`
+and of each `step`, passes through one check: a run in progress on a world that
+is not held is refused as `WORLD_NOT_HELD`, which ends the transition
+`observation_invalid` and fails a `reset`. A running world streams a new
+observation every 250 ms, so a slower decision would otherwise be refused by
+the bridge as `stale_or_duplicate` some unmeasured fraction of the time.
+
 ## Fidelity
 
 An episode measured in a world that did not run at 1x is not comparable with one

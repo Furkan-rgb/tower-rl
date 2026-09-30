@@ -52,7 +52,7 @@ from __future__ import annotations
 import statistics
 import threading
 import time
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -64,8 +64,22 @@ from tower_rl.environment.decision_time import (
     DecisionTimeProfile,
 )
 from tower_rl.environment.episode import EpisodeSummary
-from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
+from tower_rl.environment.run_environment import (
+    ADVANCE_TRUNCATED_BY_WALL,
+    BRIDGE_EVENT_DIVERGENCE,
+    DEATH_BOUNDARY_TRANSIENT,
+    GAME_TIME_DEFLATED,
+    GAME_TIME_INFLATED,
+    MASK_LEGAL_PURCHASE_REJECTED,
+    STALLED_REASON_PREFIX,
+    UNLOCK_REVERTED,
+    WORKSHOP_REVERTED,
+    WORLD_NOT_HELD,
+    RetirementAbandoned,
+)
 from tower_rl.environment.run_port import RunPortError
+from tower_rl.environment.run_state import INVENTORY_TOO_WIDE, OUT_OF_RANGE_REASON
+from tower_rl.environment.upgrade_setup import UPGRADE_SETUP_DRIFT
 from tower_rl.learning.actor import Actor, EpisodeResult
 from tower_rl.learning.backbone import (
     Backbone,
@@ -84,6 +98,39 @@ from tower_rl.learning.replay import PrioritizedSequenceReplay
 #: (`STALE_OR_DUPLICATE`) for its own report; it is not imported from there
 #: because the learning package does not depend on a script.
 STALE_OR_DUPLICATE = "stale_or_duplicate"
+
+#: Every invalid reason that has a stable name, by the name a report and a
+#: metric carry it under, and the text that marks it in an episode's
+#: `termination_detail`. Pooled by `episode_health` into `invalid_reasons`, so
+#: a run's health says which of them ended its episodes rather than only how
+#: many ended. A reason that gains a name is added here, or it is invisible
+#: at every scope a run is read from until someone reads the episodes.
+INVALID_REASONS: Mapping[str, str] = {
+    "stale_or_duplicate": STALE_OR_DUPLICATE,
+    "bridge_event_divergence": BRIDGE_EVENT_DIVERGENCE,
+    "game_time_inflated": GAME_TIME_INFLATED,
+    "game_time_deflated": GAME_TIME_DEFLATED,
+    "world_not_held": WORLD_NOT_HELD,
+    "stalled": STALLED_REASON_PREFIX,
+    "advance_truncated_by_wall": ADVANCE_TRUNCATED_BY_WALL,
+    "mask_legal_purchase_rejected": MASK_LEGAL_PURCHASE_REJECTED,
+    "unlock_reverted": UNLOCK_REVERTED,
+    "workshop_reverted": WORKSHOP_REVERTED,
+    "upgrade_setup_drift": UPGRADE_SETUP_DRIFT,
+    "out_of_range": OUT_OF_RANGE_REASON,
+    "inventory_too_wide": INVENTORY_TOO_WIDE,
+    "death_boundary_transient": DEATH_BOUNDARY_TRANSIENT,
+}
+
+
+class EpisodeAbandoned(Exception):
+    """An episode given up between two decisions because the run was stopped.
+
+    Raised out of `Actor.run_episode` by `TrainingRun`'s own per-decision hook
+    and caught by the actor's collection loop; it never leaves `TrainingRun`.
+    Not a `RunPortError`: the port did nothing wrong, and it must not count
+    towards withdrawing the actor.
+    """
 
 
 @dataclass(frozen=True)
@@ -151,15 +198,21 @@ class EpisodeHealth:
     #: reason like "the game did not honour speed_down: lifecycle_timeout" is
     #: counted and named here rather than surviving only as text on one episode.
     invalid_detail: dict[str, int]
-    bridge_event_divergence: int
-    stale_or_duplicate: int
-    game_time_inflated: int
+    #: How often the episodes' detail names each reason of `INVALID_REASONS`,
+    #: every name present and zero when unseen, so the shape does not depend
+    #: on the span.
+    invalid_reasons: dict[str, int]
     advances_cut_short: int
     #: Speed-pin failures the port recovered from at an episode boundary,
     #: pooled over the span. Recovered, so no episode is lost to one - which is
     #: exactly why it has to be pooled somewhere a long run is read from (`#57`).
     pin_restarts: int
     episodes_not_started_fresh: int
+    #: Episodes whose reset first retired a run the previous episode left live
+    #: (`retired_run_wave` above 0), and the wall time those retirements cost:
+    #: time the span spent collecting nothing (ADR 0015).
+    retirements: int
+    retirement_wall_seconds: float
     #: The game's round clock over the budgeted game time, pooled across every
     #: episode that spent measurable game time. None until one has.
     round_budgeted_ratio: float | None
@@ -201,12 +254,15 @@ def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
         invalid_episodes=len(summaries) - valid,
         invalid_by_reason=by_reason,
         invalid_detail=detail,
-        bridge_event_divergence=sum(1 for text in all_detail if BRIDGE_EVENT_DIVERGENCE in text),
-        stale_or_duplicate=sum(1 for text in all_detail if STALE_OR_DUPLICATE in text),
-        game_time_inflated=sum(1 for text in all_detail if GAME_TIME_INFLATED in text),
+        invalid_reasons={
+            name: sum(1 for text in all_detail if marker in text)
+            for name, marker in INVALID_REASONS.items()
+        },
         advances_cut_short=sum(summary.advances_cut_short for summary in summaries),
         pin_restarts=sum(summary.pin_restarts for summary in summaries),
         episodes_not_started_fresh=sum(1 for summary in summaries if summary.starting_wave > 1),
+        retirements=sum(1 for summary in summaries if summary.retired_run_wave > 0),
+        retirement_wall_seconds=sum(summary.retirement_wall_seconds for summary in summaries),
         round_budgeted_ratio=pooled_ratio,
         worst_round_budgeted_ratio=worst_ratio,
     )
@@ -827,6 +883,11 @@ class TrainingRun:
     #: aggregate - the fleet simply collects a little slower - so an unattended
     #: run has to be told about it when it happens, not only in the summary.
     on_withdrawal: Callable[[ActorProgress], None] | None = None
+    #: Called for every episode the port could not start, with the actor and
+    #: the failure. A failed start leaves no episode record, so this is where
+    #: an unattended run is told of one - and of what a retirement had cost -
+    #: as it happens.
+    on_failed_start: Callable[[ActorProgress, RunPortError], None] | None = None
     #: Runs exploration-free episodes on the same device. Its cost comes out of
     #: wall-clock time, never out of the budget, because evaluation is
     #: measurement rather than experience. It borrows an instance, so it may only
@@ -893,6 +954,14 @@ class TrainingRun:
     #: actor still collecting after an interrupt can count, learn and
     #: checkpoint nothing more over the resume point just written.
     _halted: bool = field(default=False, init=False)
+    #: Set from outside - the operator's SIGINT, by `scripts/train.py` - to end
+    #: the run the way a kill bar does: every actor returns at its next lock or
+    #: before its next decision, abandoning the episode it is in, and `advance`
+    #: returns normally, so the run's end is written as any other stop's is.
+    #: An event rather than a flag on the run because it is handed to the run
+    #: before the run exists: a SIGINT while the arm is still being built is
+    #: honoured as soon as collection starts.
+    stop: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
         if not self.actors:
@@ -948,13 +1017,15 @@ class TrainingRun:
             # in the same buckets. Wired here like the acting copy above, for
             # the same reason: the run owns what an actor is attached to.
             actor.environment.profile = actor.profile
+            # And the run's stop, so a retirement of minutes is not waited out.
+            actor.environment.stop_requested = self.stop.is_set
             self._since_sync[actor_id] = 0
             # Handed to the actor rather than run between its episodes: a
-            # refresh at a cadence in decisions lands inside them.
-            actor.before_decision = (
-                partial(self._before_decision, actor_id, copy, actor.profile)
-                if self.config.parameter_sync_decisions
-                else None
+            # refresh at a cadence in decisions lands inside them, and so does
+            # a stop, which must not wait out an episode that can run for
+            # minutes.
+            actor.before_decision = partial(
+                self._before_decision, actor_id, copy, actor.profile
             )
             self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
@@ -984,6 +1055,11 @@ class TrainingRun:
     def stopped_early(self) -> bool:
         """Whether the run stopped itself: on a plateau, or below a kill bar."""
         return self.report.plateau.stopped_at_period is not None or self.killed_by is not None
+
+    @property
+    def interrupted(self) -> bool:
+        """Whether the run was stopped from outside (`stop`) rather than by itself."""
+        return self.stop.is_set()
 
     @property
     def finished(self) -> bool:
@@ -1054,8 +1130,9 @@ class TrainingRun:
         For a resume point written as a run ends. The progress lock stops every
         count and every gradient step, and the buffer's lock every insertion,
         taken in the one order locks are ever taken in. Normally the fleet has
-        already joined; after an interrupt its actors may still be collecting,
-        and they wait here until the snapshot is written. The run is halted
+        already joined - a `stop` included; after an exception or a forced
+        interrupt its actors may still be collecting, and they wait here until
+        the snapshot is written. The run is halted
         for good from here: each actor returns the next time it takes `_lock`,
         so nothing is counted, learned or checkpointed after the snapshot. An
         actor that has added its episode to replay but not yet counted it can
@@ -1124,11 +1201,13 @@ class TrainingRun:
             with profile.acquiring(self._lock):
                 if self._halted:
                     return
-                if self.report.decisions >= target or self.stopped_early:
+                if self.report.decisions >= target or self.stopped_early or self.interrupted:
                     # The budget, or the run's own decision to stop: a plateau
                     # is answered at the episode boundary after the crossing
                     # that found it, so every actor finishes the episode it is
-                    # in and none of them starts another.
+                    # in and none of them starts another. A stop from outside
+                    # is answered here too, and inside an episode as well
+                    # (`_before_decision`).
                     return
                 # This actor's own rate, which under a ladder is not the rate
                 # any other actor is drawing - and beside it the one number the
@@ -1159,6 +1238,11 @@ class TrainingRun:
             actor.model_version = acting.model_version
             try:
                 result = actor.run_episode()
+            except (EpisodeAbandoned, RetirementAbandoned):
+                # Nothing of it was counted or added to replay: an episode is
+                # experience only once it has ended. A retirement given up on
+                # the stop is the same: no episode had begun.
+                return
             except RunPortError as failure:
                 # The port could not deliver an episode. That is a counted
                 # outcome, not the end of the run: an episode classified
@@ -1168,6 +1252,8 @@ class TrainingRun:
                     if self._halted:
                         return
                     self._record_failure(progress, failure)
+                    if self.on_failed_start is not None:
+                        self.on_failed_start(progress, failure)
                     progress.decision_time = profile.snapshot()
                     withdrawn = progress.withdrawn is not None
                     if withdrawn:
@@ -1207,12 +1293,20 @@ class TrainingRun:
     def _before_decision(
         self, actor_id: str, acting: Backbone, profile: DecisionTimeProfile
     ) -> None:
-        """Count one decision of this actor's, refreshing its copy first if one is due.
+        """Abandon the episode if the run was stopped; else count one decision.
 
         Called by the actor before each forward pass (`Actor.before_decision`),
-        so a refresh lands between two decisions and never inside one.
+        so a refresh lands between two decisions and never inside one, and a
+        stop abandons the episode between two decisions rather than inside a
+        step. At a cadence of zero nothing is refreshed here: the copy holds
+        still through the whole episode.
         """
-        if self._since_sync[actor_id] >= self.config.parameter_sync_decisions:
+        if self.interrupted:
+            raise EpisodeAbandoned(actor_id)
+        cadence = self.config.parameter_sync_decisions
+        if not cadence:
+            return
+        if self._since_sync[actor_id] >= cadence:
             self._refresh(actor_id, acting, profile)
         self._since_sync[actor_id] += 1
 
@@ -1355,6 +1449,11 @@ class TrainingRun:
         if self.evaluate is not None and period and report.episodes % period == 0:
             try:
                 report.evaluations.append(self.evaluate())
+            except RetirementAbandoned:
+                # The evaluation borrows an actor's environment, and with it
+                # the run's stop: a stop during its reset is the run's own,
+                # answered at the next lock, and loses only the point.
+                pass
             except (RunPortError, ValueError) as failure:
                 # `evaluate` refuses to score an arm that produced no valid
                 # episode, and the port can fail under it exactly as it can

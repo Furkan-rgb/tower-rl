@@ -220,8 +220,21 @@ class FakeRunPort:
     #: to model it; a test of the round-clock guard's lower bound turns it on to
     #: exercise that legitimate zero without it being mistaken for a defect.
     round_clock_resets_on_death: bool = False
+    #: Set to have `begin_episode` continue a run that is still live instead of
+    #: starting one, which is what the real adapter does: only a finished run
+    #: is sent home and a fresh round started (`#95`). Off by default so the
+    #: tests that predate it keep their fresh-run-per-episode world.
+    continues_live_runs: bool = False
+    #: Whether a round start and an advance leave the world held, as the real
+    #: adapter's closing `pause` and the bridge's own advance do. Cleared by a
+    #: test that wants a port handing the round over, or an advance back,
+    #: with the world running (`#95`).
+    holds_at_round_start: bool = True
+    holds_after_advance: bool = True
 
     sequence: int = field(default=0, init=False)
+    #: `RunPort.world_held`. A session starts with the world running.
+    world_held: bool = field(default=False, init=False)
     #: Episodes begun, the ordinal the two failure sets are matched against.
     episodes: int = field(default=0, init=False)
     _ambiguous_seen: set[int] = field(default_factory=set, init=False)
@@ -273,6 +286,12 @@ class FakeRunPort:
         self.pin_restarts += self.pin_restarts_per_episode
         if self.refuse_to_start or self.episodes in self.refuse_episodes:
             raise RunPortError("fake instance refused to start")
+        if self.continues_live_runs and self.active:
+            # The round is not restarted, so nothing a round start does happens:
+            # availability is not recomputed and the Workshop is not reloaded.
+            self.sequence += 1
+            self.world_held = self.holds_at_round_start
+            return
         self._build_slots()
         self.workshop_commands.append(("begin", 0, ()))
         if self.workshop_reverts_at_round_start:
@@ -283,6 +302,7 @@ class FakeRunPort:
         self.elapsed_ms = 0.0
         self.active = True
         self.sequence += 1
+        self.world_held = self.holds_at_round_start
 
     def slot_labels(self) -> tuple[FakeSlotLabel, ...]:
         """Every slot, named only where this instance really has a row."""
@@ -494,6 +514,7 @@ class FakeRunPort:
         ):
             self._revert_one_unlock()
         if not self.active:
+            self.world_held = False
             return FakeCommandResult("confirmed", "event:run_ended", state=self._observe())
         wave = self.wave
         health_fraction = self._transmitted_health_fraction()
@@ -523,6 +544,7 @@ class FakeRunPort:
                 reason = "event:health_changed"
                 break
         round_ms = self.elapsed_ms - round_time_before
+        self.world_held = self.active and self.holds_after_advance
         if reason == "event:run_ended" and self.round_clock_resets_on_death:
             round_ms = 0.0
         return FakeCommandResult(

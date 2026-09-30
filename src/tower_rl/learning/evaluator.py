@@ -297,6 +297,11 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "pin_restarts": summary.pin_restarts,
         "recovered_transients": summary.recovered_transients,
         "starting_wave": summary.starting_wave,
+        # The run the previous episode left live, which this episode's reset
+        # played out to its death first, and what that cost in wall time; 0
+        # when there was none. Not part of this episode's score (ADR 0015).
+        "retired_run_wave": summary.retired_run_wave,
+        "retirement_wall_seconds": summary.retirement_wall_seconds,
         # One row per wave index the episode entered. `game_ms` here is measured
         # round-clock time, charged whole to the wave an advance started in;
         # `completed` is false for the wave the episode ended in, whose numbers

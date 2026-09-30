@@ -1187,15 +1187,24 @@ frames were sitting unread in their sockets, and the run aborted twice at about
 it returns is the bridge's present rather than a superseded sequence the bridge
 would refuse.
 
-Two consequences follow from a world that can stand still. An episode that ends
-host-side while the run is still going leaves it paused, so `begin_episode`
-unpauses before it reads: otherwise the next episode would begin on a cached
-reading of a world that had stopped moving. And the death boundary — health
-negative a moment before the game flips game-over (`M1B-E008`) — cannot be
-resolved by reading again, because the frozen world answers with the identical
-reading. It is settled by advancing one frame and taking that settled
-observation; a recovery advance that is not confirmed classifies the episode as
-`ACTION_PIPELINE_FAILED` rather than being retried around.
+Three consequences follow from a world that can stand still.
+
+1. The agent may only decide while the world stands still. Every return of
+   control goes through `InstrumentedRunEnvironment._hand_over`, which refuses
+   a live run on a world the port does not report held (`WORLD_NOT_HELD`). The
+   round start needed one more command for that to hold. The speed pin is two
+   lifecycle presses, and every lifecycle press but `pause` leaves the world
+   running, so `_start_round` now ends with the game's own `pause`. That is the
+   same one an advance presses as it settles.
+2. An episode that ends host-side leaves its run live. `reset` plays that run
+   out to the game's own death before it begins the next round, so an episode
+   never continues a run it did not start (ADR 0015).
+3. The death boundary — health negative a moment before the game flips
+   game-over (`M1B-E008`) — cannot be resolved by reading again, because the
+   frozen world answers with the identical reading. It is settled by advancing
+   one frame and taking that settled observation; a recovery advance that is
+   not confirmed classifies the episode as `ACTION_PIPELINE_FAILED` rather than
+   being retried around.
 
 That replaces a loop that ran on the host: a 250 ms slice at a time, roughly eight
 slices per decision, each its own round trip. A frame is 17 ms at the observed
@@ -2188,6 +2197,23 @@ decision count and is refused while only others are there (move `replay/`
 aside to re-warm instead); with no `replay/`, replay re-warms under the
 loaded policy. Episodes in flight at a kill are lost, and a resumed run is
 not claimed to be bit-identical to one that never stopped.
+
+One SIGINT - what `run_stage.sh` sends the stage's process group - stops a run
+the way a kill bar does, at any moment: every actor abandons the episode it is
+in before its next decision (a save or a burst of gradient steps already under
+way finishes first), the resume point is written, the final evaluation is
+skipped, or abandoned if it had started, and the segment's summary is written
+with every collected episode's record, marked `interrupted`. A second SIGINT
+takes the exception path, which still writes the resume point if it can; the
+process exits once the actor threads return from the bridge call each is in.
+A retirement (ADR 0015) checks the stop between its advances, so a SIGINT is
+not held up by a retirement of minutes either. Each collected episode's record is also appended to
+`segments/<n>/episodes.jsonl` as it ends, flushed per line, an invalid one is
+logged in `train.log` with its first reason as it ends, and each episode's
+`TerminationOutcome` is tracked as the `episode_termination` code (the mapping
+is in the manifest), so a run killed outright keeps its per-episode record up
+to the episodes in flight. SIGTERM is not handled: it ends the process as
+before.
 `--budget-decisions` stays the whole run's total; a checkpoint whose identity
 names another arm, profile or schema, one that has already spent the budget,
 and one in a game-time-era format (before format 4, which evaluates only) are
@@ -2557,9 +2583,10 @@ Maintain a live matrix in the repository. Initial mapping:
 | Semantic verified actions | Controller + state machine | Per-action integration tests |
 | Instrumented training parity | Native bridge + `InstrumentedTowerDevice` | M1B bridge/visible scripted parity gate |
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
+| Episodes independent after an invalid end; decisions on a held world (ADR 0015) | `InstrumentedRunEnvironment._retire_live_run` / `_hand_over` + `InstrumentedRunAdapter._hold_the_world` | `tests/unit/test_live_run_retirement.py`, `tests/unit/test_world_held_at_handoff.py`, device probe in `docs/experiments.md` ("Invalid cuts no longer cascade") |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
 | Recurrent replay-based learner | Learner + replay | Math tests and resolved run config |
-| Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014) | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
+| Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014), `train.OperatorStop` | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), `tests/unit/test_operator_stop.py` (SIGINT at five moments, and twice), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |
 | Diagnostics and documentation | Telemetry + docs | failure injection and clean setup rehearsal |

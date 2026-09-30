@@ -197,9 +197,10 @@ def test_the_report_carries_decision_density_and_the_speed_up() -> None:
 
     assert report.total_frames > 0
     assert report.total_budgeted_game_seconds > 0.0
-    # The game's own clock beside the budgeted game time: the design assumes they
-    # are the same number, so the report has to show both.
-    assert report.total_round_seconds == pytest.approx(report.total_budgeted_game_seconds)
+    # The game's own clock beside the budgeted game time. They differ by the frame
+    # each advance counts and the world never simulates, and by the round clock's
+    # own unit (`expected_round_ms`), so the report has to show both.
+    assert 0.0 < report.total_round_seconds < report.total_budgeted_game_seconds
     assert report.total_advance_wall_seconds > 0.0
     assert report.decisions_per_episode == (
         report.decisions_in_valid_episodes / report.valid_episodes

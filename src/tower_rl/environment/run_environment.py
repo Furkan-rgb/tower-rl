@@ -208,30 +208,52 @@ _BRIDGE_BUDGET_REASON = "budget_exhausted"
 _BRIDGE_WALL_CEILING_REASON = "wall_ceiling"
 
 
-#: The most the game's own round clock may read per millisecond of game time the
-#: advances budgeted. `captureDeltaTime` makes one rendered frame worth exactly
-#: `frame_game_ms` however fast the game's own multiplier runs, so the two clocks
-#: should agree; measured across six known-good episodes they did, at 1.069 of
-#: round clock per budgeted millisecond (1.011 taken over whole episodes, the
-#: difference being the settle frames' uncounted round time). The same six
-#: episodes with the world left at this account's 1.5 speed ceiling measured
-#: 1.625, an inflation of 1.520. This ceiling sits between the two and nearer the
-#: good value than the bad one: ordinary variation around 1.069 passes, and
-#: nothing running at 1.5x can (M1B-E023).
+#: What the game's own round clock reads for one millisecond of budgeted game
+#: time the world really simulated. Every frame the bridge's advance loop counts,
+#: bar the one below, credits exactly 107.0 ms of round clock at `frame_game_ms`
+#: 100 (the `#58` round-clock probe, 5,069 advances; 53.5 ms at 50, M1B-E019).
+#: The factor is the game's own and is not explained; it is constant across
+#: waves and episodes to the fourth decimal (M3-P017's diagnosis fit 1.0705
+#: over 1,298 episodes).
+ROUND_CLOCK_MS_PER_BUDGETED_MS = 1.07
+
+#: Frames the advance loop counts that the world never simulates. The loop takes
+#: its frame count before sending `Unpause`, which lands on the main thread a
+#: frame later, so the first frame counted credits no round time: exactly one
+#: in 5,008 of 5,069 probed advances, none in 61 and two in 8 (`#58` probe).
+#: The budget, and the protocol it defines, keep counting it; only the fidelity
+#: check's expectation leaves it out.
+UNSIMULATED_FRAMES_PER_ADVANCE = 1
+
+
+def expected_round_ms(game_ms: float, frame_game_ms: float) -> float:
+    """The round time an advance that budgeted `game_ms` reads in a healthy world.
+
+    The budget less the frame the world never simulates, in the round clock's
+    own unit. A one-frame advance expects none.
+    """
+    simulated = max(0.0, game_ms - UNSIMULATED_FRAMES_PER_ADVANCE * frame_game_ms)
+    return ROUND_CLOCK_MS_PER_BUDGETED_MS * simulated
+
+
+#: The most the game's own round clock may read against what the advances'
+#: simulated frames should have credited (`expected_round_ms`). A healthy world
+#: reads 1.000 (`#58` round-clock probe). The world left at this account's 1.5
+#: speed ceiling read 1.520 times the healthy world (M1B-E023). This ceiling sits
+#: between the two and nearer the good value than the bad one: ordinary
+#: variation passes, and nothing running at 1.5x can.
 MAX_ROUND_CLOCK_RATIO = 1.25
 
-#: The least the game's own round clock may read per millisecond of game time
-#: the advances budgeted. Healthy runs pooled 1.007-1.014x across episodes,
-#: with no single episode measured above 1.0140; a 150ms-step arm that
-#: under-credited simulated time measured 0.987x, below every one of those
-#: healthy measurements. 1.0 would be the natural floor - the round clock
-#: reading less than the budgeted game time means less of the world was
-#: simulated than was asked for - but it leaves no room at all for the
-#: ordinary float noise a sum of many small deltas carries, and a run
-#: legitimately agreeing at 1.0 must not fail on that noise alone. 0.99 keeps
-#: that room, clears the lowest pooled healthy ratio by 0.017, and still sits
-#: clearly above the deflated arm's 0.987 - sustained deflation, not noise,
-#: is what crosses it.
+#: The least the game's own round clock may read against what the advances'
+#: simulated frames should have credited. A healthy world reads 1.000 at any
+#: advance density, 1.0006-1.0010 per episode (`#58` round-clock probe).
+#: Measured against the whole budget instead, the ratio fell with advance
+#: density - 1.0705 less 0.1062 per advance per budgeted game-second - and healthy
+#: episodes whose advances averaged under about 1,320 budgeted ms failed on
+#: the frame the world never simulates, not on the world (M3-P017). 1.0 would
+#: be the natural floor, but leaves no room for the ordinary float noise a sum
+#: of many small deltas carries. 0.99 keeps that room while failing any world
+#: that simulates more than 1% less than it was asked to.
 MIN_ROUND_CLOCK_RATIO = 0.99
 
 #: One advance is too short a window to judge a clock by, so the ratio is taken
@@ -371,6 +393,9 @@ class _EpisodeTally:
     #: stepping design is judged on.
     frames: int = 0
     game_ms: float = 0.0
+    #: The round time those advances should have read (`expected_round_ms`),
+    #: which the fidelity check holds the round clock against.
+    expected_round_ms: float = 0.0
     #: The game's own per-round clock across those same advances, and the wall
     #: time they took. Wall time minus advance wall time is the per-decision
     #: boundary cost.
@@ -1068,6 +1093,9 @@ class InstrumentedRunEnvironment:
         self._tally.charge_span_advance()
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
+        self._tally.expected_round_ms += expected_round_ms(
+            result.game_ms, self.cadence.frame_game_ms
+        )
         self._tally.round_ms += result.round_ms
         self._tally.charge_advance(result.round_ms)
         self._tally.advance_wall_micros += result.wall_micros
@@ -1157,15 +1185,18 @@ class InstrumentedRunEnvironment:
 
         The bridge reports both clocks per advance: the game time it budgeted
         (frames times `frame_game_ms`) and the game's own round clock across the
-        same frames. They are supposed to be the same time measured twice. When
-        the round clock runs away above the budget the world is simulating more
-        time per frame than it was told to - the shape a speed multiplier left
-        applied has; when it falls away below, the world is simulating less -
-        the shape a step that starves the game of frames has. Either way every
-        wave and decision count the episode goes on to report is measured in a
-        different unit from the runs it will be compared with. The episode is
-        failed by name rather than compensated for: scaling the frame's worth to
-        match would hide the wrong assumption and keep the numbers incomparable.
+        same frames. The round clock is held against what the frames the world
+        really simulated should have credited (`expected_round_ms`), so a
+        healthy world reads 1.0 however densely the policy's events cut its
+        advances. When the round clock runs away above that the world is
+        simulating more time per frame than it was told to - the shape a speed
+        multiplier left applied has; when it falls away below, the world is
+        simulating less - the shape a step that starves the game of frames has.
+        Either way every wave and decision count the episode goes on to report
+        is measured in a different unit from the runs it will be compared with.
+        The episode is failed by name rather than compensated for: scaling the
+        frame's worth to match would hide the wrong assumption and keep the
+        numbers incomparable.
 
         The advance that ends a run is exempt from the lower bound alone: the
         round clock resets with the round, so that one advance legitimately
@@ -1174,13 +1205,15 @@ class InstrumentedRunEnvironment:
         deflated. The upper bound is never exempt - an ending advance cannot
         report more round time than it budgeted, only less or none.
         """
-        if self._tally.game_ms < MIN_RATIO_EVIDENCE_GAME_MS:
+        # Only one-frame advances, which expect no round time, leave the
+        # expectation at zero with this much budget spent; there is no ratio yet.
+        if self._tally.game_ms < MIN_RATIO_EVIDENCE_GAME_MS or self._tally.expected_round_ms <= 0:
             return ()
-        ratio = self._tally.round_ms / self._tally.game_ms
+        ratio = self._tally.round_ms / self._tally.expected_round_ms
         if ratio > MAX_ROUND_CLOCK_RATIO:
-            return (f"{GAME_TIME_INFLATED}: round clock ran {ratio:.3f}x the budgeted game time",)
+            return (f"{GAME_TIME_INFLATED}: round clock ran {ratio:.3f}x the simulated game time",)
         if ratio < MIN_ROUND_CLOCK_RATIO and not advance_ended_run:
-            return (f"{GAME_TIME_DEFLATED}: round clock ran {ratio:.3f}x the budgeted game time",)
+            return (f"{GAME_TIME_DEFLATED}: round clock ran {ratio:.3f}x the simulated game time",)
         return ()
 
     def _divergence(
@@ -1424,6 +1457,9 @@ class InstrumentedRunEnvironment:
         # other: the speed-up is measured from what the game clock actually cost.
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
+        self._tally.expected_round_ms += expected_round_ms(
+            result.game_ms, self.cadence.frame_game_ms
+        )
         self._tally.round_ms += result.round_ms
         self._tally.charge_advance(result.round_ms)
         self._tally.advance_wall_micros += result.wall_micros

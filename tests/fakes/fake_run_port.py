@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from tower_rl.environment.run_actions import SLOTS_PER_FAMILY
+from tower_rl.environment.run_environment import expected_round_ms
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import LIVE_WIRE_NAMES, NO_ENEMY_DISTANCE
 
@@ -519,13 +520,15 @@ class FakeRunPort:
         wave = self.wave
         health_fraction = self._transmitted_health_fraction()
         affordable = self._affordable()
-        round_time_before = self.elapsed_ms
 
         frames = 0
         spent = 0.0
         reason = "budget_exhausted"
         while spent < budget_game_ms:
-            self._step_one_frame(frame_game_ms)
+            # As on the device, the first frame the advance counts is never
+            # simulated: `Unpause` has not landed yet (`expected_round_ms`).
+            if frames > 0:
+                self._step_one_frame(frame_game_ms)
             frames += 1
             spent += frame_game_ms
             if not self.active:
@@ -543,7 +546,9 @@ class FakeRunPort:
             ):
                 reason = "event:health_changed"
                 break
-        round_ms = self.elapsed_ms - round_time_before
+        # The frames this world simulated, read in the round clock's own unit
+        # at whatever rate this world really runs, as the device's clock reads.
+        round_ms = self.world_time_scale * expected_round_ms(spent, frame_game_ms)
         self.world_held = self.active and self.holds_after_advance
         if reason == "event:run_ended" and self.round_clock_resets_on_death:
             round_ms = 0.0

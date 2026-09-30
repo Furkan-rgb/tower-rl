@@ -1194,10 +1194,11 @@ timeout is derived from it rather than guessed.
 **The observation the result is bound to is settled, and the environment uses
 it.** `Pause` is dispatched to Unity's main thread and lands a frame or two after
 the loop breaks, so the state at the instant of the break is mid-frame. The
-bridge keeps `captureDeltaTime` at `frame_game_ms` until the pause has landed —
-two further rendered frames or 500 ms, whichever comes first, since this build
-exposes no game-owned pause flag — counts those tail frames at the same weight,
-and only then reads the state it reports. The readings taken inside the loop
+bridge sets `captureDeltaTime` to 0 and sends `Pause`, then waits for the
+pause to land — two further rendered frames or 500 ms, whichever comes first,
+since this build exposes no game-owned pause flag. It counts those settle
+frames as frames but not as game time, because they credit no round time
+(`#58` round-clock probe), and only then reads the state it reports. The readings taken inside the loop
 decide *when* to stop; the settled reading decides what the `reason` says, so the
 result and the observation emitted with it always describe the same moment. The
 environment builds its next state from that observation instead of waiting for
@@ -1365,24 +1366,48 @@ running, twice.
 the rate the unpaused world runs at — its observations are all taken paused — so
 `set_speed` can only confirm that the request was accepted. What verifies it is the pair of clocks each
 advance already reports: `round_ms`, the game's own round clock, against
-`game_ms`, the game time the advance budgeted. `environment/run_environment.py`
-fails an episode whose episode-to-date ratio exceeds `MAX_ROUND_CLOCK_RATIO`
-(1.25, between the 1.069 measured on known-good episodes and the 1.625 measured
-with the world left at this account's 1.5 ceiling, `M1B-E023`), naming
-`GAME_TIME_INFLATED` in the transition's reasons. The episode is then classified
+`game_ms`, the game time the advance budgeted. The two are not the same
+number, and the check holds the round clock against what the budget really
+simulated rather than against the budget itself. That expected time is
+`expected_round_ms`:
+
+    expected round ms of an advance = 1.07 × max(0, game_ms − frame_game_ms)
+
+Two terms separate the budget from the expected time, and both were measured
+per advance on device (`#58` round-clock probe, 5,069 advances):
+
+- The first frame the advance loop counts is never simulated. The loop reads
+  the frame count before sending `Unpause`, which lands on the main thread a
+  frame later. This was exactly one frame in 98.8% of advances, none in 1.2%
+  and two in 0.16%.
+- Every simulated frame reads 107.0 ms on the round clock at 100 ms a frame.
+  The 1.07 is the game's own unit and is unexplained, but it is constant.
+
+The budget and the advance protocol keep counting the unsimulated frame, and
+only the check's expectation leaves it out. Held against the whole budget, the
+ratio fell with advance density, so healthy episodes whose advances averaged
+under about 1,320 budgeted ms failed (`M3-P017`, "Stop and amendment").
+Held against the expected time, a healthy world reads 1.000 at any density.
+`environment/run_environment.py` sums both clocks over the episode to date and
+fails an episode whose ratio exceeds `MAX_ROUND_CLOCK_RATIO`. That bound is
+1.25, between the healthy 1.000 and the 1.52 of the world left at this
+account's 1.5 ceiling (`M1B-E023`). The failure is named `GAME_TIME_INFLATED`
+in the transition's reasons. The episode is then classified
 `OBSERVATION_INVALID` and cannot reach the curve: a world that simulates more
 time than it was asked for reaches higher waves with fewer decisions per wave,
 which is a faster world masquerading as a better policy. The frame's worth is
 never rescaled to compensate, because that would hide the wrong assumption and
 leave the numbers incomparable anyway.
 
-The same ratio can fall as well as climb: a 150 ms effective step measured a
-sustained 0.987 against a healthy pool of 1.007-1.014, five percent fewer
-decisions per wave, and an A/B was what caught it — a one-sided guard cannot.
-`MIN_ROUND_CLOCK_RATIO` (0.99, clear of both the pooled healthy floor and that
-measurement, with room left for ordinary float noise around exact agreement)
-names the failure `GAME_TIME_DEFLATED`, distinctly from inflation, so a report
-says which way the clock disagreed. It does not fire on the one advance that
+The same ratio can fall as well as climb, and a one-sided guard cannot see
+that. `MIN_ROUND_CLOCK_RATIO` (0.99) fails any world that simulates more than
+1% less than it was asked to. It leaves room for ordinary float noise around
+exact agreement: the probe's healthy episodes read 1.0006–1.0010. It names the failure
+`GAME_TIME_DEFLATED`, distinctly from inflation, so a report says which way the
+clock disagreed. `M1B-E038`'s 150 ms and 200 ms arms measured 0.989 and 0.983
+under the older, whole-budget accounting. That accounting reads about 0.99 or
+below at those frame sizes even for a healthy world, so the arms' rejection is
+not evidence of deflation on its own. The floor does not fire on the one advance that
 ends a run: the round clock resets with the round, so that advance legitimately
 reports none of it while still having spent game time reaching the end, and it
 is exempted from the lower bound alone for exactly that reason.
@@ -2641,6 +2666,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Instrumented training parity | Native bridge + `InstrumentedTowerDevice` | M1B bridge/visible scripted parity gate |
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
 | Episodes independent after an invalid end; decisions on a held world (ADR 0015) | `InstrumentedRunEnvironment._retire_live_run` / `_hand_over` + `InstrumentedRunAdapter._hold_the_world` | `tests/unit/test_live_run_retirement.py`, `tests/unit/test_world_held_at_handoff.py`, device probe in `docs/experiments.md` ("Invalid cuts no longer cascade") |
+| An episode counts only in a world that simulated the game time it was asked for | `InstrumentedRunEnvironment._round_clock_fidelity` against `expected_round_ms` | `tests/unit/test_run_environment.py` (the deflation tests at dense and sparse advances, the floor's boundary, and `test_an_advance_expects_the_round_time_of_the_frames_it_simulated`), device probe in `docs/experiments.md` ("Round-clock probe") |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
 | Recurrent replay-based learner | Learner + replay | Math tests, `tests/unit/test_learner_thread.py` (replay ratio held within the debt bound, ADR 0017) and resolved run config |
 | Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014), `train.OperatorStop` | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), `tests/unit/test_operator_stop.py` (SIGINT at five moments, and twice), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |

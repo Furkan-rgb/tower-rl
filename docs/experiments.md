@@ -1326,6 +1326,37 @@ from the resume onward. Every other rule is unchanged, including the chain
 rule, `stale_or_duplicate`/`WORLD_NOT_HELD`, memory, the kill bars and the
 500k rule. Learner debt pauses remain not a stop condition.
 
+**Amendment after resume attempt 1 (2026-10-01, Lead decision, written
+before resume attempt 2).**
+
+*Resume attempt 1.* The resume started from 79,869 decisions with **6 of 7
+actors**: `emulator-5568` failed to deploy (`adb: error: cannot bind
+listener: Address already in use`, on its forward to host port 47658) and
+`train.py` went on without it. It was stopped by SIGINT at **87,865
+decisions** (`latest.pt` and 87,633 replay items saved, cleanup ok), with
+**7,996 decisions collected on 6 actors** (episodes 216-228, none invalid).
+Those decisions **stay in the run**: every transition was produced by the
+same learner, bridge build and task on healthy instances, and nothing is
+removed from replay. A run below 7 actors is not acceptable under the
+protocol, so resume attempt 2 does not proceed with fewer than 7 and the
+watcher stops on it.
+
+*The `stale_or_duplicate` stop, clarified.* The stop rule "any
+`stale_or_duplicate`" is meant to catch a stale or duplicate observation
+**inside an episode**, which could corrupt a transition. Resume attempt 1
+logged one `failed episode start ... the game did not honour speed_max:
+stale_or_duplicate` on `emulator-5558`. A failed episode start records no
+transition, and its start is retried; `M3-P016` attempt 3 saw it twice
+without effect. So:
+
+- a `failed episode start` with `stale_or_duplicate` is logged and counted and
+  is **not a stop**; it becomes a stop only if 3 such failures chain on one
+  actor, read as the chain rule reads invalid episodes (failures of one actor
+  whose episode indexes are within 6 of each other; a proxy, checked by
+  hand);
+- any `stale_or_duplicate` or `WORLD_NOT_HELD` **inside an episode** (an
+  invalid episode) remains an immediate stop.
+
 ## M3-P016: DreamerV3 at its published configuration under `M3-P015`'s task protocol (pre-registered, written before the run)
 
 **Date:** 2026-09-28. Board `#58`. Single seed, single run; n=1.

@@ -466,12 +466,12 @@ def test_a_short_training_run_on_the_fake_port_takes_finite_optimisation_steps()
 
 
 
-def test_an_acting_copy_takes_each_finished_step_mid_episode_and_keeps_its_latent() -> None:
+def test_an_acting_copy_takes_each_finished_step_between_decisions() -> None:
     """`embodied/jax/agent.py` 243-247, 279-282: the next policy call after a step acts on it.
 
-    The actor's hook before a decision loads the learner's last finished step,
-    carries the episode's latent across, and returns while a step is held shut
-    inside the learner rather than waiting it out.
+    The actor's hook before a decision loads the learner's last finished step
+    and returns while a step is held shut inside the learner rather than
+    waiting it out.
     """
     backbone = _backbone()
     replay = DreamerReplay(capacity=256, length=LENGTH + 1, seed=0)
@@ -497,7 +497,6 @@ def test_an_acting_copy_takes_each_finished_step_mid_episode_and_keeps_its_laten
     training.learner.publish()
     before_decision()
     _, latent = acting.act(_features(), acting.initial_state(), epsilon=0.0)
-    kept = tuple(part.clone() for part in latent)
 
     inside, release = threading.Event(), threading.Event()
     learn = backbone.learn
@@ -524,11 +523,76 @@ def test_an_acting_copy_takes_each_finished_step_mid_episode_and_keeps_its_laten
     assert acting.model_version == backbone.model_version == 1
     assert parameters_are_equal(acting.world_model, backbone.world_model)
     assert parameters_are_equal(acting.actor, backbone.actor)
-    assert all(torch.equal(part, old) for part, old in zip(latent, kept, strict=True)), (
-        "the swap disturbed the latent the episode carries"
-    )
     action, _ = acting.act(_features(), latent, epsilon=0.0)
     assert action in (0, 1, 2)
+
+
+def test_an_episode_carries_its_latent_across_a_mid_episode_parameter_refresh() -> None:
+    """The latent after a swap continues from the one before it, as the official agent's does.
+
+    The latent is `Actor.run_episode`'s own local, so it is read where it
+    crosses into the policy: each `act` call's incoming and outgoing state.
+    The learner takes a step just before the third decision; the hook before
+    that decision loads it, and the copy's next `act` must be handed the
+    state the previous `act` returned, not `initial_state`.
+    """
+    backbone = _backbone()
+    replay = DreamerReplay(capacity=256, length=LENGTH + 1, seed=0)
+    actor = Actor(
+        environment=_fake_environment(damage_per_second=2.0),
+        policy=acting_copy(backbone),
+        replay=replay,
+    )
+    training = TrainingRun(
+        actors=[actor],
+        replay=replay,
+        backbone=backbone,
+        config=TrainingConfig(
+            budget_decisions=1,
+            warmup_sequences=2,
+            batch_size=SMALL.batch_size,
+            gradient_steps_per_decision=0.5,
+            parameter_sync_decisions=1,
+            exploration=ExplorationSchedule(
+                epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+            ),
+        ),
+    )
+    acting = cast(DreamerBackbone, training.acting[actor.config.actor_id])
+    hook = actor.before_decision
+    assert hook is not None
+    decisions_before_the_step = 2
+    calls: list[tuple[int, tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]] = []
+
+    def step_then_refresh() -> None:
+        if len(calls) == decisions_before_the_step:
+            training.learner.learn(_batch())
+        hook()
+
+    actor.before_decision = step_then_refresh
+    act = acting.act
+
+    def recording(
+        features: StateFeatures, state: tuple[torch.Tensor, ...], *, epsilon: float
+    ) -> tuple[int, tuple[torch.Tensor, ...]]:
+        action, reached = act(features, state, epsilon=epsilon)  # type: ignore[arg-type]
+        calls.append((acting.model_version, state, reached))
+        return action, reached
+
+    acting.act = recording  # type: ignore[method-assign,assignment]
+    actor.run_episode()
+
+    assert len(calls) > decisions_before_the_step, "the episode ended before the refresh"
+    swap = decisions_before_the_step
+    assert calls[swap - 1][0] == 0 and calls[swap][0] == 1, "no refresh landed mid-episode"
+    _, handed_on, _ = calls[swap]
+    _, _, reached = calls[swap - 1]
+    initial = acting.initial_state()
+    assert any(part.abs().sum() > 0 for part in reached)
+    assert all(torch.equal(now, before) for now, before in zip(handed_on, reached, strict=True)), (
+        "the latent after the swap does not continue from the one before it"
+    )
+    assert not all(torch.equal(now, zero) for now, zero in zip(handed_on, initial, strict=True))
 
 # -- the game-time discount (ADR 0013) -----------------------------------------
 

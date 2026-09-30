@@ -591,9 +591,15 @@ recurrent latent across the swap, as the official agent does (`embodied/jax/agen
 243-247, 279-282: the policy call after each train step acts on its
 parameters, with the carry unchanged; ADR 0018). Runs before this refreshed it
 at episode starts only. On the fake port, where the learner paces collection,
-it cost about 6% of acting throughput, and a snapshot holds the whole training
-state, optimiser moments included (+122 MB peak; docs/experiments.md,
-"DreamerV3 acting on each completed step"). A sequence's
+it cost about 6% of acting throughput; on a device, where a decision's round
+trip is ~140-260 ms, it is expected to cost under 1% (not measured). A
+snapshot holds the whole training state: 44 MB of parameters and 81 MB of
+optimiser moments. Each acting copy's optimiser points at the moments of the
+snapshot it loaded, so every snapshot a copy holds stays alive, and the
+actors, refreshing before every decision, hold different ones: about
+570-650 MB of extra GPU memory at 7-8 actors (the +122 MB measured was with
+one actor; docs/experiments.md, "DreamerV3 acting on each completed step").
+Keeping the optimiser out of the snapshot is `#111`. A sequence's
 `model_version` is the version its episode's first decision was taken with, so
 under a cadence in decisions it is the oldest version in the episode.
 

@@ -115,13 +115,29 @@ the session scratchpad (`dreamer-conv/smoke.py`), not committed.
 waiting out a step) and 0.45 ms after; the policy forward 3.2 ms before and
 4.2 ms after; paused on the learner's bound 5.0 ms before and 5.4 ms after.
 Publishing a step's snapshot took a median 1.4 ms and loading it 1.5 ms.
-Peak GPU memory 1,051 MB before and 1,173 MB after: the snapshot holds the
-whole training state, optimiser moments included, not only the ~40 MB of
-parameters. Losses finite.
+Peak GPU memory 1,051 MB before and 1,173 MB after (+122 MB, **with one
+actor**). Losses finite.
+
+**Memory, corrected (Tier A review, 2026-09-30).** This entry first read the
++122 MB as what a snapshot costs and stopped there. The published snapshot is
+44 MB of parameters plus 81 MB of AdamW moments. Each acting copy's optimiser
+points at the moments of the snapshot it loaded, so every snapshot a copy
+holds stays alive. With one actor that is one extra snapshot. DreamerV3
+refreshes before every decision, so at 7-8 actors the copies hold different
+snapshots: about 570-650 MB of extra GPU memory. That is an estimate from the
+sizes above, not a measurement at 7-8 actors. Keeping the optimiser out of
+the snapshot is deferred to `#111`; the code is unchanged.
 
 **Limits.** The fake port answers in 0.3 ms, so both runs are paced by the
-learner; on a device a decision's bridge round trip is ~140-260 ms and the
-extra ~1 ms is under 1% of it. No device run.
+learner, and the 6% throughput drop is a fake-port figure: there the learner
+paces collection, and the refresh's cost shows in full. On a device a
+decision's bridge round trip is ~140-260 ms and the extra ~1 ms is expected
+to be under 1% of it; that is an expectation, not a measurement. No device
+run.
+
+The decision-time bucket `learner_step`, which timed this load, is renamed
+`parameter_load` (mlflow `decision_wall_ms_parameter_load`, label `load` in
+the decision-time line). Reports written before keep the old key.
 
 ## DreamerV3 replay context 1: a window restores acting's latent, synthetic (`#108`, 2026-09-30)
 

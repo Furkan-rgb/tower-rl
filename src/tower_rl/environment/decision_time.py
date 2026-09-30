@@ -45,7 +45,7 @@ POLICY_FORWARD = "policy_forward"
 #: Parameter publication into the actor's own copy, on the actor's thread. The
 #: gradient steps themselves are the learner thread's and are not in any
 #: actor's decomposition (ADR 0017).
-LEARNER_STEP = "learner_step"
+PARAMETER_LOAD = "parameter_load"
 #: Waiting to acquire a lock the fleet shares, or paused because the learner is
 #: owed more than its bound. The wait only; whatever the caller then does under
 #: the lock is charged where it belongs.
@@ -57,7 +57,7 @@ MEASURED_BUCKETS = (
     BRIDGE_ROUND_TRIP,
     OBSERVATION_DECODE,
     POLICY_FORWARD,
-    LEARNER_STEP,
+    PARAMETER_LOAD,
     BLOCKED,
 )
 BUCKETS = (*MEASURED_BUCKETS, RESIDUAL)

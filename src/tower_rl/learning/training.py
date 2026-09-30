@@ -67,7 +67,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 
 from tower_rl.environment.decision_time import (
-    LEARNER_STEP,
+    PARAMETER_LOAD,
     DecisionTimeBreakdown,
     DecisionTimeProfile,
 )
@@ -1371,7 +1371,7 @@ class TrainingRun:
         step publishes meanwhile is loaded at the next refresh.
         """
         if self._loaded[actor_id] != self.learner.published:
-            with profile.span(LEARNER_STEP):
+            with profile.span(PARAMETER_LOAD):
                 self._loaded[actor_id] = self.learner.publish_to(acting)
         self._since_sync[actor_id] = 0
 

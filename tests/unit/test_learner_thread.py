@@ -68,7 +68,7 @@ def never() -> bool:
 def test_the_bound_pauses_an_actor_until_the_learner_drains_the_debt() -> None:
     step = CountedStep()
     step.gate.clear()
-    learner = LearnerThread(cpu_learner(), step, steps_per_decision=1.0, bound_decisions=4)
+    learner = LearnerThread(cpu_learner(), step, steps_per_credit=1.0, bound_credits=4)
     learner.start()
     learner.credit(7)  # three over the bound, and the learner is stuck in its first step
     assert step.inside.wait(5)
@@ -105,7 +105,7 @@ def test_the_ratio_is_held_within_the_bound_over_every_window() -> None:
     ratio, bound, actors, decisions = 0.5, 16, 3, 150
     step = CountedStep(seconds=0.002)
     learner = LearnerThread(
-        cpu_learner(), step, steps_per_decision=ratio, bound_decisions=bound
+        cpu_learner(), step, steps_per_credit=ratio, bound_credits=bound
     )
     ceiling = bound * ratio + actors * ratio
     readings: list[tuple[int, float]] = []
@@ -137,7 +137,7 @@ def test_the_ratio_is_held_within_the_bound_over_every_window() -> None:
 
 def test_holding_the_learner_still_waits_out_the_step_in_flight_and_starts_none() -> None:
     step = CountedStep(seconds=0.05)
-    learner = LearnerThread(cpu_learner(), step, steps_per_decision=1.0, bound_decisions=100)
+    learner = LearnerThread(cpu_learner(), step, steps_per_credit=1.0, bound_credits=100)
     learner.start()
     learner.credit(20)
     assert step.inside.wait(5)
@@ -156,7 +156,7 @@ def test_a_step_that_raises_ends_the_thread_and_is_kept_for_the_run() -> None:
     def broken() -> LearnMetrics:
         raise RuntimeError("the step failed")
 
-    learner = LearnerThread(cpu_learner(), broken, steps_per_decision=1.0, bound_decisions=1)
+    learner = LearnerThread(cpu_learner(), broken, steps_per_credit=1.0, bound_credits=1)
     learner.start()
     learner.credit(5)
     # An actor paused on the bound is not left waiting on a learner that is gone.
@@ -169,7 +169,7 @@ def test_a_step_that_raises_ends_the_thread_and_is_kept_for_the_run() -> None:
 
 def test_an_abort_ends_after_the_step_in_flight_without_paying_the_debt() -> None:
     step = CountedStep(seconds=0.05)
-    learner = LearnerThread(cpu_learner(), step, steps_per_decision=1.0, bound_decisions=100)
+    learner = LearnerThread(cpu_learner(), step, steps_per_credit=1.0, bound_credits=100)
     learner.start()
     learner.credit(50)
     assert step.inside.wait(5)
@@ -313,18 +313,20 @@ def test_a_refresh_never_waits_for_the_step_in_flight_and_loads_the_last_finishe
             self.version += 1
             return METRICS
 
-        def state_dict(self) -> dict[str, object]:
+        def network_state_dict(self) -> dict[str, object]:
             return {"version": torch.tensor(self.version)}
 
     loaded: list[int] = []
-    acting = SimpleNamespace(load_state_dict=lambda state: loaded.append(int(state["version"])))
+    acting = SimpleNamespace(
+        load_network_state_dict=lambda state: loaded.append(int(state["version"]))
+    )
     learner = Learner(backbone=cast(Any, Network()))
     learner.publish()
     thread = LearnerThread(
         learner,
         lambda: learner.learn(cast(Any, None)),
-        steps_per_decision=1.0,
-        bound_decisions=100,
+        steps_per_credit=1.0,
+        bound_credits=100,
     )
     thread.start()
     thread.credit(1)  # one step owed, so no second can begin behind the first

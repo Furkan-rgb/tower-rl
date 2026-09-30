@@ -143,6 +143,18 @@ class Backbone(Protocol):
     def load_state_dict(self, state: dict[str, Any]) -> None:
         ...
 
+    def network_state_dict(self) -> dict[str, Any]:
+        """What acting reads - the networks and the step they are from - and no optimizer state.
+
+        What the learner publishes to the acting copies (`Learner.publish`),
+        so a copy never holds optimizer moments it does not use.
+        """
+        ...
+
+    def load_network_state_dict(self, state: dict[str, Any]) -> None:
+        """Load `network_state_dict` into an acting copy."""
+        ...
+
 
 def acting_copy(backbone: Backbone, *, exploration_seed: int | str | None = None) -> Backbone:
     """One actor's own copy of a backbone, to act from without touching the learner.

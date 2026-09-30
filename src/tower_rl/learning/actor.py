@@ -8,10 +8,19 @@ filler, the last window is aligned to its end, and an episode shorter than one
 window is padded further rather than dropped.  The actor never
 decides whether a transition is admissible; the environment classifies it and
 replay refuses what is not.
+
+Under DreamerV3 and R2D2 the stacked windows above are not used: an episode
+goes to replay whole, as the steps of one stream (`_emit_stream`,
+`_emit_items`), with the policy's recurrent state beside it. DreamerV3 keeps
+its latent at every step; R2D2 keeps its LSTM state before the decisions at
+0, 40, 80, ... (`R2D2Backbone.replay_entry`). R2D2's policy is told each
+transition's game time after it (`R2D2Backbone.after_transition`), since its
+next input is that transition's reward; that holds in evaluation too.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,12 +39,15 @@ from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.dreamer_replay import DreamerReplay, episode_steps
 from tower_rl.learning.policies import Policy
+from tower_rl.learning.r2d2 import R2D2Backbone
+from tower_rl.learning.r2d2_replay import R2D2_SEQUENCE_PERIOD, R2D2Replay, item_layout
 from tower_rl.learning.replay import (
     PrioritizedSequenceReplay,
     ReplaySequence,
     ReplayStep,
     SequenceMetadata,
 )
+from tower_rl.learning.step_arrays import StepArrays
 
 #: `WAIT` is index 0 of `run-action-v1`, asked rather than assumed.
 WAIT_ACTION_INDEX = action_index(WAIT)
@@ -95,8 +107,9 @@ class Actor:
     policy: Policy
     config: ActorConfig = field(default_factory=ActorConfig)
     #: DreamerV3's step replay stores the policy's latent at every step, read
-    #: off it by `replay_entry`, and the episode's final observation.
-    replay: PrioritizedSequenceReplay | DreamerReplay | None = None
+    #: off it by `replay_entry`, and the episode's final observation; R2D2's
+    #: item replay stores its (h, c) every 40 decisions, and the same.
+    replay: PrioritizedSequenceReplay | DreamerReplay | R2D2Replay | None = None
     model_version: int = 0
     #: Where this actor's decision time goes, accumulated on its own thread and
     #: never shared with another actor. Most of a decision is spent inside the
@@ -115,8 +128,12 @@ class Actor:
         carried_state = self.policy.initial_state()
         steps: list[ReplayStep] = []
         latents: list[tuple[Any, Any]] = []
+        #: R2D2's (h, c) before the decisions at 0, 40, 80, ...
+        states: list[numpy.ndarray] = []
         final: StateFeatures | None = None
         storing_latents = isinstance(self.replay, DreamerReplay)
+        recurrent = isinstance(self.policy, R2D2Backbone)
+        streaming = storing_latents or isinstance(self.replay, R2D2Replay)
         total_reward = 0.0
         termination = TerminationOutcome.OPERATOR_STOP
 
@@ -136,12 +153,18 @@ class Actor:
             if self.before_decision is not None:
                 self.before_decision()
             with self.profile.span(POLICY_FORWARD):
+                if recurrent and len(steps) % R2D2_SEQUENCE_PERIOD == 0:
+                    states.append(self.policy.replay_entry(carried_state))  # type: ignore[attr-defined]
                 action_index, carried_state = self.policy.act(
                     features, carried_state, epsilon=self.config.epsilon
                 )
                 if storing_latents:
                     latents.append(self.policy.replay_entry(carried_state))  # type: ignore[attr-defined]
             transition = self.environment.step(action_at(action_index))
+            if recurrent:
+                carried_state = self.policy.after_transition(  # type: ignore[attr-defined]
+                    carried_state, transition.game_ms
+                )
             total_reward += transition.reward
             steps.append(
                 ReplayStep(
@@ -155,7 +178,7 @@ class Actor:
             )
             if transition.termination is not None:
                 termination = transition.termination
-                if storing_latents and transition.next_state is not None:
+                if streaming and transition.next_state is not None:
                     with self.profile.span(OBSERVATION_DECODE):
                         final = encode_state(transition.next_state)
                 break
@@ -165,6 +188,8 @@ class Actor:
         summary = self.environment.summarize(termination)
         if isinstance(self.replay, DreamerReplay):
             offered, accepted = self._emit_stream(self.replay, steps, latents, final, summary)
+        elif isinstance(self.replay, R2D2Replay):
+            offered, accepted = self._emit_items(self.replay, steps, states, final, summary)
         else:
             offered, accepted = self._emit(steps, summary)
         return EpisodeResult(
@@ -216,16 +241,7 @@ class Actor:
         if not steps:
             # The run was already over when the episode opened.
             return 0, 0
-        kept = next((i for i, step in enumerate(steps) if not step.admissible), None)
-        if kept is None:
-            observations = [step.features for step in steps]
-            if final is not None:
-                observations.append(final)
-        else:
-            # Observation `kept` is the admissible transition `kept - 1`'s
-            # valid next state; with none before it there is nothing to keep.
-            observations = [step.features for step in steps[: kept + 1]] if kept else []
-            replay.stats.reject("inadmissible_transition")
+        observations = _kept_observations(replay, steps, final)
         if not observations:
             return 1, 0
         count = len(observations)
@@ -246,6 +262,47 @@ class Actor:
         with self.profile.acquiring(replay.lock):
             accepted = replay.add(self.config.actor_id, self._metadata(summary), episode)
         return 1, int(accepted)
+
+    def _emit_items(
+        self,
+        replay: R2D2Replay,
+        steps: list[ReplayStep],
+        states: list[numpy.ndarray],
+        final: StateFeatures | None,
+        summary: EpisodeSummary,
+    ) -> tuple[int, int]:
+        """Insert the episode's R2D2 items whole, as it ends (ADR 0014, ADR 0017).
+
+        The steps are `_emit_stream`'s, in its layout and cut at the same
+        place, and each item keeps the (h, c) the policy held before its first
+        decision. Returns the items offered and inserted: the replay's unit,
+        and what the learner is credited for (`TrainingRun`).
+        """
+        if not steps:
+            # The run was already over when the episode opened.
+            return 0, 0
+        observations = _kept_observations(replay, steps, final)
+        count = len(observations)
+        if count < 2:
+            # No transition survived the cut, so there is no decision to learn.
+            return 1, 0
+        into: list[ReplayStep | None] = [None, *steps[: count - 1]]
+        episode = StepArrays(
+            scalars=numpy.asarray([o.scalars for o in observations], numpy.float32),
+            rows=numpy.asarray([o.rows for o in observations], numpy.float32).reshape(count, -1),
+            mask=numpy.asarray([o.mask for o in observations], numpy.bool_),
+            action=numpy.asarray(
+                [steps[t].action_index if t < count - 1 else 0 for t in range(count)], numpy.int64
+            ),
+            reward=numpy.asarray([0.0 if s is None else s.reward for s in into], numpy.float32),
+            terminal=numpy.asarray([s is not None and s.done for s in into], numpy.bool_),
+            game_ms=numpy.asarray([0.0 if s is None else s.game_ms for s in into], numpy.float32),
+        )
+        grid = numpy.stack(states[: math.ceil((count - 1) / R2D2_SEQUENCE_PERIOD)])
+        items = len(item_layout(count)[0])
+        with self.profile.acquiring(replay.lock):
+            accepted = replay.add(self._metadata(summary), episode, grid)
+        return items, items if accepted else 0
 
     def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:
         if self.replay is None:
@@ -326,3 +383,23 @@ class Actor:
             game_ms=0.0,
         )
         return (filler,) * (length - len(steps)) + tuple(steps)
+
+
+def _kept_observations(
+    replay: DreamerReplay | R2D2Replay, steps: list[ReplayStep], final: StateFeatures | None
+) -> list[StateFeatures]:
+    """An episode's observations as a stream replay keeps them.
+
+    Every observation, and the final one when the environment gave it; or,
+    at the first inadmissible transition, up to observation `kept`: the
+    admissible transition `kept - 1`'s valid next state, and the stream's
+    last. With no transition before it there is nothing to keep.
+    """
+    kept = next((i for i, step in enumerate(steps) if not step.admissible), None)
+    if kept is None:
+        observations = [step.features for step in steps]
+        if final is not None:
+            observations.append(final)
+        return observations
+    replay.stats.reject("inadmissible_transition")
+    return [step.features for step in steps[: kept + 1]] if kept else []

@@ -96,6 +96,10 @@ HEAD_HIDDEN = 512
 GRADIENT_CLIP_NORM = 40.0
 #: P section 2.3's h(x) = sign(x)(sqrt(|x| + 1) - 1) + eps x; rlax's default eps.
 VALUE_RESCALING_EPSILON = 1e-3
+#: Decisions an actor takes between refreshes of the parameters it acts from,
+#: counted across episodes: P Table 2, "actor parameter update interval 400
+#: environment steps"; Acme's `variable_update_period`.
+ACTOR_REFRESH_DECISIONS = 400
 
 
 @dataclass(frozen=True)

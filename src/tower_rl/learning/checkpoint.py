@@ -56,8 +56,14 @@ from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailab
 #: DreamerV3 file from before it still loads, for evaluation and selection,
 #: and `scripts/train.py` refuses to resume it as a mixed run; a stacked-dqn
 #: file of version 6 still resumes, because nothing it learns from changed.
-CHECKPOINT_FORMAT_VERSION = 7
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
+#: Version 8 is R2D2 (ADR 0018): `backbone_state` may be an `R2D2Backbone`'s
+#: - online and target networks, Adam's moments, its step count - and its
+#: resume point's replay stores items with the LSTM state each starts from
+#: (`R2D2_REPLAY_DUMP_FORMAT_VERSION`). The payload is unchanged, and every
+#: earlier version still loads and resumes as before; a file from before it
+#: holds no R2D2 run, which its arm in the identity already refuses.
+CHECKPOINT_FORMAT_VERSION = 8
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
 #: The first format a run may resume from. Named rather than compared against
 #: the current version, so a later format does not make version 4 unresumable.
 DECISION_BUDGET_FORMAT_VERSION = 4

@@ -153,14 +153,30 @@ def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
     )
 
 
-def test_a_horizon_of_no_decisions_is_refused() -> None:
+def test_a_negative_horizon_is_refused() -> None:
     with pytest.raises(ValueError, match="anneal horizon"):
         TrainingConfig(
             budget_decisions=100,
             exploration=ExplorationSchedule(
-                epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=0
+                epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=-1
             ),
         )
+
+
+def test_no_anneal_puts_every_actor_on_its_ape_x_rung_from_the_first_decision() -> None:
+    """R2D2's exploration: the Ape-X ladder, fixed, with nothing annealed (P via Table 2)."""
+    schedule = ExplorationSchedule.for_option(
+        "ladder", actors=7, epsilon_start=0.4, epsilon_end=0.0, anneal_decisions=0
+    )
+    rungs = [0.4, 0.137, 0.047, 0.016, 0.0056, 0.0019, 0.00066]
+    for decisions in (0, 1, 500_000):
+        rates = [schedule.epsilon_for(index, decisions) for index in range(7)]
+        assert rates == pytest.approx(rungs, rel=0.02)
+    eight = ExplorationSchedule.for_option(
+        "ladder", actors=8, epsilon_start=0.4, epsilon_end=0.0, anneal_decisions=0
+    )
+    assert eight.epsilon_for(7, 0) == pytest.approx(0.4**8)
+    assert eight.epsilon_for(0, 0) == 0.4
 
 
 def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> None:

@@ -478,6 +478,14 @@ class StackedDqnBackbone:
             "resets": self.resets,
         }
 
+    def network_state_dict(self) -> dict[str, Any]:
+        """What acting reads: the online network and its step; no target, no optimizer."""
+        return {"online": self.online.state_dict(), "steps": self._steps}
+
+    def load_network_state_dict(self, state: dict[str, Any]) -> None:
+        self.online.load_state_dict(state["online"])
+        self._steps = int(state["steps"])
+
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self.online.load_state_dict(state["online"])
         self.target.load_state_dict(state["target"])

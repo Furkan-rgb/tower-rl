@@ -493,19 +493,25 @@ class WatchedBackbone:
             self.updating = False
 
     def state_dict(self) -> dict[str, Any]:
+        return self.inner.state_dict()
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.inner.load_state_dict(state)
+
+    def network_state_dict(self) -> dict[str, Any]:
         if self.updating:
             self.torn.append("a publication read the network mid-update")
         self.publishing = True
         try:
             time.sleep(DECISION_SECONDS)
-            return self.inner.state_dict()
+            return self.inner.network_state_dict()
         finally:
             self.publishing = False
 
-    def load_state_dict(self, state: dict[str, Any]) -> None:
+    def load_network_state_dict(self, state: dict[str, Any]) -> None:
         self.publications += 1
         self.publish_positions.append(self.acts)
-        self.inner.load_state_dict(state)
+        self.inner.load_network_state_dict(state)
 
 
 def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, WatchedBackbone]:
@@ -639,8 +645,10 @@ def test_a_publication_gives_an_actor_the_learner_s_current_parameters() -> None
     training.learner.publish_to(acting)
 
     assert parameters_are_equal(acting.inner.online, training.backbone.inner.online)
-    assert parameters_are_equal(acting.inner.target, training.backbone.inner.target)
     assert acting.model_version == training.backbone.model_version
+    # Acting reads the online network alone; the target and the optimizer are
+    # never published (`Backbone.network_state_dict`).
+    assert not parameters_are_equal(acting.inner.target, training.backbone.inner.target)
 
 
 def test_no_actor_is_ever_given_half_of_an_optimisation_step() -> None:
@@ -757,6 +765,24 @@ def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_decisions() ->
         training, training.actors[0].config.actor_id
     )
     assert inside, "no refresh landed inside an episode"
+
+
+def test_without_a_refresh_every_episode_the_cadence_runs_on_across_episodes() -> None:
+    """R2D2's lag: Acme's actor refreshes every so many of its steps, episodes aside."""
+    training, _ = watched_fleet(
+        1, budget_decisions=400, parameter_sync_decisions=7, refresh_every_episode=False
+    )
+    acting = copies(training)[0]
+
+    report = training.run()
+
+    assert report.episodes >= 4
+    boundaries = episode_boundaries(training, training.actors[0].config.actor_id)
+    # The first load at the first decision; after it, only every seventh of the
+    # actor's own decisions, however its episodes fall.
+    assert acting.publish_positions[0] == 0
+    assert all(position % 7 == 0 for position in acting.publish_positions)
+    assert set(acting.publish_positions) - boundaries, "no refresh landed inside an episode"
 
 
 def test_an_episode_is_stamped_with_the_version_its_first_decision_was_taken_with() -> None:

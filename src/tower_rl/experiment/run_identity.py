@@ -34,6 +34,7 @@ from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.r2d2 import GRADIENT_CLIP_NORM, R2D2Config
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.learning.training import ArmReplay, TrainingConfig
 from tower_rl.learning.value_learning import V_REF
@@ -347,6 +348,39 @@ def dreamer_resolved_config(
         "survival_reward_bound": V_REF if config.survival_time_reward else None,
         **{f"dreamer_{key}": value for key, value in asdict(config).items()},
         "dreamer_compute_dtype": "bfloat16" if mixed_precision else "float32",
+    }
+
+
+def r2d2_resolved_config(
+    resolved: dict[str, object], config: R2D2Config, training: TrainingConfig
+) -> dict[str, object]:
+    """An R2D2 run's snapshot: `resolved_config`'s, with R2D2's own settings.
+
+    The stacked-dqn learner settings do not describe this run and are recorded
+    as None, as are the per-decision replay ratio and debt bound, which its
+    per-item ones replace (`TrainingConfig.gradient_steps_per_item`). The
+    network settings stay: R2D2's torso is the shared trunk
+    (`R2D2Backbone.network_config`). Every `R2D2Config` value is recorded
+    under `r2d2_<field>`, which is what `checkpoint_policy` rebuilds the
+    policy from. The discount and the reward are the task's (ADR 0013), under
+    the keys the resume guard compares for every backbone; R2D2 always learns
+    the survival reward.
+    """
+    stacked = {item.name for item in fields(StackedDqnConfig)} - {"seed"}
+    unread = stacked | {"gradient_steps_per_decision", "learner_debt_bound_decisions"}
+    return {
+        **{key: None if key in unread else value for key, value in resolved.items()},
+        "discount_per_game_second": config.discount_per_game_second,
+        "survival_time_reward": True,
+        "survival_reward_bound": V_REF,
+        "n_step": config.n_step,
+        "learning_rate": config.learning_rate,
+        "adam_epsilon": config.adam_epsilon,
+        "gradient_steps_per_item": training.gradient_steps_per_item,
+        "learner_debt_bound_items": training.learner_debt_bound_items,
+        "refresh_every_episode": training.refresh_every_episode,
+        **{f"r2d2_{key}": value for key, value in asdict(config).items()},
+        "r2d2_gradient_clip_norm": GRADIENT_CLIP_NORM,
     }
 
 

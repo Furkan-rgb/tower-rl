@@ -16,7 +16,8 @@ from tower_rl.learning.dreamer_replay import DreamerReplay, episode_steps
 from tower_rl.learning.r2d2_replay import (
     R2D2_BURN_IN,
     R2D2_ITEM_LENGTH,
-    R2D2_LEARNER_STEPS_PER_DECISION,
+    R2D2_LEARNER_DEBT_BOUND_ITEMS,
+    R2D2_LEARNER_STEPS_PER_ITEM,
     R2D2_SEQUENCE_PERIOD,
     R2D2Replay,
     item_layout,
@@ -244,9 +245,14 @@ def test_a_priority_update_skips_an_item_evicted_since_its_sample() -> None:
     assert replay.image().item_priority.tolist() == [1.0]
 
 
-def test_the_rate_limiter_is_an_eighth_of_a_learner_step_per_decision() -> None:
-    """320 samples per insert x 1 insert per 40 decisions / 64 per batch."""
-    assert R2D2_LEARNER_STEPS_PER_DECISION == 320 * (1 / 40) / 64 == 0.125
+def test_the_rate_limiter_is_five_learner_steps_per_item_within_acmes_error_buffer() -> None:
+    """320 samples per insert / 64 per batch; 1,250 x 320 x 0.1 samples of slack."""
+    assert R2D2_LEARNER_STEPS_PER_ITEM == 320 / 64 == 5.0
+    assert R2D2_LEARNER_DEBT_BOUND_ITEMS * 320 == 1_250 * 320 * 0.1
+    # An ordinary 521-decision episode inserts 12 items, 60 steps' worth at
+    # once; eight actors ending one inside a single hold stay under the bound.
+    assert len(item_layout(522)[0]) == 12
+    assert 8 * 12 * R2D2_LEARNER_STEPS_PER_ITEM < R2D2_LEARNER_DEBT_BOUND_ITEMS * 5
 
 
 def test_a_dump_round_trips_items_priorities_states_and_the_sampler(tmp_path: Path) -> None:

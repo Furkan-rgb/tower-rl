@@ -2565,3 +2565,199 @@ def test_dreamerv3_acts_on_the_last_finished_step_at_every_decision(tmp_path: Pa
     assert dreamer_arguments(tmp_path).parameter_sync_decisions == 1
     with pytest.raises(SystemExit, match="contradicts DreamerV3"):
         dreamer_arguments(tmp_path, "--parameter-sync-decisions", "100")
+
+
+# -- R2D2 --------------------------------------------------------------------
+
+#: The task's discount and reward, which an R2D2 run must give (ADR 0013).
+R2D2_TASK = ("--discount-per-game-second", "0.999", "--survival-time-reward")
+
+
+def r2d2_arguments(run_dir: Path, *flags: str) -> argparse.Namespace:
+    return train.parse_arguments(
+        [
+            "--budget-decisions", "1000", "--run-dir", str(run_dir), "--backbone", "r2d2",
+            *R2D2_TASK, *flags,
+        ]
+    )
+
+
+def test_r2d2_fixes_its_published_loop_settings(tmp_path: Path) -> None:
+    parsed = r2d2_arguments(tmp_path)
+    assert (parsed.sequence_length, parsed.stacked_burn_in) == (80, 40)
+    assert (parsed.batch_size, parsed.warmup_sequences) == (64, 1_250)
+    assert parsed.replay_capacity == 100_000
+    assert (parsed.n_step, parsed.learning_rate) == (5, 1e-4)
+    assert parsed.exploration == "ladder" and parsed.epsilon_anneal_decisions == 0
+    assert parsed.parameter_sync_decisions == 400
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--batch-size", "32"),
+        ("--sequence-length", "64"),
+        ("--n-step", "3"),
+        ("--learning-rate", "1e-3"),
+        ("--exploration", "uniform"),
+        ("--epsilon-anneal-decisions", "8000"),
+        ("--parameter-sync-decisions", "100"),
+        ("--warmup-sequences", "100"),
+    ],
+)
+def test_a_flag_that_contradicts_an_r2d2_value_is_refused(
+    tmp_path: Path, flag: str, value: str
+) -> None:
+    with pytest.raises(SystemExit, match="contradicts R2D2"):
+        r2d2_arguments(tmp_path, flag, value)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--history-length", "8"),
+        ("--discount", "0.99"),
+        ("--target-ema-decay", "0.995"),
+        ("--reset-every-steps", "1000"),
+        ("--gradient-steps-per-decision", "1.0"),
+        ("--epsilon-end", "0.01"),
+    ],
+)
+def test_a_flag_r2d2_does_not_read_is_refused(tmp_path: Path, flags: tuple[str, ...]) -> None:
+    with pytest.raises(SystemExit, match="stacked-dqn setting"):
+        r2d2_arguments(tmp_path, *flags)
+
+
+@pytest.mark.parametrize(
+    "task", [("--discount-per-game-second", "0.999"), ("--survival-time-reward",)]
+)
+def test_r2d2_needs_the_game_time_discount_and_the_survival_reward(
+    tmp_path: Path, task: tuple[str, ...]
+) -> None:
+    with pytest.raises(SystemExit, match="--backbone r2d2 learns the survival reward"):
+        train.parse_arguments(
+            ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--backbone", "r2d2", *task]
+        )
+
+
+#: R2D2 reduced for the CPU: a target copy every 3 steps, a refresh every 10
+#: decisions, two items to warm, a batch of two. Test-only, patched in.
+R2D2_SMOKE_TARGET_PERIOD = 3
+R2D2_SMOKE_REFRESH = 10
+
+
+def r2d2_session(
+    run_dir: Path, budget: str, resume: Any = None, loads: list[int] | None = None
+) -> dict[str, Any]:
+    """One R2D2 session through the entry point, reduced for the CPU, on the fake fleet."""
+    from tower_rl.learning.learner import Learner
+    from tower_rl.learning.r2d2 import R2D2Config
+
+    publish_to = Learner.publish_to
+
+    def counted(learner: Learner, acting: Any) -> int:
+        if loads is not None:
+            loads.append(learner.published)
+        return publish_to(learner, acting)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        patch.setattr(
+            train,
+            "R2D2Config",
+            lambda **given: R2D2Config(target_update_period=R2D2_SMOKE_TARGET_PERIOD, **given),
+        )
+        patch.setattr(train, "R2D2_MIN_REPLAY_ITEMS", 2)
+        patch.setattr(train, "R2D2_BATCH_SIZE", 2)
+        patch.setattr(train, "R2D2_REPLAY_CAPACITY", 64)
+        patch.setattr(train, "ACTOR_REFRESH_DECISIONS", R2D2_SMOKE_REFRESH)
+        patch.setattr(Learner, "publish_to", counted)
+        parsed = r2d2_arguments(
+            run_dir,
+            "--budget-decisions", budget,
+            "--evaluation-episodes", "1",
+            "--collection-window-episodes", "2",
+            "--checkpoint-every-episodes", "2",
+            "--serial", "fake-0",
+            "--max-quiet-game-ms", "4000",
+            *(() if resume is None else ("--resume", str(resume))),
+        )
+        state = (
+            None
+            if resume is None
+            else train.resume_point(parsed, profile_id=PROFILE, revision="test")
+        )
+        report: dict[str, Any] = train.train_session(
+            parsed,
+            fleet(1),
+            profile_id=PROFILE,
+            revision="test",
+            device=torch.device("cpu"),
+            resume=state,
+        )
+    return report
+
+
+def test_an_r2d2_session_learns_copies_its_target_refreshes_checkpoints_and_resumes(
+    tmp_path: Path,
+) -> None:
+    """The CPU smoke run of `--backbone r2d2`, at test-only reduced settings (ADR 0018)."""
+    from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+    from tower_rl.learning.r2d2_replay import R2D2Replay
+
+    loads: list[int] = []
+    first = r2d2_session(tmp_path / "first", "200", loads=loads)
+    arm = first["arm"]
+    assert arm["backbone"] == "r2d2" and arm["failed_episodes"] == 0
+    steps = arm["optimisation_steps"]
+    # Learning: five steps per item inserted, whole items only, the warming
+    # episode's included and nothing before it.
+    assert steps >= 2 * R2D2_SMOKE_TARGET_PERIOD
+    assert steps % 5 == 0 and steps <= 5 * arm["sequences_accepted"]
+    # Refreshes inside episodes, counted across them: the first load at the
+    # first episode's start, then one per 10 decisions, never one per episode.
+    assert len(loads) >= 2
+    assert len(loads) <= 1 + arm["decisions"] // R2D2_SMOKE_REFRESH
+
+    resolved = arm["resolved_config"]
+    assert resolved["r2d2_target_update_period"] == R2D2_SMOKE_TARGET_PERIOD
+    assert resolved["gradient_steps_per_item"] == 5.0
+    assert resolved["learner_debt_bound_items"] == 125
+    assert resolved["gradient_steps_per_decision"] is None
+    assert resolved["exploration_epsilon_floors"] == [0.4]
+
+    # A checkpoint: format 8, the target a copy of an online network at a
+    # multiple of the period, so no longer the target it was initialised to.
+    checkpoint = latest_checkpoint(first)
+    saved = load(checkpoint)
+    assert saved.format_version == 8 and saved.identity.backbone == "r2d2"
+    state = saved.backbone_state
+    fresh = R2D2Backbone(
+        R2D2Config(discount_per_game_second=0.999, seed=resolved["seed"]),
+        network_config=SMALL_NETWORK,
+    ).state_dict()
+    assert any(
+        not torch.equal(state["target"][key], fresh["target"][key]) for key in fresh["target"]
+    )
+    # It plays as a policy.
+    policy, _ = checkpoint_policy(
+        checkpoint,
+        decision_cadence=resolved["decision_cadence"],
+        upgrade_availability=resolved["upgrade_availability"],
+        workshop_level=0,
+    )
+    assert isinstance(policy, R2D2Backbone)
+
+    # The resume pair: the dump holds items with their stored states.
+    dump = saved_replay(tmp_path / "first")
+    dump_decisions, decisions = paired_decisions(dump)
+    assert dump_decisions == decisions
+    restored = R2D2Replay(capacity=64)
+    restored.load_from(dump)
+    assert len(restored) > 0
+
+    second = r2d2_session(tmp_path / "second", "400", resume=checkpoint)
+    resumed = second["arm"]
+    assert resumed["resolved_config"]["replay_restored_from"] == str(dump)
+    assert resumed["decisions"] >= 400
+    assert resumed["optimisation_steps"] > steps

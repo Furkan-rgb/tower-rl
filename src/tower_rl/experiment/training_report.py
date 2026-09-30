@@ -58,6 +58,7 @@ from tower_rl.learning.checkpoint import (
 from tower_rl.learning.dreamer_replay import DreamerReplayImage
 from tower_rl.learning.evaluator import EvaluationReport, to_record
 from tower_rl.learning.learner import IDLE_LOAD, LearnerLoad
+from tower_rl.learning.r2d2_replay import R2D2ReplayImage
 from tower_rl.learning.replay import ReplayImage
 from tower_rl.learning.training import (
     ArmReplay,
@@ -268,7 +269,9 @@ class TrainingReport:
             self._write_resume_point(report, self.replay.image())
 
     def _write_resume_point(
-        self, report: TrainingProgressReport, image: ReplayImage | DreamerReplayImage
+        self,
+        report: TrainingProgressReport,
+        image: ReplayImage | DreamerReplayImage | R2D2ReplayImage,
     ) -> None:
         """Write the buffer, then `latest.pt` naming it, then delete every other dump.
 
@@ -782,8 +785,10 @@ class TrainingReport:
         }
 
 
-def _held(image: ReplayImage | DreamerReplayImage) -> str:
+def _held(image: ReplayImage | DreamerReplayImage | R2D2ReplayImage) -> str:
     """What a replay dump holds, in its own unit."""
     if isinstance(image, DreamerReplayImage):
         return f"{len(image.items)} replay items"
+    if isinstance(image, R2D2ReplayImage):
+        return f"{len(image.item_episode)} replay items"
     return f"{len(image.sequences)} replay sequences"

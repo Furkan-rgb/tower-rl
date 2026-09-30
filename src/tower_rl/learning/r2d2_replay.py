@@ -42,7 +42,10 @@ What differs, each forced:
   An item with no valid trace step - an episode of 41 steps or fewer - takes
   priority 0 at its first update and is not drawn again.
 - **Minimum size, samples per insert.** See `R2D2_MIN_REPLAY_ITEMS` and
-  `R2D2_LEARNER_STEPS_PER_DECISION`: both forced by the protocol's budget.
+  `R2D2_SAMPLES_PER_INSERT`: both forced by the protocol's budget.
+- **The rate limiter** is ADR 0017's learner debt, credited per item
+  inserted (`R2D2_LEARNER_STEPS_PER_ITEM`, `R2D2_LEARNER_DEBT_BOUND_ITEMS`).
+  An episode's items are inserted, and credited, as it ends.
 
 A step is in the shared layout (`StepArrays`): its observation, the action
 taken at it, and the reward, termination and game time of the transition into
@@ -106,14 +109,22 @@ R2D2_MIN_REPLAY_ITEMS = 1_250
 #: 320, about 125,000 steps and 50 target copies.
 R2D2_SAMPLES_PER_INSERT = 320
 #: Acme's rate limiter (`SampleToInsertRatio`) held as ADR 0017's learner debt,
-#: which is credited per decision: 320 samples per insert x 1 insert per 40
-#: decisions / 64 samples per learner step = 0.125 learner steps per decision.
-#: One insert per 40 decisions is the grid's rate; an episode's own is a
-#: little lower (12 items from a 521-decision episode), since its tail
-#: shorter than a period starts no item.
-R2D2_LEARNER_STEPS_PER_DECISION = (
-    R2D2_SAMPLES_PER_INSERT / R2D2_SEQUENCE_PERIOD / R2D2_BATCH_SIZE
-)
+#: credited per item actually inserted, as Reverb counts inserts: 320 samples
+#: per insert / 64 samples per learner step = 5 learner steps per item.
+R2D2_LEARNER_STEPS_PER_ITEM = R2D2_SAMPLES_PER_INSERT / R2D2_BATCH_SIZE
+#: The debt bound, in items: Acme's `error_buffer`, `min_replay_size x
+#: samples_per_insert x samples_per_insert_tolerance_rate` = 1,250 x 320 x 0.1
+#: = 40,000 samples = 625 learner steps = 125 items. It meets ADR 0017's rule
+#: for the bound - cover the longest ordinary hold, a resume-point save of
+#: 11.5 s - with room: an episode's items are credited at once as it ends
+#: (about 12 items, 60 steps, from a 521-decision episode), so the worst hold
+#: is every actor ending an episode inside it, 8 x 60 = 480 steps, under 625.
+#: Its lag, 625 steps, is a quarter of one 2,500-step target period. Reverb
+#: also offsets the ratio by `min_replay_size x samples_per_insert`, so the
+#: first 1,250 items earn no steps; here the items before the buffer is warm
+#: earn none and the warming episode's earn theirs (ADR 0017): a difference
+#: of one episode's items.
+R2D2_LEARNER_DEBT_BOUND_ITEMS = 125
 #: The layout of a saved R2D2 replay. 1 and 2 are stacked-dqn's window buffer
 #: (`replay.REPLAY_DUMP_FORMAT_VERSION`) and 3 DreamerV3's step replay; all
 #: are refused, since no earlier buffer holds items with stored states.

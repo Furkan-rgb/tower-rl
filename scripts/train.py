@@ -164,6 +164,7 @@ from tower_rl.experiment.run_identity import (  # noqa: E402
     RunIdentity,
     checkpoint_identity,
     dreamer_resolved_config,
+    r2d2_resolved_config,
     reference_final_waves,
     resolved_config,
     source_revision,
@@ -206,6 +207,22 @@ from tower_rl.learning.exploration import (  # noqa: E402
     ExplorationSchedule,
 )
 from tower_rl.learning.network import NetworkConfig  # noqa: E402
+from tower_rl.learning.r2d2 import (  # noqa: E402
+    ACTOR_REFRESH_DECISIONS,
+    R2D2,
+    R2D2Backbone,
+    R2D2Config,
+)
+from tower_rl.learning.r2d2_replay import (  # noqa: E402
+    R2D2_BATCH_SIZE,
+    R2D2_BURN_IN,
+    R2D2_LEARNER_DEBT_BOUND_ITEMS,
+    R2D2_LEARNER_STEPS_PER_ITEM,
+    R2D2_MIN_REPLAY_ITEMS,
+    R2D2_REPLAY_CAPACITY,
+    R2D2_TRACE_LENGTH,
+    R2D2Replay,
+)
 from tower_rl.learning.replay import (  # noqa: E402
     R2D2_IMPORTANCE_SAMPLING_EXPONENT,
     R2D2_PRIORITY_EXPONENT,
@@ -255,7 +272,7 @@ from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter 
 #: The default backbone, and the one every run before DreamerV3 trained.
 BACKBONE = "stacked-dqn"
 #: What `--backbone` chooses from.
-BACKBONES = (BACKBONE, DREAMERV3)
+BACKBONES = (BACKBONE, DREAMERV3, R2D2)
 
 #: What a uniform schedule anneals to when `--epsilon-end` is not given. Held
 #: here rather than as the flag's default so that a value the ladder would
@@ -347,10 +364,13 @@ def last_reset_step(arguments: argparse.Namespace) -> int:
 def build_replay(arguments: argparse.Namespace) -> ArmReplay:
     """The empty buffer the arm collects into.
 
-    Each backbone replays as its own recipe does, and neither is an option:
-    DreamerV3 from the official step replay (solution.md 9.4c), stacked-dqn
-    from windows by R2D2's priorities.
+    Each backbone replays as its own recipe does, and none is an option:
+    DreamerV3 from the official step replay (solution.md 9.4c), R2D2 from
+    items with stored states (ADR 0018), stacked-dqn from windows by R2D2's
+    priorities.
     """
+    if arguments.backbone == R2D2:
+        return R2D2Replay(capacity=arguments.replay_capacity, seed=arguments.seed)
     if arguments.backbone == DREAMERV3:
         return DreamerReplay(
             capacity=arguments.replay_capacity,
@@ -415,6 +435,18 @@ def build_arm(
         # Only for `resolved_config`'s signature: `dreamer_resolved_config`
         # records every stacked-dqn setting of a DreamerV3 run as None.
         learner, network = StackedDqnConfig(), NetworkConfig()
+    elif arguments.backbone == R2D2:
+        network = NetworkConfig()
+        backbone = R2D2Backbone(
+            config=R2D2Config(
+                discount_per_game_second=arguments.discount_per_game_second,
+                seed=arguments.seed,
+            ),
+            network_config=network,
+            device=device,
+        )
+        # As above: `r2d2_resolved_config` records R2D2's own settings.
+        learner = StackedDqnConfig()
     else:
         backbone, learner, network = build_backbone(arguments, device)
     if resume is not None:
@@ -440,6 +472,7 @@ def build_arm(
             f"{resume.replay_dump} in {time.monotonic() - loading:.1f} s",
             flush=True,
         )
+    r2d2 = arguments.backbone == R2D2
     config = TrainingConfig(
         budget_decisions=arguments.budget_decisions,
         warmup_sequences=arguments.warmup_sequences,
@@ -461,6 +494,11 @@ def build_arm(
         early_stop_min_improvement=arguments.early_stop_min_improvement,
         parameter_sync_decisions=arguments.parameter_sync_decisions,
         kill_bars=tuple(arguments.kill_bars),
+        # Acme's rate limiter, credited per item inserted, and Acme's refresh
+        # every 400 decisions counted across episodes (ADR 0018).
+        gradient_steps_per_item=R2D2_LEARNER_STEPS_PER_ITEM if r2d2 else None,
+        learner_debt_bound_items=R2D2_LEARNER_DEBT_BOUND_ITEMS if r2d2 else None,
+        refresh_every_episode=not r2d2,
     )
     stride = max(1, arguments.sequence_length // 2)
     burn_in = int(arguments.stacked_burn_in)
@@ -504,6 +542,8 @@ def build_arm(
         resolved = dreamer_resolved_config(
             resolved, backbone.config, mixed_precision=bool(backbone.mixed_precision)
         )
+    if isinstance(backbone, R2D2Backbone):
+        resolved = r2d2_resolved_config(resolved, backbone.config, config)
     if resume is not None and resume.tracking_run_id is not None:
         # The same run, not a second one beside it: the curve of a run trained
         # in two sittings is one series, on the one decision axis both
@@ -843,32 +883,77 @@ def dreamer_loop_settings() -> dict[str, object]:
     }
 
 
-def settle_dreamer_settings(
+#: Flags only stacked-dqn reads that R2D2 does not: R2D2 has no stacked window,
+#: no n-step anneal, no per-decision discount, no ez-greedy, a hard target copy
+#: rather than an EMA, no resets, a fixed ladder with no floor to anneal to,
+#: and a replay ratio per item (`build_arm`).
+R2D2_UNREAD_FLAGS = (
+    "history_length",
+    "n_step_final",
+    "n_step_anneal_steps",
+    "discount",
+    "ez_greedy",
+    "target_ema_decay",
+    "reset_every_steps",
+    "epsilon_end",
+    "gradient_steps_per_decision",
+)
+
+
+def r2d2_loop_settings() -> dict[str, object]:
+    """The training-loop settings R2D2 fixes, by argument name (ADR 0018)."""
+    config = R2D2Config(discount_per_game_second=0.999)
+    return {
+        # The trace; each item adds its burn-in before it and one step after.
+        "sequence_length": R2D2_TRACE_LENGTH,
+        "stacked_burn_in": R2D2_BURN_IN,
+        "replay_capacity": R2D2_REPLAY_CAPACITY,
+        "batch_size": R2D2_BATCH_SIZE,
+        # Items: Acme's `min_replay_size`, forced lower by the budget.
+        "warmup_sequences": R2D2_MIN_REPLAY_ITEMS,
+        "n_step": config.n_step,
+        "learning_rate": config.learning_rate,
+        # Ape-X's fixed ladder from the first decision, which R2D2 adopts
+        # (P section 3): 0.4 is its base rate, and nothing anneals.
+        "exploration": LADDER,
+        "epsilon_start": 0.4,
+        "epsilon_anneal_decisions": 0,
+        "parameter_sync_decisions": ACTOR_REFRESH_DECISIONS,
+    }
+
+
+def settle_fixed_settings(
     parser: argparse.ArgumentParser, argv: list[str] | None, arguments: argparse.Namespace
 ) -> None:
-    """Under `--backbone dreamerv3`, fix its loop settings and refuse any flag against them.
+    """Under DreamerV3 or R2D2, fix its loop settings and refuse any flag against them.
 
     A flag that repeats a fixed value is accepted; one that contradicts it, or
     one only stacked-dqn reads, is refused rather than silently overridden.
     """
-    if arguments.backbone != DREAMERV3:
+    unread: tuple[str, ...]
+    if arguments.backbone == DREAMERV3:
+        fixed, unread, name, source = (
+            dreamer_loop_settings(), STACKED_ONLY_FLAGS, "DreamerV3", "docs/solution.md 9.4c"
+        )
+    elif arguments.backbone == R2D2:
+        fixed, unread, name, source = r2d2_loop_settings(), R2D2_UNREAD_FLAGS, "R2D2", "ADR 0018"
+    else:
         return
-    fixed = dreamer_loop_settings()
     # Parsed again with nothing defaulted, so a flag that was given can be told
     # from one that was left alone.
-    parser.set_defaults(**{dest: None for dest in (*fixed, *STACKED_ONLY_FLAGS)})
+    parser.set_defaults(**{dest: None for dest in (*fixed, *unread)})
     given = vars(parser.parse_args(argv))
-    for dest in STACKED_ONLY_FLAGS:
+    for dest in unread:
         if given[dest] is not None:
             raise SystemExit(
                 f"--{dest.replace('_', '-')} is a stacked-dqn setting; "
-                "--backbone dreamerv3 does not read it"
+                f"--backbone {arguments.backbone} does not read it"
             )
     for dest, value in fixed.items():
         if given[dest] is not None and given[dest] != value:
             raise SystemExit(
-                f"--{dest.replace('_', '-')} {given[dest]} contradicts DreamerV3's "
-                f"fixed {value} (docs/solution.md 9.4c)"
+                f"--{dest.replace('_', '-')} {given[dest]} contradicts {name}'s "
+                f"fixed {value} ({source})"
             )
         setattr(arguments, dest, value)
 
@@ -1213,12 +1298,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     arguments = parser.parse_args(argv)
 
     if (
-        arguments.backbone != DREAMERV3
+        arguments.backbone == BACKBONE
         and arguments.discount is not None
         and arguments.discount_per_game_second is not None
     ):
         # Two definitions of one discount: neither may be silently unused.
-        # DreamerV3 refuses --discount outright (`settle_dreamer_settings`).
+        # DreamerV3 and R2D2 refuse --discount outright (`settle_fixed_settings`).
         raise SystemExit(
             "--discount and --discount-per-game-second each define the discount; "
             "give one or the other"
@@ -1287,7 +1372,17 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         raise SystemExit("--n-step-anneal-steps cannot be negative")
     if arguments.reset_every_steps < 0:
         raise SystemExit("--reset-every-steps cannot be negative")
-    settle_dreamer_settings(parser, argv, arguments)
+    settle_fixed_settings(parser, argv, arguments)
+    if arguments.backbone == R2D2 and (
+        arguments.discount_per_game_second is None or not arguments.survival_time_reward
+    ):
+        # R2D2 is written against the task's game-time discount and survival
+        # reward (ADR 0013, ADR 0018); it has no per-decision or wave variant.
+        raise SystemExit(
+            "--backbone r2d2 learns the survival reward under the game-time discount "
+            "and needs --discount-per-game-second (the protocol's is 0.999, ADR 0013) "
+            "and --survival-time-reward"
+        )
     if arguments.backbone == DREAMERV3 and arguments.discount_per_game_second is None:
         # The discount is a task parameter (ADR 0013) and has no code default;
         # DreamerV3 has no per-decision one to fall back on.
@@ -1509,10 +1604,11 @@ def recorded_loop_settings(resolved: Mapping[str, object]) -> dict[str, object]:
     start. Any other count of episodes has no cadence in decisions to continue
     at, so such a checkpoint is refused outright.
     """
+    # An R2D2 run records no per-decision ratio: its per-item one is fixed.
     recorded = {
         name: resolved[name]
         for name in ("gradient_steps_per_decision", "replay_capacity")
-        if name in resolved
+        if resolved.get(name) is not None
     }
     # Only stacked-dqn resets, and a DreamerV3 run records it as None.
     if resolved.get("reset_every_steps") is not None:

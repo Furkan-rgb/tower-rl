@@ -895,6 +895,20 @@ class DreamerBackbone:
             "steps": self._steps,
         }
 
+    def network_state_dict(self) -> dict[str, Any]:
+        """Every network and the return scale, as `state_dict` holds them, without the optimizer."""
+        state = self.state_dict()
+        del state["optimizer"]
+        return state
+
+    def load_network_state_dict(self, state: dict[str, Any]) -> None:
+        self.world_model.load_state_dict(state["world_model"])
+        self.actor.load_state_dict(state["actor"])
+        self.critic.load_state_dict(state["critic"])
+        self.slow_critic.load_state_dict(state["slow_critic"])
+        self.return_normaliser.load_state_dict(state["return_normaliser"])
+        self._steps = int(state["steps"])
+
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self.world_model.load_state_dict(state["world_model"])
         self.actor.load_state_dict(state["actor"])

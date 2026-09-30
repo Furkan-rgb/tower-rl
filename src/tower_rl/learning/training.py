@@ -52,7 +52,10 @@ No actor takes a gradient step.  The learner is a thread of its own
 (`learning/learner.py`, ADR 0017): each decision an actor takes credits it
 with the steps that decision earns, it takes them while the actors carry on
 collecting, and an actor pauses only when more than
-`learner_debt_bound_decisions` decisions' worth are owed.
+`learner_debt_bound_decisions` decisions' worth are owed. Under R2D2 the
+learner is credited instead with the replay items each episode inserted, as it
+ends (`gradient_steps_per_item`), which is Acme's rate limiter counting
+inserts.
 """
 
 from __future__ import annotations
@@ -99,11 +102,12 @@ from tower_rl.learning.dreamer_replay import DreamerReplay
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.learner import Learner, LearnerLoad, LearnerThread
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 
 #: The buffer an arm collects into: stacked-dqn's windows, or DreamerV3's
 #: step replay (`dreamer_replay.py`, docs/solution.md 9.4c).
-ArmReplay = PrioritizedSequenceReplay | DreamerReplay
+ArmReplay = PrioritizedSequenceReplay | DreamerReplay | R2D2Replay
 
 #: The device's own rejection reason for a stale or duplicate command, carried
 #: into an episode's `termination_detail` free text exactly as it comes off the
@@ -362,6 +366,12 @@ class TrainingConfig:
     #: `scripts/train.py` fixes it there). Zero refreshes at the start of
     #: every episode only, never inside one - `M3-P009`'s cadence.
     parameter_sync_decisions: int = 100
+    #: Whether every episode also starts on a fresh copy and restarts the count
+    #: above. False is R2D2's: Acme's actor updates its variables every 400
+    #: of its own steps, counted across episodes (`VariableClient`
+    #: `update_period`), so an episode start refreshes only a copy that never
+    #: loaded.
+    refresh_every_episode: bool = True
     #: Pre-registered floors on the decision axis the run stops itself on; see
     #: `KillBar`. Empty is off, which is every run before run 4.
     kill_bars: tuple[KillBar, ...] = ()
@@ -379,6 +389,12 @@ class TrainingConfig:
     #: default refresh cadence already accepts. 512 gradient steps at
     #: stacked-dqn's 1.0, 256 at DreamerV3's 0.5.
     learner_debt_bound_decisions: int = 512
+    #: Gradient steps per replay item inserted, and the debt bound in items,
+    #: which replace the two per-decision figures above when set: the learner
+    #: is then credited with the items each episode inserted, as it ends, and
+    #: nothing per decision. R2D2's rate limiter (`r2d2_replay`).
+    gradient_steps_per_item: float | None = None
+    learner_debt_bound_items: int | None = None
 
     def __post_init__(self) -> None:
         if self.budget_decisions < 1:
@@ -401,6 +417,17 @@ class TrainingConfig:
             raise ValueError("early-stopping patience cannot be negative")
         if self.learner_debt_bound_decisions < 1:
             raise ValueError("the learner's debt bound must be at least one decision")
+        if (self.gradient_steps_per_item is None) != (self.learner_debt_bound_items is None):
+            raise ValueError("crediting per item needs both its ratio and its bound")
+        if self.gradient_steps_per_item is not None and (
+            self.gradient_steps_per_item <= 0 or (self.learner_debt_bound_items or 0) < 1
+        ):
+            raise ValueError("the ratio and bound per item must be positive")
+
+    @property
+    def credits_items(self) -> bool:
+        """Whether the learner is credited per replay item rather than per decision."""
+        return self.gradient_steps_per_item is not None
 
 
 @dataclass(frozen=True)
@@ -1017,8 +1044,16 @@ class TrainingRun:
         self.learner_thread = LearnerThread(
             self.learner,
             self._take_gradient_step,
-            steps_per_decision=self.config.gradient_steps_per_decision,
-            bound_decisions=self.config.learner_debt_bound_decisions,
+            steps_per_credit=(
+                self.config.gradient_steps_per_item
+                if self.config.gradient_steps_per_item is not None
+                else self.config.gradient_steps_per_decision
+            ),
+            bound_credits=(
+                self.config.learner_debt_bound_items
+                if self.config.learner_debt_bound_items is not None
+                else self.config.learner_debt_bound_decisions
+            ),
             carried_debt_steps=self.resumed_debt_steps,
         )
         # The cadences are continued rather than restarted: a run resumed at
@@ -1299,10 +1334,13 @@ class TrainingRun:
             # Every episode starts on a fresh copy, and the count of decisions
             # to the next refresh restarts here. At a cadence of zero the copy
             # then holds still through the whole episode; otherwise the
-            # refreshes inside it are `_before_decision`'s. `_lock` is released
-            # first, so the only order locks are ever taken in is progress,
-            # then replay, then learner.
-            self._refresh(actor_id, acting, profile)
+            # refreshes inside it are `_before_decision`'s. Without
+            # `refresh_every_episode` only a copy that never loaded is
+            # refreshed here, and the count runs on across episodes. `_lock` is
+            # released first, so the only order locks are ever taken in is
+            # progress, then replay, then learner.
+            if self.config.refresh_every_episode or not self._loaded[actor_id]:
+                self._refresh(actor_id, acting, profile)
             # Exploration is set per episode rather than per step, so a stored
             # sequence has one epsilon and its provenance stays meaningful.
             actor.config = replace(actor.config, epsilon=epsilon)
@@ -1348,7 +1386,12 @@ class TrainingRun:
                     self._take_back_credit(actor_id)
                     return
                 self._record_episode(progress, result)
-                self._settle_debt(actor_id, result.summary.decisions)
+                self._settle_debt(
+                    actor_id,
+                    result.sequences_accepted
+                    if self.config.credits_items
+                    else result.summary.decisions,
+                )
                 # Before the hooks, so a hook reading the learner's figures
                 # reads every step taken so far.
                 self._absorb_learning()
@@ -1385,15 +1428,17 @@ class TrainingRun:
         stop abandons the episode between two decisions rather than inside a
         step. The decision credits the learner as it is taken, once the buffer
         is warm, and the actor pauses here if the learner is more than the
-        bound behind. At a cadence of zero nothing is refreshed here: the copy
+        bound behind. Under R2D2 a decision credits nothing: the episode's
+        items do, as it ends. At a cadence of zero nothing is refreshed here: the copy
         holds still through the whole episode. A refresh here leaves the
         episode's carried state alone, which is the actor's, not the copy's.
         """
         if self._abandoning():
             raise EpisodeAbandoned(actor_id)
         if self._warmed:
-            self._credited[actor_id] += 1
-            self.learner_thread.credit(1)
+            if not self.config.credits_items:
+                self._credited[actor_id] += 1
+                self.learner_thread.credit(1)
             self.learner_thread.make_room(profile, self._abandoning)
             if self._abandoning():
                 raise EpisodeAbandoned(actor_id)
@@ -1410,6 +1455,8 @@ class TrainingRun:
 
     def _settle_debt(self, actor_id: str, counted: int) -> None:
         """Square the learner's credit for an episode with what the episode counted.
+
+        `counted` is its decisions, or under R2D2 the items it inserted.
 
         Called under `_lock` once the episode is in replay. Decisions credit the
         learner as they are taken only once the buffer is warm; the episode
@@ -1696,6 +1743,8 @@ class TrainingRun:
         """
         if isinstance(self.replay, DreamerReplay):
             return self._take_dreamer_step(self.replay)
+        if isinstance(self.replay, R2D2Replay):
+            return self._take_r2d2_step(self.replay)
         with self.replay.lock:
             indices, sequences, weights = self.replay.sample(self.config.batch_size)
         # Built where the parameters are: a CPU batch handed to a CUDA model
@@ -1705,6 +1754,22 @@ class TrainingRun:
         with self.replay.lock:
             self.replay.update_priorities(indices, metrics.td_errors)
         return metrics
+
+    def _take_r2d2_step(self, replay: R2D2Replay) -> LearnMetrics:
+        """Sample items, learn on them, and write back the priorities the learner computed.
+
+        The learner computes each item's priority on its device from its TD
+        errors (Acme `learning.py` 153-157), so the replay takes them as they
+        are. An item evicted meanwhile is skipped (`update_priorities`).
+        """
+        with replay.lock:
+            sample = replay.sample(self.config.batch_size)
+        metrics = self.learner.learn(sample.batch(device=self.backbone.device))
+        if metrics.priorities is None:
+            raise RuntimeError("a learner on R2D2's replay must return its priorities")
+        with replay.lock:
+            replay.update_priorities(sample.keys, metrics.priorities)
+        return replace(metrics, priorities=None)
 
     def _take_dreamer_step(self, replay: DreamerReplay) -> LearnMetrics:
         """`embodied/run/train.py` `trainfn`: sample, train, write the latents back.

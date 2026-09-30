@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import numpy
 import pytest
 from fakes.fake_run_port import FakeRunPort
 
@@ -11,6 +12,7 @@ from tower_rl.environment.episode import (
     TerminationOutcome,
     WaveRecord,
 )
+from tower_rl.environment.features import StateFeatures
 from tower_rl.environment.run_actions import RunActionId
 from tower_rl.environment.run_environment import (
     CadenceConfig,
@@ -30,6 +32,8 @@ from tower_rl.learning.policies import (
     RandomPolicy,
     WaitOnlyPolicy,
 )
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config, R2D2State
+from tower_rl.learning.r2d2_replay import R2D2Replay, item_layout
 from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayStep
 
 PROFILE = "fake-profile-v1"
@@ -600,3 +604,41 @@ def test_each_stored_step_carries_the_game_time_its_transition_spanned(
     assert [step.game_ms for step in stored] == spans
     assert 0.0 in spans, "a confirmed purchase takes no game time"
     assert any(span > 0.0 for span in spans), "a wait does"
+
+
+def test_an_r2d2_actor_stores_the_state_it_held_every_40_decisions_and_the_game_time() -> None:
+    class Recording(R2D2Backbone):
+        held: list[numpy.ndarray]
+        told: list[float]
+
+        def act(
+            self, features: StateFeatures, state: R2D2State, *, epsilon: float
+        ) -> tuple[int, R2D2State]:
+            self.held.append(self.replay_entry(state))
+            assert state.previous_reward is not None or not self.told
+            return super().act(features, state, epsilon=epsilon)
+
+        def after_transition(self, state: R2D2State, game_ms: float) -> R2D2State:
+            self.told.append(game_ms)
+            return super().after_transition(state, game_ms)
+
+    policy = Recording(R2D2Config(discount_per_game_second=0.99, seed=0))
+    policy.held, policy.told = [], []
+    replay = R2D2Replay(capacity=64, seed=0)
+    actor = Actor(
+        environment=_environment(damage_per_second=0.2),
+        policy=policy,
+        config=ActorConfig(epsilon=0.3),
+        replay=replay,
+    )
+
+    result = actor.run_episode()
+
+    decisions = result.summary.decisions
+    assert decisions > 40, "the episode must span more than one state period"
+    (episode,) = replay._episodes.values()
+    starts, _ = item_layout(len(episode.steps))
+    assert len(episode.steps) == decisions + 1
+    assert result.sequences_accepted == len(replay) == len(starts)
+    assert numpy.array_equal(episode.states, numpy.stack(policy.held)[starts])
+    assert policy.told == episode.steps.game_ms[1:].tolist()

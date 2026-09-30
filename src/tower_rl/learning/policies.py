@@ -32,6 +32,7 @@ from tower_rl.environment.run_port import UpgradeSlotLabelLike
 from tower_rl.learning.checkpoint import Checkpoint, CheckpointIdentity, load
 from tower_rl.learning.dreamer import DREAMERV3, DreamerBackbone, DreamerConfig
 from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.r2d2 import R2D2, R2D2Backbone, R2D2Config
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
 
@@ -259,7 +260,7 @@ def checkpoint_policy(
     workshop_level: int,
     device: torch.device | None = None,
     sampling_seed: str | None = None,
-) -> tuple[StackedDqnBackbone | DreamerBackbone, CheckpointIdentity]:
+) -> tuple[StackedDqnBackbone | DreamerBackbone | R2D2Backbone, CheckpointIdentity]:
     """Rebuild the backbone a checkpoint holds, as a policy to evaluate.
 
     Everything needed to reconstruct it is in the checkpoint: its identity says
@@ -304,6 +305,8 @@ def checkpoint_policy(
         raise ValueError(f"{path} cannot be played here: {'; '.join(refusals)}")
     if checkpoint.identity.backbone == DREAMERV3:
         return _dreamer_policy(checkpoint, device, sampling_seed), checkpoint.identity
+    if checkpoint.identity.backbone == R2D2:
+        return _r2d2_policy(checkpoint, device), checkpoint.identity
 
     settings = checkpoint.resolved_config
     if checkpoint.identity.backbone != "stacked-dqn":
@@ -353,6 +356,30 @@ def checkpoint_policy(
     backbone.online.eval()
     backbone.online.requires_grad_(False)
     return backbone, checkpoint.identity
+
+
+def _r2d2_policy(checkpoint: Checkpoint, device: torch.device | None) -> R2D2Backbone:
+    """An R2D2 checkpoint as a policy: its config is the `r2d2_*` keys it recorded.
+
+    Its network is the shared trunk at the widths `network_*` recorded.
+    """
+    settings = checkpoint.resolved_config
+    backbone = R2D2Backbone(
+        config=R2D2Config(
+            **{name.name: settings[f"r2d2_{name.name}"] for name in fields(R2D2Config)}
+        ),
+        network_config=NetworkConfig(
+            identity_capacity=int(settings["network_identity_capacity"]),
+            identity_dim=int(settings["network_identity_dim"]),
+            hidden=int(settings["network_hidden"]),
+            core_hidden=int(settings["network_core_hidden"]),
+        ),
+        device=device or torch.device("cpu"),
+    )
+    backbone.load_state_dict(dict(checkpoint.backbone_state))
+    backbone.online.eval()
+    backbone.online.requires_grad_(False)
+    return backbone
 
 
 def _dreamer_policy(

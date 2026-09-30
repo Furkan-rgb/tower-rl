@@ -7,6 +7,7 @@ recorded in `docs/experiments.md`, not here.
 
 from __future__ import annotations
 
+import copy
 import io
 import math
 import threading
@@ -36,6 +37,7 @@ from tower_rl.learning.dreamer_replay import (
     episode_steps,
 )
 from tower_rl.learning.exploration import ExplorationSchedule
+from tower_rl.learning.learner import Learner
 from tower_rl.learning.replay import (
     ReplaySequence,
     ReplayStep,
@@ -867,3 +869,25 @@ def test_an_episodes_stream_stops_at_its_first_inadmissible_transition() -> None
     # Inadmissible at once: nothing to keep.
     first = [replace(steps[0], admissible=False)]
     assert actor._emit_stream(replay, first, latents, None, summary) == (1, 0)
+
+
+def test_a_publication_carries_no_optimizer_and_acts_as_the_whole_state_does() -> None:
+    """Network-only publication: the snapshot drops the optimizer and nothing acting reads.
+
+    A copy refreshed from it acts exactly as a copy loaded with the learner's
+    whole state, from the same stream, so DreamerV3's acting is unchanged.
+    """
+    learner = _backbone()
+    _learn(learner, _batch(), seed=0)
+    publisher = Learner(learner)
+    publisher.publish()
+    assert publisher._snapshot is not None
+    assert "optimizer" not in publisher._snapshot
+    assert set(publisher._snapshot) == set(learner.state_dict()) - {"optimizer"}
+    published = acting_copy(_backbone(), exploration_seed="actor-3")
+    whole = acting_copy(_backbone(), exploration_seed="actor-3")
+    assert isinstance(published, DreamerBackbone) and isinstance(whole, DreamerBackbone)
+    assert publisher.publish_to(published) == 1
+    whole.load_state_dict(copy.deepcopy(learner.state_dict()))
+    assert published.model_version == whole.model_version == learner.model_version
+    assert _actions(published) == _actions(whole)

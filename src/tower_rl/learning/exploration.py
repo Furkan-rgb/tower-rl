@@ -100,12 +100,14 @@ class ExplorationSchedule:
     #: parser and half this file's.
     epsilon_start: float
     epsilon_end: float
+    #: Zero is no anneal: every actor is at its floor from the first decision,
+    #: and `epsilon_start` is not read - Ape-X's and R2D2's fixed ladder.
     anneal_decisions: int
     floors: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.anneal_decisions < 1:
-            raise ValueError("the epsilon anneal horizon must be positive")
+        if self.anneal_decisions < 0:
+            raise ValueError("the epsilon anneal horizon cannot be negative")
 
     @classmethod
     def for_option(
@@ -167,8 +169,10 @@ class ExplorationSchedule:
         most of what it collected was near-random and its collection curve could
         not be read as a policy's performance at all.
         """
-        fraction = min(1.0, decisions / self.anneal_decisions)
         floor = self.floor_for(actor_index)
+        if not self.anneal_decisions:
+            return floor
+        fraction = min(1.0, decisions / self.anneal_decisions)
         return self.epsilon_start + (floor - self.epsilon_start) * fraction
 
     def is_near_greedy(self, actor_index: int) -> bool:

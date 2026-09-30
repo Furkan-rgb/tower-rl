@@ -98,6 +98,13 @@ class DreamerConfig:
     #: without it, so the official actor mixes in nothing. A checkpoint from
     #: before recorded 0.01 and still acts with it.
     actor_unimix: float = 0.0
+    #: True: the action mask is a boolean key, which the official code treats
+    #: as discrete with two classes (`elements/space.py` 15-16, 42-43): the
+    #: encoder takes it one-hot (`nets.py` 488-493) and the decoder predicts
+    #: it with a two-class categorical head per action (`rssm.py` 299-300),
+    #: read by its argmax. False is the 0/1 input and binary head a checkpoint
+    #: from before recorded no key for; it still acts that way.
+    mask_one_hot: bool = True
     actor_outscale: float = 0.01
     free_nats: float = 1.0
     # Loop geometry (configs.yaml batch_size, batch_length; train_ratio per
@@ -279,33 +286,53 @@ class WorldModel(nn.Module):
         super().__init__()
         c = config
         feature = c.deter + c.stoch * c.classes
-        self.encoder = _mlp(SCALAR_COUNT + ROWS_WIDTH + ACTIONS, c.units, c.encoder_layers)
+        self.mask_classes = 2 if c.mask_one_hot else 1
+        self.encoder = _mlp(
+            SCALAR_COUNT + ROWS_WIDTH + ACTIONS * self.mask_classes, c.units, c.encoder_layers
+        )
         self.dynamics = _Dynamics(c)
         self.decoder = _mlp(feature, c.units, c.decoder_layers)
         self.decode_scalars = _linear(c.units, SCALAR_COUNT)
         self.decode_rows = _linear(c.units, ROWS_WIDTH)
-        self.decode_mask = _linear(c.units, ACTIONS)
+        self.decode_mask = _linear(c.units, ACTIONS * self.mask_classes)
         self.reward = _head(feature, c.units, c.reward_layers, c.bins, 0.0)
         self.cont = _head(feature, c.units, c.continue_layers, 1, 1.0)
 
     def encode(self, scalars: Tensor, rows: Tensor, mask: Tensor) -> Tensor:
-        """Symlog the float keys and concatenate, as `DictConcat` does; the mask goes in as 0/1."""
-        flat = torch.cat(
-            (symlog(scalars), symlog(rows.flatten(-2)), mask.to(scalars.dtype)), -1
-        )
+        """Symlog the float keys and concatenate, as `DictConcat` does; the mask one-hot."""
+        if self.mask_classes == 2:
+            encoded = functional.one_hot(mask.long(), 2).flatten(-2).to(scalars.dtype)
+        else:
+            encoded = mask.to(scalars.dtype)
+        flat = torch.cat((symlog(scalars), symlog(rows.flatten(-2)), encoded), -1)
         tokens: Tensor = self.encoder(flat)
         return tokens
 
+    def mask_logits(self, decoded: Tensor) -> Tensor:
+        """The decoder's mask logits, float32: [..., ACTIONS, 2], or [..., ACTIONS] if 0/1."""
+        logits: Tensor = self.decode_mask(decoded).float()
+        if self.mask_classes == 2:
+            return logits.reshape(*logits.shape[:-1], ACTIONS, 2)
+        return logits
+
+    def mask_loss(self, logits: Tensor, mask: Tensor) -> Tensor:
+        """The mask's reconstruction loss, summed over actions as `outs.Agg` sums a key."""
+        if self.mask_classes == 2:
+            chosen = logits.log_softmax(-1).gather(-1, mask.long().unsqueeze(-1))
+            return -chosen.squeeze(-1).sum(-1)
+        return functional.binary_cross_entropy_with_logits(
+            logits, mask.to(torch.float32), reduction="none"
+        ).sum(-1)
+
+    def valid_actions(self, logits: Tensor) -> Tensor:
+        """The decoded mask read as a mask: its argmax (logit > 0 if 0/1), WAIT always valid."""
+        valid = logits.argmax(-1).bool() if self.mask_classes == 2 else logits > 0.0
+        valid[..., WAIT_INDEX] = True
+        return valid
+
     def decoded_mask(self, feature: Tensor) -> Tensor:
         """The mask the model believes a state has, WAIT always included."""
-        return _valid_actions(self.decode_mask(self.decoder(feature)))
-
-
-def _valid_actions(mask_logits: Tensor) -> Tensor:
-    """The decoded mask's logits read as a mask: logit > 0, WAIT always valid."""
-    valid = mask_logits > 0.0
-    valid[..., WAIT_INDEX] = True
-    return valid
+        return self.valid_actions(self.mask_logits(self.decoder(feature)))
 
 
 @dataclass(frozen=True)
@@ -623,10 +650,8 @@ class DreamerBackbone:
         rows_loss = (
             (world.decode_rows(decoded).float() - symlog(rows.flatten(-2))).square().sum(-1)
         )
-        mask_logits = world.decode_mask(decoded).float()
-        mask_loss = functional.binary_cross_entropy_with_logits(
-            mask_logits, mask.to(torch.float32), reduction="none"
-        ).sum(-1)
+        mask_logits = world.mask_logits(decoded)
+        mask_loss = world.mask_loss(mask_logits, mask)
         reward_loss = twohot_loss(world.reward(feature).float(), reward_in, self._bins)
         # contdisc, per transition: the continue head predicts (1 - terminal)
         # * gamma_s ** t, 1 for a purchase, where the official target is
@@ -756,7 +781,7 @@ class DreamerBackbone:
         relative_error = torch.where(
             timed.sum() > 0, _mean(relative, timed), torch.full_like(timed.sum(), math.nan)
         )
-        decoded = _valid_actions(mask_logits)
+        decoded = self.world_model.valid_actions(mask_logits)
         return {
             "dreamer_implied_dt_seconds": _mean(implied, live),
             "dreamer_true_dt_seconds": _mean(seconds_in, live),

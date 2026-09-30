@@ -319,7 +319,7 @@ def dreamer_session(run_dir: Path, *flags: str) -> dict[str, Any]:
         patch.setattr(
             train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
         )
-        patch.setattr(train, "DREAMER_WARMUP_SEQUENCES", 2)
+        patch.setattr(train, "DREAMER_WARMUP_ITEMS", 2)
         patch.setattr(train, "DREAMER_REPLAY_CAPACITY", 64)
         parsed = dreamer_arguments(
             run_dir,
@@ -2097,22 +2097,42 @@ def test_a_dreamerv3_run_writes_and_reloads_the_same_resume_pair(tmp_path: Path)
 def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_resume(
     tmp_path: Path,
 ) -> None:
-    """Format 6: zero-start windows and no stored latents. Resuming it would mix two replays."""
+    """Format 6: zero-start windows and no stored latents. Resuming it would mix two replays.
+
+    It recorded an actor unimix of 0.01 and no mask encoding, and its network
+    took the mask as 0/1.
+    """
+    from tower_rl.learning.dreamer import DreamerBackbone
+
     checkpoint = latest_checkpoint(dreamer_session(tmp_path / "first"))
     parent = load(checkpoint)
     settings = {**parent.resolved_config, "dreamer_actor_unimix": 0.01}
-    older = tmp_path / "older.pt"
-    save(replace(parent, format_version=6, resolved_config=settings), older)
-    with pytest.raises(SystemExit, match="mixed run"):
-        dreamer_resume(tmp_path / "second", older)
-    # It still plays, with the actor unimix it was trained with.
-    policy, _ = checkpoint_policy(
-        older,
+    del settings["dreamer_mask_one_hot"]
+    playing = dict(
         decision_cadence=settings["decision_cadence"],
         upgrade_availability=settings["upgrade_availability"],
         workshop_level=0,
     )
+    current, _ = checkpoint_policy(checkpoint, **playing)
+    state = DreamerBackbone(config=replace(current.config, mask_one_hot=False)).state_dict()
+    older = tmp_path / "older.pt"
+    save(
+        replace(parent, format_version=6, resolved_config=settings, backbone_state=state),
+        older,
+    )
+    with pytest.raises(SystemExit, match="mixed run"):
+        dreamer_resume(tmp_path / "second", older)
+    # It still plays, with the actor unimix and the mask encoding it was trained with.
+    policy, _ = checkpoint_policy(older, **playing)
     assert policy.config.actor_unimix == 0.01
+    assert policy.config.mask_one_hot is False
+    features = StateFeatures(
+        scalars=(0.5,) * SCALAR_COUNT,
+        rows=(0.5,) * (ROW_COUNT * ROW_WIDTH),
+        mask=tuple(index < 3 for index in range(len(RUN_ACTIONS))),
+    )
+    action, _ = policy.act(features, policy.initial_state(), epsilon=0.0)
+    assert features.mask[action]
 
 
 def test_a_dreamerv3_run_resumes_only_under_its_own_discount_and_reward(
@@ -2540,8 +2560,8 @@ def test_a_checkpoint_from_before_the_adam_epsilon_resumes_at_its_own(tmp_path: 
     assert arm.training.config.parameter_sync_decisions == 0
 
 
-def test_dreamerv3_is_refreshed_only_between_episodes(tmp_path: Path) -> None:
-    """Its latent is state the parameters produced; a swap inside an episode would split it."""
-    assert dreamer_arguments(tmp_path).parameter_sync_decisions == 0
+def test_dreamerv3_acts_on_the_last_finished_step_at_every_decision(tmp_path: Path) -> None:
+    """The official agent swaps parameters at the next policy call after each step."""
+    assert dreamer_arguments(tmp_path).parameter_sync_decisions == 1
     with pytest.raises(SystemExit, match="contradicts DreamerV3"):
         dreamer_arguments(tmp_path, "--parameter-sync-decisions", "100")

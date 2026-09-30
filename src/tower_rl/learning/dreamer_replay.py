@@ -47,7 +47,7 @@ import shutil
 import threading
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +126,6 @@ class DreamerSample:
 
     #: Per window, the (episode, offset, count) runs its steps were read from.
     runs: tuple[tuple[tuple[int, int, int], ...], ...]
-    online: tuple[bool, ...]
     arrays: Mapping[str, numpy.ndarray]
 
     def batch(self, device: torch.device | None = None) -> SequenceBatch:
@@ -252,19 +251,17 @@ class DreamerReplay:
         if not self._items:
             raise ReplayRejected("replay is empty")
         windows: list[tuple[tuple[int, int, int], ...]] = []
-        online: list[bool] = []
         while len(windows) < batch_size:
             if self._queue:
-                item, fresh = self._queue.popleft(), True
+                item = self._queue.popleft()
             else:
-                item, fresh = self._items[self._random.randrange(len(self._items))], False
+                item = self._items[self._random.randrange(len(self._items))]
             runs = self._runs(*item)
             if runs is None:
                 continue  # its steps were evicted since it was queued
             windows.append(runs)
-            online.append(fresh)
         self.stats.sampled += batch_size
-        return DreamerSample(tuple(windows), tuple(online), self._assemble(windows))
+        return DreamerSample(tuple(windows), self._assemble(windows))
 
     def _runs(self, number: int, offset: int) -> tuple[tuple[int, int, int], ...] | None:
         """The (episode, offset, count) runs of the window starting at one item."""
@@ -356,29 +353,20 @@ class DreamerReplay:
             )
 
     def image(self) -> DreamerReplayImage:
-        """The buffer at this moment; the caller holds `lock`.
+        """The buffer at this moment; the caller holds `lock` and the learner still.
 
-        The episodes' arrays are copied, because the write-back changes them in
-        place while the image is written without the lock.
+        The image shares the episodes' arrays rather than copying them, which
+        would double the latents' memory for every save. That is sound only
+        while nothing writes them until the image is written, after the lock
+        is released: an actor only appends whole episodes, but the write-back
+        changes the latents in place, and it runs only inside a learner step.
+        So the learner must be held still (`LearnerThread.held`) from here
+        until the image is written, as both callers do: a resume point is
+        written under `TrainingRun._learner_still` and the run's last one
+        under `TrainingRun.held_still`. Each episode's record is copied, as
+        its `successor` is set when its actor adds the next one.
         """
-        episodes = tuple(
-            _Episode(
-                episode.number,
-                episode.actor_id,
-                episode.metadata,
-                EpisodeSteps(
-                    **{
-                        name.name: getattr(episode.steps, name.name).copy()
-                        if name.name in ("deter", "stoch")
-                        else getattr(episode.steps, name.name)
-                        for name in fields(EpisodeSteps)
-                    }
-                ),
-                episode.stream_start,
-                episode.successor,
-            )
-            for episode in self._episodes.values()
-        )
+        episodes = tuple(replace(episode) for episode in self._episodes.values())
         return DreamerReplayImage(
             capacity=self.capacity,
             length=self.length,

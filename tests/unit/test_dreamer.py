@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import io
 import math
+import threading
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import numpy
 import pytest
@@ -27,7 +28,7 @@ from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import Actor
 from tower_rl.learning.backbone import SequenceBatch, acting_copy, collate
 from tower_rl.learning.dreamer import WAIT_INDEX, DreamerBackbone, DreamerConfig
-from tower_rl.learning.dreamer_math import categorical_kl
+from tower_rl.learning.dreamer_math import symlog
 from tower_rl.learning.dreamer_replay import (
     DreamerReplay,
     DreamerSample,
@@ -135,7 +136,7 @@ def _windows(*episodes: EpisodeSteps, device: torch.device | None = None) -> Seq
     for index, episode in enumerate(episodes):
         replay.add(f"actor-{index}", _metadata(), episode)
     runs = tuple(((index, 0, LENGTH + 1),) for index in range(len(episodes)))
-    return DreamerSample(runs, (False,) * len(runs), replay._assemble(runs)).batch(device)
+    return DreamerSample(runs, replay._assemble(runs)).batch(device)
 
 
 def _batch(device: torch.device | None = None) -> SequenceBatch:
@@ -227,11 +228,14 @@ def test_imagination_samples_only_what_the_decoded_mask_allows() -> None:
     backbone = _backbone()
     allowed = {WAIT_INDEX, 4, 9}
     with torch.no_grad():
+        # Two classes per action, invalid then valid: only WAIT, 4 and 9 decode valid.
         head = backbone.world_model.decode_mask
         head.weight.zero_()
-        head.bias.fill_(-1.0)
+        bias = head.bias.view(ACTIONS, 2)
+        bias[:, 0] = 1.0
+        bias[:, 1] = -1.0
         for index in (4, 9):
-            head.bias[index] = 1.0
+            bias[index] = torch.tensor([-1.0, 1.0])
         backbone.actor[-1].bias.zero_()
         backbone.actor[-1].bias[20] = 50.0
     c = SMALL
@@ -245,6 +249,47 @@ def test_imagination_samples_only_what_the_decoded_mask_allows() -> None:
     assert masks.gather(-1, actions.unsqueeze(-1)).all()
     assert masks[..., WAIT_INDEX].all()
 
+
+def test_the_mask_is_a_two_class_key_as_the_official_code_takes_a_boolean() -> None:
+    """`elements/space.py` 15-16, 42-43: bool is discrete with 2 classes.
+
+    The encoder takes it one-hot (`nets.py` 488-493), the decoder predicts a
+    categorical per action (`rssm.py` 299-300) whose loss sums over actions
+    (`heads.py` `Agg`), and the decoded mask is its argmax.
+    """
+    world = _backbone().world_model
+    scalars, rows = torch.full((1, SCALAR_COUNT), 0.5), torch.full((1, ROW_COUNT, ROW_WIDTH), 0.5)
+    mask = torch.tensor([[index in (0, 3) for index in range(ACTIONS)]])
+    first = world.encoder[0]
+    assert first.in_features == SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + 2 * ACTIONS
+    flat = torch.cat(
+        (
+            symlog(scalars),
+            symlog(rows.flatten(-2)),
+            functional.one_hot(mask.long(), 2).flatten(-2).float(),
+        ),
+        -1,
+    )
+    assert torch.equal(world.encode(scalars, rows, mask), world.encoder(flat))
+
+    logits = torch.randn(1, ACTIONS, 2)
+    expected = -functional.log_softmax(logits, -1)[0, torch.arange(ACTIONS), mask[0].long()]
+    assert world.mask_loss(logits, mask).item() == pytest.approx(expected.sum().item(), rel=1e-6)
+    valid = world.valid_actions(logits)
+    assert torch.equal(valid[0, 1:], (logits[0, 1:, 1] > logits[0, 1:, 0]))
+    assert valid[0, WAIT_INDEX]
+
+
+def test_a_backbone_from_before_the_one_hot_mask_keeps_its_0_1_mask() -> None:
+    """Its network is shaped for the 0/1 input and binary head, and still acts on them."""
+    backbone = _backbone(replace(SMALL, mask_one_hot=False))
+    world = backbone.world_model
+    assert world.encoder[0].in_features == SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + ACTIONS
+    logits = torch.tensor([[-1.0] * ACTIONS])
+    logits[0, 5] = 1.0
+    assert world.valid_actions(logits)[0].nonzero().flatten().tolist() == [WAIT_INDEX, 5]
+    action, _ = backbone.act(_features(), backbone.initial_state(), epsilon=0.0)
+    assert action in (0, 1, 2)
 
 def _with_context(batch: SequenceBatch, **changes: Any) -> SequenceBatch:
     """The batch with its context step's (index 0) fields changed."""
@@ -420,6 +465,71 @@ def test_a_short_training_run_on_the_fake_port_takes_finite_optimisation_steps()
     assert all(math.isfinite(loss) for loss in report.recent_weighted_losses)
 
 
+
+def test_an_acting_copy_takes_each_finished_step_mid_episode_and_keeps_its_latent() -> None:
+    """`embodied/jax/agent.py` 243-247, 279-282: the next policy call after a step acts on it.
+
+    The actor's hook before a decision loads the learner's last finished step,
+    carries the episode's latent across, and returns while a step is held shut
+    inside the learner rather than waiting it out.
+    """
+    backbone = _backbone()
+    replay = DreamerReplay(capacity=256, length=LENGTH + 1, seed=0)
+    actor = Actor(environment=_fake_environment(), policy=acting_copy(backbone), replay=replay)
+    training = TrainingRun(
+        actors=[actor],
+        replay=replay,
+        backbone=backbone,
+        config=TrainingConfig(
+            budget_decisions=1,
+            warmup_sequences=2,
+            batch_size=SMALL.batch_size,
+            gradient_steps_per_decision=0.5,
+            parameter_sync_decisions=1,
+            exploration=ExplorationSchedule(
+                epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+            ),
+        ),
+    )
+    acting = cast(DreamerBackbone, training.acting[actor.config.actor_id])
+    before_decision = actor.before_decision
+    assert before_decision is not None
+    training.learner.publish()
+    before_decision()
+    _, latent = acting.act(_features(), acting.initial_state(), epsilon=0.0)
+    kept = tuple(part.clone() for part in latent)
+
+    inside, release = threading.Event(), threading.Event()
+    learn = backbone.learn
+
+    def held_shut(batch: SequenceBatch) -> Any:
+        inside.set()
+        release.wait()
+        return learn(batch)
+
+    backbone.learn = held_shut  # type: ignore[method-assign]
+    stepping = threading.Thread(target=training.learner.learn, args=(_batch(),))
+    stepping.start()
+    assert inside.wait(5)
+    deciding = threading.Thread(target=before_decision)
+    deciding.start()
+    deciding.join(5)
+    waited = deciding.is_alive()
+    release.set()
+    stepping.join(5)
+
+    assert not waited, "a decision waited out the learner's step in flight"
+    assert acting.model_version == 0
+    before_decision()
+    assert acting.model_version == backbone.model_version == 1
+    assert parameters_are_equal(acting.world_model, backbone.world_model)
+    assert parameters_are_equal(acting.actor, backbone.actor)
+    assert all(torch.equal(part, old) for part, old in zip(latent, kept, strict=True)), (
+        "the swap disturbed the latent the episode carries"
+    )
+    action, _ = acting.act(_features(), latent, epsilon=0.0)
+    assert action in (0, 1, 2)
+
 # -- the game-time discount (ADR 0013) -----------------------------------------
 
 #: Game time of each transition a window trains on: a purchase, a 17 s WAIT, a
@@ -539,9 +649,11 @@ def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
     # WAIT, 9) 2 are invalid; of the 4 valid ones 1 is dropped.
     mask = torch.zeros(1, 2, ACTIONS, dtype=torch.bool)
     mask[..., [WAIT_INDEX, 4]] = True
-    logits = torch.full((1, 2, ACTIONS), -1.0)
-    logits[0, 0, [4, 9]] = 1.0
-    logits[0, 1, 9] = 1.0
+    # Two classes per action, invalid then valid; the argmax is read.
+    logits = torch.zeros(1, 2, ACTIONS, 2)
+    logits[..., 0] = 1.0
+    logits[0, 0, [4, 9], 1] = 2.0
+    logits[0, 1, 9, 1] = 2.0
 
     checks = backbone._checks(
         torch.logit(predicted.double()).float(), target, seconds, terminal, transition,
@@ -619,7 +731,7 @@ def test_a_window_restores_the_latent_acting_reached_at_its_context_step() -> No
     replay.add("a", _metadata(), episode)
     starts = (3, 4)
     runs = tuple(((0, start, LENGTH + 1),) for start in starts)
-    batch = DreamerSample(runs, (False, False), replay._assemble(runs)).batch()
+    batch = DreamerSample(runs, replay._assemble(runs)).batch()
     metrics = backbone.learn(batch)
     assert metrics.latents is not None
     deter, _ = metrics.latents
@@ -627,49 +739,6 @@ def test_a_window_restores_the_latent_acting_reached_at_its_context_step() -> No
         assert torch.allclose(
             deter[window, 0], torch.from_numpy(episode.deter[start + 1]), atol=1e-5
         )
-
-
-def test_the_restored_window_filters_as_the_full_episode_does() -> None:
-    """KL(full || window) per step, with the same draws: about 0 from the context, not from zero.
-
-    The measurement that found the old zero-start windows' posterior far from
-    the one acting filtered (docs/experiments.md), rerun: the full episode
-    filtered from its first step, against one window of it from its context
-    step's latent.
-    """
-    backbone = _backbone()
-    count, start = 3 * LENGTH, LENGTH
-    episode = _acted_episode(backbone, count)
-    c = SMALL
-    with torch.no_grad():
-        tokens = backbone.world_model.encode(
-            torch.from_numpy(episode.scalars)[None],
-            torch.from_numpy(episode.rows).view(1, count, ROW_COUNT, ROW_WIDTH),
-            torch.from_numpy(episode.mask)[None],
-        )
-        previous = functional.one_hot(
-            torch.from_numpy(numpy.concatenate(([0], episode.action[:-1]))), ACTIONS
-        ).float()[None]
-        reset = torch.zeros(1, count, dtype=torch.bool)
-        reset[0, 0] = True
-        uniform = torch.rand(count, 1, c.stoch, generator=torch.Generator().manual_seed(0))
-        zeros = (torch.zeros(1, c.deter), torch.zeros(1, c.stoch * c.classes))
-        full_deter, full_stoch, full = backbone._observe(
-            tokens, previous, reset, uniform, *zeros
-        )
-        window = slice(start + 1, start + 1 + LENGTH)
-        no_reset = torch.zeros(1, LENGTH, dtype=torch.bool)
-
-        def filtered(deter: torch.Tensor, stoch: torch.Tensor) -> torch.Tensor:
-            _, _, posterior = backbone._observe(
-                tokens[:, window], previous[:, window], no_reset, uniform[window], deter, stoch
-            )
-            return categorical_kl(full[:, window], posterior).sum(-1)
-
-        restored = filtered(full_deter[:, start], full_stoch[:, start])
-        fresh = filtered(*zeros)
-    assert restored.max().item() < 1e-5
-    assert fresh[0, 0].item() > 1e-3
 
 
 # -- the actor's stream -----------------------------------------------------------

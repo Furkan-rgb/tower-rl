@@ -36,16 +36,17 @@ decisions the whole fleet collected.  Collection scales linearly to four
 instances on this host (M1B-E028), and an actor spends nearly all of its time
 waiting on a socket, so the actors are threads: they share the replay buffer
 directly and nothing has to be serialised between processes.  What they do not
-share is the network they act from.  Each actor holds its own copy of it and the
-learner publishes into that copy every `parameter_sync_decisions` of the
-actor's own decisions, between two of them, which is the actor-learner
+share is the network they act from.  Each actor holds its own copy of it, and
+every `parameter_sync_decisions` of the actor's own decisions, between two of
+them, loads the snapshot the learner's last completed step published if its
+copy is older, which is the actor-learner
 arrangement of Ape-X and R2D2: a forward pass then contends with nothing, where
 every actor reading the one live network would have put fifty decisions a
 second and a dozen gradient steps a second through one lock.  What
 that costs is the discipline in this file - the run's progress is mutated only
 under `_lock`, the buffer only under the replay's own lock, and the learner's
-parameters are read only through `Learner.publish_to` or with the learner held
-still.
+parameters are read only through its published snapshot (`Learner.publish_to`)
+or with the learner held still.
 
 No actor takes a gradient step.  The learner is a thread of its own
 (`learning/learner.py`, ADR 0017): each decision an actor takes credits it
@@ -354,10 +355,12 @@ class TrainingConfig:
     #: which is the staleness M3-P009 won under, so staleness is not
     #: first-order at or below it (M3-P010, docs/experiments.md). Safe for a
     #: backbone whose carried state is its own input history, as stacked-dqn's
-    #: is. Zero refreshes at the start of every episode only, never inside
-    #: one: what a backbone whose carried state the parameters themselves
-    #: produced needs, which is DreamerV3's recurrent latent (`scripts/train.py`
-    #: fixes it there).
+    #: is. One refreshes before every decision, which with a refresh that
+    #: loads only a newer snapshot is the official DreamerV3 agent's: fresh
+    #: parameters at the first policy call after each step, the recurrent
+    #: latent carried across (`embodied/jax/agent.py` 243-247, 279-282;
+    #: `scripts/train.py` fixes it there). Zero refreshes at the start of
+    #: every episode only, never inside one - `M3-P009`'s cadence.
     parameter_sync_decisions: int = 100
     #: Pre-registered floors on the decision axis the run stops itself on; see
     #: `KillBar`. Empty is off, which is every run before run 4.
@@ -953,13 +956,15 @@ class TrainingRun:
     #: per-actor metric series is keyed by, so it is resolved once here rather
     #: than re-derived by everything that reports per actor.
     actor_index: dict[str, int] = field(default_factory=dict, init=False)
-    #: Decisions each actor has taken since its copy was last refreshed. Starts
-    #: at the cadence so every actor publishes before its first decision, which
-    #: is also what picks up a checkpoint loaded into the backbone after the run
-    #: was built. Each actor touches only its own entry of a dict whose keys are
-    #: all present from construction, so it needs no lock of its own. Unread
-    #: at a cadence of zero, which refreshes at every episode start instead.
+    #: Decisions each actor has taken since its copy was last refreshed. Each
+    #: actor touches only its own entry of a dict whose keys are all present
+    #: from construction, so it needs no lock of its own. Unread at a cadence
+    #: of zero, which refreshes at every episode start instead.
     _since_sync: dict[str, int] = field(default_factory=dict, init=False)
+    #: The number of the learner's snapshot each actor's copy last loaded
+    #: (`Learner.published`), by actor id; 0, before any, is behind the first.
+    #: A refresh loads only a newer one. Each actor touches only its own entry.
+    _loaded: dict[str, int] = field(default_factory=dict, init=False)
     #: Where on the decision axis this segment's `report.collected` starts: zero
     #: for a fresh run, the parent's count for a resumed one. A kill bar places
     #: each episode on the whole run's axis from here.
@@ -1044,6 +1049,7 @@ class TrainingRun:
             # And the run's stop, so a retirement of minutes is not waited out.
             actor.environment.stop_requested = self.stop.is_set
             self._since_sync[actor_id] = 0
+            self._loaded[actor_id] = 0
             self._credited[actor_id] = 0
             # Handed to the actor rather than run between its episodes: a
             # refresh at a cadence in decisions lands inside them, and so does
@@ -1134,6 +1140,9 @@ class TrainingRun:
         with self._lock:
             # A buffer reloaded on a resume is warm from its first decision.
             self._warmed = self._warm()
+        # The learner as the block starts: what every actor's first refresh
+        # loads, including a checkpoint loaded after the run was built.
+        self.learner.publish()
         self.learner_thread.start()
         try:
             with ThreadPoolExecutor(max_workers=len(collecting)) as pool:
@@ -1356,9 +1365,14 @@ class TrainingRun:
                 raise RunPortError(barren)
 
     def _refresh(self, actor_id: str, acting: Backbone, profile: DecisionTimeProfile) -> None:
-        """Publish the learner's parameters into one actor's copy, on its own thread."""
-        with profile.span(LEARNER_STEP):
-            self.learner.publish_to(acting)
+        """Load the learner's latest snapshot into one actor's copy, if it is newer.
+
+        On the actor's own thread. The number is read without the lock: one a
+        step publishes meanwhile is loaded at the next refresh.
+        """
+        if self._loaded[actor_id] != self.learner.published:
+            with profile.span(LEARNER_STEP):
+                self._loaded[actor_id] = self.learner.publish_to(acting)
         self._since_sync[actor_id] = 0
 
     def _before_decision(
@@ -1372,7 +1386,8 @@ class TrainingRun:
         step. The decision credits the learner as it is taken, once the buffer
         is warm, and the actor pauses here if the learner is more than the
         bound behind. At a cadence of zero nothing is refreshed here: the copy
-        holds still through the whole episode.
+        holds still through the whole episode. A refresh here leaves the
+        episode's carried state alone, which is the actor's, not the copy's.
         """
         if self._abandoning():
             raise EpisodeAbandoned(actor_id)

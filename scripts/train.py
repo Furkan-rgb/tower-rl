@@ -800,7 +800,7 @@ def run_manifest(
 #: Replay items before DreamerV3's first update: the official loop trains once
 #: replay holds one batch of steps' worth of items (16 x 64 = 1,024;
 #: `embodied/run/train.py` 71). An item is a step with a whole window after it.
-DREAMER_WARMUP_SEQUENCES = 16 * 64
+DREAMER_WARMUP_ITEMS = 16 * 64
 
 #: Flags only stacked-dqn reads. Given with `--backbone dreamerv3` they would be
 #: silently unused, so they are refused.
@@ -831,14 +831,15 @@ def dreamer_loop_settings() -> dict[str, object]:
         "replay_capacity": DREAMER_REPLAY_CAPACITY,
         "batch_size": config.batch_size,
         "gradient_steps_per_decision": config.gradient_steps_per_decision,
-        "warmup_sequences": DREAMER_WARMUP_SEQUENCES,
+        "warmup_sequences": DREAMER_WARMUP_ITEMS,
         # It samples its own policy and adds no exploration noise.
         "exploration": "uniform",
         "epsilon_start": 0.0,
         "epsilon_end": 0.0,
-        # Its latent is recurrent state the parameters produced, so its acting
-        # copy is refreshed only between episodes.
-        "parameter_sync_decisions": 0,
+        # The official agent acts on the parameters of the last completed step
+        # and carries its latent across the swap (`embodied/jax/agent.py`
+        # 243-247, 279-282): a newer snapshot is loaded before every decision.
+        "parameter_sync_decisions": 1,
     }
 
 
@@ -1132,8 +1133,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "decisions one actor takes between refreshes of the copy of the "
             "network it acts from, inside an episode included (Ape-X's 400 "
-            "frames); 0 refreshes at every episode start instead, which is what "
-            "every run before it did and what DreamerV3 is fixed to"
+            "frames); a refresh loads the learner's last completed step if the "
+            "copy is older; 0 refreshes at every episode start instead; DreamerV3 "
+            "is fixed to 1, before every decision"
         ),
     )
     parser.add_argument("--serial", default="emulator-5556")

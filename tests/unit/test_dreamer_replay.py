@@ -73,8 +73,8 @@ def test_training_samples_take_the_online_queue_first_then_uniform() -> None:
     # Queued: the items completed when the stream length was a multiple of 3,
     # positions 1 (completed by step 3) and 4 (by step 6).
     assert [window[0] for window in sample.arrays["reward"].tolist()][:2] == [1.0, 4.0]
-    assert sample.online == (True, True, False)
-    assert not any(replay.sample(8).online)
+    # Each once: the queue is spent, and what follows is uniform.
+    assert not replay._queue
 
 
 def test_items_are_evicted_oldest_first_and_their_episode_with_its_last() -> None:
@@ -138,3 +138,20 @@ def test_a_dump_of_another_format_or_shape_is_refused(tmp_path: Path) -> None:
     path.write_text(json.dumps({**metadata, "format_version": 2}))
     with pytest.raises(ReplayDumpError, match="format 2"):
         DreamerReplay(capacity=64, length=3).load_from(tmp_path / "dump")
+
+
+def test_an_image_shares_the_latents_and_keeps_its_own_episode_records() -> None:
+    """A save holds the learner still, so nothing writes the arrays: they are not copied.
+
+    An actor may still add an episode after the lock is released, which sets
+    its predecessor's successor, so the records themselves are the image's own.
+    """
+    replay = DreamerReplay(capacity=64, length=3, seed=0)
+    replay.add("a", METADATA, _episode(0, 3))
+    image = replay.image()
+    replay.add("a", METADATA, _episode(3, 4))
+
+    (episode,) = image.episodes
+    assert episode.steps.deter is replay._episodes[episode.number].steps.deter
+    assert episode.successor is None
+    assert replay._episodes[episode.number].successor is not None

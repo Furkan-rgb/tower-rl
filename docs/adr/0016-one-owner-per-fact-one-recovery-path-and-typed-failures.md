@@ -234,12 +234,23 @@ steps per decision.
 Named in the design as unmeasured; each is settled by the stage that needs it.
 
 - **Whether the chain-starting cut** (ADR 0015, "Not explained here") survives
-  ADR 0015's fixes. One short 7-actor stage with a 0.3 s think delay, reading
-  the live invalid reasons, decides whether P4 lands before or after the next
-  long run.
+  ADR 0015's fixes, and what it is. One short 7-actor stage with a 0.3 s think
+  delay, reading the live invalid reasons, decides whether P4 lands before or
+  after the next long run. The candidates are a pause that did not land within
+  the settle window, the host and the bridge computing the mask differently,
+  the 3 s confirmation timeout under load, and a fidelity check tripping.
 - **Retirement duration at waves 30-50.** Estimated, not measured.
 - **Overlay growth per instance** during a long stage.
 - **Attribution of `M3-P016`'s OOM** between emulators, replay and tmpfs.
 - **The ~55 ms non-advance cost per decision:** transport is only the prime
   suspect.
 - **Whether 500 ms suffices** to verify a hold on a loaded host.
+- **Whether the game has its own end-round control.** It would make retiring a
+  live run cost the same at any wave. The diagnostics build's probe command can
+  test candidates.
+- **Whether `SpeedChangeMax` and `SpeedChangeDown` act on a paused world.**
+  `EnsureHeld` after each press covers either answer, but it needs a device
+  check.
+- **Whether `-gpu host` still refuses to save a snapshot on the current
+  emulator version.** One save attempt on a writable instance would recheck it.
+  The snapshot rejection rests on that.

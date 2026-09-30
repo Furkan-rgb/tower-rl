@@ -5,7 +5,7 @@ state/runs/<run name>/
   manifest.json          the run's configuration and upgrade setup, and `segments`
   checkpoints/           latest.pt and the numbered checkpoints, every segment's
   replay/d<decisions>/   the buffer saved with latest.pt, which names it
-  segments/<n>/          one per sitting: summary.json and train.log
+  segments/<n>/          one per sitting: summary.json, train.log and episodes.jsonl
   logs/                  run_stage.sh stage logs, pointed here by --log-directory
   evaluations/<name>/    per-actor records of a checkpoint of this run played greedily
 ```
@@ -37,6 +37,9 @@ EVALUATIONS = "evaluations"
 #: A segment's own files, inside `segments/<n>/`.
 SEGMENT_SUMMARY = "summary.json"
 SEGMENT_LOG = "train.log"
+#: Each collected episode's record, one JSON line per episode, appended as the
+#: episode ends: what a segment killed before it could write its summary keeps.
+SEGMENT_EPISODES = "episodes.jsonl"
 
 
 def utc_stamp(now: datetime | None = None) -> str:

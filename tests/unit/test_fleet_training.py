@@ -724,7 +724,6 @@ def test_at_a_cadence_of_zero_no_refresh_lands_inside_an_episode() -> None:
     training.run()
 
     for actor, acting in zip(training.actors, copies(training), strict=True):
-        assert actor.before_decision is None
         assert acting.publish_positions
         assert set(acting.publish_positions) <= episode_boundaries(
             training, actor.config.actor_id

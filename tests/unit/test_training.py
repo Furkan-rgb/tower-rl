@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import statistics
+from dataclasses import replace
 
 import pytest
 import torch
@@ -19,6 +20,7 @@ from tower_rl.environment.run_environment import (
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
+from tower_rl.experiment.metrics import health_metrics
 from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
@@ -731,6 +733,23 @@ def test_episode_health_counts_a_leftover_run_and_cut_short_advances() -> None:
 
     assert health.episodes_not_started_fresh == 1
     assert health.advances_cut_short == 2
+
+
+def test_episode_health_pools_the_runs_resets_retired_and_what_they_cost() -> None:
+    """ADR 0015: a reset that plays a leftover run out collects nothing meanwhile."""
+    summaries = [
+        replace(_collected(4).summary, retired_run_wave=12, retirement_wall_seconds=40.5),
+        _collected(6).summary,
+        replace(_collected(5).summary, retired_run_wave=3, retirement_wall_seconds=9.5),
+    ]
+
+    health = episode_health(summaries)
+
+    assert health.retirements == 2
+    assert health.retirement_wall_seconds == pytest.approx(50.0)
+    metrics = health_metrics(health, prefix="window_")
+    assert metrics["window_retirements"] == 2.0
+    assert metrics["window_retirement_wall_seconds"] == pytest.approx(50.0)
 
 
 def test_episode_health_pools_the_pin_failures_the_boundaries_recovered_from() -> None:

@@ -2197,6 +2197,21 @@ decision count and is refused while only others are there (move `replay/`
 aside to re-warm instead); with no `replay/`, replay re-warms under the
 loaded policy. Episodes in flight at a kill are lost, and a resumed run is
 not claimed to be bit-identical to one that never stopped.
+
+One SIGINT - what `run_stage.sh` sends the stage's process group - stops a run
+the way a kill bar does, at any moment: every actor abandons the episode it is
+in before its next decision (a save or a burst of gradient steps already under
+way finishes first), the resume point is written, the final evaluation is
+skipped, or abandoned if it had started, and the segment's summary is written
+with every collected episode's record, marked `interrupted`. A second SIGINT
+exits at once through the exception path, which still writes the resume point
+if it can. Each collected episode's record is also appended to
+`segments/<n>/episodes.jsonl` as it ends, flushed per line, an invalid one is
+logged in `train.log` with its first reason as it ends, and each episode's
+`TerminationOutcome` is tracked as the `episode_termination` code (the mapping
+is in the manifest), so a run killed outright keeps its per-episode record up
+to the episodes in flight. SIGTERM is not handled: it ends the process as
+before.
 `--budget-decisions` stays the whole run's total; a checkpoint whose identity
 names another arm, profile or schema, one that has already spent the budget,
 and one in a game-time-era format (before format 4, which evaluates only) are
@@ -2569,7 +2584,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Episodes independent after an invalid end; decisions on a held world (ADR 0015) | `InstrumentedRunEnvironment._retire_live_run` / `_hand_over` + `InstrumentedRunAdapter._hold_the_world` | `tests/unit/test_live_run_retirement.py`, `tests/unit/test_world_held_at_handoff.py`, device probe in `docs/experiments.md` ("Invalid cuts no longer cascade") |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
 | Recurrent replay-based learner | Learner + replay | Math tests and resolved run config |
-| Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014) | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
+| Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014), `train.OperatorStop` | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), `tests/unit/test_operator_stop.py` (SIGINT at five moments, and twice), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |
 | Diagnostics and documentation | Telemetry + docs | failure injection and clean setup rehearsal |

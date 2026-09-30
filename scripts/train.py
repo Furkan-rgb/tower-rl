@@ -89,6 +89,15 @@ parent, and leaves the folder it came from as it was.
         --resume state/runs/<run name>/checkpoints/latest.pt \\
         --budget-decisions 120000
 
+One SIGINT - what `run_stage.sh` sends the stage's process group - stops the
+run the way a kill bar does: every actor abandons the episode it is in before
+its next decision and starts no other, the resume point is written, the final
+evaluation is skipped (or abandoned, if it had started) and the segment's
+summary is written. A second SIGINT exits at once, writing the resume point
+only if it can. Each collected episode's record is also appended to
+`segments/<n>/episodes.jsonl` as it ends, and an invalid one is logged with its
+first reason, so a run that dies without its summary keeps both.
+
 The run records itself to the local MLflow store under `state/`;
 `--extra tracking` is what puts MLflow in the environment. Pass `--no-track` to
 run without recording, which leaves nothing to compare the run against later.
@@ -99,6 +108,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import signal
 import sys
 import threading
 import time
@@ -107,6 +117,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import FrameType
 from typing import TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -131,8 +142,10 @@ from tower_rl.environment.upgrade_setup import (  # noqa: E402
     UpgradeSetup,
     UpgradeSetupReference,
 )
+from tower_rl.experiment.metrics import termination_code_names  # noqa: E402
 from tower_rl.experiment.run_folder import (  # noqa: E402
     MANIFEST,
+    SEGMENT_EPISODES,
     SEGMENT_LOG,
     SEGMENT_SUMMARY,
     continues_in_place,
@@ -343,6 +356,7 @@ def build_arm(
     tracker: ExperimentTracker,
     tags: dict[str, str],
     resume: ResumeState | None = None,
+    stop: threading.Event | None = None,
 ) -> tuple[TrainingReport, Callable[[bool], EvaluationReport]]:
     # Identity first: the run id this segment's checkpoints and tracked run are
     # named by, and the compatibility key its checkpoints are written with,
@@ -533,6 +547,7 @@ def build_arm(
             backbone=backbone,
             config=config,
             report=progress,
+            stop=threading.Event() if stop is None else stop,
         ),
         started=started,
         run=run,
@@ -545,6 +560,7 @@ def build_arm(
         resumed_game_ms=progress.game_ms,
         tracking_run_id=tracked_run_id,
         replay_restored_from=restored_from,
+        episode_stream=segment_directory(run_dir, segment) / SEGMENT_EPISODES,
     )
     if resume is not None:
         # Last, once everything that seeds a stream as it is built - the
@@ -739,6 +755,9 @@ def run_manifest(
         "run_id": run_id,
         **resolved,
         **carried,
+        # What each value of the per-episode `episode_termination` metric
+        # means, so the tracked series can be read without the code.
+        "episode_termination_codes": termination_code_names(),
         "segments": [*recorded_segments(run_dir), segment],
     }
 
@@ -1662,6 +1681,75 @@ def segment_log(path: Path) -> Iterator[None]:
             sys.stdout, sys.stderr = streams
 
 
+class EvaluationAbandoned(BaseException):
+    """The final evaluation, given up on the operator's SIGINT.
+
+    A `BaseException`, as `KeyboardInterrupt` is, so no handler inside the
+    evaluation that catches `Exception` and retries can swallow it.
+    """
+
+
+class OperatorStop:
+    """The operator's SIGINT, turned into the run's own stop.
+
+    Without this a SIGINT raised `KeyboardInterrupt` in the main thread, which
+    is blocked joining the actors for the whole of collection: the run left
+    past the code that writes its summary, and the actors went on collecting
+    until the resume point written on the way out halted them (`M3-P015`,
+    `M3-P016`). Now the first SIGINT only sets `requested`, the run's `stop`:
+    the actors return at their next lock or decision, the join returns, and
+    the run ends down the path a kill bar's does. The main thread is never
+    interrupted by it, so no lock it holds and no write it is making is cut
+    short.
+
+    The one exception is the final evaluation, a blocking call of up to hours
+    on the main thread that polls nothing: inside `abandoning_evaluation` the
+    first SIGINT raises `EvaluationAbandoned` there instead. A second SIGINT,
+    anywhere, raises `KeyboardInterrupt`: the exit an operator who will not
+    wait asks for.
+
+    The handler sets an event and raises; it prints nothing, because it runs
+    between two bytecodes of the main thread, which may be inside the log's
+    own lock at that moment.
+    """
+
+    def __init__(self) -> None:
+        self.requested = threading.Event()
+        self._evaluating = False
+
+    def _on_sigint(self, signum: int, frame: FrameType | None) -> None:
+        if self.requested.is_set():
+            raise KeyboardInterrupt
+        self.requested.set()
+        if self._evaluating:
+            raise EvaluationAbandoned
+
+    @contextmanager
+    def installed(self) -> Iterator[None]:
+        """Handle SIGINT as above for the duration, and restore the handler after."""
+        previous = signal.signal(signal.SIGINT, self._on_sigint)
+        try:
+            yield
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+    @contextmanager
+    def abandoning_evaluation(self) -> Iterator[None]:
+        """Let the first SIGINT abandon what runs inside, raising `EvaluationAbandoned`.
+
+        The mode is set before `requested` is read, so a SIGINT landing
+        between the two is still answered: either the read sees it or the
+        handler raises.
+        """
+        self._evaluating = True
+        try:
+            if self.requested.is_set():
+                raise EvaluationAbandoned
+            yield
+        finally:
+            self._evaluating = False
+
+
 def train_session(
     arguments: argparse.Namespace,
     instances: Sequence[ActorInstance],
@@ -1685,7 +1773,11 @@ def train_session(
     """
     run_folder: Path = arguments.run_folder
     segment = len(recorded_segments(run_folder)) + 1
-    with segment_log(segment_directory(run_folder, segment) / SEGMENT_LOG):
+    operator_stop = OperatorStop()
+    with (
+        segment_log(segment_directory(run_folder, segment) / SEGMENT_LOG),
+        operator_stop.installed(),
+    ):
         print(f"run folder {run_folder}, segment {segment}", flush=True)
         started = time.monotonic()
         recorder = NoExperimentTracker() if tracker is None else tracker
@@ -1713,6 +1805,7 @@ def train_session(
             tracker=recorder,
             tags=tags,
             resume=resume,
+            stop=operator_stop.requested,
         )
 
         # Whether the run's end has written its resume point, so that however it
@@ -1723,7 +1816,14 @@ def train_session(
             arm.training.run()
 
             killed = arm.training.killed_by
-            if killed is not None:
+            if arm.training.interrupted:
+                print(
+                    f"[{arm.name}] stopped by SIGINT at "
+                    f"{arm.training.report.decisions} decisions: every actor "
+                    "abandoned the episode it was in",
+                    flush=True,
+                )
+            elif killed is not None:
                 bar = killed.bar
                 print(
                     f"[{arm.name}] stopped at {killed.decisions} decisions on the kill "
@@ -1762,9 +1862,16 @@ def train_session(
             # The summary records the skip. A plateau stop still evaluates.
             if killed is not None:
                 print(f"[{arm.name}] final evaluation skipped: stopped on a kill bar", flush=True)
+            elif arm.training.interrupted:
+                print(f"[{arm.name}] final evaluation skipped: stopped by SIGINT", flush=True)
             else:
                 try:
-                    run_evaluation(True)
+                    with operator_stop.abandoning_evaluation():
+                        run_evaluation(True)
+                except EvaluationAbandoned:
+                    # The instance it played on is left mid-episode, which is
+                    # for the teardown that follows to put down.
+                    print(f"[{arm.name}] final evaluation abandoned: SIGINT", flush=True)
                 except (RunPortError, ValueError) as failure:
                     # Losing the headline measurement must not lose the run: the
                     # collection curve and the checkpoints are already on disk.

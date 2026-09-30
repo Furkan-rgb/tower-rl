@@ -8,12 +8,10 @@ from fakes.fake_run_port import FakeRunPort
 
 from tower_rl.environment.episode import (
     EpisodeSummary,
-    RunTransition,
     TerminationOutcome,
     WaveRecord,
 )
 from tower_rl.environment.features import StateFeatures
-from tower_rl.environment.run_actions import RunActionId
 from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
@@ -34,7 +32,6 @@ from tower_rl.learning.policies import (
 )
 from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config, R2D2State
 from tower_rl.learning.r2d2_replay import R2D2Replay, item_layout
-from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayStep
 
 PROFILE = "fake-profile-v1"
 
@@ -45,26 +42,6 @@ def _environment(**port_kwargs: object) -> InstrumentedRunEnvironment:
         builder=RunStateBuilder(profile_id=PROFILE),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
-
-
-def test_an_actor_plays_an_episode_and_emits_sequences() -> None:
-    replay = PrioritizedSequenceReplay(capacity=64, seed=0)
-    actor = Actor(
-        environment=_environment(damage_per_second=1.0),
-        policy=CheapestFirstPolicy(),
-        config=ActorConfig(sequence_length=8, burn_in=2, stride=4),
-        replay=replay,
-    )
-
-    result = actor.run_episode()
-
-    assert result.summary.decisions > 0
-    assert result.sequences_accepted > 0
-    assert len(replay) == result.sequences_accepted
-    stored = replay._items[0]
-    assert len(stored.steps) == 8 and stored.burn_in == 2
-    assert stored.metadata.profile_id == PROFILE
-    assert stored.metadata.observation_schema == "observation-v2"
 
 
 def test_buying_survives_longer_than_never_buying() -> None:
@@ -558,7 +535,7 @@ def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:
         "damage_per_second": 4.0,
         "max_health": 1.0,
     }
-    buffer = PrioritizedSequenceReplay(capacity=64, seed=0)
+    buffer = R2D2Replay(capacity=64, seed=0)
     actor = Actor(
         environment=_environment(**settings), policy=CheapestFirstPolicy(), replay=buffer
     )
@@ -577,33 +554,6 @@ def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:
     assert report.total_decisions == 0
     assert report.decisions_per_episode == 0.0
     assert report.distribution.mean >= 1.0
-
-
-def test_each_stored_step_carries_the_game_time_its_transition_spanned(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """T7: the actor keeps `transition.game_ms`; a purchase spans none of it."""
-    environment = _environment(damage_per_second=1.0)
-    spans: list[float] = []
-    step = environment.step
-
-    def recorded(action: RunActionId) -> RunTransition:
-        transition = step(action)
-        spans.append(transition.game_ms)
-        return transition
-
-    monkeypatch.setattr(environment, "step", recorded)
-    actor = Actor(environment=environment, policy=CheapestFirstPolicy())
-    stored: list[ReplayStep] = []
-    monkeypatch.setattr(
-        actor, "_emit", lambda steps, summary: (stored.extend(steps), (0, 0))[1]
-    )
-
-    actor.run_episode()
-
-    assert [step.game_ms for step in stored] == spans
-    assert 0.0 in spans, "a confirmed purchase takes no game time"
-    assert any(span > 0.0 for span in spans), "a wait does"
 
 
 def test_an_r2d2_actor_stores_the_state_it_held_every_40_decisions_and_the_game_time() -> None:

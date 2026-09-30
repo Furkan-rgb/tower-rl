@@ -43,12 +43,8 @@ from tower_rl.learning.checkpoint import (
     write_checkpoint,
 )
 from tower_rl.learning.exploration import ExplorationSchedule, ape_x_floors
-from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import (
-    StackedDqnBackbone,
-    StackedDqnConfig,
-)
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.training import (
     KillBar,
     NearGreedyPlateau,
@@ -61,8 +57,6 @@ from tower_rl.simulation.instrumented_bridge import BridgeTimeoutError
 from tower_rl.simulation.instrumented_run_adapter import (
     InstrumentedRunAdapter,
 )
-
-SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 #: Any schedule at all: nothing in this file is about exploration, and the rates
 #: a real run uses are resolved from `train.py`'s parser rather than defaulted.
@@ -153,20 +147,13 @@ def fleet(
     left, handed to the run at construction because the run reads its
     checkpoint cadence off them.
     """
-    learner = backbone or StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
-    replay = PrioritizedSequenceReplay(capacity=256, seed=0)
+    learner = backbone or R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
+    replay = R2D2Replay(capacity=256, seed=0)
     actors = [
         Actor(
             environment=item,
             policy=learner,
-            config=ActorConfig(
-                actor_id=f"fake-{index}:stacked-dqn",
-                sequence_length=6,
-                burn_in=1,
-                stride=3,
-            ),
+            config=ActorConfig(actor_id=f"fake-{index}:r2d2"),
             replay=replay,
         )
         for index, item in enumerate(environments)
@@ -229,11 +216,11 @@ def test_a_bridge_that_stops_answering_withdraws_its_actor_and_not_the_run() -> 
 
     report = training.run()
 
-    dead = report.actors["fake-1:stacked-dqn"]
+    dead = report.actors["fake-1:r2d2"]
     assert dead.withdrawn is not None and "liveness expired" in dead.withdrawn
     assert dead.failed_episodes == 3 and dead.decisions == 0
     # Named as it happened, with the instance it names and why it left.
-    assert withdrawn == [("fake-1:stacked-dqn", dead.withdrawn)]
+    assert withdrawn == [("fake-1:r2d2", dead.withdrawn)]
     alive = [progress for progress in report.actors.values() if progress.withdrawn is None]
     assert len(alive) == 2 and all(progress.valid_episodes > 0 for progress in alive)
     assert report.decisions >= 250
@@ -335,7 +322,7 @@ def test_one_dead_instance_costs_an_actor_and_not_the_run() -> None:
 
     report = training.run()
 
-    dead = report.actors["fake-1:stacked-dqn"]
+    dead = report.actors["fake-1:r2d2"]
     assert dead.withdrawn is not None and dead.failed_episodes == 3
     assert dead.decisions == 0 and dead.valid_episodes == 0
     assert report.failed_episodes == 3 and len(report.episode_failures) == 3
@@ -354,7 +341,7 @@ def test_a_withdrawn_actor_is_not_asked_again_in_a_later_block() -> None:
     )
 
     training.advance(100)
-    dead = training.report.actors["fake-1:stacked-dqn"]
+    dead = training.report.actors["fake-1:r2d2"]
     failures_after_first_block = dead.failed_episodes
 
     training.advance(100)
@@ -388,7 +375,7 @@ def test_two_actors_may_not_share_one_identity() -> None:
     """Per-actor reporting is keyed by identity; a shared name hides a dead one."""
     training = fleet([environment(), environment()])
     for actor in training.actors:
-        actor.config = ActorConfig(actor_id="same", sequence_length=6, burn_in=1, stride=3)
+        actor.config = ActorConfig(actor_id="same")
 
     with pytest.raises(ValueError, match="id of its own"):
         TrainingRun(
@@ -447,7 +434,7 @@ class WatchedBackbone:
     instance records is exactly what reached the learner itself.
     """
 
-    inner: StackedDqnBackbone
+    inner: R2D2Backbone
     #: Breaches of the one rule the learner's lock is still there for.
     torn: list[str] = field(default_factory=list)
     #: Model versions observed by `act`, in order.
@@ -517,9 +504,7 @@ class WatchedBackbone:
 def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, WatchedBackbone]:
     """A fleet whose learner and acting copies both keep a record of themselves."""
     watched = WatchedBackbone(
-        StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+        R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     )
     training = fleet([environment() for _ in range(instances)], backbone=watched, **overrides)
     return training, watched
@@ -601,9 +586,7 @@ def test_an_actor_does_not_wait_for_the_learner_to_finish_a_step() -> None:
     """
     overlap = Overlap()
     watched = WatchedBackbone(
-        StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+        R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     )
     updates: list[tuple[float, float]] = []
     inner_learn = watched.learn
@@ -673,9 +656,7 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_latest_parameter
     reference; its last published snapshot is (`Learner.publish_to`).
     """
     watched = WatchedBackbone(
-        StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+        R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     )
     opened_on: list[tuple[int, int]] = []
     instance = environment()
@@ -860,9 +841,7 @@ def test_a_refresh_inside_an_episode_never_gives_an_actor_a_torn_copy() -> None:
     unguarded copy would land inside a step.
     """
     watched = LedgeredBackbone(
-        StackedDqnBackbone(
-            config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-        )
+        R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     )
     training = fleet(
         [environment() for _ in range(3)],
@@ -913,12 +892,10 @@ def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alon
 
 def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
     """Copies of one backbone would otherwise share the stream they were copied from."""
-    learner = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+    learner = R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     first = acting_copy(learner)
-    second = acting_copy(learner, exploration_seed="fake-1:stacked-dqn")
-    third = acting_copy(learner, exploration_seed="fake-2:stacked-dqn")
+    second = acting_copy(learner, exploration_seed="fake-1:r2d2")
+    third = acting_copy(learner, exploration_seed="fake-2:r2d2")
 
     draws = [
         [copy._random.random() for _ in range(8)]  # type: ignore[attr-defined]
@@ -932,9 +909,7 @@ def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
 
 
 def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> None:
-    learner = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+    learner = R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
 
     acting = acting_copy(learner)
 
@@ -1129,7 +1104,7 @@ def test_a_period_is_measured_over_the_near_greedy_actors_alone() -> None:
     )
     # The bottom two rungs of a ladder of three are near-greedy; actor 0, at
     # 0.4, is searching.
-    assert training.near_greedy_actor_ids == {"fake-1:stacked-dqn", "fake-2:stacked-dqn"}
+    assert training.near_greedy_actor_ids == {"fake-1:r2d2", "fake-2:r2d2"}
     play(training, [40], actor=0)
     play(training, [7], actor=1)
     play(training, [7], actor=2)

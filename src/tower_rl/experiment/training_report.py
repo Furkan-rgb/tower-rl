@@ -59,7 +59,6 @@ from tower_rl.learning.dreamer_replay import DreamerReplayImage
 from tower_rl.learning.evaluator import EvaluationReport, to_record
 from tower_rl.learning.learner import IDLE_LOAD, LearnerLoad
 from tower_rl.learning.r2d2_replay import R2D2ReplayImage
-from tower_rl.learning.replay import ReplayImage
 from tower_rl.learning.training import (
     ArmReplay,
     CollectionWindow,
@@ -235,9 +234,9 @@ class TrainingReport:
         counted or learned until it returns. That actor's emulator idles for the
         save, and any other actor that finishes an episode meanwhile waits for
         the lock too; the buffer's own lock is taken only to capture it. The
-        conversion of the sequences to arrays (`ReplayImage.write`) is pure
-        Python and holds the GIL, so the actors still mid-episode are slowed
-        while it runs, not left undisturbed.
+        write of the image (`R2D2ReplayImage.write`, `DreamerReplayImage.write`)
+        runs without the buffer's lock, but the actors still mid-episode may be
+        slowed while it runs, not left undisturbed.
         """
         with self.replay.lock:
             image = self.replay.image()
@@ -271,12 +270,12 @@ class TrainingReport:
     def _write_resume_point(
         self,
         report: TrainingProgressReport,
-        image: ReplayImage | DreamerReplayImage | R2D2ReplayImage,
+        image: DreamerReplayImage | R2D2ReplayImage,
     ) -> None:
         """Write the buffer, then `latest.pt` naming it, then delete every other dump.
 
         That order is what lets a kill at any moment leave a pair a resume can
-        restore: the new dump is complete (`ReplayImage.write` renames it into
+        restore: the new dump is complete (`R2D2ReplayImage.write` renames it into
         place) before the `latest.pt` that names it replaces the old one
         (`checkpoint.save`, atomic with its checksum), and the old dump is
         deleted only after that. Until the rename, the old `latest.pt` and the
@@ -785,10 +784,8 @@ class TrainingReport:
         }
 
 
-def _held(image: ReplayImage | DreamerReplayImage | R2D2ReplayImage) -> str:
+def _held(image: DreamerReplayImage | R2D2ReplayImage) -> str:
     """What a replay dump holds, in its own unit."""
     if isinstance(image, DreamerReplayImage):
         return f"{len(image.items)} replay items"
-    if isinstance(image, R2D2ReplayImage):
-        return f"{len(image.item_episode)} replay items"
-    return f"{len(image.sequences)} replay sequences"
+    return f"{len(image.item_episode)} replay items"

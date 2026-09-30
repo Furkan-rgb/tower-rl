@@ -396,15 +396,12 @@ def collected_episode_record(index: int, episode: CollectedEpisode) -> dict[str,
     `episode_record` is what `run_episodes.py` already serialises per-episode
     records with; this is that same shape, plus the actor id, since a fleet's
     episodes are one series and a health problem must be traceable back to the
-    instance that produced it, and the episode's ez-greedy options - always
-    present, 0 when the run explored without them. `index` is the episode's
-    place in the segment's `collected` series.
+    instance that produced it. `index` is the episode's place in the
+    segment's `collected` series.
     """
     return {
         **episode_record(index, episode.summary),
         "actor_id": episode.actor_id,
-        "options_started": episode.options_started,
-        "longest_option": episode.longest_option,
     }
 
 

@@ -239,6 +239,14 @@ def test_the_network_is_initialised_as_haiku_initialises_it() -> None:
     assert float(weight.std()) == pytest.approx(0.88 / math.sqrt(torso.in_features), rel=0.05)
 
 
+def test_the_row_identity_embedding_takes_haikus_embed_default() -> None:
+    # hk.Embed: truncated normal at std 1, cut at 2 std. Not torch's N(0, 1).
+    table = R2D2Network().trunk.identity.weight.detach()
+    assert float(table.abs().max()) <= 2.0
+    assert float(table.std()) == pytest.approx(0.88, rel=0.05)
+    assert abs(float(table.mean())) < 0.05
+
+
 def test_the_optimiser_is_adam_at_the_papers_values_without_decay() -> None:
     backbone = _backbone()
     optimizer = backbone.optimizer

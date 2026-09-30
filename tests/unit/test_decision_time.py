@@ -37,18 +37,12 @@ from tower_rl.experiment.metrics import pooled
 from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.evaluator import EvaluationReport, evaluate
 from tower_rl.learning.exploration import ExplorationSchedule
-from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import (
-    StackedDqnBackbone,
-    StackedDqnConfig,
-)
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.training import (
     TrainingConfig,
     TrainingRun,
 )
-
-SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 #: Float noise over a few thousand additions, and nothing more. The residual is
 #: computed by subtraction, so anything above this is a real accounting fault.
@@ -189,17 +183,13 @@ def environment() -> InstrumentedRunEnvironment:
 
 
 def fleet(count: int) -> TrainingRun:
-    learner = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
-    replay = PrioritizedSequenceReplay(capacity=256, seed=0)
+    learner = R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
+    replay = R2D2Replay(capacity=256, seed=0)
     actors = [
         Actor(
             environment=environment(),
             policy=learner,
-            config=ActorConfig(
-                actor_id=f"fake-{index}", sequence_length=6, burn_in=1, stride=3
-            ),
+            config=ActorConfig(actor_id=f"fake-{index}"),
             replay=replay,
         )
         for index in range(count)
@@ -216,7 +206,8 @@ def fleet(count: int) -> TrainingRun:
             ),
             warmup_sequences=2,
             batch_size=2,
-            gradient_steps_per_decision=0.2,
+            gradient_steps_per_item=1.0,
+            learner_debt_bound_items=4,
         ),
     )
 

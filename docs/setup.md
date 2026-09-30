@@ -79,7 +79,7 @@ state/runs/<run name>/
 ```
 
 `train.py --run-name` names the folder (default `<backbone>-<UTC start>`, for
-example `stacked-dqn-20260927T134501Z`). A `--resume` from the folder's own
+example `r2d2-20260927T134501Z`). A `--resume` from the folder's own
 `checkpoints/latest.pt` continues in it as the next segment; a resume from a
 numbered checkpoint or from a run written before this layout starts a new
 folder naming its parent. `run_episodes.py` and `run_actors.py` with
@@ -588,7 +588,7 @@ A stage — a training seed, an evaluation batch, a recording session — is hou
 of device time, so it is launched once and left alone rather than watched:
 
 ```text
-run=stacked-dqn-$(date -u +%Y%m%dT%H%M%SZ)
+run=r2d2-$(date -u +%Y%m%dT%H%M%SZ)
 nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 \
     --log-directory "state/runs/$run/logs" -- \
   uv run --extra tracking python scripts/train.py --run-name "$run" \

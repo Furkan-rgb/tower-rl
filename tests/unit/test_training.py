@@ -28,9 +28,8 @@ from tower_rl.experiment.metrics import failed_start_line, health_metrics, windo
 from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
-from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import R2D2_IMPORTANCE_SAMPLING_EXPONENT, PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.training import (
     INVALID_REASONS,
     STALE_OR_DUPLICATE,
@@ -41,8 +40,6 @@ from tower_rl.learning.training import (
     collection_windows,
     episode_health,
 )
-
-SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 #: Any schedule at all: nothing in this file is about exploration, and the rates
 #: a real run uses are resolved from `train.py`'s parser rather than defaulted.
@@ -57,23 +54,23 @@ def _run(*, device: torch.device | None = None, **overrides: object) -> Training
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
-    backbone = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2),
-        network_config=SMALL,
+    backbone = R2D2Backbone(
+        R2D2Config(discount_per_game_second=0.999, seed=0),
         device=device or torch.device("cpu"),
     )
-    replay = PrioritizedSequenceReplay(capacity=64, seed=0)
+    replay = R2D2Replay(capacity=64, seed=0)
     actor = Actor(
         environment=environment,
         policy=backbone,
-        config=ActorConfig(sequence_length=6, burn_in=1, stride=3),
+        config=ActorConfig(),
         replay=replay,
     )
     settings: dict[str, object] = {
         "budget_decisions": 190,
         "warmup_sequences": 2,
         "batch_size": 2,
-        "gradient_steps_per_decision": 0.2,
+        "gradient_steps_per_item": 1.0,
+        "learner_debt_bound_items": 4,
         "exploration": SCHEDULE,
     }
     settings.update(overrides)
@@ -209,7 +206,7 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
         annealed(report.decisions - report.collected[-1].summary.decisions)
     )
     # Fixed rather than scheduled: R2D2's exponent from the first step to the last.
-    assert report.importance_beta == R2D2_IMPORTANCE_SAMPLING_EXPONENT
+    assert report.importance_beta == training.replay.beta
 
 
 def test_no_optimisation_happens_before_the_buffer_is_warm() -> None:

@@ -92,22 +92,17 @@ from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import INVENTORY_TOO_WIDE, OUT_OF_RANGE_REASON
 from tower_rl.environment.upgrade_setup import UPGRADE_SETUP_DRIFT
 from tower_rl.learning.actor import Actor, EpisodeResult
-from tower_rl.learning.backbone import (
-    Backbone,
-    LearnMetrics,
-    acting_copy,
-    collate,
-)
+from tower_rl.learning.backbone import Backbone, LearnMetrics, acting_copy
 from tower_rl.learning.dreamer_replay import DreamerReplay
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.learner import Learner, LearnerLoad, LearnerThread
 from tower_rl.learning.r2d2_replay import R2D2Replay
-from tower_rl.learning.replay import PrioritizedSequenceReplay
 
-#: The buffer an arm collects into: stacked-dqn's windows, or DreamerV3's
-#: step replay (`dreamer_replay.py`, docs/solution.md 9.4c).
-ArmReplay = PrioritizedSequenceReplay | DreamerReplay | R2D2Replay
+#: The buffer an arm collects into: DreamerV3's step replay
+#: (`dreamer_replay.py`, docs/solution.md 9.4c) or R2D2's item replay
+#: (`r2d2_replay.py`, 9.4).
+ArmReplay = DreamerReplay | R2D2Replay
 
 #: The device's own rejection reason for a stale or duplicate command, carried
 #: into an episode's `termination_detail` free text exactly as it comes off the
@@ -298,19 +293,13 @@ class TrainingConfig:
     #: the rates a run explores at are resolved from the command line, and a
     #: default here would be a second source of them.
     exploration: ExplorationSchedule
-    #: Sequences required before the first optimisation step. About 35 episodes
-    #: at this geometry: enough that the first gradient steps see more than a
-    #: handful of episodes of one policy.
+    #: Replay entries (items or steps: the buffer's own unit) required before
+    #: the first optimisation step.
     warmup_sequences: int = 100
     batch_size: int = 8
-    #: Gradient steps per environment decision. What matters is the replay
-    #: ratio, transitions replayed per transition generated, which is this
-    #: times the learnable steps in a batch. D'Oro et al. 2023's 32-64:1 bound
-    #: was derived in the Atari-100k batch-32 regime; at 0.114 (SPR's 64:1 on
-    #: this project's geometry), M3-P010 tracked M3-P009 within 2.5-4 waves at
-    #: matched gradient steps but reached them 9x slower in decisions, so it
-    #: never climbed the way M3-P009 did by 100k decisions (M3-P010,
-    #: docs/experiments.md). Reverted to M3-P009's 1.0.
+    #: Gradient steps per environment decision: DreamerV3's 0.5 (its train
+    #: ratio 512 over a batch of 16 x 64). R2D2 credits per item instead
+    #: (`gradient_steps_per_item`).
     gradient_steps_per_decision: float = 1.0
     #: Episodes per point of the collection curve. The curve is read from the
     #: collection episodes themselves rather than from exploration-free
@@ -352,19 +341,13 @@ class TrainingConfig:
     #: inside an episode. Every episode also starts on a fresh copy, and that
     #: refresh restarts the count, so an episode never opens on parameters
     #: older than the previous one's last. 100 is Ape-X's 400 frames at an
-    #: action repeat of 4 (Horgan et al. 2018). A fleet of seven at the
-    #: default 1.0 gradient steps per decision then acts on parameters at most
-    #: about 7 x 100 x 1.0 = 700 gradient steps old; refreshing once per
-    #: 550-decision episode instead would be about 7 x 550 x 1.0 = 3,850 -
-    #: which is the staleness M3-P009 won under, so staleness is not
-    #: first-order at or below it (M3-P010, docs/experiments.md). Safe for a
-    #: backbone whose carried state is its own input history, as stacked-dqn's
-    #: is. One refreshes before every decision, which with a refresh that
-    #: loads only a newer snapshot is the official DreamerV3 agent's: fresh
-    #: parameters at the first policy call after each step, the recurrent
-    #: latent carried across (`embodied/jax/agent.py` 243-247, 279-282;
-    #: `scripts/train.py` fixes it there). Zero refreshes at the start of
-    #: every episode only, never inside one - `M3-P009`'s cadence.
+    #: action repeat of 4 (Horgan et al. 2018). One refreshes before every
+    #: decision, which with a refresh that loads only a newer snapshot is the
+    #: official DreamerV3 agent's: fresh parameters at the first policy call
+    #: after each step, the recurrent latent carried across
+    #: (`embodied/jax/agent.py` 243-247, 279-282). R2D2 refreshes every 400
+    #: decisions (`scripts/train.py` fixes both). Zero refreshes at the start
+    #: of every episode only, never inside one.
     parameter_sync_decisions: int = 100
     #: Whether every episode also starts on a fresh copy and restarts the count
     #: above. False is R2D2's: Acme's actor updates its variables every 400
@@ -385,9 +368,7 @@ class TrainingConfig:
     #: still. Quantity: that save takes 11.5 s at 1,000,000 steps (ADR 0014),
     #: while seven actors collect up to about 34 decisions a second (`M3-P016`:
     #: at most 17,549 decisions an hour each), so about 390 decisions. Value:
-    #: 512, the next power of two, and below the 7 x 100 = 700 steps of lag the
-    #: default refresh cadence already accepts. 512 gradient steps at
-    #: stacked-dqn's 1.0, 256 at DreamerV3's 0.5.
+    #: 512, the next power of two: 256 gradient steps at DreamerV3's 0.5.
     learner_debt_bound_decisions: int = 512
     #: Gradient steps per replay item inserted, and the debt bound in items,
     #: which replace the two per-decision figures above when set: the learner
@@ -444,9 +425,6 @@ class CollectedEpisode:
     #: Which actor played it. The episodes of a fleet are one series in
     #: completion order, and this is how a per-actor account is taken of it.
     actor_id: str = "actor-0"
-    #: Its ez-greedy options, as `EpisodeResult` carries them; 0 when off.
-    options_started: int = 0
-    longest_option: int = 0
 
     @property
     def wait_fraction(self) -> float:
@@ -1506,8 +1484,6 @@ class TrainingRun:
                 summary,
                 wait_decisions=result.wait_decisions,
                 actor_id=progress.actor_id,
-                options_started=result.options_started,
-                longest_option=result.longest_option,
             )
         )
         progress.episodes += 1
@@ -1743,17 +1719,7 @@ class TrainingRun:
         """
         if isinstance(self.replay, DreamerReplay):
             return self._take_dreamer_step(self.replay)
-        if isinstance(self.replay, R2D2Replay):
-            return self._take_r2d2_step(self.replay)
-        with self.replay.lock:
-            indices, sequences, weights = self.replay.sample(self.config.batch_size)
-        # Built where the parameters are: a CPU batch handed to a CUDA model
-        # fails on the first optimisation step, which is the worst place to
-        # discover it after an hour of collection.
-        metrics = self.learner.learn(collate(sequences, weights, device=self.backbone.device))
-        with self.replay.lock:
-            self.replay.update_priorities(indices, metrics.td_errors)
-        return metrics
+        return self._take_r2d2_step(self.replay)
 
     def _take_r2d2_step(self, replay: R2D2Replay) -> LearnMetrics:
         """Sample items, learn on them, and write back the priorities the learner computed.

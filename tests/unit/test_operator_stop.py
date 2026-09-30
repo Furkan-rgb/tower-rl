@@ -29,7 +29,8 @@ from typing import Any
 import pytest
 
 from tower_rl.learning.checkpoint import load
-from tower_rl.learning.replay import PrioritizedSequenceReplay, read_replay_metadata
+from tower_rl.learning.r2d2_replay import R2D2Replay
+from tower_rl.learning.replay import read_replay_metadata
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -140,7 +141,7 @@ def assert_a_loadable_pair(runs: Path) -> int:
     dump = latest.parent.parent / checkpoint.paired_replay
     decisions = checkpoint.progress.environment_decisions
     assert read_replay_metadata(dump)["run"]["decisions"] == decisions
-    buffer = PrioritizedSequenceReplay(capacity=64)
+    buffer = R2D2Replay(capacity=64)
     buffer.load_from(dump)
     return decisions
 

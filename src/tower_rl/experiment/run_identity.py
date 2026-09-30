@@ -18,7 +18,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass
 
 import torch
 
@@ -35,7 +35,6 @@ from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.r2d2 import GRADIENT_CLIP_NORM, R2D2Config
-from tower_rl.learning.stacked_dqn import StackedDqnConfig
 from tower_rl.learning.training import ArmReplay, TrainingConfig
 from tower_rl.learning.value_learning import V_REF
 
@@ -163,15 +162,13 @@ def resolved_config(
     *,
     actor_ids: Sequence[str],
     config: TrainingConfig,
-    learner: StackedDqnConfig,
-    network: NetworkConfig,
+    network: NetworkConfig | None,
     replay: ArmReplay,
     cadence: CadenceConfig,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,
     workshop_level: int,
     burn_in: int,
-    stride: int,
     device: torch.device,
     parent_checkpoint: str | None = None,
     replay_restored_from: str | None = None,
@@ -203,53 +200,16 @@ def resolved_config(
         "warmup_sequences": config.warmup_sequences,
         "gradient_steps_per_decision": arguments.gradient_steps_per_decision,
         "sequence_length": arguments.sequence_length,
-        # The burn-in this arm was built with: exactly what fills the window.
+        # The burn-in this arm was built with.
         "burn_in": burn_in,
-        "stride": stride,
-        "history_length": arguments.history_length if name == "stacked-dqn" else None,
         # The shape of the network, not only its hyperparameters: a checkpoint
         # whose snapshot cannot say how wide its layers were cannot be rebuilt
         # into the policy that wrote it, which is what an evaluation of a
         # numbered checkpoint has to do.
-        "network_identity_capacity": network.identity_capacity,
-        "network_identity_dim": network.identity_dim,
-        "network_hidden": network.hidden,
-        "network_core_hidden": network.core_hidden,
-        "n_step": learner.n_step,
-        # The n-step anneal, if any: `n_step` is where it starts. None and 0
-        # hold `n_step` fixed, which is what every run before run 4 used.
-        "n_step_final": learner.n_step_final,
-        "n_step_anneal_steps": learner.n_step_anneal_steps,
-        # Only the discount the target is built with: under the game-time
-        # discount the per-decision one is not read, and is recorded as None
-        # rather than as a value that played no part.
-        "discount": (
-            None if learner.discount_per_game_second is not None else learner.discount
-        ),
-        # None discounts per decision, which is every run before board #81.
-        "discount_per_game_second": learner.discount_per_game_second,
-        # False learns from the wave reward, which is every run before board #82.
-        "survival_time_reward": learner.survival_time_reward,
-        # The survival-time reward's maximum return, which fixes its scale
-        # (ADR 0013), or None under the wave reward. Absent from every file
-        # before M3-P015, whose survival-time reward was bounded by
-        # 1 / (-ln gamma_s * WAVE_SECONDS) at its own discount instead.
-        "survival_reward_bound": V_REF if learner.survival_time_reward else None,
-        # False explores one decision at a time, which is every run before
-        # board #83.
-        "ez_greedy": learner.ez_greedy,
-        "learning_rate": learner.learning_rate,
-        # Absent from every file written before it existed, all of which ran
-        # at torch's 1e-8.
-        "adam_epsilon": learner.adam_epsilon,
-        "target_ema_decay": (
-            arguments.target_ema_decay if name == "stacked-dqn" else None
-        ),
-        # SR-SPR-style resets: the interval in gradient steps, 0 for none -
-        # every run before M3-P014 - and the last step one may happen at,
-        # derived from the budget.
-        "reset_every_steps": learner.reset_every_steps,
-        "last_reset_step": learner.last_reset_step,
+        # None for a backbone that does not use the shared trunk (DreamerV3).
+        "network_identity_capacity": None if network is None else network.identity_capacity,
+        "network_identity_dim": None if network is None else network.identity_dim,
+        "network_hidden": None if network is None else network.hidden,
         "epsilon_start": config.exploration.epsilon_start,
         "epsilon_end": config.exploration.epsilon_end,
         "epsilon_anneal_decisions": config.exploration.anneal_decisions,
@@ -260,10 +220,8 @@ def resolved_config(
         # no per-actor floor at all.
         "exploration": config.exploration.option,
         "exploration_epsilon_floors": list(config.exploration.floors),
-        # How replay was sampled: R2D2's fixed exponents under stacked-dqn,
-        # uniform (0 and 0) under DreamerV3. Every stacked-dqn run before board
-        # #85 recorded priority_alpha 0.0 beside a beta_start/beta_end anneal
-        # that uniform sampling never read.
+        # How replay was sampled: R2D2's fixed exponents, uniform (0 and 0)
+        # under DreamerV3.
         "priority_alpha": replay.alpha,
         "importance_beta": replay.beta,
         "replay_capacity": arguments.replay_capacity,
@@ -327,22 +285,17 @@ def dreamer_resolved_config(
 ) -> dict[str, object]:
     """A DreamerV3 run's snapshot: `resolved_config`'s, with DreamerV3's own settings.
 
-    The stacked-dqn learner and network settings do not describe this run and
-    are recorded as None. Every `DreamerConfig` value is recorded under
-    `dreamer_<field>`, which is what `checkpoint_policy` rebuilds the policy from.
-    `dreamer_compute_dtype` is the learner's compute precision (bfloat16 on
-    CUDA, `DreamerBackbone.mixed_precision`); it is no `DreamerConfig` field,
-    so the rebuild never reads it.
+    Every `DreamerConfig` value is recorded under `dreamer_<field>`, which is
+    what `checkpoint_policy` rebuilds the policy from. `dreamer_compute_dtype`
+    is the learner's compute precision (bfloat16 on CUDA,
+    `DreamerBackbone.mixed_precision`); it is no `DreamerConfig` field, so the
+    rebuild never reads it.
 
-    The discount and the reward are the task's, not stacked-dqn's (ADR 0013),
-    so they are recorded under the keys stacked-dqn records them under, which
-    the resume guard compares for either backbone. A file from before the
-    game-time discount has `dreamer_horizon` instead, and None there.
+    The discount and the reward are the task's (ADR 0013), so they are
+    recorded under the keys the resume guard compares for every backbone.
     """
-    stacked = {item.name for item in fields(StackedDqnConfig)} - {"seed"}
-    stacked |= {f"network_{item.name}" for item in fields(NetworkConfig)}
     return {
-        **{key: None if key in stacked else value for key, value in resolved.items()},
+        **resolved,
         "discount_per_game_second": config.discount_per_game_second,
         "survival_time_reward": config.survival_time_reward,
         "survival_reward_bound": V_REF if config.survival_time_reward else None,
@@ -356,9 +309,8 @@ def r2d2_resolved_config(
 ) -> dict[str, object]:
     """An R2D2 run's snapshot: `resolved_config`'s, with R2D2's own settings.
 
-    The stacked-dqn learner settings do not describe this run and are recorded
-    as None, as are the per-decision replay ratio and debt bound, which its
-    per-item ones replace (`TrainingConfig.gradient_steps_per_item`). The
+    The per-decision replay ratio and debt bound are recorded as None: its
+    per-item ones replace them (`TrainingConfig.gradient_steps_per_item`). The
     network settings stay: R2D2's torso is the shared trunk
     (`R2D2Backbone.network_config`). Every `R2D2Config` value is recorded
     under `r2d2_<field>`, which is what `checkpoint_policy` rebuilds the
@@ -366,8 +318,7 @@ def r2d2_resolved_config(
     the keys the resume guard compares for every backbone; R2D2 always learns
     the survival reward.
     """
-    stacked = {item.name for item in fields(StackedDqnConfig)} - {"seed"}
-    unread = stacked | {"gradient_steps_per_decision", "learner_debt_bound_decisions"}
+    unread = ("gradient_steps_per_decision", "learner_debt_bound_decisions")
     return {
         **{key: None if key in unread else value for key, value in resolved.items()},
         "discount_per_game_second": config.discount_per_game_second,

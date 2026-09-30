@@ -54,14 +54,14 @@ from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailab
 #: stores latents, final observations and the online queue, and its learner
 #: starts every window from a stored latent. The payload is unchanged. A
 #: DreamerV3 file from before it still loads, for evaluation and selection,
-#: and `scripts/train.py` refuses to resume it as a mixed run; a stacked-dqn
-#: file of version 6 still resumes, because nothing it learns from changed.
+#: and `scripts/train.py` refuses to resume it as a mixed run.
 #: Version 8 is R2D2 (ADR 0018): `backbone_state` may be an `R2D2Backbone`'s
 #: - online and target networks, Adam's moments, its step count - and its
 #: resume point's replay stores items with the LSTM state each starts from
 #: (`R2D2_REPLAY_DUMP_FORMAT_VERSION`). The payload is unchanged, and every
-#: earlier version still loads and resumes as before; a file from before it
-#: holds no R2D2 run, which its arm in the identity already refuses.
+#: earlier version still loads; a file from before it holds no R2D2 run, which
+#: its arm in the identity refuses. A stacked-dqn file (any version) is
+#: refused by name in `CheckpointIdentity.incompatibilities`.
 CHECKPOINT_FORMAT_VERSION = 8
 SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
 #: The first format a run may resume from. Named rather than compared against
@@ -71,6 +71,13 @@ DECISION_BUDGET_FORMAT_VERSION = 4
 LEARNER_THREAD_FORMAT_VERSION = 6
 #: The first format a DreamerV3 run on its step replay writes.
 DREAMER_STEP_REPLAY_FORMAT_VERSION = 7
+
+
+#: The backbone board #111 removed, and the last commit that can resume or
+#: evaluate its checkpoints and replays. Its results (M3-P014 and earlier) are
+#: reproduced from that commit.
+REMOVED_STACKED_DQN = "stacked-dqn"
+LAST_STACKED_DQN_COMMIT = "cb2f324"
 
 
 class CheckpointError(RuntimeError):
@@ -115,6 +122,12 @@ class CheckpointIdentity:
     def incompatibilities(self, other: CheckpointIdentity) -> tuple[str, ...]:
         """Differences that make a resume unsafe. The run id may legitimately differ."""
         reasons = []
+        if self.backbone == REMOVED_STACKED_DQN:
+            reasons.append(
+                f"it is a {REMOVED_STACKED_DQN} checkpoint, a backbone that was removed "
+                f"(board #111, ADR 0018); commit {LAST_STACKED_DQN_COMMIT} is the last that "
+                "can resume or evaluate it"
+            )
         for field_name in (
             "backbone",
             "profile_id",

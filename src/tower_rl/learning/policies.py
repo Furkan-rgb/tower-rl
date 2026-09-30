@@ -33,7 +33,6 @@ from tower_rl.learning.checkpoint import Checkpoint, CheckpointIdentity, load
 from tower_rl.learning.dreamer import DREAMERV3, DreamerBackbone, DreamerConfig
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.r2d2 import R2D2, R2D2Backbone, R2D2Config
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
 
 class Policy(Protocol):
@@ -260,7 +259,7 @@ def checkpoint_policy(
     workshop_level: int,
     device: torch.device | None = None,
     sampling_seed: str | None = None,
-) -> tuple[StackedDqnBackbone | DreamerBackbone | R2D2Backbone, CheckpointIdentity]:
+) -> tuple[DreamerBackbone | R2D2Backbone, CheckpointIdentity]:
     """Rebuild the backbone a checkpoint holds, as a policy to evaluate.
 
     Everything needed to reconstruct it is in the checkpoint: its identity says
@@ -268,8 +267,7 @@ def checkpoint_policy(
     with says how the learner and the network were shaped. Nothing is taken from
     the caller, so a checkpoint cannot be evaluated under settings it was not
     trained under - a network rebuilt a layer wider would fail to load its own
-    weights, and one rebuilt with a shorter history would load them and act on a
-    window the run never saw.
+    weights.
 
     The settings that are *not* in the weights are taken from the caller and
     checked: the cadence the policy will be asked at (ADR 0009), the upgrade
@@ -307,55 +305,10 @@ def checkpoint_policy(
         return _dreamer_policy(checkpoint, device, sampling_seed), checkpoint.identity
     if checkpoint.identity.backbone == R2D2:
         return _r2d2_policy(checkpoint, device), checkpoint.identity
-
-    settings = checkpoint.resolved_config
-    if checkpoint.identity.backbone != "stacked-dqn":
-        raise ValueError(
-            f"{path} holds a {checkpoint.identity.backbone!r} backbone; "
-            "only stacked-dqn can be rebuilt as a policy"
-        )
-    defaults = NetworkConfig()
-    backbone = StackedDqnBackbone(
-        config=StackedDqnConfig(
-            history_length=int(settings["history_length"]),
-            n_step=int(settings["n_step"]),
-            # Absent from a checkpoint written before the n-step anneal, which
-            # held n fixed - what these defaults rebuild.
-            n_step_final=(
-                None
-                if settings.get("n_step_final") is None
-                else int(settings["n_step_final"])
-            ),
-            n_step_anneal_steps=int(settings.get("n_step_anneal_steps", 0)),
-            # Acting reads neither discount. A game-time run records the
-            # per-decision one as None, and a run before it records no
-            # per-game-second key at all; both rebuild on the defaults.
-            discount=(
-                StackedDqnConfig.discount
-                if settings.get("discount") is None
-                else float(settings["discount"])
-            ),
-            discount_per_game_second=settings.get("discount_per_game_second"),
-            learning_rate=float(settings["learning_rate"]),
-            target_ema_decay=float(settings["target_ema_decay"]),
-        ),
-        network_config=NetworkConfig(
-            identity_capacity=int(
-                settings.get("network_identity_capacity", defaults.identity_capacity)
-            ),
-            identity_dim=int(settings.get("network_identity_dim", defaults.identity_dim)),
-            hidden=int(settings.get("network_hidden", defaults.hidden)),
-            core_hidden=int(settings.get("network_core_hidden", defaults.core_hidden)),
-        ),
-        device=device or torch.device("cpu"),
+    raise ValueError(
+        f"{path} holds a {checkpoint.identity.backbone!r} backbone; "
+        "only dreamerv3 and r2d2 can be rebuilt as a policy"
     )
-    backbone.load_state_dict(dict(checkpoint.backbone_state))
-    # Nothing here is ever trained again. `act` already builds no graph; this
-    # says so at the object as well, so a policy that leaked into a learner
-    # would fail rather than quietly accumulate gradients.
-    backbone.online.eval()
-    backbone.online.requires_grad_(False)
-    return backbone, checkpoint.identity
 
 
 def _r2d2_policy(checkpoint: Checkpoint, device: torch.device | None) -> R2D2Backbone:
@@ -372,7 +325,6 @@ def _r2d2_policy(checkpoint: Checkpoint, device: torch.device | None) -> R2D2Bac
             identity_capacity=int(settings["network_identity_capacity"]),
             identity_dim=int(settings["network_identity_dim"]),
             hidden=int(settings["network_hidden"]),
-            core_hidden=int(settings["network_core_hidden"]),
         ),
         device=device or torch.device("cpu"),
     )

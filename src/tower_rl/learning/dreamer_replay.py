@@ -2,7 +2,7 @@
 
 A port of the official `embodied/core/replay.py` (danijar/dreamerv3 at
 e3f02248) as `dreamerv3/main.py` `make_replay` configures it, in place of the
-window buffer stacked-dqn samples (`replay.py`). What it follows, by line:
+window buffer this project first used. What it follows, by line:
 
 - Each actor writes one stream of steps, episode after episode. Every stream
   position becomes an item - the start of one window of `length` steps - as
@@ -71,9 +71,9 @@ from tower_rl.learning.step_arrays import StepArrays, read_rows, write_rows
 DREAMER_REPLAY_CAPACITY = 5_000_000
 #: `configs.yaml` `replay_context`.
 DREAMER_REPLAY_CONTEXT = 1
-#: The layout of a saved step replay. 1 and 2 are the window buffer's
-#: (`replay.REPLAY_DUMP_FORMAT_VERSION`), which this buffer refuses: a DreamerV3
-#: run saved before stored latents cannot continue under them.
+#: The layout of a saved step replay. 1 and 2 were the window buffer's,
+#: which this buffer refuses: a DreamerV3 run saved before stored latents
+#: cannot continue under them.
 DREAMER_REPLAY_DUMP_FORMAT_VERSION = 3
 
 

@@ -15,8 +15,8 @@ next decision until the learner has brought the debt back under the bound.
 So over any span the steps taken are the configured ratio of the data
 collected, short by at most the bound (plus one credit per actor, each of
 which credits before it checks), and the parameters an actor acts from are at
-most that far behind the data it is collecting. Under stacked-dqn and
-DreamerV3 a credit is a decision, credited as it is taken; under R2D2 it is a
+most that far behind the data it is collecting. Under DreamerV3 a
+credit is a decision, credited as it is taken; under R2D2 it is a
 replay item, credited as its episode ends (`TrainingRun`).
 
 **Holding the learner still.** `held` lets no step begin and waits out the one
@@ -41,7 +41,7 @@ cannot overtake it either.
 (`embodied/jax/agent.py` 243-247, 279-282): every completed step publishes a
 snapshot of the network with a number, and an actor whose copy is older loads
 the latest before a decision: before every one under DreamerV3, on the refresh
-cadence under stacked-dqn and R2D2 (`TrainingConfig.parameter_sync_decisions`). The
+cadence under R2D2 (`TrainingConfig.parameter_sync_decisions`). The
 actor's carried state is its own and survives the load. A snapshot is never
 written once published - each step makes a new one - so `Learner.lock` guards
 only the moment a snapshot is handed over or loaded, never a step: an actor

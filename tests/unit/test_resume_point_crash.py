@@ -40,9 +40,9 @@ from test_train_entry_point import (
 
 from tower_rl.experiment.training_report import REPLAY_DIRECTORY
 from tower_rl.learning.checkpoint import load, save
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.replay import (
     REPLAY_DUMP_METADATA,
-    PrioritizedSequenceReplay,
     read_replay_metadata,
 )
 
@@ -291,7 +291,7 @@ def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pai
         dump = folder / paired
     assert dump is not None
     assert read_replay_metadata(dump)["run"]["decisions"] == expected
-    buffer = PrioritizedSequenceReplay(capacity=64)
+    buffer = R2D2Replay(capacity=64)
     buffer.load_from(dump)
     assert len(buffer) > 0
 

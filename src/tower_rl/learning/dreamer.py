@@ -518,8 +518,8 @@ class DreamerBackbone:
             # outputs are no longer read.
             torch.compiler.cudagraph_mark_step_begin()  # type: ignore[no-untyped-call]
         # Each transition's own d and the reward it carries, valued at its
-        # start: exactly stacked-dqn's (`StackedDqnBackbone.learn`), for the
-        # transition into each step. The survival-time reward replaces the
+        # start, for the transition into each step (the same functions R2D2
+        # calls). The survival-time reward replaces the
         # wave change; the wave change, booked where its span ends, is d * r.
         discounts = game_time_discounts(c.discount_per_game_second, batch.game_ms)
         if c.survival_time_reward:

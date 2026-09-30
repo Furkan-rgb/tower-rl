@@ -8,7 +8,6 @@ algorithm cannot quietly change what it is measured against.
 from __future__ import annotations
 
 import copy as copying
-import itertools
 import random
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,9 +17,7 @@ import numpy
 import torch
 from torch import Tensor, nn
 
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
-from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.replay import ReplaySequence
+from tower_rl.environment.features import StateFeatures
 
 
 @dataclass(frozen=True)
@@ -33,8 +30,8 @@ class LearnMetrics:
     because beta annealed the weights upwards, not because the learner improved.
     """
 
-    #: The optimised quantity: Huber loss scaled by the per-sequence
-    #: importance-sampling weights, and therefore confounded with the
+    #: The optimised quantity, scaled by the per-sequence importance-sampling
+    #: weights where the replay has them, and therefore confounded with the
     #: priorities the batch was sampled by.
     weighted_loss: float
     #: The same batch's mean absolute TD error with no weighting of any kind.
@@ -85,13 +82,13 @@ class SequenceBatch:
     game_ms: Tensor
     weights: Tensor  # [batch]
     burn_in: int
-    #: A batch with stored latents is in DreamerV3's layout (`DreamerReplay`):
+    #: A batch is in DreamerV3's layout (`DreamerReplay`):
     #: `rewards`, `dones` and `game_ms` describe the transition *into* each
     #: step and `actions` the action taken at it; the first `burn_in` steps
     #: are the replay context, read only for `context`, the stored latent of
     #: the last of them - `deter` [batch, deter] and stochastic class indices
     #: [batch, stoch]. `first` and `last` [batch, time] are `is_first` and
-    #: `is_last`. None in the window layout every other learner reads.
+    #: `is_last`.
     #: R2D2's replay (`R2D2Replay`) uses the same step layout, with its own
     #: meanings: `burn_in` is the steps unrolled before the trace, `first`
     #: and `last` mark an episode's first and last steps, and `context` is
@@ -189,70 +186,3 @@ def acting_copy(backbone: Backbone, *, exploration_seed: int | str | None = None
     if exploration_seed is not None and isinstance(stream, random.Random):
         stream.seed(exploration_seed)
     return acting
-
-
-def collate(
-    sequences: tuple[ReplaySequence, ...],
-    weights: tuple[float, ...],
-    *,
-    device: torch.device | None = None,
-) -> SequenceBatch:
-    """Stack equal-length sequences into tensors.
-
-    Equal length is required: the actor emits fixed length windows, padding the
-    front of an episode too short to fill one rather than dropping it. Padding is
-    carried as its own mask, separate from the action mask, and the only thing it
-    ever does is remove a step from the learning window - a padded step is never a
-    target and never contributes a TD error.
-    """
-    if not sequences:
-        raise ValueError("a batch needs at least one sequence")
-    length = len(sequences[0].steps)
-    burn_in = sequences[0].burn_in
-    if any(len(sequence.steps) != length for sequence in sequences):
-        raise ValueError("all sequences in a batch must have the same length")
-    if any(sequence.burn_in != burn_in for sequence in sequences):
-        raise ValueError("all sequences in a batch must share one burn-in length")
-    if len(weights) != len(sequences):
-        raise ValueError("every sequence in a batch needs exactly one weight")
-
-    # Every value of the batch is written once into one float32 buffer, step by
-    # step, and the buffer crosses to the device in one transfer; the typed
-    # tensors are cut from it there. Action indices and flags are small
-    # integers, which float32 holds exactly. Building nested Python lists and a
-    # tensor per field instead was most of a gradient step's time.
-    step_width = SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + len(RUN_ACTIONS) + 5
-    values = itertools.chain.from_iterable(
-        part
-        for sequence in sequences
-        for step in sequence.steps
-        for part in (
-            step.features.scalars,
-            step.features.rows,
-            step.features.mask,
-            (step.action_index, step.reward, step.done, step.padding, step.game_ms),
-        )
-    )
-    batch = len(sequences)
-    stepped = batch * length * step_width
-    packed = numpy.fromiter(
-        itertools.chain(values, weights), dtype=numpy.float32, count=stepped + batch
-    )
-    flat = torch.as_tensor(packed, device=device)
-    steps = flat[:stepped].view(batch, length, step_width)
-
-    rows_at = SCALAR_COUNT
-    mask_at = rows_at + ROW_COUNT * ROW_WIDTH
-    tail_at = mask_at + len(RUN_ACTIONS)
-    return SequenceBatch(
-        scalars=steps[..., :rows_at].contiguous(),
-        rows=steps[..., rows_at:mask_at].reshape(batch, length, ROW_COUNT, ROW_WIDTH),
-        mask=steps[..., mask_at:tail_at] != 0,
-        actions=steps[..., tail_at].to(torch.int64),
-        rewards=steps[..., tail_at + 1].contiguous(),
-        dones=steps[..., tail_at + 2] != 0,
-        padding=steps[..., tail_at + 3] != 0,
-        game_ms=steps[..., tail_at + 4].contiguous(),
-        weights=flat[stepped:],
-        burn_in=burn_in,
-    )

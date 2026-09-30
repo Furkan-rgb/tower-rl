@@ -1,21 +1,13 @@
-"""The actor: drives one environment with one policy and emits replay sequences.
+"""The actor: drives one environment with one policy and emits its episodes to replay.
 
-Sequences are fixed length with a burn-in prefix and a configurable stride, so
-the learner always receives contiguous history and warms its stacked window on
-the prefix rather than on zeros.  Every episode contributes both the step that
-began it and the step that ended it: its front is padded by one burn-in of
-filler, the last window is aligned to its end, and an episode shorter than one
-window is padded further rather than dropped.  The actor never
-decides whether a transition is admissible; the environment classifies it and
-replay refuses what is not.
-
-Under DreamerV3 and R2D2 the stacked windows above are not used: an episode
-goes to replay whole, as the steps of one stream (`_emit_stream`,
+An episode goes to replay whole, as the steps of one stream (`_emit_stream`,
 `_emit_items`), with the policy's recurrent state beside it. DreamerV3 keeps
 its latent at every step; R2D2 keeps its LSTM state before the decisions at
 0, 40, 80, ... (`R2D2Backbone.replay_entry`). R2D2's policy is told each
 transition's game time after it (`R2D2Backbone.after_transition`), since its
-next input is that transition's reward; that holds in evaluation too.
+next input is that transition's reward; that holds in evaluation too. The actor
+never decides whether a transition is admissible; the environment classifies it
+and the stream is cut at the first one that is not.
 """
 
 from __future__ import annotations
@@ -34,19 +26,20 @@ from tower_rl.environment.decision_time import (
 )
 from tower_rl.environment.episode import REWARD_SCHEMA_VERSION, EpisodeSummary, TerminationOutcome
 from tower_rl.environment.features import StateFeatures, encode_state
-from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION, WAIT, action_at, action_index
+from tower_rl.environment.run_actions import (
+    ACTION_SCHEMA_VERSION,
+    RUN_ACTIONS,
+    WAIT,
+    action_at,
+    action_index,
+)
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.dreamer_replay import DreamerReplay, episode_steps
 from tower_rl.learning.policies import Policy
 from tower_rl.learning.r2d2 import R2D2Backbone
 from tower_rl.learning.r2d2_replay import R2D2_SEQUENCE_PERIOD, R2D2Replay, item_layout
-from tower_rl.learning.replay import (
-    PrioritizedSequenceReplay,
-    ReplaySequence,
-    ReplayStep,
-    SequenceMetadata,
-)
+from tower_rl.learning.replay import ReplayRejected, SequenceMetadata
 from tower_rl.learning.step_arrays import StepArrays
 
 #: `WAIT` is index 0 of `run-action-v1`, asked rather than assumed.
@@ -54,28 +47,32 @@ WAIT_ACTION_INDEX = action_index(WAIT)
 
 
 @dataclass(frozen=True)
-class ActorConfig:
-    """Sequence shape and exploration for one actor."""
+class Decision:
+    """One decision as the actor took it: what it saw, what it did, what followed."""
 
-    actor_id: str = "actor-0"
-    #: `docs/solution.md` 9.4: 80 stored decisions, 40 of burn-in, a 40 step
-    #: learning unroll. Halving these doubles the fraction of steps that the
-    #: n-step tail leaves without a target, which is why the documented geometry
-    #: is the default rather than a cheaper one.
-    sequence_length: int = 80
-    burn_in: int = 40
-    #: Distance between the starts of consecutive sequences. A stride shorter than
-    #: the learning window overlaps them, which is what R2D2 does.
-    stride: int = 40
-    epsilon: float = 0.0
+    features: StateFeatures
+    action_index: int
+    reward: float
+    done: bool
+    admissible: bool
+    #: The game time the transition spanned, in ms: 0 for a purchase. Required,
+    #: because a default of 0 would silently mean "no discount" to a learner
+    #: that discounts by game time, at every call site that forgot it.
+    game_ms: float = field(kw_only=True)
 
     def __post_init__(self) -> None:
-        if self.sequence_length < 2:
-            raise ValueError("a sequence needs at least two steps")
-        if not 0 <= self.burn_in < self.sequence_length:
-            raise ValueError("burn-in must leave at least one learning step")
-        if self.stride < 1:
-            raise ValueError("stride must be positive")
+        if not 0 <= self.action_index < len(RUN_ACTIONS):
+            raise ReplayRejected(f"action index {self.action_index} is outside the schema")
+        if not math.isfinite(self.game_ms) or self.game_ms < 0.0:
+            raise ReplayRejected(f"game time {self.game_ms} ms is not finite and non-negative")
+
+
+@dataclass(frozen=True)
+class ActorConfig:
+    """One actor's name and the rate it explores at."""
+
+    actor_id: str = "actor-0"
+    epsilon: float = 0.0
 
 
 @dataclass
@@ -92,24 +89,20 @@ class EpisodeResult:
     #: makes a degenerate policy - one that waits out every episode - visible
     #: while it is happening rather than only in the final wave.
     wait_decisions: int = 0
-    #: The policy's ez-greedy options this episode (`StackedDqnBackbone`): how
-    #: many started and the most decisions one ran for. 0 for a policy without
-    #: them, and for stacked-dqn with ez-greedy off.
-    options_started: int = 0
-    longest_option: int = 0
 
 
 @dataclass
 class Actor:
-    """One environment, one policy, emitting sequences into replay."""
+    """One environment, one policy, emitting episodes into replay."""
 
     environment: InstrumentedRunEnvironment
     policy: Policy
     config: ActorConfig = field(default_factory=ActorConfig)
     #: DreamerV3's step replay stores the policy's latent at every step, read
     #: off it by `replay_entry`, and the episode's final observation; R2D2's
-    #: item replay stores its (h, c) every 40 decisions, and the same.
-    replay: PrioritizedSequenceReplay | DreamerReplay | R2D2Replay | None = None
+    #: item replay stores its (h, c) every 40 decisions, and the same. None
+    #: plays the episode without storing it.
+    replay: DreamerReplay | R2D2Replay | None = None
     model_version: int = 0
     #: Where this actor's decision time goes, accumulated on its own thread and
     #: never shared with another actor. Most of a decision is spent inside the
@@ -123,10 +116,10 @@ class Actor:
     before_decision: Callable[[], None] | None = None
 
     def run_episode(self) -> EpisodeResult:
-        """Play one episode to its classified end and emit its sequences."""
+        """Play one episode to its classified end and emit it to replay."""
         state = self.environment.reset()
         carried_state = self.policy.initial_state()
-        steps: list[ReplayStep] = []
+        steps: list[Decision] = []
         latents: list[tuple[Any, Any]] = []
         #: R2D2's (h, c) before the decisions at 0, 40, 80, ...
         states: list[numpy.ndarray] = []
@@ -167,7 +160,7 @@ class Actor:
                 )
             total_reward += transition.reward
             steps.append(
-                ReplayStep(
+                Decision(
                     features=features,
                     action_index=action_index,
                     reward=transition.reward,
@@ -191,18 +184,13 @@ class Actor:
         elif isinstance(self.replay, R2D2Replay):
             offered, accepted = self._emit_items(self.replay, steps, states, final, summary)
         else:
-            offered, accepted = self._emit(steps, summary)
+            offered = accepted = 0
         return EpisodeResult(
             summary,
             offered,
             accepted,
             total_reward,
             wait_decisions=sum(1 for step in steps if step.action_index == WAIT_ACTION_INDEX),
-            # Read off the policy rather than returned by `act`, so the policy
-            # interface every other arm implements is unchanged; its
-            # `initial_state` above started the counts for this episode.
-            options_started=int(getattr(self.policy, "options_started", 0)),
-            longest_option=int(getattr(self.policy, "longest_option", 0)),
         )
 
     def _metadata(self, summary: EpisodeSummary) -> SequenceMetadata:
@@ -221,7 +209,7 @@ class Actor:
     def _emit_stream(
         self,
         replay: DreamerReplay,
-        steps: list[ReplayStep],
+        steps: list[Decision],
         latents: list[tuple[Any, Any]],
         final: StateFeatures | None,
         summary: EpisodeSummary,
@@ -245,7 +233,7 @@ class Actor:
         if not observations:
             return 1, 0
         count = len(observations)
-        into: list[ReplayStep | None] = [None, *steps[: count - 1]]
+        into: list[Decision | None] = [None, *steps[: count - 1]]
         blank = (numpy.zeros_like(latents[0][0]), numpy.zeros_like(latents[0][1]))
         entries = [*latents[:count], *[blank] * (count - len(latents))]
         episode = episode_steps(
@@ -266,7 +254,7 @@ class Actor:
     def _emit_items(
         self,
         replay: R2D2Replay,
-        steps: list[ReplayStep],
+        steps: list[Decision],
         states: list[numpy.ndarray],
         final: StateFeatures | None,
         summary: EpisodeSummary,
@@ -286,7 +274,7 @@ class Actor:
         if count < 2:
             # No transition survived the cut, so there is no decision to learn.
             return 1, 0
-        into: list[ReplayStep | None] = [None, *steps[: count - 1]]
+        into: list[Decision | None] = [None, *steps[: count - 1]]
         episode = StepArrays(
             scalars=numpy.asarray([o.scalars for o in observations], numpy.float32),
             rows=numpy.asarray([o.rows for o in observations], numpy.float32).reshape(count, -1),
@@ -304,89 +292,9 @@ class Actor:
             accepted = replay.add(self._metadata(summary), episode, grid)
         return items, items if accepted else 0
 
-    def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:
-        if self.replay is None:
-            return 0, 0
-        assert isinstance(self.replay, PrioritizedSequenceReplay)
-        metadata = self._metadata(summary)
-        offered = accepted = 0
-        # One acquisition for the whole episode: several actors write into the
-        # one buffer while the learner samples it, and replay leaves that
-        # discipline to its callers (see `PrioritizedSequenceReplay.lock`).
-        # Uncontended for a single actor, which is the fleet of one.
-        with self.profile.acquiring(self.replay.lock):
-            for window in self._windows(steps):
-                offered += 1
-                # Replay is the authority on admissibility; a window containing a
-                # classified failure is refused there and counted, not dropped here.
-                sequence = ReplaySequence(metadata, window, self.config.burn_in)
-                if self.replay.add(sequence):
-                    accepted += 1
-        return offered, accepted
-
-    def _windows(self, steps: list[ReplayStep]) -> list[tuple[ReplayStep, ...]]:
-        """Cut one episode into learning windows, first and terminal steps included.
-
-        Striding over the episode alone loses both of its ends. A window's
-        burn-in prefix is never a target, so window 0's first `burn_in` steps -
-        the opening decisions of every episode - were never learned (#92). And
-        striding emits whole windows only, so the step that ends the episode
-        reached replay only when the episode length happened to be a multiple
-        of the stride, and an episode shorter than one window not at all.
-        Termination is the whole of the negative signal under `reward-v1`, so
-        that loss is silent and severe.
-
-        Two rules fix both. Every episode is left-padded with `burn_in` filler
-        steps, so window 0's burn-in is filler and the first decision is its
-        first learning step; an episode still too short for one window is
-        padded further, up to a full window, so its real steps land at the
-        end. The filler is the zero history the episode really started from
-        (`_left_padded`). And the last window is aligned to the end of the
-        episode, overlapping its predecessor where it must; overlap only
-        duplicates experience, whereas a missing step is never learned at all.
-        """
-        length, stride = self.config.sequence_length, self.config.stride
-        if not steps:
-            # The run was already over when the episode opened; there is no
-            # decision to learn from, padding included.
-            return []
-        padded = self._left_padded(steps, max(length, len(steps) + self.config.burn_in))
-        starts = list(range(0, len(padded) - length + 1, stride))
-        if starts[-1] + length < len(padded):
-            starts.append(len(padded) - length)
-        return [padded[start : start + length] for start in starts]
-
-    @staticmethod
-    def _left_padded(steps: list[ReplayStep], length: int) -> tuple[ReplayStep, ...]:
-        """Fill the front of an episode up to `length` steps with steps that never train.
-
-        The filler carries zeroed features, so the history window a stacked
-        backbone builds from the prefix is the zero state it already starts an
-        episode from, and it borrows the first real step's action mask so the
-        masked Q-values stay finite. It is flagged as padding, and the learner
-        excludes flagged steps from both the loss and the TD errors that set
-        priorities.
-        """
-        first = steps[0]
-        filler = ReplayStep(
-            features=StateFeatures(
-                scalars=(0.0,) * len(first.features.scalars),
-                rows=(0.0,) * len(first.features.rows),
-                mask=first.features.mask,
-            ),
-            action_index=first.action_index,
-            reward=0.0,
-            done=False,
-            admissible=True,
-            padding=True,
-            # No time passes in filler, so it discounts nothing.
-            game_ms=0.0,
-        )
-        return (filler,) * (length - len(steps)) + tuple(steps)
-
 
 def _kept_observations(
-    replay: DreamerReplay | R2D2Replay, steps: list[ReplayStep], final: StateFeatures | None
+    replay: DreamerReplay | R2D2Replay, steps: list[Decision], final: StateFeatures | None
 ) -> list[StateFeatures]:
     """An episode's observations as a stream replay keeps them.
 

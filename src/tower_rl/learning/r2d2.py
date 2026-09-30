@@ -311,6 +311,10 @@ class R2D2Network(nn.Module):
 def _haiku_initialise(network: R2D2Network) -> None:
     """haiku's defaults: every Linear truncated normal (2 std) at 1 / sqrt(fan_in), zero bias.
 
+    The row-identity embedding has no counterpart in the reference torso, so it
+    takes `hk.Embed`'s default: a truncated normal at std 1, cut at 2 std
+    (embed.py 134, initializers.py `TruncatedNormal`).
+
     haiku's LSTM is one Linear over [x, h] with one bias, and adds 1 to the
     forget gate's pre-activation (recurrent.py 339-343). Here its two weight
     matrices take that Linear's fan-in, `bias_hh` is zero and frozen, and the
@@ -321,6 +325,7 @@ def _haiku_initialise(network: R2D2Network) -> None:
         if isinstance(module, nn.Linear):
             _truncated_normal(module.weight, module.in_features)
             nn.init.zeros_(module.bias)
+    nn.init.trunc_normal_(network.trunk.identity.weight, std=1.0, a=-2.0, b=2.0)
     core = network.core
     lstm = dict(core.named_parameters())
     fan_in = core.input_size + core.hidden_size

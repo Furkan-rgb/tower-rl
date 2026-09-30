@@ -125,9 +125,9 @@ R2D2_LEARNER_STEPS_PER_ITEM = R2D2_SAMPLES_PER_INSERT / R2D2_BATCH_SIZE
 #: earn none and the warming episode's earn theirs (ADR 0017): a difference
 #: of one episode's items.
 R2D2_LEARNER_DEBT_BOUND_ITEMS = 125
-#: The layout of a saved R2D2 replay. 1 and 2 are stacked-dqn's window buffer
-#: (`replay.REPLAY_DUMP_FORMAT_VERSION`) and 3 DreamerV3's step replay; all
-#: are refused, since no earlier buffer holds items with stored states.
+#: The layout of a saved R2D2 replay. 1 and 2 were the removed stacked-dqn's
+#: window buffer and 3 is DreamerV3's step replay; all are refused, since no
+#: earlier buffer holds items with stored states.
 R2D2_REPLAY_DUMP_FORMAT_VERSION = 4
 
 

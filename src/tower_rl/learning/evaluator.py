@@ -165,13 +165,7 @@ def evaluate(
     quietly explored would overstate nothing and understate everything.
     """
     base = actor_config or ActorConfig()
-    config = ActorConfig(
-        actor_id=base.actor_id,
-        sequence_length=base.sequence_length,
-        burn_in=base.burn_in,
-        stride=base.stride,
-        epsilon=0.0,
-    )
+    config = ActorConfig(actor_id=base.actor_id, epsilon=0.0)
     actor = Actor(environment=environment, policy=policy, config=config, replay=None)
     # Evaluation borrows an instance a collecting actor owns, and most of a
     # decision is spent inside that instance. Left alone, the environment would

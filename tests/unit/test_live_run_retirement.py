@@ -29,7 +29,7 @@ from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.policies import CheapestFirstPolicy
-from tower_rl.learning.replay import PrioritizedSequenceReplay
+from tower_rl.learning.r2d2_replay import R2D2Replay
 
 WORKSHOP_LEVEL = 5
 
@@ -131,11 +131,11 @@ def test_nothing_of_the_retired_run_reaches_replay_or_the_next_episode_record() 
     environment, port = _environment()
     _cut_mid_game(environment, port)
     advances_before = port.advances
-    replay = PrioritizedSequenceReplay(capacity=256, seed=0)
+    replay = R2D2Replay(capacity=256, seed=0)
     actor = Actor(
         environment=environment,
         policy=CheapestFirstPolicy(),
-        config=ActorConfig(sequence_length=8, burn_in=2, stride=4),
+        config=ActorConfig(),
         replay=replay,
     )
 

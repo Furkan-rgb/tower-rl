@@ -4,7 +4,7 @@ Tower-RL is a local reinforcement-learning project that trains an agent to play 
 
 The target system has two primary modes:
 
-- **Train:** multiple headless Android actors collect real gameplay for one central agent — a single backbone, `stacked-dqn`.
+- **Train:** multiple headless Android actors collect real gameplay for one central agent — R2D2 or DreamerV3, chosen with `--backbone`.
 - **Watch:** the best evaluated model controls one visible Android instance with learning and exploration disabled.
 
 ## Project status
@@ -18,7 +18,7 @@ tree. The validated runtime is the Play-installed 29.0.3 build on an x86_64 API
 36 Google Play AVD on the RTX workstation, driven offline from a clone AVD that
 several `-read-only` instances share.
 
-A fleet of actors collects concurrently, a `stacked-dqn` learner trains against
+A fleet of actors collects concurrently, an R2D2 or DreamerV3 learner trains against
 one prioritized sequence replay under a game-time budget, and runs are
 checkpointed and evaluated exploration-free. Multi-actor scaling, renderer
 equivalence, game-time fidelity and frame-rate limits are all measured; every

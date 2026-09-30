@@ -569,22 +569,24 @@ parameters as of the last completed step when the copy was refreshed
 every version the learner reached). What an actor carries through an episode
 is its own and survives a refresh.
 
+Publication carries the network only (`network_state_dict`,
+`load_network_state_dict`): the online weights and the step count, never the
+optimiser's moments or R2D2's target network, which an acting copy does not
+read and which would be copied for nothing. A checkpoint still carries the
+whole `state_dict` (ADR 0014). The learner's debt (ADR 0017) is counted in
+credits: a credit is one decision for DreamerV3 (0.5 learner steps per
+decision, bound 512 steps) and one inserted item for R2D2 (5 learner steps per
+item, bound 125 items = 625 steps, Acme's `error_buffer`). An R2D2 episode is
+credited as a whole when it ends, since its items are inserted then.
+
 The cadence is counted in decisions, so a refresh lands inside an episode; the
 refresh at an episode's start restarts the count, so no episode opens on
 parameters older than the previous one's last. `--parameter-sync-decisions 0`
 refreshes only at episode start and never inside one — `M3-P009`'s cadence.
-The stacked-dqn recipe runs 10 (`M3-P014`, docs/experiments.md), derived from
-parameter lag in gradient steps rather than copied: the lag is about
-actors × replay ratio × cadence, so 7 × 1.0 × 10 is at most 70 updates and
-about 35 on average, against Ape-X's ~53 (Horgan et al. 2018: its actors copy
-every 400 frames) and the 199-update mean lag of BBF, which acts from its EMA
-target (§9.4's table). At M3-P009's cadence of 0 the same product over a
-~550-decision episode is up to ~3,850 updates. Refresh-100 (`M3-P011`/`M3-P012`)
-was never isolated as the cause of either run's shortfall, and a single-run
-screen could not have resolved it (`M3-P012`, docs/experiments.md). A
-mid-episode swap is safe for `stacked-dqn` because what it carries
-through an episode is a window of its own inputs, not a state its parameters
-produced; a swap changes how the window is read, never what is in it.
+R2D2 refreshes every 400 decisions, counted across episodes and not restarted
+at an episode's start (the paper's 400 actor steps, Table 2). An actor's LSTM
+state is its own and survives a refresh. The removed stacked-dqn ran 10
+(`M3-P014`, docs/experiments.md).
 DreamerV3 is fixed at `--parameter-sync-decisions 1`: before every decision it
 loads the last completed step if a newer one was published, and carries its
 recurrent latent across the swap, as the official agent does (`embodied/jax/agent.py`
@@ -617,8 +619,8 @@ a block ends by paying what is still owed. The bound is the smallest debt that
 never pauses an actor while the learner keeps up on average: it covers a
 resume-point save (11.5 s at 1,000,000 steps, ADR 0014) at up to ~34 fleet
 decisions/s (`M3-P016`), about 390 decisions. So the learner is at most
-`bound + actors` decisions behind collection (519 at 7 actors: 519 steps for
-stacked-dqn, 260 for DreamerV3), plus each copy's refresh cadence as above:
+`bound + actors` decisions behind collection (260 at 7 actors for a
+0.5-step DreamerV3; R2D2's bound is in credits, below), plus each copy's refresh cadence as above:
 none for DreamerV3 beyond the step in flight, as it loads each completed step
 at its next decision.
 
@@ -641,7 +643,7 @@ batch draws depends on timing, so a fleet of one is no longer reproducible
 from its seed (ADR 0017; `tests/unit/test_fleet_training.py`,
 `tests/unit/test_learner_thread.py`).
 
-**Learner step profile.** At production shapes (batch 8 × 80 steps, burn-in 7,
+**Learner step profile** (of the removed stacked-dqn, reproducible at `cb2f324`). At production shapes (batch 8 × 80 steps, burn-in 7,
 n = 10, 197,379 parameters) on the RTX 4090, one gradient step — `collate` plus
 `StackedDqnBackbone.learn` — takes a median 10 ms on an idle host (collate
 4.7 ms, learn 5.0 ms), down from 35 ms (collate 10.3 ms, learn 22 ms, of which
@@ -1454,7 +1456,7 @@ the comparison measures an accident instead.
 - `RecurrentPolicyNetwork` threads a single-layer LSTM state, as section 9.4's
   R2D2 skeleton requires. Burn-in reconstructs that state before the learning
   window.
-- `StackedPolicyNetwork` has no state to warm. Its core is a feed-forward MLP,
+- `StackedPolicyNetwork` (removed on board #111; `cb2f324`) had no state to warm. Its core is a feed-forward MLP,
   and time is carried by concatenating the last `k` run-scalar vectors, `k`
   being a tuned hyperparameter in the range 4 to 16 with `k = 1` as the
   no-history ablation. Upgrade rows are supplied for the current step only:
@@ -1501,172 +1503,73 @@ encoder, and core. The 4090 is not the reason to enlarge it; environment sample
 quality and throughput dominate. Add a CNN playfield branch only after an
 ablation shows structured observations are insufficient.
 
-### 9.4 Initial recurrent replay configuration
+### 9.4 R2D2
 
-Use configurable defaults close to established R2D2 practice:
+R2D2 (Kapturowski et al. 2019) is a backbone, `R2D2Backbone` in
+`learning/r2d2.py`, selected with `scripts/train.py --backbone r2d2`. It is a
+PyTorch port of the paper (section 2.3, section 3, Appendix, Table 2) and,
+where the paper is silent, of Acme at 4949d3ce (`agents/jax/r2d2/`), with
+rlax's targets and haiku's initialisers. Its replay is `R2D2Replay` in
+`learning/r2d2_replay.py`. The name `PrioritizedSequenceReplay` was the removed
+window buffer's and is not reused: `R2D2Replay` says which buffer it is, and
+the dump formats 1 and 2 that carried the old name are refused.
 
-- stored sequence length: 80 decisions;
-- burn-in: per backbone, because the word means two different things. The
-  recurrent arm burns in 40 decisions to reconstruct a stored LSTM state that
-  older parameters produced. The stacked arm has no state to reconstruct: its
-  burn-in only fills the history window, so it is exactly `history_length - 1`
-  (7 at the standing window of 8) and every further step would be a learnable
-  step discarded for nothing;
-- overlapping actor sequences;
-- n-step return: 10. About 21.7 decisions pass per wave and the whole reward is
-  the wave delta, so a shorter n-step needs several bootstrap hops to carry one
-  wave back to the decisions that earned it. `stacked-dqn` may instead anneal
-  it (`--n-step-final`, `--n-step-anneal-steps`): n falls exponentially from
-  `--n-step` to the final value over the first gradient steps and then holds,
-  n(t) = round(n0 · (n1/n0)^(min(t,T)/T)) - long early for fast credit
-  propagation, short once the value estimate is worth bootstrapping from. t
-  counts gradient steps since the start or the latest reset (below). The counter is the learner's own and
-  travels in the checkpoint, so a resume continues the schedule; unset, n is
-  fixed, as for every run before run 4;
-- discount 0.99 per decision by default, a horizon of 100 decisions, calibrated
-  against baseline v1's ~121-decision episode. Every run since M3-P003 has
-  discounted `stacked-dqn` by game time instead (section 9.4d), whose recipe
-  value is now 0.999 per game-second;
-- Double Q-learning;
-- dueling head;
-- prioritized sequence replay at R2D2's published values (below), always on;
-- Huber TD loss;
-- gradient norm clipping;
-- target network;
-- actor-local recurrent inference;
-- stored initial recurrent state plus burn-in reconstruction.
+The rule (ADR 0018): the port follows its reference code, and a row differs
+only where this environment or protocol forces it, naming what forces it.
 
-Exact values are starting hypotheses, not acceptance requirements. Record every experiment's resolved values.
+The recipe. An item is 121 consecutive decisions of one episode (40 burn-in, 80
+trace, 1 bootstrap), started every 40 decisions, each carrying the actor's
+LSTM state (h, c) from before its first step. The learner unrolls both
+networks from that state through the burn-in with no gradient, then trains
+every trace step on a 5-step double-Q target through the value rescaling h.
+Priorities are p^0.9, importance exponent 0.6, an item's priority 0.9 max +
+0.1 mean of its |TD error|. The target is a hard copy every 2,500 learner
+steps. The actors' epsilon is the Ape-X ladder, fixed from the first decision.
+The loop settings it fixes are `r2d2_loop_settings` in `scripts/train.py`; a
+flag that repeats one is accepted, one that contradicts it is refused. The
+manifest records every `R2D2Config` value as `r2d2_<field>`.
 
-Overlapping windows are cut so that every episode contributes both the step
-that began it and the step that ended it. Striding over an episode alone loses
-both ends. A window's burn-in is never a target, so window 0's first
-`burn_in` steps — the first seven decisions of every episode, the opening
-purchases — were never learned, while acting took them on the zero history an
-episode starts from (board #92). And whole windows alone store a terminal step
-just when the episode length happens to be a multiple of the stride, and nothing
-at all for an episode shorter than one window. Under `reward-v1` the reward is a
-wave delta, so termination is the whole of the negative signal and a short
-episode is an early death: both are exactly what the learner must see. So every
-episode is padded at the front with one burn-in of filler — zeroed features,
-which is the history window an episode really starts from — and further, up to
-a full window, if it is still too short for one; and the last window of an
-episode is aligned to its end, overlapping its predecessor where it must. Every
-decision is then a learning step in some window. Padding is flagged, and a
-flagged step is never a training target and never contributes a TD error to a
-priority. At a stride of 40 an episode of 550 decisions is cut into 13 windows,
-about 42 decisions each.
+**Conventions** (ours against the reference; "same" or the forcing reason):
 
-For priority, combine maximum and mean absolute TD error so one surprising transition matters without letting a single outlier completely dominate. Record prioritization alpha, importance-sampling beta, epsilon floor, replay warm-up, batch size, learning rate, target-update interval, and actor weight-refresh interval.
+| Convention | Reference | Ours | Same, or what forces it |
+|---|---|---|---|
+| Torso | Acme `DeepAtariTorso`: ResNet, then `MLP([512], activate_final)` (atari.py) | Shared row encoder over the 60 upgrade rows and the scalars, flattened, then Linear 512 and ReLU | Forced: the observation is a vector and 60 rows, not an image. The LayerNorm belongs to the ResNet, so it is not kept |
+| Action mask | None: every action is always valid | Advantages centred over valid actions, invalid actions -inf in Q, greedy, double-Q argmax and exploration over valid actions, value 0 with none valid | Forced: the game offers only some upgrades at a choice point (environment-contract.md) |
+| Discount | 0.997 per step (P Table 2) | 0.999 ** game-seconds per transition, times (1 - done) | Forced: decisions span unequal game time, and a purchase spans none (ADR 0013) |
+| Reward | Clipped game score, `tanh` fed to the LSTM | Survival reward (1 - gamma**t) * V_REF, learned and fed to the LSTM | Forced: the task rewards survival, not score (ADR 0013) |
+| A step | An Atari frame-stack step | A choice-point decision | Forced: the agent decides only at choice points (ADR 0009); n, burn-in, trace and target period count decisions |
+| Actors | 256 (P Table 2) | 7 or 8 | Forced: one emulator each on one host. Exploration follows the Ape-X ladder over the actors that exist (0.4 ** (1 + 7 i / (N - 1))) |
+| Insertion | Items stream in as the episode runs (structured.py) | An episode's items are inserted when it ends | Forced: a counted episode must be in replay whole or not at all, for ADR 0014's resume pair and ADR 0017's debt |
+| Rate limiter | `SampleToInsertRatio(samples_per_insert 4, error_buffer 1250 * 320 * 0.1)` (Acme config) | ADR 0017's learner thread, credited per item: 5 steps per item, bound 125 items (625 steps) | Same mechanism; values forced below |
+| Samples per insert | 4 (Acme config), about 1,563 steps in 1,000,000 decisions | 320 = 5 steps per item of 64 | Forced: the budget is 1,000,000 decisions, and 1,563 steps would be under one target period. 320 gives about 125,000 steps and 50 target copies. The error buffer is Acme's formula at 320: 40,000 samples = 625 steps = 125 items |
+| Minimum replay | `min_replay_size` 50,000 items (Acme config) | 1,250 items | Forced: 50,000 items is about 2,000,000 decisions, twice the budget. 1,250 is 50,000 decisions, Acme's number read in transitions |
+| Bootstrap at an item's end | rlax cuts the return at a sequence's last step (`multistep.py`) | Same, at the episode's last real step | Same. Forced addition: a pad step has an empty mask, so a pad is never a target and the bootstrap value is the last real step's |
+| Burn-in gradient | P section 3: burn-in only produces the start state. Acme differentiates the online unroll through it (learning.py 86-116) | No gradient through the burn-in | Same as the paper; a choice between the two references, recorded in `r2d2.py` |
+| Optimiser | P Table 2: Adam 1e-4, epsilon 1e-3. Acme: 1e-3 and optax 1e-8 | Adam 1e-4, epsilon 1e-3, no weight decay | Same (paper) |
+| Gradient clip | Not in Table 2, which sends missing parameters to Ape-X: clip 40. Acme: none | Clip the norm at 40 | Same (Ape-X via Table 2) |
+| Epsilon ladder | Ape-X `0.4 ** (1 + 7 i / (N - 1))` | Same, fixed from decision 0, no anneal | Same, over N actors |
+| Refresh | P Table 2: actors refresh their network every 400 steps | Every 400 decisions, counted across episodes, not reset at an episode start | Same. Publication carries the network only, no optimiser state (section 6.10) |
+| Short episodes | TRUNCATE: one item of all its steps, zero-padded (structured.py 303-358, builder.py `_zero_pad`) | Same | Same. An item of 41 steps or fewer has no valid trace target and takes priority 0 at its first update (the mask forces this) |
+| Priorities | Not importance-weighted; only the loss is (learning.py 147-157) | Same | Same |
+| Network initialisation | haiku: truncated normal fan-in, LSTM as one Linear over [x, h] with forget bias 1, `Embed` truncated normal stddev 1.0 | Same, including the row-identity embedding, `_haiku_initialise` | Same. Torch's `N(0, 1)` default differs only in the tails and nothing forced it, so it was changed to haiku's (`test_the_row_identity_embedding_takes_haikus_embed_default`) |
 
-Replay sampling is not an option (decided 2026-09-26, board #85). `stacked-dqn`
-always samples by R2D2's published values (Kapturowski et al. 2019, as DeepMind's
-Acme reference `agents/jax/r2d2/config.py` states them): priority exponent
-α = 0.9, importance-sampling exponent β = 0.6, held fixed rather than annealed,
-and priority mix η = 0.9, so a sequence's priority is
-η·max|δ| + (1−η)·mean|δ| over its real learning steps. R2D2 rather than Ape-X
-(α 0.6, β 0.4) or Schaul et al. 2016 (β annealed to 1) because replay stores
-sequences. The constants live in `learning/replay.py`; `--priority-alpha`,
-which defaulted to 0 and made every run from the 2026-09-17 retune until this
-decision sample uniformly, is gone, and DreamerV3 samples uniformly as its
-official loop does (9.4c). Three details are this project's choices, not
-R2D2's: a new sequence enters at the buffer's current maximum priority
-(Schaul et al. 2016, Algorithm 1; Ape-X's actors compute initial priorities
-instead), a priority never falls below 1e-6, and importance-sampling weights
-are divided by the largest weight in the batch, as the R2D2 reference learners
-(Acme, SEED RL) do, rather than by the buffer-wide largest of the baselines /
-literal-Schaul convention the code used before, which was harmless at α 0; under
-it a single near-zero-priority sequence would shrink every weight. A checkpoint
-recorded under other replay exponents is refused on `--resume`, as one under
-another exploration is.
+Known deviations with no forcing reason: none. Two things to read with care.
+The items-per-decision mapping is approximate: the limiter credits by item
+rather than by decision, and a 521-decision episode gives 12 items (one per
+43.4 decisions), so the effective samples per insert is about 347, not 320,
+which is the budget's forcing applied through the mapping. And the burn-in is
+unrolled without gradient where Acme differentiates it: the paper is the
+reference for that row.
 
-**The stacked-dqn recipe (board #85, `M3-P014`).** SR-SPR (D'Oro et al. 2023,
-as BBF's code configures it) is the base: a high replay ratio made to pay by
-periodic resets, and a fresh actor refresh. Each value applies the source's
-reasoning to this problem's units rather than copying its number; where a BBF
-piece does not transfer it is excluded. "Verified" means read in the paper's
-text or the official code (BBF: Schwarzer et al. 2023, arXiv 2305.19452, and
-github.com/google-research/google-research/tree/master/bigger_better_faster,
-`BBF.gin` and `SR_SPR.gin`); measurements are in `M3-P014`'s recipe derivation
-(docs/experiments.md).
+The stacked-dqn backbone that every result before this section was measured
+with (M3-P014 and earlier in `docs/experiments.md`) was removed on board
+#111. Those results are reproducible from commit `cb2f324`, the last commit
+that can train, resume or evaluate a stacked-dqn run. Its checkpoints and
+replay dumps are refused by the current code with a message that names it.
 
-| parameter | principle → quantity → our value | value | source |
-| --- | --- | --- | --- |
-| batch | McCandlish et al.'s critical batch B_simple = tr(Σ)/\|G\|² predicts where larger batches stop paying; measured on M3-P009's replay it is 3.5 windows at 21k steps and 15.6 at 296k. The learner step is compute-bound (collate ~0.6 ms per window dominates from batch 16 up), so the smallest batch inside the noise scale | 8 windows | McCandlish 2018 verified (arXiv 1812.06162); measured |
-| replay ratio | Count independent data replayed, not correlated positions: a window's 73 positions carry 1.1-10.3 independent ones (measured), so 1.0 × 8 windows replays 9-82 effective positions per decision, BBF's RR-8 regime (RR 8 × batch 32 = 256 sampled transitions per agent step; a stored datum takes part in ~180 updates mid-run and ~1,000 for BBF's first 2k steps, against 584 here under FIFO eviction). The earlier "560 transitions replayed per decision" (against ~1 for Ape-X and R2D2) count treated correlated positions as independent. M3-P010's 0.114 tracked M3-P009 at matched steps but 9× slower in decisions | 1.0 gradient steps per decision | BBF text and code verified; M3-P010 measured |
-| parameter refresh | Lag in updates ≈ actors × ratio × cadence: 7 × 1.0 × 10 → at most 70, about 35 on average, against Ape-X's ~53 (learner 19 batches/s × actor refresh every 400 frames ≈ 2.8 s ⇒ ≈53 updates of lag) and BBF's EMA-target mean lag of 199 (§6.10) | `--parameter-sync-decisions 10` | Horgan et al. 2018 verified (Ape-X, arXiv 1803.00933); BBF code verified |
-| reset interval | BBF resets every 40k updates and anneals over 25% of training; here recovery after a reset takes R ≈ 20-30k updates (offline, on M3-P009's replay), so 4R keeps the adapting fraction at ~25% | `--reset-every-steps 100000` | BBF text and code verified; R measured |
-| last reset | BBF's `no_resets_after`: the last reset leaves ≈ one interval (≥ 3× recovery) before the end. Gradient steps trail decisions by the ~4.3k warm-up, so the 1,000,000-decision budget takes ≈995.7k gradient steps; reset 9, at 900k steps (near decision 904.3k), leaves ≈95.7k steps — 3-5× the measured 20-30k recovery | budget × ratio − interval (900k at 1M: 9 resets) | BBF code verified; measured |
-| what a reset does | SR-SPR: head and projection re-initialised, encoder shrunk and perturbed, target reset, optimiser state of the re-initialised parameters dropped (Nikishin et al. 2022 reset optimiser statistics) | `core` and `heads` fresh; `trunk` ← 0.8 old + 0.2 fresh; target ← online; AdamW state cleared for core and heads only | `SR_SPR.gin` verified (0.8/0.2; BBF's 0.5/0.5 is for its 4× network); Nikishin arXiv 2205.07802 verified |
-| n-step after a reset | BBF restarts the 10→3 anneal over 10k steps after each reset; offline, the restart raised Q correlation at 10k updates from 0.58 to 0.77 | 10 → 3 over 10k steps from each reset | BBF text and code verified; measured |
-| discount | Per game-second; 0.999 tripled the value scale and clipped the gradient (M3-P011) | 0.997 per game-second | M3-P011/M3-P012 measured |
-| γ anneal | BBF's 0.97 → 0.997 is per agent step; ours is per game-second, and M3-P011 showed value-scale sensitivity | excluded | judgement |
-| target | EMA, τ 0.005 as BBF and SR-SPR | decay 0.995 | BBF code verified |
-| learning rate | BBF 1e-4 | 1e-4 | BBF code verified |
-| Adam ε | BBF's 1.5e-4 pairs with rewards clipped to ±1; ours are ~1/35 per game-second, and at M3-P010 300k 41% of parameters had sqrt(v̂) below it, cutting the mean step to 0.044× lr against M3-P009's 0.102× | 1e-8 (torch's default) | M3-P010 measured |
-| weight decay | BBF's 0.1 curbs overfitting in a 4× network ("larger networks need more regularization"); SR-SPR uses 0; this network is 197k parameters | 1e-5 | BBF text, `SR_SPR.gin` verified; judgement |
-| SPR loss, 4× width | Self-prediction exists for pixel inputs; the features here are dense and engineered. No underfitting to widen against | excluded | judgement |
-| replay sampling | R2D2's α/β/η (below) | 0.9 / 0.6 / 0.9 | Kapturowski et al. 2019 verified; Acme reference config verified |
-| replay capacity | Fedus et al. 2020 finds capacity and oldest-policy age separate factors, gives no closed form, and that n-step is what makes capacity pay; Nikishin et al. 2022 finds resets need the buffer preserved across the reset, not the whole run kept. Criterion (judgement): the oldest data is at least one reset interval old (≥ ~2,500 windows). 4096 windows ≈ 169k decisions at 41.3 decisions per window ≈ 1.7 reset intervals (the literature spans ≈0.5, DrQ + resets, to ≈20, SR-SPR, intervals). Keep-everything (≈25,000 windows, ≈23 GiB RAM) is a separate candidate arm, not bundled here. RAM ≈ 1.0 MB per window (24.4 KB per stored decision, measured on the M3-P010/M3-P012 dumps), so 4096 ≈ 3.8 GiB | 4096 | Fedus et al. 2020 verified (arXiv 2007.06700); Nikishin et al. 2022 verified (arXiv 2205.07802); costs M3-P010/M3-P012 measured |
-
-A reset happens in `StackedDqnBackbone.learn`, after the step that reaches a
-multiple of `--reset-every-steps`, against a fresh network seeded from the run
-seed and the reset count so a run's resets are reproducible. The step of the
-latest reset and the count travel in the checkpoint, so a resume continues both
-the n-step anneal and the seeding; a checkpoint from before resets loads as
-never reset. Each reset is logged as `learner_resets` on the decision axis, so
-a dip in the curve is attributable. `--early-stop-patience-periods` stays 0 for
-a resetting run: a plateau rule would read the post-reset dips as decline.
-
-None of the replay ratio, the capacity, the refresh cadence or the reset
-interval is in a checkpoint's identity, and several default to different values
-than the runs before them, so `--resume` refuses a checkpoint recorded under
-other values rather than continue it under the new defaults silently; repeating
-the recorded values continues it as it was. A checkpoint that recorded
-`parameter_sync_episodes` 1 reads as `--parameter-sync-decisions 0`. A resume
-keeps the Adam ε its optimizer state carries.
-
-Exploration anneals over a horizon counted in decisions and is then held at the
-floor, rather than being derived from progress through the whole budget.
-Deriving it from the budget made the mean epsilon of the first run 0.525, so
-over half of it collected near-random data and none of its episodes could be
-read as a policy's performance.
-
-The learning curve is read from the collection episodes themselves, in
-consecutive non-overlapping windows of 100 episodes. They are collected at the
-held epsilon anyway, so a window costs no device time, and 100 episodes put the
-standard error near 0.2 waves where the 5-episode exploration-free points of the
-first run could not resolve less than about 3 waves. Exploration-free evaluation
-is then a single pre-registered measurement of the final checkpoint, sized at 30
-episodes, and it is the headline number against the scripted floor.
-
-A run can also be pre-registered to stop itself behind a comparator run at
-matched fleet decisions (`--kill-bar AT:START:MIN`, repeatable, off by
-default): when cumulative decisions first reach AT, the near-greedy actors'
-valid episodes that ended in (START, AT] must average at least MIN waves, or
-the run stops at that episode boundary. A window with no such episode measures
-nothing and does not stop the run. Every check is recorded in the summary's
-`early_stopping.kill_bar_checks`. A run stopped this way skips the final
-evaluation of its last weights and records `final_evaluation_skipped:
-kill_bar`; a plateau stop still takes it. Whether a killed run's arm is
-evaluated is the pre-registration's decision (section 9.2b).
-
-Every point carries the learner diagnostics that separate a broken learner from
-a slow one: the weighted loss and the unweighted mean absolute TD error under
-names that cannot be confused (the weighted one moves with the
-importance-sampling weights whether or not anything is learned), the gradient norm, the correlation between V(s_t) and
-the realised discounted return over steps whose episode ended inside the stored
-sequence, and what the collecting policy did - WAIT fraction and purchases per
-episode against the random baseline's 18.7.
-
-Both backbones draw from this one replay under this one configuration; that is
-what makes their comparison fair. Where `stacked-dqn` departs is only in its
-optimisation, and only in the four ways the Atari 100k literature in
-`docs/rl-candidates.md` 3.1 and the recipe table above call for: an
-exponential-moving-average target instead of a periodic hard copy, decoupled
-weight decay (AdamW), a replay ratio the training loop supplies rather than the
-algorithm, and periodic resets. Every such departure
-is a resolved value recorded with the experiment, not a hidden default.
+Both backbones, R2D2 and DreamerV3, take the task's discount and reward
+(sections 9.4d and 9.4e) and replay from their own buffer; the old shared-replay
+comparison of section 9.4 no longer applies.
 
 ### 9.4b PyTorch directly, not TorchRL (for now)
 
@@ -1747,16 +1650,15 @@ Every DreamerV3 value lives in `DreamerConfig`. The loop settings it fixes —
 sequence length, batch, replay ratio, warm-up, replay capacity and
 exploration — are set by `dreamer_loop_settings` in `scripts/train.py`, and
 `build_replay` builds `DreamerReplay` for it. A flag that repeats one of them
-is accepted. A flag that contradicts one is refused, and so is a flag only
-stacked-dqn reads. The manifest records every `DreamerConfig` value as
-`dreamer_<field>` and records the stacked-dqn learner and network keys as
-None. `checkpoint_policy` rebuilds the policy from the `dreamer_*` keys.
+is accepted. A flag that contradicts one is refused. The manifest records
+every `DreamerConfig` value as `dreamer_<field>` and records the network key
+as None. `checkpoint_policy` rebuilds the policy from the `dreamer_*` keys.
 
 **The discount and the reward are the task's** (ADR 0013), not DreamerV3's.
 `--discount-per-game-second` is required: there is no per-step discount to
 fall back on, and `--discount` is refused. `--survival-time-reward` means what
-it means for stacked-dqn (§9.4e). Both are `DreamerConfig` fields and are also
-recorded under stacked-dqn's keys (`discount_per_game_second`,
+it means for R2D2 (§9.4e). Both are `DreamerConfig` fields and are also
+recorded under the shared keys (`discount_per_game_second`,
 `survival_time_reward`, `survival_reward_bound`), so the one resume guard
 compares them for either backbone. A checkpoint from before the game-time
 discount records `dreamer_horizon` instead; it is refused as a resume and still
@@ -1781,7 +1683,7 @@ the model there. A window's first step is its context: only its stored latent
 and action are read (`_apply_replay_context`), and every later step trains
 every loss with its own stored targets. After each update the trained steps'
 posterior latents are written back. Each transition's d = γ_s^Δt (§9.4d) is
-read from the game time stored with it; the reward is stacked-dqn's, valued at
+read from the game time stored with it; the reward is the shared one, valued at
 the span's start: (1 − d)·V_REF under `--survival-time-reward`
 (`value_learning.survival_rewards`, the one function both backbones call),
 else the wave change d·r. Every loss is a plain mean, as the official one is.
@@ -1853,7 +1755,7 @@ decision that is ≈23 ms per decision, ≈6.4 h of learner time over 1M
 decisions on an idle host; fleet load inflated the old step time ≈1.7×
 (`docs/experiments.md`, "DreamerV3 learner step time").
 
-### 9.4d Discounting by game time (stacked-dqn, behind a flag)
+### 9.4d Discounting by game time (R2D2 and DreamerV3)
 
 Section 7.3 makes the discount time-aware once the variance of the interval
 between decisions is measured. Under choice points that interval is not one
@@ -1862,8 +1764,8 @@ length: a confirmed purchase advances no game time at all
 choice point. Discounting per decision taxes every purchase by (1 − γ)·V and
 makes the horizon depend on how many choice points a policy creates.
 
-`scripts/train.py --discount-per-game-second γ_s` discounts `stacked-dqn` by
-game time instead, as a semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
+`scripts/train.py --discount-per-game-second γ_s` discounts by game time, as a
+semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
 1999):
 
 - a transition that spans Δt game-seconds (`RunTransition.game_ms`, the round
@@ -1913,7 +1815,7 @@ the bias is accepted rather than measured, because an exact measure needs
 per-advance events on `RunTransition`. Per decision stays the default pending
 the M3-P003 comparison.
 
-### 9.4e Survival-time reward (stacked-dqn, behind a flag)
+### 9.4e Survival-time reward (R2D2 and DreamerV3)
 
 Under the wave reward a death 5 s into a wave and a death 30 s into it score the
 same: neither earns the next +1, and every action-value difference between the
@@ -2002,7 +1904,8 @@ near-greedy actors alone, which is the series a run's curve and its early
 stopping are read from. `docs/architecture.md` states where it lives.
 Evaluation always uses epsilon zero.
 
-`--ez-greedy` (stacked-dqn only, off by default) changes how long an
+`--ez-greedy` (removed with stacked-dqn; it was off by default and is
+reproducible from `cb2f324`) changed how long an
 exploratory action lasts, not how often one starts: εz-greedy (Dabney,
 Ostrovski & Barreto 2021, arXiv:2006.01782, §4.2, App. B, Algorithm 1). With
 no option running, the actor's own ε coin is flipped as before; on heads it
@@ -2051,7 +1954,7 @@ The learner increments `model_version` after each publication interval. It publi
 
 Actors poll or receive notification between inference steps and swap weights atomically at a safe boundary. They record the active version in every sequence. Reject incompatible weights loudly.
 
-As built (§6.10), every completed optimisation step publishes a numbered snapshot of the learner's parameters, and each actor loads the latest into its own acting network, if its copy is older, at every episode start and every `--parameter-sync-decisions` of its own decisions after it (default 100; the stacked-dqn recipe runs 10, §9.4; DreamerV3 1, before every decision), on its own thread before a decision's forward pass, so a swap can land inside an episode but never inside a decision, and never waits for an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode.
+As built (§6.10), every completed optimisation step publishes a numbered snapshot of the learner's parameters, and each actor loads the latest into its own acting network, if its copy is older, at every episode start and every `--parameter-sync-decisions` of its own decisions after it (default 100; R2D2 400, §9.4; DreamerV3 1, before every decision), on its own thread before a decision's forward pass, so a swap can land inside an episode but never inside a decision, and never waits for an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode.
 
 The learner steps on its own thread (ADR 0017), so the version a refresh copies is at most `learner_debt_bound_decisions` plus one decision per actor behind the decisions collected so far; the refresh cadence adds its own lag on top. The per-decision timing line reports the learner's steps, its utilisation, the debt against the bound and actors' paused time, which is where a learner that cannot keep up shows.
 
@@ -2204,8 +2107,7 @@ Interactive only where evidence/confirmation is inherently needed. Produces a ve
 
 **What exists today.** Training runs through `scripts/train.py`, a device runner
 for the instrumented profile. It trains one arm on the single backbone named by
-the `BACKBONE` constant (`stacked-dqn`) — the multi-backbone comparison of
-section 9.2b was retired and there is no `--backbone` flag — running to
+the `--backbone` flag (`r2d2` or `dreamerv3`, no default), and running to
 `--budget-decisions`, checkpointing atomically under `state/runs`, and taking
 one exploration-free evaluation on the final weights after the budget is spent.
 
@@ -2469,9 +2371,10 @@ sequence geometry contradicting the design doc, and `_max_priority` monotone
 non-decreasing. See 9.4b for the honest counterfactual on what TorchRL would
 and would not have prevented among these.
 
-One deviation from R2D2 is acknowledged and deliberate rather than a defect:
-invertible value rescaling h(x) is absent; Huber loss is used instead. This is
-defensible at this project's reward scale.
+That review covered the removed stacked-dqn learner (`cb2f324`), which had
+two deviations from R2D2 that no longer exist: no value rescaling h(x), and a
+Huber loss. The R2D2 backbone uses h(x) and the squared loss, and its
+deviations are the table in section 9.4.
 
 ### 14.6 Progression-contract tests (`M8–M11`)
 
@@ -2642,7 +2545,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
 | Episodes independent after an invalid end; decisions on a held world (ADR 0015) | `InstrumentedRunEnvironment._retire_live_run` / `_hand_over` + `InstrumentedRunAdapter._hold_the_world` | `tests/unit/test_live_run_retirement.py`, `tests/unit/test_world_held_at_handoff.py`, device probe in `docs/experiments.md` ("Invalid cuts no longer cascade") |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
-| Recurrent replay-based learner | Learner + replay | Math tests, `tests/unit/test_learner_thread.py` (replay ratio held within the debt bound, ADR 0017) and resolved run config |
+| Recurrent replay-based learner (R2D2, section 9.4; DreamerV3, 9.4c) | `R2D2Backbone` + `R2D2Replay`, `Learner` | `tests/unit/test_r2d2.py` (targets against rlax's formulas, burn-in without gradient, the learn step wired as the reference computes it), `tests/unit/test_r2d2_replay.py`, `tests/unit/test_learner_thread.py` (replay ratio held within the debt bound, in credits, ADR 0017) and resolved run config |
 | Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014), `train.OperatorStop` | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), `tests/unit/test_operator_stop.py` (SIGINT at five moments, and twice), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |

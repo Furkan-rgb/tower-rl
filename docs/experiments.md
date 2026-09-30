@@ -1120,6 +1120,46 @@ polling loops.
 the operator's scratchpad, computing the run name's UTC stamp at launch
 time; the developer gives the go.
 
+### Amendment, 2026-09-30: the third attempt (`#104`, `#58`)
+
+Written before the third attempt is launched. The third attempt differs from
+the protocol published above only in these three ways:
+
+- **The learner runs on its own thread** with a bounded debt of 512
+  decisions (ADR 0017), under checkpoint format 6. The gradient steps per
+  decision (0.5) and every Dreamer setting are unchanged; only which thread
+  takes the steps, and the policy lag that follows (at most 519 decisions
+  behind collection at 7 actors), differ.
+- **The bridge build.** Training collection uses
+  `workshop-render-interval-16-nodelay` (`libtower_bridge.so` SHA-256
+  `33d7ada0b7709970b82755b06199ff114dbebf83f08fb65f5ae2d32534b53ef8`), and the
+  arm-n10 evaluation uses `workshop-default-nodelay` (`f5e9d9a4971718822462369ae8e2b849a9ba8aede6b0339003ecaaa3da0e1601`),
+  in place of `workshop-render-interval-16` and `workshop-default`. The
+  builds carry the transport fix and nothing else.
+- **The fingerprint equivalence evidence** is the `#103` entry, "Bridge
+  transport fix": under a fixed policy the fingerprint's intervals
+  (final wave, decisions per wave, round-clock ratio, game seconds per
+  decision) overlap the reference's on both builds, and only speed moved.
+
+**Attempts 1 and 2 are abandoned.** Attempt 1
+(`state/runs/m3-p016-dreamerv3-v2-20260929T201403Z`) was killed by
+systemd-oomd at 425,078 decisions. Attempt 2 was stopped at about 71k
+decisions (`…20260930T062633Z`) and its restart at 10,925
+(`…20260930T085936Z`). None of their checkpoints (formats 4 and 5) can
+resume under format 6 (ADR 0017); the third attempt starts from scratch.
+
+**Actors stay at 7.** DreamerV3's learner caps near 33 decisions/s (about
+119,000 per hour), and 7 actors already collect about 144,000 per hour under
+the fixed policy (`#103`, `N=7 after`), so an 8th actor adds nothing for
+Dreamer. It would also compete with the learner for the GPU.
+
+Everything else is unchanged: seed 0, the 1,000,000-decision budget, the kill
+bars, the command's arguments, the operator-read checks, the primary outcome
+and the comparator, and the lead's 500k rule (best < 39.4 at 500,000
+decisions means the run is stopped with SIGINT). The launch
+command is the one above with `TOWER_BRIDGE_BUILD_DIR` set to
+`state/bridge/builds/workshop-render-interval-16-nodelay`.
+
 ## M3-P015: `M3-P014`'s recipe at the protocol discount horizon, 0.999 per game-second, with the survival reward scaled to V_REF (pre-registered, written before the run)
 
 **Date:** 2026-09-28. Board `#85`. Single seed, single run.

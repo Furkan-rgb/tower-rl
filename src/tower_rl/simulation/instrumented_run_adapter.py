@@ -65,6 +65,11 @@ def _describe_state(state: BridgeObservation) -> str:
     )
 
 
+#: What the bridge answers an advance when the engine clock it steps cannot be
+#: resolved: it presses nothing, so the world is as running as it was.
+CLOCK_UNAVAILABLE = "clock_unavailable"
+
+
 def _held_after(
     command: Mapping[str, object], result: BridgeCommandResult, *, held_before: bool
 ) -> bool:
@@ -75,13 +80,15 @@ def _held_after(
     lifecycle press holds it only if it was a confirmed `pause`, and every
     other one - `unpause`, the speed presses, a round start - leaves it
     running; anything else leaves the hold as it was, except that a run which
-    has ended is never held.
+    has ended is never held. The one advance that does not hold a live run is
+    the one the bridge could not run at all (`clock_unavailable`): it returns
+    before it presses `Pause`, and says `paused = false`.
     """
     if result.outcome == "rejected" and result.reason == "stale_or_duplicate":
         return held_before
     in_progress = isinstance(result.state, BridgeObservation) and not result.state.terminal
     if command.get("kind") == "advance":
-        return in_progress
+        return in_progress and result.reason != CLOCK_UNAVAILABLE
     if command.get("kind") == "lifecycle":
         return command.get("action") == "pause" and result.outcome == "confirmed" and in_progress
     return held_before and (result.state is None or in_progress)
@@ -107,7 +114,9 @@ class InstrumentedRunAdapter:
     #: Whether the bridge is holding the world still (`RunPort.world_held`),
     #: mirrored from the commands this adapter carries by the bridge's own
     #: rule (`native/tower_bridge/tower_bridge.cpp`, `world_paused`). A bridge
-    #: session starts with the world running.
+    #: session starts with the world running, so a connection that dropped -
+    #: and whatever connection replaces it - is not held until a `pause` is
+    #: confirmed on it.
     world_held: bool = field(default=False, init=False)
     #: The upgrade-row names, once the session has asked for them.
     _labels: tuple[UpgradeSlotLabel, ...] | None = field(default=None, init=False)
@@ -133,8 +142,11 @@ class InstrumentedRunAdapter:
         try:
             return self.client.read_state()
         except BridgeStaleObservationError as stale:
+            # A stream whose sequence moved backwards is a new connection's.
+            self.world_held = False
             raise RunPortError(f"the bridge stream lost its sequence: {stale}") from stale
         except InstrumentedBridgeError as failure:
+            self.world_held = False
             raise RunPortError(
                 f"the bridge could not report the run state: "
                 f"{type(failure).__name__}: {failure}"
@@ -440,6 +452,9 @@ class InstrumentedRunAdapter:
         except BridgeStaleObservationError as stale:
             raise RunPortError(f"the bridge refused a stale command: {stale}") from stale
         except InstrumentedBridgeError as failure:
+            # The client closes the connection on any of these, and a
+            # connection that replaces it starts with the world running.
+            self.world_held = False
             raise RunPortError(
                 f"the bridge did not carry out a command: "
                 f"{type(failure).__name__}: {failure}"

@@ -81,6 +81,9 @@ to the agent only while the world is held.**
   - a confirmed `pause` holds the world;
   - an advance that settles on a live run holds it;
   - any other lifecycle press releases it, and so does an ended run;
+  - an advance the bridge could not run (`clock_unavailable`) presses nothing
+    and releases it, and so does a bridge connection that failed: the next one
+    starts with the world running, held again only by a confirmed `pause`;
   - anything else leaves it as it was.
 
   `InstrumentedRunEnvironment._hand_over` is the one point where control returns

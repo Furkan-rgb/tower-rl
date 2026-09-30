@@ -7,6 +7,7 @@ import pytest
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.simulation.instrumented_bridge import (
     BridgeCommandResult,
+    BridgeDisconnectedError,
     BridgeObservation,
     BridgeRunUnavailable,
     BridgeStaleObservationError,
@@ -331,6 +332,63 @@ def test_an_advance_that_ends_the_run_leaves_nothing_held() -> None:
     _advance(adapter)
 
     assert not adapter.world_held
+
+
+def test_an_advance_the_bridge_could_not_run_does_not_hold_the_world() -> None:
+    """`clock_unavailable`: the bridge returns before it presses `Pause`."""
+    client = FakeClient()
+    adapter = _adapter(client)
+    adapter.begin_episode()
+    assert adapter.world_held
+
+    def no_engine_clock(message: dict[str, object]) -> BridgeCommandResult:
+        return BridgeCommandResult(
+            request_id=str(message["request_id"]), outcome=CommandOutcome("ambiguous"),
+            reason="clock_unavailable", observation_sequence=8, state=_observation(sequence=8),
+        )
+
+    client.send_command = no_engine_clock  # type: ignore[method-assign]
+    _advance(adapter)
+
+    assert not adapter.world_held, "the state is a live run's, and nothing paused it"
+
+
+def test_a_connection_that_dropped_is_not_held_until_a_pause_is_confirmed() -> None:
+    """A new bridge session starts with the world running."""
+    client = FakeClient()
+    adapter = _adapter(client)
+    adapter.begin_episode()
+    assert adapter.world_held
+    working = client.send_command
+
+    def dropped(message: dict[str, object]) -> BridgeCommandResult:
+        raise BridgeDisconnectedError("the bridge went away")
+
+    client.send_command = dropped  # type: ignore[method-assign]
+    with pytest.raises(RunPortError):
+        _advance(adapter)
+    assert not adapter.world_held
+
+    client.send_command = working  # type: ignore[method-assign]
+    _advance(adapter)
+    assert adapter.world_held, "an advance that settles on a live run holds it again"
+
+
+def test_a_state_read_that_lost_the_connection_or_its_sequence_is_not_held() -> None:
+    for failure in (BridgeDisconnectedError("gone"), BridgeStaleObservationError("backwards")):
+        client = FakeClient()
+        adapter = _adapter(client)
+        adapter.begin_episode()
+        assert adapter.world_held
+
+        def failing_read(failure: Exception = failure) -> object:
+            raise failure
+
+        client.read_state = failing_read  # type: ignore[method-assign]
+        with pytest.raises(RunPortError):
+            adapter.read_state()
+
+        assert not adapter.world_held
 
 
 def test_a_hold_the_game_does_not_honour_fails_the_boundary() -> None:

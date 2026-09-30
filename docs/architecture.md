@@ -476,7 +476,12 @@ both — so epsilon, the selection periods and the numbered-checkpoint
 cadence are derived where a run that never stopped would have them. A
 checkpoint before format 4 (`DECISION_BUDGET_FORMAT_VERSION`) is from the
 game-time budget era: `load` still reads it for evaluation, but `resume_point`
-refuses it by name. `build_arm` continues
+refuses it by name. So does one before format 6
+(`LEARNER_THREAD_FORMAT_VERSION`): it was trained with its gradient steps on
+the actors' threads, and continuing it would make a mixed run (ADR 0017). A
+format 6 checkpoint carries the debt the learner still owed
+(`progress.learner_debt_steps`), which a resume with its buffer pays first.
+`build_arm` continues
 the parent's tracked run through `open_run` when it had one, and names the
 parent in `resolved_config.parent_checkpoint`.
 

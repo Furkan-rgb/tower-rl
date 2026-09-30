@@ -28,7 +28,17 @@ pauses only while the debt is over a bound.**
   squared when it is counted: the episode that warms the buffer earns all its
   decisions, as every episode ending warm always did, and an episode abandoned
   or failed takes its credit back, as it never counted. A block ends by paying
-  what is still owed, so a run's steps are what the old rule gave it.
+  every whole step still owed, so it ends owing under one step.
+- **Across a resume.** A checkpoint records the debt the learner owes on the
+  episodes counted so far (`progress.learner_debt_steps`); the episodes in
+  flight when a run stops are lost, and their credit with them. A resume that
+  reloads its parent's buffer carries that debt and pays it first, so over the
+  parent's segments and the resumed one the steps taken are the ratio of the
+  decisions counted since the first warm episode, to within the under-one-step
+  remainder a block ends on: what the old rule gave a run that never stopped.
+  A checkpoint written mid-block records what was owed at that moment, up to
+  the bound, and the resume pays it. A resume that re-warms an empty buffer
+  starts owing nothing, since the debt was owed on a buffer it no longer has.
 - **The bound.** `learner_debt_bound_decisions`, default **512 decisions**
   (512 steps for stacked-dqn at 1.0, 256 for DreamerV3 at 0.5).
   - *Principle:* the smallest debt that never pauses an actor while the
@@ -90,15 +100,20 @@ shows the new behaviour.
 
 ## Consequences
 
-- A resume of a checkpoint written before this continues under the learner
-  thread without refusal: the bound is recorded in the resolved config from
-  now on, not compared on resume, and has no flag.
+- The checkpoint format is 6. A checkpoint from before this (format 5 or
+  earlier) was trained with its steps taken on the actors' threads; a resume
+  of it is refused by name, because continuing it on the learner thread would
+  make one run of two learners. It still loads for evaluation and selection.
+  `M3-P016`'s checkpoints are format 4 and 5, so that run cannot be continued;
+  it can only be started again. The bound is recorded in the resolved config
+  from now on, not compared on resume, and has no flag.
 - The gain is capped by the learner. At DreamerV3's ~60 ms per step under load
   and 0.5 steps per decision, the learner serves about 33 decisions/s, close
   to what the fleet collects; past that the bound paces the actors, and the
   timing line's paused figure says so.
 - A reset (`--reset-every-steps`) is logged at the first episode that sees it;
-  resets taken in a block's closing drain have no episode after them.
+  those taken in a block's closing drain have no episode after them, and are
+  logged when the block ends (`TrainingRun.on_block_end`).
 - Weights are no longer a function of the decision count: the closing drain
   steps after the last episode's hooks. A curve point's checkpoint is
   therefore named `decisions-<d>-v<model version>.pt`, so the final

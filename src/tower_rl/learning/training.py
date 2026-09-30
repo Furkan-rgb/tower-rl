@@ -896,9 +896,17 @@ class TrainingRun:
     #: numbered checkpoint is a candidate arm, so it must survive the next one
     #: being written.
     numbered_checkpoint: Callable[[TrainingProgressReport], None] | None = None
+    #: Called when a block ends normally, once the learner has paid what it
+    #: owed. The steps of that closing drain have no episode after them, so
+    #: what `on_episode` reports of the learner is read here one last time.
+    on_block_end: Callable[[TrainingProgressReport], None] | None = None
     #: Progress so far. Instance state rather than a local because a run can be
     #: advanced in blocks, and a resumed run is constructed with its parent's.
     report: TrainingProgressReport = field(default_factory=TrainingProgressReport)
+    #: The steps a resumed run's parent still owed at its checkpoint, which the
+    #: learner pays first. Zero for a fresh run, and for a resume that
+    #: re-warms: its buffer is not the one the debt was owed on.
+    resumed_debt_steps: float = 0.0
     #: The training copy of the network, and the only thing that updates it.
     learner: Learner = field(init=False)
     #: The thread that takes the gradient steps, and the debt it serves.
@@ -1001,6 +1009,7 @@ class TrainingRun:
             self._take_gradient_step,
             steps_per_decision=self.config.gradient_steps_per_decision,
             bound_decisions=self.config.learner_debt_bound_decisions,
+            carried_debt_steps=self.resumed_debt_steps,
         )
         # The cadences are continued rather than restarted: a run resumed at
         # 50,123 decisions has already answered the multiple of 15,000 at
@@ -1141,6 +1150,8 @@ class TrainingRun:
             raise fatal
         if self.learner_thread.failure is not None:
             raise self.learner_thread.failure
+        if self.on_block_end is not None:
+            self.on_block_end(report)
 
         withdrawals = [error for error in errors if isinstance(error, RunPortError)]
         if withdrawals and all(
@@ -1390,13 +1401,13 @@ class TrainingRun:
         self._credited[actor_id] = 0
         if not self._warmed and self._warm():
             self._warmed = True
-        self.learner_thread.credit((counted if self._warmed else 0) - credited)
+        self.learner_thread.settle(credited, counted if self._warmed else 0)
 
     def _take_back_credit(self, actor_id: str) -> None:
         """Withdraw what an episode that was never counted credited the learner."""
         credited = self._credited[actor_id]
         self._credited[actor_id] = 0
-        self.learner_thread.credit(-credited)
+        self.learner_thread.settle(credited, 0)
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:
         """Count an episode the port could not deliver, against run and actor."""

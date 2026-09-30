@@ -15,7 +15,6 @@ import time
 from types import SimpleNamespace
 from typing import Any, cast
 
-import pytest
 import torch
 from test_fleet_training import (
     DECISION_SECONDS,
@@ -25,7 +24,7 @@ from test_fleet_training import (
     fleet,
 )
 
-from tower_rl.environment.decision_time import BLOCKED, LEARNER_STEP, DecisionTimeProfile
+from tower_rl.environment.decision_time import BLOCKED, DecisionTimeProfile
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
 from tower_rl.learning.learner import Learner, LearnerThread
 from tower_rl.learning.training import TrainingProgressReport
@@ -262,43 +261,81 @@ def test_a_checkpoint_is_written_with_the_learner_held_still() -> None:
     )
 
 
-def test_actors_are_not_kept_waiting_by_a_slow_learner() -> None:
-    """Throughput on fake ports: a gradient step ten times a decision costs actors nothing.
+def test_a_slow_learner_pauses_no_actor_and_no_actor_takes_a_step() -> None:
+    """A gradient step ten times a decision costs a fleet's actors nothing but refreshes.
 
     Before ADR 0017 the finishing actor took every step its episode earned, so
     the fleet's actors spent the learner's whole stepping time waiting on it.
-    Now they spend only a publication's wait for the step in flight, and none
-    paused on the bound while the learner keeps up on average.
+    Now every step runs on the learner thread, and the bound pauses nobody: the
+    whole run credits 15 steps against a bound of 25.6, so the debt cannot pass
+    it however slow the learner is. Counted, not timed.
     """
-    overlap = Overlap()
     training = fleet(
-        [environment(overlap) for _ in range(3)],
+        [environment(Overlap()) for _ in range(3)],
         budget_decisions=300,
-        # Slow enough steps that the old arrangement would have been dominated
-        # by them, at a ratio the learner can keep up with.
         gradient_steps_per_decision=0.05,
         parameter_sync_decisions=10,
     )
-    learn = training.learner.learn
+    assert training.learner_thread.bound_steps > 300 * 0.05
+    threads: list[str] = []
+    learn = training.backbone.learn
 
     def slow(batch: SequenceBatch) -> LearnMetrics:
+        # Inside `Learner.lock`, so a refresh really has a step to wait on.
+        threads.append(threading.current_thread().name)
         time.sleep(LEARN_SECONDS)
         return learn(batch)
 
-    training.learner.learn = slow  # type: ignore[method-assign]
+    training.backbone.learn = slow  # type: ignore[method-assign]
 
     report = training.run()
 
-    load = training.learner_load()
-    assert load.gradient_steps >= 5
-    waited = sum(
-        progress.decision_time.buckets[LEARNER_STEP].wall_seconds
-        + progress.decision_time.buckets[BLOCKED].wall_seconds
-        for progress in report.actors.values()
-        if progress.decision_time is not None
+    assert len(threads) == report.optimisation_steps >= 5
+    assert set(threads) == {"learner"}, "an actor thread took a gradient step"
+    assert training.learner_load().paused_actor_seconds == 0.0, "an actor paused on the bound"
+
+
+def test_a_refresh_waits_for_the_step_in_flight_and_copies_a_finished_one() -> None:
+    """The one place an actor waits on a learn step, ordered by events and not by time."""
+    events: list[str] = []
+    inside, release, about_to_refresh = (threading.Event() for _ in range(3))
+
+    class Network:
+        device = torch.device("cpu")
+
+        def learn(self, batch: object) -> LearnMetrics:
+            events.append("step begins")
+            inside.set()
+            release.wait()
+            events.append("step ends")
+            return METRICS
+
+        def state_dict(self) -> dict[str, object]:
+            events.append("copy")
+            return {}
+
+    learner = Learner(backbone=cast(Any, Network()))
+    acting = SimpleNamespace(load_state_dict=lambda state: None)
+    thread = LearnerThread(
+        learner,
+        lambda: learner.learn(cast(Any, None)),
+        steps_per_decision=1.0,
+        bound_decisions=100,
     )
-    assert load.stepping_seconds >= load.gradient_steps * LEARN_SECONDS
-    assert waited < 0.5 * load.stepping_seconds, (
-        f"actors waited {waited:.3f}s against {load.stepping_seconds:.3f}s of steps"
-    )
-    assert load.paused_actor_seconds == pytest.approx(0.0, abs=0.05)
+    thread.start()
+    thread.credit(1)  # one step owed, so no second can begin behind the first
+    assert inside.wait(5)
+
+    def refresh() -> None:
+        about_to_refresh.set()
+        learner.publish_to(cast(Any, acting))
+
+    refresher = threading.Thread(target=refresh, daemon=True)
+    refresher.start()
+    assert about_to_refresh.wait(5)
+    release.set()
+    refresher.join(5)
+    thread.finish(drain=True)
+
+    assert not refresher.is_alive()
+    assert events == ["step begins", "step ends", "copy"], "the copy read a step in flight"

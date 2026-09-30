@@ -212,7 +212,7 @@ def test_a_checkpoint_of_the_old_layout_still_resumes_into_a_new_folder(
     assert run_ids(old) == [first["arm"]["run_id"]]
 
 
-def test_a_run_saved_as_before_format_5_resumes_in_place_with_its_replay(
+def test_a_run_saved_with_a_single_dump_resumes_in_place_with_its_replay(
     tmp_path: Path,
 ) -> None:
     """M3-P015's layout: one dump as `replay/` itself, a `latest.pt` naming none."""
@@ -231,7 +231,7 @@ def test_a_run_saved_as_before_format_5_resumes_in_place_with_its_replay(
     del metadata["sampler_state"]
     metadata["format_version"] = 1
     (replays / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata))
-    save(replace(checkpoint, paired_replay=None, rng_state=None, format_version=4), latest)
+    save(replace(checkpoint, paired_replay=None, rng_state=None), latest)
 
     second = resumed(tmp_path, latest, 400)
 

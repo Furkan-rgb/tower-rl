@@ -213,6 +213,7 @@ class LearnerThread:
         *,
         steps_per_decision: float,
         bound_decisions: int,
+        carried_debt_steps: float = 0.0,
     ) -> None:
         self._learner = learner
         self._step = step
@@ -227,6 +228,12 @@ class LearnerThread:
         #: steps over any span are the ratio of its decisions exactly, with no
         #: rounding carried from one credit to the next.
         self._decisions = 0
+        #: Of those, the decisions of episodes still being played: credited as
+        #: they were taken, not yet counted by the run (`settle`).
+        self._unsettled = 0
+        #: Steps already owed when the thread was made: a resumed run's parent's
+        #: debt (`counted_debt_steps`), which the counters above start without.
+        self._carried_debt_steps = carried_debt_steps
         self._holds = 0
         self._stepping = False
         self._ending: _Ending | None = None
@@ -276,11 +283,38 @@ class LearnerThread:
         self._thread = None
 
     def credit(self, decisions: int) -> None:
-        """Owe the learner what `decisions` earn; negative takes credit back."""
+        """Owe the learner what `decisions` earn, as an episode's are taken."""
         with self._condition:
             self._decisions += decisions
+            self._unsettled += decisions
             if self._owed() >= 1.0:
                 self._condition.notify_all()
+
+    def settle(self, credited: int, counted: int) -> None:
+        """Square an episode's credit with what the run counted of it.
+
+        `credited` is what its decisions credited as they were taken; `counted`
+        is what the run now owes the learner for it - its decisions, or none
+        for an episode that never counted (abandoned, failed) or was counted
+        before the buffer was warm.
+        """
+        with self._condition:
+            self._unsettled -= credited
+            self._decisions += counted - credited
+            if self._owed() >= 1.0:
+                self._condition.notify_all()
+
+    def counted_debt_steps(self) -> float:
+        """The steps owed on the episodes the run has counted, and not on those in flight.
+
+        What a checkpoint records and a resume carries, so the steps of a run
+        resumed with its buffer are the steps of one that never stopped: the
+        episodes in flight are lost by a stop, and their credit with them. Read
+        with the learner held still, or the steps taken move under it.
+        """
+        with self._condition:
+            settled = self._decisions - self._unsettled
+            return self._carried_debt_steps + settled * self._steps_per_decision - self._steps
 
     def make_room(self, profile: DecisionTimeProfile, abandoned: Callable[[], bool]) -> None:
         """Pause the calling actor while more than the bound is owed.
@@ -343,7 +377,9 @@ class LearnerThread:
 
     def _owed(self) -> float:
         """Gradient steps owed now; the caller holds the condition."""
-        return self._decisions * self._steps_per_decision - self._steps
+        return (
+            self._carried_debt_steps + self._decisions * self._steps_per_decision - self._steps
+        )
 
     def _serve(self) -> None:
         try:

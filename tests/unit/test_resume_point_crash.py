@@ -11,10 +11,11 @@ save must leave only the pair it wrote: whatever the kill left in `replay/`
 is removed.
 
 The killed save is the second of a fresh run, or the first of a segment
-resumed from a folder as an older run left it: a format-4 `latest.pt` beside
-the dump of its own decision count, or `M3-P015`'s single dump as `replay/`
-itself. A kill is what the OOM killer does; nothing in the process gets to
-clean up.
+resumed from a folder as an older layout left it: a `latest.pt` naming no
+pair beside the dump of its own decision count, or `M3-P015`'s single dump as
+`replay/` itself. (Such a run's own checkpoints are refused for resume now,
+ADR 0017, so these are current-format files in the older layouts.) A kill is
+what the OOM killer does; nothing in the process gets to clean up.
 """
 
 from __future__ import annotations
@@ -176,13 +177,13 @@ else:
 """
 
 
-def as_format_4(latest: Path) -> None:
-    """The `latest.pt` of a run before format 5: it names no replay, and has no streams.
+def as_unpaired(latest: Path) -> None:
+    """A `latest.pt` that names no replay and has no streams, as before format 5.
 
     The dump it was written with is still `replay/d<its decisions>/`, which is
-    where a resume from a format-4 checkpoint looks for one at its own count.
+    where a resume from a checkpoint naming no pair looks for one at its own count.
     """
-    save(replace(load(latest), paired_replay=None, rng_state=None, format_version=4), latest)
+    save(replace(load(latest), paired_replay=None, rng_state=None), latest)
 
 
 def as_single_dump(latest: Path) -> None:
@@ -198,13 +199,13 @@ def as_single_dump(latest: Path) -> None:
     del metadata["sampler_state"]
     metadata["format_version"] = 1
     (replays / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata))
-    as_format_4(latest)
+    as_unpaired(latest)
 
 
 #: What each case starts from: nothing (a fresh run, killed at its second
 #: save), or the folder of a run of an older layout, killed at the first save
 #: of the segment that resumes it.
-FRESH, FORMAT_4, SINGLE_DUMP = "fresh", "format-4", "single-dump"
+FRESH, UNPAIRED, SINGLE_DUMP = "fresh", "unpaired", "single-dump"
 
 #: Each kill, and which save's pair survives it: the one before the killed
 #: save ("earlier") or the killed save's own ("killed").
@@ -254,7 +255,7 @@ def run_killed_child(
 @pytest.mark.parametrize(
     ("layout", "kill_at", "survivor"),
     [(FRESH, kill, survivor) for kill, survivor in FRESH_KILLS]
-    + [(FORMAT_4, kill, survivor) for kill, survivor in RESUMED_KILLS]
+    + [(UNPAIRED, kill, survivor) for kill, survivor in RESUMED_KILLS]
     + [(SINGLE_DUMP, kill, survivor) for kill, survivor in RESUMED_KILLS],
 )
 def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pair(
@@ -270,7 +271,7 @@ def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pai
         first = numbered(runs, 200)
         latest = latest_checkpoint(first)
         earlier_dump = latest.parent.parent / str(load(latest).paired_replay)
-        {FORMAT_4: as_format_4, SINGLE_DUMP: as_single_dump}[layout](latest)
+        {UNPAIRED: as_unpaired, SINGLE_DUMP: as_single_dump}[layout](latest)
         parent = load(latest).progress.environment_decisions
         saves = run_killed_child(runs, kill_at, 1, latest)
         assert set(saves) == {1}

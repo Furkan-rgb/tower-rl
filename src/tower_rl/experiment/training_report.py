@@ -378,6 +378,9 @@ class TrainingReport:
                 checkpoint_periods_closed=report.plateau.periods_closed,
                 best_period_near_greedy_mean=report.plateau.best_mean_final_wave,
                 periods_without_improvement=report.plateau.periods_without_improvement,
+                # Read with the learner held still, as every save is, so the
+                # steps owed and the steps counted are of the same moment.
+                learner_debt_steps=self.training.learner_thread.counted_debt_steps(),
             ),
             backbone_state=self.backbone.state_dict(),
             resolved_config=self.resolved,

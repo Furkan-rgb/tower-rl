@@ -2253,8 +2253,10 @@ to the episodes in flight. SIGTERM is not handled: it ends the process as
 before.
 `--budget-decisions` stays the whole run's total; a checkpoint whose identity
 names another arm, profile or schema, one that has already spent the budget,
-and one in a game-time-era format (before format 4, which evaluates only) are
-each refused by name before a device is touched.
+one in a game-time-era format (before format 4, which evaluates only), and one
+trained under the actor-thread learner (before format 6, ADR 0017: continuing
+it would make a mixed run; it still evaluates) are each refused by name before
+a device is touched.
 
 Example behavior:
 

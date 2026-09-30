@@ -1315,11 +1315,28 @@ def test_a_game_time_era_checkpoint_is_refused_for_resume_by_name(
     assert "evaluation only" in str(refusal.value)
 
 
-def test_a_game_time_era_checkpoint_still_loads_for_evaluation(tmp_path: Path) -> None:
-    """The refusal is the resume's alone: the file rebuilds into a policy."""
-    parent, legacy = legacy_checkpoint(tmp_path, 3)
+@pytest.mark.parametrize("format_version", [4, 5])
+def test_a_checkpoint_from_the_actor_thread_learner_is_refused_for_resume(
+    tmp_path: Path, format_version: int
+) -> None:
+    """Continuing it on the learner thread would make one run of two learners (ADR 0017)."""
+    _, legacy = legacy_checkpoint(tmp_path, format_version)
 
-    assert load(legacy).format_version == 3
+    with pytest.raises(SystemExit, match="actor-thread learner") as refusal:
+        resume_from(tmp_path / "second", legacy, 400)
+
+    assert f"format {format_version} checkpoint" in str(refusal.value)
+    assert "mixed run" in str(refusal.value)
+
+
+@pytest.mark.parametrize("format_version", [3, 5])
+def test_an_older_checkpoint_still_loads_for_evaluation(
+    tmp_path: Path, format_version: int
+) -> None:
+    """The refusal is the resume's alone: the file rebuilds into a policy."""
+    parent, legacy = legacy_checkpoint(tmp_path, format_version)
+
+    assert load(legacy).format_version == format_version
     _, identity = checkpoint_policy(
         legacy,
         decision_cadence=parent.identity.decision_cadence.value,
@@ -1819,6 +1836,51 @@ def test_a_run_stopped_mid_collection_resumes_from_the_steps_its_weights_took(
         resume=resume_from(tmp_path / "third", latest_checkpoint(first), budget),
     )
     assert second["arm"]["optimisation_steps"] > steps
+
+
+def test_a_resume_pays_the_debt_its_parent_still_owed(tmp_path: Path) -> None:
+    """The steps a resumed run takes are the ones an uninterrupted run's rule gives it.
+
+    A parent that ended owing a part of a step (the ratio times its decisions,
+    less the whole steps taken) writes that debt into its checkpoint (ADR 0017).
+    The resume carries it, so over the two segments the steps stay the ratio of
+    the decisions and the fraction is not dropped at the seam.
+    """
+    ratio = 0.2
+    # Ends at 103 decisions, 73 of them counted warm: 14.6 steps, 0.6 of one owed.
+    first = numbered(tmp_path / "first", 100)
+    checkpoint = latest_checkpoint(first)
+    parent = load(checkpoint)
+    owed = parent.progress.learner_debt_steps
+    assert 0 < owed < 1, "the parent ended part-way through a step"
+
+    arm, resume = resumed_arm(tmp_path / "second", checkpoint, budget=400)
+    assert resume.learner_debt_steps == owed
+    assert arm.training.learner_thread.counted_debt_steps() == pytest.approx(owed)
+
+    second = session(
+        tmp_path / "third",
+        budget="400",
+        resume=resume_from(tmp_path / "third", checkpoint, 400),
+    )
+
+    spent = second["arm"]["decisions"] - parent.progress.environment_decisions
+    taken = second["arm"]["optimisation_steps"] - parent.progress.optimisation_steps
+    earned = owed + ratio * spent
+    assert taken <= earned + 1e-9 < taken + 1, "the segment ended owing under one step"
+    assert taken != int(ratio * spent), "without the parent's fraction it would take one fewer"
+
+
+def test_a_resume_that_rewarms_its_buffer_owes_nothing(tmp_path: Path) -> None:
+    """A debt owed on the parent's buffer is not carried onto an empty one (ADR 0017)."""
+    first = numbered(tmp_path / "first", 100)
+    checkpoint = latest_checkpoint(first)
+    assert load(checkpoint).progress.learner_debt_steps > 0
+    shutil.rmtree(checkpoint.parent.parent / "replay")
+
+    arm, _ = resumed_arm(tmp_path / "second", checkpoint, budget=400)
+
+    assert arm.training.learner_thread.counted_debt_steps() == 0
 
 
 def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_point(
@@ -2403,10 +2465,10 @@ def test_the_learner_resets_are_logged_as_they_happen(tmp_path: Path) -> None:
     resolved = summary["arm"]["resolved_config"]
     # 200 decisions at 0.2 buy 40 steps, and the last interval is left alone.
     assert (resolved["reset_every_steps"], resolved["last_reset_step"]) == (5, 35)
-    # Logged at the episode that first sees each one. The learner steps on its
-    # own thread (ADR 0017), so the steps it pays at the block's end have no
-    # episode after them to be logged at: the last may go unlogged.
-    assert 1.0 <= logged[-1] <= 7.0
+    # The learner steps on its own thread (ADR 0017), so the last reset may be
+    # taken in the block's closing drain, after the last episode's hook: it is
+    # logged when the block ends.
+    assert logged[-1] == 7.0
 
 
 def test_a_resume_is_held_to_its_reset_interval() -> None:

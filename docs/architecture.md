@@ -303,7 +303,8 @@ on resume.
 actors write into (`PrioritizedSequenceReplay`, or `DreamerReplay` for
 DreamerV3; `ArmReplay`), one `Backbone` inside
 `Learner`, one acting copy per actor in `acting`, the `TrainingProgressReport`,
-the `LearnerThread` that trains the `Learner`, `_since_sync`, and each actor's
+the `LearnerThread` that trains the `Learner`, `_since_sync`, the number of
+the learner's snapshot each copy last loaded (`_loaded`), and each actor's
 decisions credited to the learner in its current episode (`_credited`). The
 learner thread owns the gradient debt: decisions credited and steps taken.
 Four locks, taken only in this order - progress lock, learner held, replay
@@ -323,14 +324,17 @@ lock, `Learner.lock` - each guarding one thing:
   sample and again to update priorities (`DreamerReplay`: to write latents
   back), not across the step between them; both follow the evictions actors
   made in between.
-- `Learner.lock` guards the training network. It is what keeps an optimisation
-  step and a parameter publication from overlapping, so what an actor copies out
-  is always some completed step and never half of one. A publication therefore
-  waits for at most the one step in flight. On CUDA the learner issues on a
-  stream of its own, and each side synchronises its stream before releasing
-  this lock.
+- `Learner.lock` guards the published snapshot. Every completed step clones
+  the training network into a new snapshot with the next number and hands it
+  over under this lock; an actor whose copy is older loads the latest under
+  it. A snapshot is never written after it is published, so what an actor
+  loads is always some completed step and never half of one, and the lock is
+  never held across a step: a refresh never waits out the step in flight. On
+  CUDA the learner issues on a stream of its own; a step synchronises its
+  stream before handing its snapshot over, and a load synchronises the actor's
+  stream before releasing this lock.
 
-`_since_sync` and `_credited` need no lock: each actor touches only its own
+`_since_sync`, `_loaded` and `_credited` need no lock: each actor touches only its own
 entry of a dict whose keys are all present from construction, and `_credited`
 is read by the actor's own thread alone.
 
@@ -458,8 +462,9 @@ neither is part of a run:
    block ends by paying what is still owed;
    each actor refreshes its acting copy at every episode start and then every
    `parameter_sync_decisions` of its own decisions, before a decision's
-   forward pass and so inside an episode (0, DreamerV3's setting, refreshes at
-   episode starts only).
+   forward pass and so inside an episode, loading the learner's last completed
+   step if the copy is older (DreamerV3 is fixed at 1, before every decision,
+   as the official agent swaps; 0 refreshes at episode starts only).
 5. `arm.checkpoint` writes the checkpoint, then one pre-registered
    exploration-free evaluation runs on the final weights — after the budget, so
    it costs none of it and cannot be chosen after the fact.

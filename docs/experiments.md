@@ -98,24 +98,54 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
-## DreamerV3 replay context 1: KL(full || window) rerun, synthetic (`#108`, 2026-09-30)
+## DreamerV3 acting on each completed step: acting throughput, fake port (`#108`, 2026-09-30)
+
+**Question.** Loading the learner's snapshot before each decision after every
+step (§6.10), where DreamerV3 refreshed at episode starts only, costs how much
+acting throughput?
+
+**Method.** Published size, CUDA, compiled bfloat16, one actor on the fake port
+(`FakeRunPort(damage_per_second=2.0)`), 0.5 steps per decision, warm-up 1,024
+items, ~3,000 decisions, inductor cache warm; e7ec5a7 at cadence 0 against this
+change at cadence 1, alternated twice on an otherwise idle RTX 4090. Script in
+the session scratchpad (`dreamer-conv/smoke.py`), not committed.
+
+**Result.** 93.8 and 93.9 decisions/s collecting before; 89.5 and 88.3 after
+(about −6%). Per decision: the refresh 1.3 ms before (an episode-start copy
+waiting out a step) and 0.45 ms after; the policy forward 3.2 ms before and
+4.2 ms after; paused on the learner's bound 5.0 ms before and 5.4 ms after.
+Publishing a step's snapshot took a median 1.4 ms and loading it 1.5 ms.
+Peak GPU memory 1,051 MB before and 1,173 MB after: the snapshot holds the
+whole training state, optimiser moments included, not only the ~40 MB of
+parameters. Losses finite.
+
+**Limits.** The fake port answers in 0.3 ms, so both runs are paced by the
+learner; on a device a decision's bridge round trip is ~140-260 ms and the
+extra ~1 ms is under 1% of it. No device run.
+
+## DreamerV3 replay context 1: a window restores acting's latent, synthetic (`#108`, 2026-09-30)
 
 **Question.** With replay context 1 and stored latents (ADR 0018), does a
-training window filter as acting did over the whole episode, where the old
-zero-start windows did not (the M3-P016 diagnosis's KL(full || window))?
+training window start from the latent acting reached, where the old
+zero-start windows started from zero (the M3-P016 diagnosis's
+KL(full || window))?
 
-**Method.** `tests/unit/test_dreamer.py::test_the_restored_window_filters_as_the_full_episode_does`:
-a small untrained model (deter 16), an 18-step synthetic episode acted on,
-posteriors filtered over the whole episode against one 6-step window of it,
-with the same stochastic draws, from the context step's latent and from zero.
-Plus `test_a_window_restores_the_latent_acting_reached_at_its_context_step`:
-the learner's first deterministic state against the one the acting policy
-stored, through `DreamerReplay`.
+**Method.** `tests/unit/test_dreamer.py::test_a_window_restores_the_latent_acting_reached_at_its_context_step`:
+a small untrained model (deter 16) acts on a synthetic episode, storing its
+latents, and the learner's first deterministic state of a window drawn from
+`DreamerReplay` is compared with the one the acting policy stored there.
 
-**Result.** From the context latent: KL 0.0 at every window step (exact). From
-zero: 0.027, 0.016, 0.008, 0.004, 0.001, 0.001 — the gap the old windows had,
-shrinking along the window. The window's first deterministic state matches
-the acted one within 1e-5.
+**Result.** The window's first deterministic state matches the acted one
+within 1e-5, so the window starts where acting was.
+
+**Retracted.** This entry first also cited a KL(full || window) of 0.0 at
+every window step from `test_the_restored_window_filters_as_the_full_episode_does`.
+That figure was no evidence: the window restarted from the full pass's own
+latent with the same random draws, so it equalled the full pass by
+construction and the test could not fail. The test was deleted (Tier C
+review, 2026-09-30). The zero-start figures it printed beside it (0.027 to
+0.001 along the window) stand only as the size of the gap on this small
+untrained model.
 
 **Limits.** Synthetic, untrained and small; it shows the mechanism, not the
 size of the effect on a trained model, and not whether it changes learning.

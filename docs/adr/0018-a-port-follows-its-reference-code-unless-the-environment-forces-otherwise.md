@@ -31,18 +31,26 @@ a port of `embodied/core/replay.py`) with context 1, stored and written-back
 latents, the online queue, an item at every step, FIFO capacity 5e6 and the
 official warm-up; the driver's step layout with the environment's terminal
 observation; first-step losses as `_annotate_batch` leaves them; no actor
-unimix. The deviations left each name their cause in the §9.4c table:
+unimix; the mask, a boolean key, one-hot in and a two-class categorical out;
+and acting on the parameters of the last completed step, loaded before each
+decision with the latent carried across, where it had refreshed only at
+episode starts. The deviations left each name their cause in the §9.4c table:
 whole-episode insertion (ADR 0014, ADR 0017), the stream cut at an
 inadmissible transition (the environment contract), the action mask as an
-observation key (the environment contract; its 0/1 encoding is kept for
-loading older checkpoints, ADR 0014), the per-transition game-time discount
-(ADR 0013), and the unused `td_errors` (the `Backbone` contract).
+observation key (the environment contract), the per-transition game-time
+discount (ADR 0013), and the unused `td_errors` (the `Backbone` contract).
 
 ## Consequences
 
 - DreamerV3 checkpoints are format 7 and its replay dumps format 3; an older
   DreamerV3 checkpoint is refused as a resume (a mixed run) and still loads
-  for evaluation.
+  for evaluation, with the actor unimix and the 0/1 mask it was trained with
+  (`dreamer_mask_one_hot` absent reads as False).
+- Every completed learner step now publishes a snapshot of the parameters,
+  and an actor loads it without waiting for the step in flight. That replaces
+  ADR 0017's publication, which copied the live network under a lock a step
+  held and so could wait for one step; stacked-dqn keeps its refresh cadence
+  and gains the same no-wait load. The debt is unchanged.
 - Replay costs ~10.6 KB per step at the official float32 entry precision,
   ~10.6 GB per 1M decisions (§9.4c).
 - The same rule applies to any later port, including stacked-dqn's rebuild

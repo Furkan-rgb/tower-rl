@@ -443,8 +443,9 @@ def failed_start_line(actor_id: str, failure: RunPortError) -> str:
     0 for a failure that had no run to retire.
     """
     retired = failure if isinstance(failure, RetirementFailed) else None
+    reason = failure if retired is None else retired.reason
     return (
-        f"failed episode start: actor {actor_id} reason {failure} "
+        f"failed episode start: actor {actor_id} reason {reason} "
         f"retired_run_wave {0 if retired is None else retired.retired_run_wave} "
         f"retirement_wall_seconds "
         f"{0.0 if retired is None else retired.retirement_wall_seconds}"

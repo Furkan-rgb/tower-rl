@@ -475,11 +475,100 @@ def test_the_failed_start_line_names_the_actor_the_reason_and_what_retirement_co
 
     line = failed_start_line("actor-3", retirement)
 
-    assert line.startswith("failed episode start: actor actor-3 reason the run left live")
-    assert line.endswith("retired_run_wave 37 retirement_wall_seconds 301.5")
+    assert line == (
+        "failed episode start: actor actor-3 reason the run left live did not end "
+        "retired_run_wave 37 retirement_wall_seconds 301.5"
+    )
     assert failed_start_line("actor-3", RunPortError("no start")).endswith(
         "retired_run_wave 0 retirement_wall_seconds 0.0"
     )
+
+
+def test_a_retirement_that_fails_is_a_counted_failed_start() -> None:
+    training = _run(budget_decisions=190, max_consecutive_episode_failures=2)
+    environment = training.actors[0].environment
+    environment.cadence = CadenceConfig(max_quiet_game_ms=1000, stall_window_wall_seconds=0.0)
+    port = environment.port
+    assert isinstance(port, FakeRunPort)
+    port.damage_per_second = 0.1
+    port.continues_live_runs = True
+    environment.reset()
+    environment.step(WAIT)
+    real_advance = port.advance_until_event
+
+    def frozen_round_clock(**kwargs: object) -> object:
+        return replace(real_advance(**kwargs), round_ms=0.0)  # type: ignore[arg-type]
+
+    port.advance_until_event = frozen_round_clock  # type: ignore[method-assign]
+    seen: list[RunPortError] = []
+    training.on_failed_start = lambda progress, failure: seen.append(failure)
+
+    with pytest.raises(RunPortError):
+        training.run()
+
+    assert training.report.failed_episodes == 2
+    assert len(seen) == 2 and all(isinstance(failure, RetirementFailed) for failure in seen)
+    assert all("retired_run_wave" in text for text in training.report.episode_failures)
+
+
+def test_a_stop_during_an_evaluations_reset_ends_the_run_and_loses_only_the_point() -> None:
+    """The evaluation borrows an actor's environment, and with it the run's stop."""
+    training = _run(budget_decisions=190, evaluate_every_episodes=1)
+    environment = training.actors[0].environment
+    port = environment.port
+    assert isinstance(port, FakeRunPort)
+    real_advance = port.advance_until_event
+
+    def evaluate() -> EvaluationReport:
+        port.damage_per_second = 0.1
+        port.continues_live_runs = True
+        environment.reset()
+        environment.step(WAIT)
+
+        def stop_during_the_first_advance(**kwargs: object) -> object:
+            training.stop.set()
+            return real_advance(**kwargs)  # type: ignore[arg-type]
+
+        port.advance_until_event = stop_during_the_first_advance  # type: ignore[method-assign]
+        environment.reset()
+        raise AssertionError("the retirement was not abandoned")
+
+    training.evaluate = evaluate
+
+    report = training.run()
+
+    assert training.interrupted
+    assert report.evaluation_failures == [] and report.evaluations == []
+    assert report.episodes == 1
+
+
+def test_every_episode_reason_constant_is_a_named_invalid_reason() -> None:
+    """A reason that gains a name must be pooled, or it is invisible in every report."""
+    import tower_rl.environment.run_environment as run_environment
+    import tower_rl.environment.run_state as run_state
+    import tower_rl.environment.upgrade_setup as upgrade_setup
+
+    #: Named strings that are not an episode's invalid reason: span names, a
+    #: schema version, and the two start failures, which raise out of `reset`
+    #: and leave no episode to carry a reason.
+    not_reasons = {
+        "BRIDGE_ROUND_TRIP",
+        "OBSERVATION_DECODE",
+        "OBSERVATION_SCHEMA_VERSION",
+        "UNLOCK_NOT_APPLIED",
+        "WORKSHOP_NOT_APPLIED",
+    }
+    named = {
+        value
+        for module in (run_environment, run_state, upgrade_setup)
+        for name, value in vars(module).items()
+        if name.isupper()
+        and not name.startswith("_")
+        and isinstance(value, str)
+        and name not in not_reasons
+    }
+
+    assert named | {STALE_OR_DUPLICATE} == set(INVALID_REASONS.values())
 
 
 def test_a_stop_reaches_the_environment_and_ends_a_retirement_without_counting_it() -> None:

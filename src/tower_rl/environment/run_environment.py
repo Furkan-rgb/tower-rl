@@ -303,6 +303,7 @@ class RetirementFailed(RunPortError):
             f"{reason} (retired_run_wave {retired_run_wave}, "
             f"retirement_wall_seconds {retirement_wall_seconds})"
         )
+        self.reason = reason
         self.retired_run_wave = retired_run_wave
         self.retirement_wall_seconds = retirement_wall_seconds
 

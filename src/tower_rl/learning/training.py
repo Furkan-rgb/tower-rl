@@ -1449,6 +1449,11 @@ class TrainingRun:
         if self.evaluate is not None and period and report.episodes % period == 0:
             try:
                 report.evaluations.append(self.evaluate())
+            except RetirementAbandoned:
+                # The evaluation borrows an actor's environment, and with it
+                # the run's stop: a stop during its reset is the run's own,
+                # answered at the next lock, and loses only the point.
+                pass
             except (RunPortError, ValueError) as failure:
                 # `evaluate` refuses to score an arm that produced no valid
                 # episode, and the port can fail under it exactly as it can

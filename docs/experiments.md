@@ -203,6 +203,87 @@ the bridge) should take a decision from ~125 to ~82 ms solo and from ~151 to
 to be verified against this reference, with the fingerprint unchanged. Frame
 rate and cores are not levers at this operating point.
 
+The estimate was verified by the `#103` entry below; the transport fix cut a
+decision from 125.5 to 84.9 ms solo and from 151.0 to 98.7 ms at 7 actors.
+
+## Bridge transport fix: one write per frame, `TCP_NODELAY`, 5 ms purchase poll (`#103`, 2026-09-30)
+
+**Purpose.** The `#101` reference attributed a fixed ~45 ms per command to
+Nagle's algorithm meeting a delayed ACK on the bridge's split header and
+payload writes. This entry verifies that on device against that reference.
+
+**Change** (`native/tower_bridge/tower_bridge.cpp`):
+- `SendFrame` sends the 4-byte length and the payload in one buffer, in one
+  `WriteAll`;
+- `TCP_NODELAY` is set on each accepted client socket;
+- a purchase's confirmation poll is `kPurchasePollMicros` = 5 ms, down from
+  50 ms; the timeout (3 s) and the `confirmed` / `ambiguous` outcomes are
+  unchanged. The speed-set confirmation keeps `kCommandPollMicros` (50 ms):
+  it is not on the decision path and the assignment was to change nothing else.
+- The host client needed no change: `_write_message` already sends one
+  `sendall` of `encode_frame`'s header plus payload.
+
+**Setup.** As the `#101` reference: read-only clones, each stage through
+`scripts/run_stage.sh`, `require_offline`, no taps or screenshots, turtle
+policy, host renderer, 120 Hz, 4 cores, availability `all`, Workshop 5,
+100 ms frames, the same episodes per actor as the reference cell (8 solo, 5 at
+N=7). Build `workshop-render-interval-16-nodelay` (`33d7ada0…`); the source
+otherwise equals `53d346ae…` (rebuilding the unmodified source reproduced
+`33de6826…` byte for byte). Reports:
+`state/records/bridge-transport/{n1-nodelay,n7-nodelay,n8-nodelay,n1-default-nodelay}/fleet.json`
+(VRAM samples beside `n7-nodelay` and `n8-nodelay`).
+
+**Results.** Means with 95% intervals (stratified bootstrap, actor as
+stratum); ms per decision unless marked. "Before" is the `#101` cell.
+Decisions per hour is decisions over the stage's `wall_seconds`, bring-up
+included.
+
+| Cell | Episodes (invalid) | Decision ms | Advance ms | Transport ms per advance | Purchase round trip ms | Decisions/h | Final wave | Decisions/wave | Round-clock ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| N=1 before | 8 (0) | 125.5 [124.2, 126.8] | 75.2 [74.4, 76.1] | 44.8 [44.6, 45.1] | 94.7 | 25,561 | 39.5 [38.8, 40.0] | 21.32 [21.20, 21.43] | 0.9960 [0.9956, 0.9964] |
+| N=1 after | 8 (0) | 84.9 [84.4, 85.4] | 80.5 [80.1, 80.9] | 3.3 [3.1, 3.4] | 14.2 | 35,803 | 39.5 [39.0, 40.0] | 21.31 [21.18, 21.47] | 0.9959 [0.9956, 0.9962] |
+| N=7 before | 35 (0) | 151.0 [148.2, 153.6] | 100.5 [97.8, 103.1] | 44.9 [44.8, 45.0] | 95.9 | 109,528 | 39.2 [38.9, 39.5] | 21.28 [21.19, 21.36] | 0.9957 [0.9955, 0.9959] |
+| N=7 after | 35 (0) | 98.7 [96.3, 101.2] | 93.0 [90.6, 95.4] | 4.6 [4.5, 4.8] | 11.7 | 144,000 | 39.4 [39.2, 39.7] | 21.17 [21.08, 21.25] | 0.9954 [0.9952, 0.9956] |
+| N=8 after | 40 (0) | 102.4 [99.4, 105.3] | 96.8 [93.8, 99.6] | 4.6 [4.4, 4.7] | 11.1 | 153,058 | 39.5 [39.3, 39.8] | 21.26 [21.20, 21.32] | 0.9955 [0.9953, 0.9957] |
+
+- Transport per command fell from ~45 ms to 3.3 ms solo and 4.6 ms at 7 and 8
+  actors. Decision time fell 32% solo (1.48×) and 35% at N=7 (1.53×).
+  Decisions per hour rose 1.40× solo and 1.31× at N=7; the fixed bring-up and
+  the last episodes' tail sit in `wall_seconds` and dilute it, so the per-decision
+  ratio is the cleaner one.
+- A purchase's round trip fell from 95 to 11-14 ms: it was the 50 ms poll
+  plus the ~45 ms of transport.
+- **The fingerprint's intervals overlap the reference in every cell**: final
+  wave, decisions per wave, round-clock ratio and game seconds per decision
+  (1.616 [1.606, 1.626] solo, against 1.613 [1.603, 1.623]). Only speed moved.
+- *Solo advance rose* from 75.2 to 80.5 ms (intervals disjoint). At N=7 it fell
+  from 100.5 to 93.0. This is not explained. What the data says is that the
+  advance is now the whole of a decision: 95% of it solo, and the fixed cost is
+  gone.
+- `advances_cut_short` counts are 5 solo, 20 at N=7 and 32 at N=8, from 2 and 25
+  before; no invalid episode in 87.
+
+**8 actors.** The 8th instance came up on the first attempt; all 8 stages'
+cleanup checks passed. VRAM by `nvidia-smi` every 20 s: peak 18,980 MiB of
+24,564 MiB (77%), each qemu ~2,001 MiB (N=7: 16,795 MiB). Fleet decisions per
+hour 153,058, 1.06× the N=7 cell's 144,000 (valid episodes per hour 182.2
+against 172.5); per-actor decision time went from 98.7 to 102.4 ms, so the 8th
+actor is bounded by the advance slowdown as expected.
+
+**Eval build.** `workshop-default-nodelay` (`f5e9d9a4…`, render interval 1), 4
+solo episodes, 0 invalid: final wave 39.5 [38.5, 40.0], decisions per wave 21.33
+[21.02, 21.64], round-clock ratio 0.9966 [0.9961, 0.9971], transport 2.9 ms per
+advance. Its intervals contain the reference's; the intervals here are wide
+because there are 4 episodes.
+
+Every stage ended `cleanup ok` with the libunity SHA-256 ffc1f3ef…0040,
+versionCode 1199, installer com.android.vending, 0 mounts and no emulator left.
+
+**Conclusion.** Nagle plus delayed ACK on the split write was the fixed 45 ms.
+The change is speed-only: no fingerprint moved. `state/bridge/current` is
+unchanged; the `-nodelay` builds are the ones to run
+(`docs/setup.md`).
+
 ## The learner thread: what is verified, and what is not measured (`#102`, 2026-09-30)
 
 **Purpose.** ADR 0017 moves the gradient steps off the actors' threads onto one

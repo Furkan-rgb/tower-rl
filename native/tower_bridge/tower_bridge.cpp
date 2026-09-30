@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -63,6 +64,9 @@ constexpr useconds_t kHeartbeatIntervalMicros = 1000000;
 constexpr useconds_t kIl2CppInitializationDelayMicros = 4000000;
 constexpr useconds_t kCommandTimeoutMicros = 3000000;
 constexpr useconds_t kCommandPollMicros = 50000;
+// How often a purchase is checked for the game's own level increment. Each poll
+// is a sleep the host waits out, so it is the floor of a purchase's round trip.
+constexpr useconds_t kPurchasePollMicros = 5000;
 constexpr useconds_t kLifecycleTimeoutMicros = 30000000;
 constexpr useconds_t kLifecyclePollMicros = 250000;
 // Floors the cadence so a very high speed cannot spin the loop, but it must stay
@@ -1490,10 +1494,16 @@ bool WriteAll(int client, const void* data, size_t size) {
   return true;
 }
 
+// The header and the payload leave in one write. Two writes on a socket with
+// Nagle enabled hold the payload back until the peer's delayed ACK of the header
+// (~43 ms per frame).
 bool SendFrame(int client, const std::string& payload) {
   if (payload.empty() || payload.size() > kMaxFrameBytes) return false;
-  uint32_t size = htonl(static_cast<uint32_t>(payload.size()));
-  return WriteAll(client, &size, sizeof(size)) && WriteAll(client, payload.data(), payload.size());
+  const uint32_t size = htonl(static_cast<uint32_t>(payload.size()));
+  std::string frame(sizeof(size), '\0');
+  std::memcpy(&frame[0], &size, sizeof(size));
+  frame += payload;
+  return WriteAll(client, frame.data(), frame.size());
 }
 
 bool SendError(int client, const char* code, const char* message) {
@@ -2626,8 +2636,8 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
           // The game owns the purchase. Only its own level increment confirms one.
           // In-run cash rises continuously from kills, so a cash change alone is
           // neither confirmation nor contradiction.
-          for (useconds_t elapsed = 0; elapsed < kCommandTimeoutMicros; elapsed += kCommandPollMicros) {
-            usleep(kCommandPollMicros);
+          for (useconds_t elapsed = 0; elapsed < kCommandTimeoutMicros; elapsed += kPurchasePollMicros) {
+            usleep(kPurchasePollMicros);
             if (!ReadUpgradeEvidence(api, fields, command.family, command.index, &after)) break;
             if (after.level == before.level + 1 && after.unlocked) { confirmed = true; break; }
             if (after.level < before.level || after.level > before.level + 1 ||
@@ -2729,6 +2739,10 @@ void* BridgeThread(void*) {
   while (true) {
     const int client = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
     if (client < 0) continue;
+    // Frames are small and each one is awaited by the host, so none may wait to
+    // be coalesced with the next.
+    const int no_delay = 1;
+    setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay));
     if (!runtime_ready) runtime_ready = InitializeRuntime(&api, &fields);
     if (!runtime_ready) {
       SendError(client, "compatibility_error", "required IL2CPP exports unavailable");

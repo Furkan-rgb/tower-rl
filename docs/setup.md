@@ -190,7 +190,20 @@ f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with A
 7b5e97014b37c63fc0172c5aa3212ca2975ef1fb1722431437b0ca9d902aa228   render-off experiment, TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16 (#27), 2026-09-23
 33de682666eeac8fb8a2260ce18c5a6f7f57c941ff677fc209daaf2a658195e8   source with ADR 0012 Workshop commands (#80), 2026-09-27; state/bridge/builds/workshop-default/, not installed
 53d346ae26f721318dc24e67644b5834b01cc48cf195a9c3154cffac2b11c7d3   the same with TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16, 2026-09-27; state/bridge/builds/workshop-render-interval-16/
+f5e9d9a4971718822462369ae8e2b849a9ba8aede6b0339003ecaaa3da0e1601   the Workshop source with the transport fix (#103), 2026-09-30; state/bridge/builds/workshop-default-nodelay/, not installed
+33d7ada0b7709970b82755b06199ff114dbebf83f08fb65f5ae2d32534b53ef8   the same with TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16, 2026-09-30; state/bridge/builds/workshop-render-interval-16-nodelay/
 ```
+
+`f5e9d9a4…` and `33d7ada0…` are the ones to run. Each is `33de6826…` and
+`53d346ae…` with the transport fix (`SendFrame` writes header and payload in
+one buffer, `TCP_NODELAY` on the accepted socket, a 5 ms purchase poll), which
+took the fixed ~45 ms out of every command; the older two stay in
+`state/bridge/builds/` as the A/B reference and nothing selects them any more.
+`33d7ada0…` is the training and benchmark build and `f5e9d9a4…` the
+evaluation build (render interval 1). The device evidence is the `#103` entry
+in [`experiments.md`](experiments.md). Neither is installed as
+`state/bridge/current`, which still serves `f9d5f161…`, a build that has no
+Workshop commands and the old transport.
 
 `33de6826…` and `53d346ae…` are the source with the Workshop runway commands
 (`workshop_levels`, `set_workshop_levels`;
@@ -655,7 +668,7 @@ own, on the training build and with training's settings:
 ```text
 name=m1-benchmark-n7-$(date -u +%Y%m%dT%H%M%SZ)
 out=state/records/benchmarks/$name
-TOWER_BRIDGE_BUILD_DIR=$PWD/state/bridge/builds/workshop-render-interval-16 \
+TOWER_BRIDGE_BUILD_DIR=$PWD/state/bridge/builds/workshop-render-interval-16-nodelay \
 nohup ./scripts/run_stage.sh --name "$name" --instances 7 -- \
   uv run python scripts/run_actors.py --actors 7 --episodes 8 --policy turtle \
       --renderer host --frame-rate-hz 120 --cores 4 \
@@ -689,4 +702,7 @@ episodes only, with 95% stratified-bootstrap intervals (actor as the stratum):
 A change is robustness-only when the fingerprint's intervals are unchanged
 and only failure rates move; anything else changed behaviour and needs a
 pre-registered equivalence stage first. The reference numbers are
-`docs/experiments.md`, "Fixed-policy throughput reference".
+`docs/experiments.md`, "Fixed-policy throughput reference" (the build before
+the transport fix) and, for the build now in use, the `#103` entry, "Bridge
+transport fix", whose `N=1 after` and `N=7 after` cells are the reference for
+the next change.

@@ -38,8 +38,13 @@ moment leaves one complete pair.**
   new file alone. `load` accepts any line, so the file on disk always passes.
 - **Cadence.** The pair is written every `--checkpoint-every-episodes`
   (default 25), beside every numbered checkpoint, and once more as the run
-  ends. The write holds the progress lock, so learning and episode counting
-  wait for it; actors keep playing and adding to the buffer.
+  ends. The write holds the progress lock and runs on the thread of the actor
+  whose episode triggered it: that actor's emulator idles for the save, and any
+  other actor that finishes an episode meanwhile waits for the lock too, so
+  learning and episode counting stop. The actors still mid-episode keep
+  playing, but the conversion of the sequences to arrays is pure Python and
+  holds the GIL, so they are slowed while it runs. Each save prints its
+  decisions, sequences, size and wall time.
 - **Full rewrite, not an incremental log.** A full dump at 1,000,000 steps
   takes 11.5 s and adds 0.2 GB of peak memory against a 23 GB process,
   written in 8,192-row chunks with the page cache dropped behind them. That
@@ -50,9 +55,15 @@ moment leaves one complete pair.**
   and (same device count only) CUDA streams; the replay dump (format 2)
   carries its sampler. `build_arm` restores the process streams last, after
   every component is built.
-- **Failure.** A replay save that fails moves nothing: it is printed, and
-  the previous pair stands. A `latest.pt` without its replay would be a
-  resume point that silently loses the buffer.
+- **Failure.** A replay save that fails moves nothing: the previous pair
+  stands. A `latest.pt` without its replay would be a resume point that
+  silently loses the buffer. The consequence is that a persistently failing
+  save freezes the resume point: `latest.pt` does not advance, however far
+  the run does. Each failure prints a loud line with how many decisions
+  `latest.pt` is behind, and is counted in the run summary
+  (`failed_resume_saves`) and in MLflow (`health_failed_resume_saves`), so it
+  is seen while the run is still alive rather than after a kill. Numbered
+  checkpoints are unaffected, but carry no replay.
 
 ### What a resume refuses and accepts
 
@@ -86,7 +97,9 @@ moment leaves one complete pair.**
 
 - Disk: one dump (4.8 GB at 1,000,000 steps) plus a second one transiently
   while the next is written.
-- Actor-visible stall: learning and counting pause about 12 s per save at
-  1,000,000 steps; at the default cadence that is one save per 25 episodes.
+- Stall: at 1,000,000 steps a save takes about 12 s, during which the
+  triggering actor's emulator idles and other actors finishing an episode
+  wait; at the default cadence that is one save per 25 episodes. The first
+  device run is where the fleet-wide cost is measured, from the per-save line.
 - Resuming `M3-P016` itself, which predates this, can only re-warm: its
   `latest.pt` is format 4 and it left no dump.

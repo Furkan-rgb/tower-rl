@@ -283,6 +283,34 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
     assert report.checkpoints_written == len(written)
 
 
+def test_the_resume_point_beside_a_numbered_checkpoint_is_not_counted_again() -> None:
+    training = _run(budget_decisions=250)
+    training.config = TrainingConfig(
+        budget_decisions=250,
+        exploration=SCHEDULE,
+        warmup_sequences=2,
+        batch_size=2,
+        gradient_steps_per_decision=0.2,
+        checkpoint_every_episodes=3,
+        checkpoint_every_decisions=40,
+    )
+    numbered: list[int] = []
+    resume_points: list[int] = []
+    training.numbered_checkpoint = lambda report: numbered.append(report.episodes)
+    training.checkpoint = lambda report: resume_points.append(report.episodes)
+
+    report = training.run()
+
+    # Every numbered checkpoint has a resume point beside it, at the same count.
+    assert set(numbered) <= set(resume_points)
+    assert len(resume_points) > len(
+        [episode for episode in resume_points if episode % 3 == 0]
+    )
+    assert report.checkpoints_written == len(numbered) + len(
+        [episode for episode in resume_points if episode % 3 == 0]
+    )
+
+
 def test_periodic_hooks_are_off_when_their_period_is_zero() -> None:
     calls: list[str] = []
     training = _run(budget_decisions=100)

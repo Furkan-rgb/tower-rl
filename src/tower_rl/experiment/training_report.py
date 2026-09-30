@@ -184,8 +184,17 @@ class TrainingReport:
     #: The saved buffer this run's replay was loaded from on resume, or None
     #: when it started empty. Recorded in every checkpoint's replay provenance.
     replay_restored_from: str | None = None
+    #: Resume-point saves whose replay could not be written. While one fails
+    #: `latest.pt` does not advance (it is only written after its replay), so a
+    #: run that keeps failing has a resume point that falls further behind.
+    failed_resume_saves: int = field(init=False, default=0)
+    #: The decisions of the resume point in place: the last save that
+    #: succeeded, or where this segment resumed (0 for a run that has written
+    #: none). What a failed save reports the run to be behind by.
+    resume_point_decisions: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
+        self.resume_point_decisions = self.resumed_decisions
         self.decisions_logged = self.resumed_decisions
         self.game_ms_logged = self.resumed_game_ms
 
@@ -207,11 +216,14 @@ class TrainingReport:
     def checkpoint(self, report: TrainingProgressReport) -> None:
         """The resume point, rewritten as the run proceeds: `latest.pt` and its replay.
 
-        Called with the run's progress lock held (`TrainingRun.checkpoint`), so
-        nothing is counted or learned until it returns. The buffer's lock is
-        taken only to capture the buffer, so the actors go on playing - and
-        adding what they play - while it is written; an actor that finishes an
-        episode meanwhile waits for the progress lock to count it.
+        Called with the run's progress lock held (`TrainingRun.checkpoint`), on
+        the thread of the actor whose episode triggered it, so nothing is
+        counted or learned until it returns. That actor's emulator idles for the
+        save, and any other actor that finishes an episode meanwhile waits for
+        the lock too; the buffer's own lock is taken only to capture it. The
+        conversion of the sequences to arrays (`ReplayImage.write`) is pure
+        Python and holds the GIL, so the actors still mid-episode are slowed
+        while it runs, not left undisturbed.
         """
         with self.replay.lock:
             image = self.replay.image()
@@ -253,10 +265,13 @@ class TrainingReport:
         name the one decision count, in the dump's metadata and in the
         checkpoint's progress, and a resume refuses a pair where they differ.
 
-        A failed replay save moves nothing: it is reported, not raised, and the
-        previous pair stands - a `latest.pt` without its replay would be a
-        resume point that loses the buffer. Only one dump is kept, whatever the
-        number of numbered checkpoints: the resume point is `latest.pt` alone.
+        A failed replay save moves nothing: it is counted and reported loudly,
+        not raised, and the previous pair stands - a `latest.pt` without its
+        replay would be a resume point that loses the buffer. The cost is that
+        while saves keep failing the resume point freezes at the last good
+        pair; the count and the line say how far behind it is. Only one dump is
+        kept, whatever the number of numbered checkpoints: the resume point is
+        `latest.pt` alone.
         """
         replays = self.run_dir / REPLAY_DIRECTORY
         dump = replays / replay_dump_name(report.decisions)
@@ -273,15 +288,24 @@ class TrainingReport:
                 dump, run={"decisions": report.decisions, "identity": asdict(self.identity)}
             )
         except Exception as failure:  # noqa: BLE001 - best effort; see above
+            self.failed_resume_saves += 1
             print(
-                f"[{self.name}] resume point not moved: replay not saved ({failure}); "
-                "latest.pt and the replay it names stand",
+                f"[{self.name}] !!! RESUME POINT NOT SAVED (failure "
+                f"{self.failed_resume_saves}): replay not saved ({failure}); "
+                f"latest.pt stays at {self.resume_point_decisions} decisions, now "
+                f"{report.decisions - self.resume_point_decisions} decisions behind "
+                "the run, and will not advance until a save succeeds",
                 flush=True,
+            )
+            self.run.log_metrics(
+                {"health_failed_resume_saves": float(self.failed_resume_saves)},
+                decisions=report.decisions,
             )
             return
         self.last_checkpoint_fingerprint = self._write(
             report, self.checkpoint_path, paired_replay=dump.relative_to(self.run_dir).as_posix()
         )
+        self.resume_point_decisions = report.decisions
         for stale in replays.iterdir():
             if stale == dump:
                 continue
@@ -602,7 +626,13 @@ class TrainingReport:
         # key, the legacy by-reason mapping, and the MLflow metrics below: one
         # count of the run's honesty, not three.
         health = episode_health(report.episode_summaries)
-        self.run.log_metrics(health_metrics(health, prefix="health_"), decisions=report.decisions)
+        self.run.log_metrics(
+            {
+                **health_metrics(health, prefix="health_"),
+                "health_failed_resume_saves": float(self.failed_resume_saves),
+            },
+            decisions=report.decisions,
+        )
         return {
             "backbone": self.name,
             "run_id": self.identity.run_id,
@@ -693,6 +723,7 @@ class TrainingReport:
             "episode_failures": report.episode_failures,
             "evaluation_failures": report.evaluation_failures,
             "checkpoints_written": report.checkpoints_written,
+            "failed_resume_saves": self.failed_resume_saves,
             "checkpoint_path": str(self.checkpoint_path),
             # Every collected episode's own record - what certifies the run
             # stayed honest for its whole span, not only in aggregate.

@@ -128,7 +128,10 @@ the saved one. At 100,000 steps the save took 1.3 s, +87 MB.
 **Reading.** A full rewrite of the buffer fits the bound with room to spare,
 so no incremental format was built (ADR 0014 gives the reasons). The save
 holds the training run's progress lock throughout, so learning and episode
-counting stall about 12 s per save at this size; actors keep playing. At the
+counting stall about 12 s per save at this size. The save runs on the thread
+of the actor whose episode triggered it, so that actor's emulator idles, other
+actors finishing an episode wait, and the rest are slowed by the GIL the
+conversion loop holds. At the
 default `--checkpoint-every-episodes 25` and about 1,000 decisions per
 episode late in `M3-P016`, that is one save per ~25,000 decisions. The disk
 holds one dump, plus a second while the next is written.

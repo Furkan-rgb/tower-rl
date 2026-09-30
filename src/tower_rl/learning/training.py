@@ -690,6 +690,9 @@ class TrainingProgressReport:
     #: reported it, by name, over the same window.
     recent_diagnostics: dict[str, list[float]] = field(default_factory=dict)
     evaluations: list[EvaluationReport] = field(default_factory=list)
+    #: Checkpoints written on their own cadence: each numbered one, and each
+    #: `latest.pt` written by the episode cadence. The `latest.pt` written
+    #: beside a numbered checkpoint is not counted again.
     checkpoints_written: int = 0
     #: Where the exploration schedule had reached, and the importance-sampling
     #: exponent replay samples at (fixed; `PrioritizedSequenceReplay.beta`).
@@ -1374,11 +1377,11 @@ class TrainingRun:
         # just written too, so every checkpoint the run writes has a resume
         # point - with its replay - at the same decision count beside it.
         period = self.config.checkpoint_every_episodes
-        if self.checkpoint is not None and (
-            wrote_numbered or (period and report.episodes % period == 0)
-        ):
+        on_cadence = bool(period) and report.episodes % period == 0
+        if self.checkpoint is not None and (wrote_numbered or on_cadence):
             self.checkpoint(report)
-            report.checkpoints_written += 1
+            if on_cadence:
+                report.checkpoints_written += 1
         if period_closed:
             # After the checkpoint, so a run that stops here has written the
             # model the period it stopped on produced.

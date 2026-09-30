@@ -247,8 +247,8 @@ def dump_bytes(dump: Path) -> dict[Path, bytes]:
     return {path.relative_to(dump): path.read_bytes() for path in dump.rglob("*") if path.is_file()}
 
 
-def test_a_replay_save_that_fails_leaves_the_earlier_pair_in_place(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_replay_save_that_fails_leaves_the_earlier_pair_in_place_and_is_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     first = numbered(tmp_path, 200)
     folder = Path(first["run_folder"])
@@ -262,7 +262,14 @@ def test_a_replay_save_that_fails_leaves_the_earlier_pair_in_place(
         raise OSError("disk full")
 
     monkeypatch.setattr(ReplayImage, "write", fails)
-    resumed(tmp_path, latest, 400)
+    segment = resumed(tmp_path, latest, 400)
+
+    # A resume point that no longer advances is loud and counted, not silent.
+    failed = segment["arm"]["failed_resume_saves"]
+    assert failed >= 1
+    out = capsys.readouterr().out
+    assert out.count("RESUME POINT NOT SAVED") == failed
+    assert "decisions behind" in out
 
     after = (latest.read_bytes(), dump_bytes(folder / REPLAY_DIRECTORY))
     assert after[0] == before[0]

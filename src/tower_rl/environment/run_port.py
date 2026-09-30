@@ -132,6 +132,21 @@ class RunPort(Protocol):
         """
         ...
 
+    @property
+    def world_held(self) -> bool:
+        """Whether the game world is standing still on the latest reading.
+
+        The environment hands control to the agent only on a held world
+        (`#95`, ADR 0015): a running one streams a new observation every few
+        hundred milliseconds, so any command a slower-than-that policy composed
+        would bind a sequence already gone. The port answers from the commands
+        it has carried: a world is held after a confirmed `pause` and after an
+        advance that settled on a run still in progress, released by every
+        other lifecycle press and by the run ending, and left as it was by
+        anything else - a purchase, a Workshop or unlock command.
+        """
+        ...
+
     def read_state(self) -> ExactRunReadingLike | None:
         """Return the freshest exact reading, or None when no run is initialized."""
         ...

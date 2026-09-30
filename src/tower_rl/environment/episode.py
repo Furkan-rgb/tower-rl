@@ -296,11 +296,18 @@ class EpisodeSummary:
     #: single frame, rather than by excluding the episode (M1B-E008).
     recovered_transients: int = 0
     #: The wave observed in this episode's first state. A fresh run always
-    #: starts at 1; anything higher means the episode continued a leftover run
-    #: instead of starting one, which is contamination that must stay visible
-    #: rather than be silently recovered from (`begin_episode` refreshes a
-    #: frozen leftover run but still continues it).
+    #: starts at 1. Reset retires any run the previous episode left live before
+    #: it begins one (ADR 0015), so anything higher means an episode continued
+    #: a leftover run anyway - contamination that must stay visible rather
+    #: than be silently absorbed.
     starting_wave: int = 0
+    #: The wave of the run the previous episode left live - it ended some way
+    #: other than `GAME_OVER` - which this episode's reset played out with
+    #: `WAIT` to the game's own death before starting a fresh round, and the
+    #: wall time that retirement cost. 0 and 0.0 when there was nothing to
+    #: retire. None of the retired run is part of this episode (ADR 0015).
+    retired_run_wave: int = 0
+    retirement_wall_seconds: float = 0.0
     #: One row per wave index this episode entered, in order. Empty only for a
     #: summary assembled without the environment's per-wave tally.
     waves: tuple[WaveRecord, ...] = ()

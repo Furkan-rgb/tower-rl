@@ -98,6 +98,83 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Invalid cuts no longer cascade (`#95`, 2026-09-30)
+
+**Purpose.** In M3 runs, one invalid end was followed by episodes that opened
+above wave 1 and ended invalid again. There were also fresh episodes that ended
+at wave 1 with 0 ms of game time. This entry finds the mechanism on a device
+and verifies the fix (ADR 0015).
+
+**Setup.**
+- One read-only clone, `tower_rl_instrumented_api36` on emulator-5556, through
+  `scripts/run_stage.sh`:
+  - cold bring-up at 120 Hz on the host renderer;
+  - `require_offline` checked before any episode;
+  - no taps, screenshots or input.
+- Bridge build `workshop-render-interval-16` (53d346ae…).
+- Environment as in `M3-P016`: availability `all`, Workshop level 5,
+  choice points, 100 ms frames.
+- Policy `CheapestFirstPolicy`.
+- A "cut" stops stepping at a decision cap, which leaves the run live exactly
+  as an invalid end does.
+- A "think" is a sleep before each decision, standing in for a slow policy.
+- Script:
+  `scratchpad p95-recovery/device_session.py`, not committed. It uses only the
+  bring-up, adapter and environment APIs.
+
+Every stage ended `cleanup ok`:
+- libunity SHA-256 ffc1f3ef…0040;
+- versionCode 1199;
+- installer com.android.vending;
+- 0 mounts;
+- no emulator left.
+
+The three stages took 12 min of device time in total.
+
+**Results, before the fix.**
+
+| Episode | Think | Start wave | End | Reason |
+|---|---|---|---|---|
+| fresh | 0 | 1 | game over, wave 20 | — |
+| fresh, cut at 60 decisions | 0 | 1 | cut, wave 12 | — |
+| next | 0 | **12** | game over, wave 21 | — |
+| fresh, cut | 0 | 1 | cut, wave 12 | — |
+| next | 0 | **12** | game over, wave 21 | — |
+| fresh ×3 | 0.3 s | 1 | **mask_legal_rejected, wave 1, 0 ms** | `…rejected by the bridge: stale_or_duplicate`, 3 of 3 |
+
+**Results, after the fix.**
+- The reset after every cut retired the live run and started at wave 1:
+  - 4 of 4 retirements;
+  - retired from waves 12, 7, 7 and 12;
+  - 19.3–29.8 s of wall time each; the whole reset took 23–34 s.
+- Across the 0.3 s think episodes (5 episodes, 220 decisions), there were 0
+  invalid transitions and no `stale_or_duplicate`.
+- None drifted from the upgrade setup, and none tripped the Workshop or
+  availability checks.
+- One normal fresh episode reached game over at wave 21.
+- The world-held check covered 100 decisions of two episodes, one of them
+  after a retirement. After each 0.3 s think, a fresh bridge read returned the
+  sequence the agent was deciding on (a world that is not held streams a new
+  one every 250 ms), and the port reported `world_held`: 100 of 100 both ways.
+
+**Reading.**
+- An episode inherited the run it was cut from: proven.
+- A fresh round was handed over with the world running, so a slower first
+  decision lost the race against the stream: proven. That covers the wave-1,
+  0 ms episodes. It also covers the resumed episodes re-tripping, which went
+  through the same unpause and speed pin, but that part is inferred, not
+  reproduced.
+- The cut that starts a chain mid-game is not explained by either mechanism.
+  Inside an episode the world is held after every advance and a purchase does
+  not release it (bridge source), and the check above held at every decision.
+  Its reason is for the live invalid-reason logging to show.
+
+**Limits.**
+- One instance, no learner contention.
+- A host-side cut stands in for an invalid end.
+- The retirement cost is from waves 7 and 12 only. A cut at wave 30+ would
+  take longer, and was not measured.
+
 ## Crash-safe resume point: save cost at 1,000,000 replay steps (`#97`, 2026-09-30)
 
 **Purpose.** `M3-P016` was killed by systemd-oomd at 425,078 decisions and

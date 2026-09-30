@@ -177,6 +177,8 @@ def test_records_carry_everything_needed_to_compare_arms_later() -> None:
     assert record["valid_episodes"] == 3
     assert "mean_final_wave" in record and "stdev_final_wave" in record
     assert "total_decisions" in record and "game_speed" in record
+    # What the policy cost, which the throughput benchmark splits a decision by.
+    assert record["total_policy_seconds"] > 0.0
 
 
 def test_the_report_carries_decision_density_and_the_speed_up() -> None:

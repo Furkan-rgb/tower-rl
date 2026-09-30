@@ -276,6 +276,13 @@ class EpisodeSummary:
     #: Wall time spent inside advances alone. The rest of `elapsed_wall_seconds`
     #: is decision-boundary overhead, which is only readable as the difference.
     advance_wall_seconds: float = 0.0
+    #: The same advances as the host saw them, issue to result: wall time, and
+    #: the host thread's CPU time inside it. Round trip minus
+    #: `advance_wall_seconds` is what carrying the commands cost.
+    advance_round_trip_seconds: float = 0.0
+    advance_round_trip_cpu_seconds: float = 0.0
+    #: Purchase commands as the host saw them, issue to confirmed result.
+    purchase_round_trip_seconds: float = 0.0
     #: Advances the bridge stopped mid-loop on a reading its own settled
     #: snapshot then did not corroborate: neither the game-time budget spent nor
     #: an event the settled state still shows. Benign - the settled state is

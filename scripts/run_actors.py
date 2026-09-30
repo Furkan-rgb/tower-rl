@@ -37,6 +37,11 @@ collection afterwards is exactly as concurrent as before.
     uv run python scripts/run_actors.py \\
         --actors 2 --episodes 20
 
+The fleet report also carries `throughput` (`experiment/throughput.py`): under
+one fixed scripted policy it is the pipeline benchmark every speed change is
+verified against (`docs/setup.md`, "Fixed-policy throughput benchmark"), and
+`bridge_build`, the build every actor deployed.
+
 With `--policy checkpoint:<path>` and no output given, every actor's record and
 the fleet's `fleet.json` are filed with the run that wrote the checkpoint, in
 `<run folder>/evaluations/<name>/`; `--evaluation-name` names it (default: the
@@ -73,7 +78,13 @@ from run_episodes import (  # noqa: E402
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
-from tower_rl.simulation.bridge import ActorFailure, deploy_bridge  # noqa: E402
+from tower_rl.experiment.throughput import throughput  # noqa: E402
+from tower_rl.simulation.bridge import (  # noqa: E402
+    ActorFailure,
+    artifact_digest,
+    bridge_build_directory,
+    deploy_bridge,
+)
 from tower_rl.simulation.bring_up import (  # noqa: E402
     bring_up,
     require_game_activity,
@@ -524,6 +535,18 @@ def main() -> int:
     # Per instance index, because one fleet may hold two arms; each actor's
     # entry and each actor's own record carry the rate it collected at.
     report["frame_rates_hz"] = arguments.frame_rates
+    # Which bridge every actor deployed: a throughput reading belongs to one
+    # build, and `TOWER_BRIDGE_BUILD_DIR` is what chose it.
+    build = bridge_build_directory()
+    report["bridge_build"] = {
+        "directory": str(build),
+        "digest": artifact_digest(build / "libtower_bridge.so"),
+    }
+    # Where each actor's decisions went, and the behaviour fingerprint that
+    # says whether two reports measured the same play (ADR 0016).
+    report["throughput"] = throughput(
+        {outcome.serial: outcome.record for outcome in outcomes if outcome.record is not None}
+    )
 
     arguments.output.write_text(json.dumps(report, indent=2))
     for actor in report["actors"]:

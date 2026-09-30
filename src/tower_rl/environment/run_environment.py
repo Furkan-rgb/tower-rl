@@ -376,6 +376,17 @@ class _EpisodeTally:
     #: boundary cost.
     round_ms: float = 0.0
     advance_wall_micros: int = 0
+    #: The same advance commands as the host saw them: wall time from issuing
+    #: each one to holding its result, and this thread's CPU time inside that
+    #: window. The round trip minus the bridge's own `advance_wall_micros` is
+    #: what carrying a command costs - adb forward, the bridge's work outside
+    #: its advance loop, and host decoding - and the CPU time says how much of
+    #: that is the host computing rather than waiting.
+    advance_round_trip_seconds: float = 0.0
+    advance_round_trip_cpu_seconds: float = 0.0
+    #: Wall time of purchase commands as the host saw them. The bridge reports
+    #: no wall time of its own for a purchase; its confirmation poll is inside.
+    purchase_round_trip_seconds: float = 0.0
     #: Advances the bridge stopped mid-loop on a reading the settled snapshot
     #: then did not corroborate: it spent neither its budget nor found an event
     #: the settled state still shows. The transition is genuine - the settled
@@ -451,6 +462,11 @@ class _EpisodeTally:
         """
         if self.waves:
             self.waves[-1].game_ms += round_ms
+
+    def charge_advance_round_trip(self, started_wall: float, started_cpu: float) -> None:
+        """Charge one advance command's round trip, begun at these clock readings."""
+        self.advance_round_trip_seconds += time.perf_counter() - started_wall
+        self.advance_round_trip_cpu_seconds += time.thread_time() - started_cpu
 
     def charge_decision(self) -> None:
         if self.waves:
@@ -792,6 +808,9 @@ class InstrumentedRunEnvironment:
             game_ms=round(self._tally.game_ms, 3),
             round_ms=round(self._tally.round_ms, 3),
             advance_wall_seconds=round(self._tally.advance_wall_micros / 1_000_000, 3),
+            advance_round_trip_seconds=round(self._tally.advance_round_trip_seconds, 4),
+            advance_round_trip_cpu_seconds=round(self._tally.advance_round_trip_cpu_seconds, 4),
+            purchase_round_trip_seconds=round(self._tally.purchase_round_trip_seconds, 4),
             advances_cut_short=self._tally.advances_cut_short,
             pin_restarts=self._tally.pin_restarts,
             invalid_transitions=self._tally.invalid_transitions,
@@ -862,12 +881,14 @@ class InstrumentedRunEnvironment:
         try:
             if not action.is_wait:
                 assert action.family is not None and action.slot is not None
+                purchase_started = time.perf_counter()
                 with self.profile.span(BRIDGE_ROUND_TRIP):
                     purchase_result = self.port.buy_upgrade(
                         action.family.value,
                         action.slot,
                         expected_sequence=state.source_sequence,
                     )
+                self._tally.purchase_round_trip_seconds += time.perf_counter() - purchase_started
                 outcome = _purchase_outcome(purchase_result.outcome)
                 if outcome is ActionOutcome.EXECUTED:
                     self._tally.purchases += 1
@@ -1035,6 +1056,7 @@ class InstrumentedRunEnvironment:
             )
 
         budget = self.cadence.max_quiet_game_ms
+        started_wall, started_cpu = time.perf_counter(), time.thread_time()
         with self.profile.span(BRIDGE_ROUND_TRIP):
             result = self.port.advance_until_event(
                 expected_sequence=state.source_sequence,
@@ -1042,6 +1064,7 @@ class InstrumentedRunEnvironment:
                 frame_game_ms=self.cadence.frame_game_ms,
                 health_change_fraction=self.cadence.health_change_fraction,
             )
+        self._tally.charge_advance_round_trip(started_wall, started_cpu)
         self._tally.charge_span_advance()
         self._tally.frames += result.frames
         self._tally.game_ms += result.game_ms
@@ -1387,6 +1410,7 @@ class InstrumentedRunEnvironment:
         moved on is a real failure, and it keeps its reasons so the episode is
         classified invalid rather than quietly accepted.
         """
+        started_wall, started_cpu = time.perf_counter(), time.thread_time()
         with self.profile.span(BRIDGE_ROUND_TRIP):
             result = self.port.advance_until_event(
                 expected_sequence=state.source_sequence,
@@ -1394,6 +1418,8 @@ class InstrumentedRunEnvironment:
                 frame_game_ms=self.cadence.frame_game_ms,
                 health_change_fraction=self.cadence.health_change_fraction,
             )
+        # Charged with its bridge wall time below, so the two stay paired.
+        self._tally.charge_advance_round_trip(started_wall, started_cpu)
         # This frame really was stepped, so it is charged to the episode like any
         # other: the speed-up is measured from what the game clock actually cost.
         self._tally.frames += result.frames

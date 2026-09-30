@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 
 import pytest
@@ -406,6 +407,50 @@ def test_the_summary_reports_what_advancing_cost_the_game_clock() -> None:
     # to show what the decision boundaries cost. The double invents its own
     # figure, so only that it is carried through is testable here.
     assert summary.advance_wall_seconds > 0.0
+
+
+def test_the_summary_reports_each_command_as_the_host_saw_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round trip minus the bridge's own advance time is what transport cost.
+
+    The double answers instantly, so every command here is made to take a
+    known 3 ms of host wall time; the summary must carry at least that much for
+    each advance and each purchase, separately.
+    """
+    environment, port = _environment(damage_per_second=4.0)
+    commands = {"advance": 0, "purchase": 0}
+
+    def slowed(name: str, command: object) -> object:
+        def issue(*args: object, **kwargs: object) -> object:
+            commands[name] += 1
+            time.sleep(0.003)
+            return command(*args, **kwargs)  # type: ignore[operator]
+        return issue
+
+    monkeypatch.setattr(port, "advance_until_event", slowed("advance", port.advance_until_event))
+    monkeypatch.setattr(port, "buy_upgrade", slowed("purchase", port.buy_upgrade))
+    environment.reset()
+    advances_before = commands["advance"]
+    environment.step(upgrade_action("attack", 0))
+    for _ in range(50):
+        transition = environment.step(WAIT)
+        if transition.terminated:
+            break
+    else:
+        pytest.fail("the tower never died")
+
+    summary = environment.summarize(transition.termination)
+    assert summary.purchases == commands["purchase"] == 1
+    assert summary.purchase_round_trip_seconds >= 0.003
+    # The episode's advances include the ones `reset` made to its first choice
+    # point, which the tally charges from the moment the episode begins.
+    assert commands["advance"] - advances_before <= summary.advances
+    assert summary.advance_round_trip_seconds >= 0.003 * summary.advances
+    assert 0.0 <= summary.advance_round_trip_cpu_seconds <= summary.advance_round_trip_seconds
+    assert summary.advance_round_trip_seconds + summary.purchase_round_trip_seconds <= (
+        summary.elapsed_wall_seconds + 0.001
+    )
 
 
 def test_reward_is_wave_progress_only() -> None:

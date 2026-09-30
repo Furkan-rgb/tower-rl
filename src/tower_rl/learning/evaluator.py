@@ -12,6 +12,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any
 
+from tower_rl.environment.decision_time import POLICY_FORWARD
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.learning.actor import Actor, ActorConfig
@@ -97,6 +98,8 @@ class EvaluationReport:
     #: continued a leftover run instead of starting fresh. Not excluded, only
     #: counted, so contamination stays visible in an unattended run.
     episodes_not_started_fresh: int = 0
+    #: Wall time the policy spent choosing, over every attempted episode.
+    total_policy_seconds: float = 0.0
 
     @property
     def invalid_rate(self) -> float:
@@ -246,6 +249,9 @@ def evaluate(
         advances_cut_short=cut_short,
         episodes=tuple(attempted),
         episodes_not_started_fresh=sum(1 for summary in attempted if summary.starting_wave > 1),
+        total_policy_seconds=round(
+            actor.profile.snapshot().buckets[POLICY_FORWARD].wall_seconds, 4
+        ),
     )
 
 
@@ -285,6 +291,12 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         "budgeted_game_ms": summary.game_ms,
         "round_ms": summary.round_ms,
         "advance_wall_seconds": summary.advance_wall_seconds,
+        # The same advances as the host saw them, and the purchases: the
+        # difference from `advance_wall_seconds` is what carrying the commands
+        # cost (`experiment/throughput.py`).
+        "advance_round_trip_seconds": summary.advance_round_trip_seconds,
+        "advance_round_trip_cpu_seconds": summary.advance_round_trip_cpu_seconds,
+        "purchase_round_trip_seconds": summary.purchase_round_trip_seconds,
         "elapsed_wall_seconds": summary.elapsed_wall_seconds,
         # The reasons the episode was invalid; empty for a valid episode. Today
         # this is the same tuple as `termination_detail` because every invalid
@@ -375,6 +387,7 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "advances_cut_short": report.advances_cut_short,
         "speedup": round(report.speedup, 3),
         "episodes_not_started_fresh": report.episodes_not_started_fresh,
+        "total_policy_seconds": report.total_policy_seconds,
         "episodes": [
             episode_record(index, summary) for index, summary in enumerate(report.episodes)
         ],

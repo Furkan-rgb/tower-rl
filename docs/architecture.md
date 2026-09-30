@@ -330,6 +330,11 @@ and no script.
 - `comparison.py` — `iqm`, `stratified_bootstrap`,
   `stratified_bootstrap_difference`, `bootstrap_difference`, `cohens_d`.
 - `wave_statistics.py` — per-wave equivalence analysis between two arms.
+- `throughput.py` — the fixed-policy throughput report `run_actors.py` writes:
+  frames per second, a decision's wall time split into advance, transport,
+  purchase, policy and other host time, and the behaviour fingerprint (final
+  wave, decisions per wave, round-clock ratio), each with a stratified
+  bootstrap interval (ADR 0016).
 
 **State.** Run identity is immutable and is stamped into every checkpoint and
 every record. Durable state is files under the run folder plus whatever the

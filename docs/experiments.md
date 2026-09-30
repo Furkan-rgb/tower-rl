@@ -98,6 +98,111 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Fixed-policy throughput reference (`#101`, 2026-09-30)
+
+**Purpose.** Training decisions per hour follow the policy's game time per
+decision, so they cannot say whether a pipeline change made collection faster
+(ADR 0016). This entry is the reference every speed change is measured
+against: a fixed scripted policy's frames per second, a decision's wall time
+split by where it goes, and the behaviour fingerprint a robustness-only change
+must leave unchanged. It also attributes the ~55 ms of non-advance time per
+decision seen in training.
+
+**Setup.**
+- Read-only clones of `tower_rl_instrumented_api36` from emulator-5556, each
+  stage through `scripts/run_stage.sh`; `require_offline` before any episode;
+  no taps, screenshots or input.
+- Bridge build `workshop-render-interval-16` (53d346ae…) through
+  `TOWER_BRIDGE_BUILD_DIR`.
+- Training's settings: host renderer, availability `all`, Workshop level 5,
+  100 ms frames; 120 Hz and 4 cores unless the cell says otherwise.
+- Policy `turtle` (`TurtlePolicy`). Its mix, 1.005 advances and 0.050
+  purchases per decision at 1.6 game-s per decision, is the trained policies'.
+  `cheapest_first` (3.7 advances and 1.0 purchase per decision) overweights
+  purchases and is kept only as a probe.
+- Command: `docs/setup.md` section 11. Reports:
+  `state/records/m1-benchmark/<cell>/fleet.json`, key `throughput`.
+- Intervals: 95% stratified bootstrap over valid episodes, actor as the
+  stratum (`experiment/throughput.py`).
+- A per-frame socket probe (header and payload arrival times per command) ran
+  on two probe stages through a scratchpad `sitecustomize`, not committed.
+
+Every stage ended `cleanup ok`: libunity SHA-256 ffc1f3ef…0040, versionCode
+1199, installer com.android.vending, 0 mounts, no emulator left. 7 stages,
+80 min of device time, 0 invalid episodes in 67.
+
+**Results.** Means with 95% intervals; ms are per decision unless marked.
+
+| Cell | Episodes | Decision ms | Advance ms | Transport ms per advance | Frames/s in advance | Frames/s per episode | Final wave | Decisions/wave | Round-clock ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| N=1, 120 Hz, 4 cores | 8 | 125.5 [124.2, 126.8] | 75.2 [74.4, 76.1] | 44.8 [44.6, 45.1] | 247 [245, 249] | 148 [147, 149] | 39.5 [38.8, 40.0] | 21.32 [21.20, 21.43] | 0.9960 [0.9956, 0.9964] |
+| N=1, 240 Hz | 6 | 127.4 [125.9, 129.0] | 76.5 [75.4, 77.8] | 44.7 [44.4, 45.0] | 245 [240, 249] | 148 [145, 149] | 39.3 [38.7, 40.0] | 21.13 [21.00, 21.21] | 0.9958 [0.9950, 0.9963] |
+| N=1, 8 cores | 6 | 124.9 [123.9, 126.1] | 74.7 [73.9, 75.7] | 44.6 [44.3, 44.8] | 251 [250, 253] | 150 [150, 151] | 39.2 [38.5, 39.8] | 21.23 [21.04, 21.43] | 0.9958 [0.9952, 0.9963] |
+| N=1, 2 cores | 6 | 127.0 [126.5, 127.5] | 75.8 [75.3, 76.3] | 45.0 [44.9, 45.1] | 249 [248, 250] | 148 [148, 149] | 38.7 [38.0, 39.3] | 21.23 [21.07, 21.39] | 0.9963 [0.9957, 0.9968] |
+| N=7, 120 Hz, 4 cores | 35 | 151.0 [148.2, 153.6] | 100.5 [97.8, 103.1] | 44.9 [44.8, 45.0] | 184 [178, 190] | 122 [119, 124] | 39.2 [38.9, 39.5] | 21.28 [21.19, 21.36] | 0.9957 [0.9955, 0.9959] |
+
+The split of a decision at N=1 and 120 Hz: 75.2 ms advance, 44.8 ms transport,
+4.8 ms purchases, 0.03 ms policy and 0.7 ms other host time. At N=7 it is
+100.5, 45.1, 4.8, 0.02 and 0.5 ms. A purchase's round trip is 95 ms in every
+cell. Outside the episodes, each actor spends 8-10 s per episode on the reset
+and round start. At N=7 the fleet renders 851 frames/s, 5.75× the solo 148.
+The final waves are 38-40 in every cell.
+
+**Attribution.**
+- *Transport is a fixed ~45 ms per command.* It is the same at 1 and 7 actors,
+  at 2, 4 and 8 cores and at 120 and 240 Hz. Only 0.6-0.9 ms of it is host
+  CPU. It is not streaming drain: each advance command gets exactly 2 frames,
+  the observation and the result, and there were 5 heartbeats in 2,534
+  commands. It is not adb-forward contention either, since 7 actors leave it
+  unchanged.
+- The socket probe shows where it goes. The observation's 4-byte header
+  arrives 1.25 ms after the bridge's `wall_micros` ends. Its ~9.4 KB payload
+  arrives 42.9 ms after that (p10 41.1, p90 44.9). The result follows 0.4 ms
+  later.
+- That is the signature of Nagle's algorithm meeting a ~40 ms delayed ACK.
+  `SendFrame` writes the header and the payload separately, without
+  `TCP_NODELAY`. This is the likely cause, not yet a verified one: it is
+  verified only when a bridge build with the fix removes the gap.
+- A purchase is one 50 ms confirmation poll (`kCommandPollMicros`) plus the
+  same ~45 ms transport.
+- *7 actors cost advance time, not transport:* each actor's advance goes from
+  75 to 100.5 ms per decision (+34%).
+
+**120 Hz pacing does not bind.** At 120 Hz the advance renders a frame every
+~4.0 ms, well above 120 Hz. 240 Hz changes neither the frame rate nor the
+fingerprint: every interval overlaps the 120 Hz cell's.
+
+**Cores.** 2, 4 and 8 cores give the same solo advance, 74.7-75.8 ms with
+overlapping intervals. Cores do not bind a solo actor.
+
+**VRAM at 7 actors.** From `nvidia-smi` every 20 s (`vram-gpu.csv`,
+`vram-processes.txt` in the N=7 cell):
+- each qemu uses 1.98-2.00 GiB, 13.9 GiB in total;
+- the device's peak is 17.3 GiB of 24.0 GiB, leaving 6.7 GiB, room for three
+  more instances by memory;
+- an 8th would bring the device to ~19.2 GiB (80%);
+- GPU utilisation is 3-26%.
+
+Whether an 8th actor adds throughput depends on the per-actor advance slowdown,
+not on VRAM, and needs its own N=8 cell.
+
+**Contrary and supplementary evidence.** The `cheapest_first` probe (3
+episodes, scripted, same build) ran 577 ms per decision:
+- 313 ms advance, 166 ms transport and 95 ms purchases per decision;
+- 3.7 advances and 1.0 purchase per decision;
+- the same 44.6 ms per command.
+
+The transport per command does not depend on the policy. Its share of a
+decision does.
+
+**Conclusion.** For the trained policies' decision mix, a third of a solo
+decision's wall time and 30% of a 7-actor decision's is a fixed per-command
+socket delay, not work. Removing it (`TCP_NODELAY`, or one write per frame, in
+the bridge) should take a decision from ~125 to ~82 ms solo and from ~151 to
+~108 ms at 7 actors, 1.4-1.5× the decisions per hour. That estimate still has
+to be verified against this reference, with the fingerprint unchanged. Frame
+rate and cores are not levers at this operating point.
+
 ## Invalid cuts no longer cascade (`#95`, 2026-09-30)
 
 **Purpose.** In M3 runs, one invalid end was followed by episodes that opened

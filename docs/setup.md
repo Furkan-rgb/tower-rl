@@ -642,3 +642,51 @@ It needs **bash 5.1 or newer** (the workstation runs 5.3) and refuses to start
 otherwise: it waits on the stage and on the grace timer at once through
 `wait -n -p`, and a shell that cannot do that would read a running stage as a
 finished one and clean the device up underneath it.
+
+## 11. Fixed-policy throughput benchmark
+
+Every change meant to make collection faster is verified against this
+benchmark, never against training decisions per hour, which follow the
+policy's game time per decision (ADR 0016, "Throughput and comparability").
+It is `run_actors.py` under the fixed `turtle` floor, whose decision mix -
+about one advance and 0.09 purchases per decision - is the trained policies'
+own, on the training build and with training's settings:
+
+```text
+name=m1-benchmark-n7-$(date -u +%Y%m%dT%H%M%SZ)
+out=state/records/benchmarks/$name
+TOWER_BRIDGE_BUILD_DIR=$PWD/state/bridge/builds/workshop-render-interval-16 \
+nohup ./scripts/run_stage.sh --name "$name" --instances 7 -- \
+  uv run python scripts/run_actors.py --actors 7 --episodes 8 --policy turtle \
+      --renderer host --frame-rate-hz 120 --cores 4 \
+      --upgrade-availability all --workshop-level 5 --frame-game-ms 100 \
+      --output-directory "$out" --output "$out/fleet.json" > /dev/null 2>&1 &
+```
+
+`--actors 1 --episodes 20` is the solo reference. Change one thing per
+report: the build (`TOWER_BRIDGE_BUILD_DIR`), `--actors`, `--frame-rate-hz`
+or `--cores`.
+
+`fleet.json` then carries `bridge_build` (directory and digest) and
+`throughput` (`src/tower_rl/experiment/throughput.py`), measured over valid
+episodes only, with 95% stratified-bootstrap intervals (actor as the stratum):
+
+- `readings.frames_per_advance_second` - render pacing inside the bridge's
+  advance loop; `frames_per_episode_second` and, per fleet,
+  `fleet_frames_per_episode_second` - what an episode delivers;
+- `decision_split_ms` - a decision's wall time as `advance` (the bridge's own
+  `wall_micros`), `transport` (the host's advance round trip minus that),
+  `purchase` (purchase round trips), `policy` and `other_host`;
+  `readings.transport_ms_per_advance` and `transport_cpu_ms` say what one
+  command costs and how much of it is host CPU;
+- `readings.advances_per_decision`, `purchases_per_decision`,
+  `purchase_round_trip_ms` and `boundary_seconds_per_episode`;
+- `validity` - valid and invalid episodes, invalid by reason;
+- `fingerprint` - the final-wave distribution, decisions per wave, the
+  round-clock ratio (budgeted game ms over the game's round clock) and game
+  seconds per decision.
+
+A change is robustness-only when the fingerprint's intervals are unchanged
+and only failure rates move; anything else changed behaviour and needs a
+pre-registered equivalence stage first. The reference numbers are
+`docs/experiments.md`, "Fixed-policy throughput reference".

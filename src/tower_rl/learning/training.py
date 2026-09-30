@@ -52,7 +52,7 @@ from __future__ import annotations
 import statistics
 import threading
 import time
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -65,11 +65,21 @@ from tower_rl.environment.decision_time import (
 )
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.environment.run_environment import (
+    ADVANCE_TRUNCATED_BY_WALL,
     BRIDGE_EVENT_DIVERGENCE,
+    DEATH_BOUNDARY_TRANSIENT,
+    GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
+    MASK_LEGAL_PURCHASE_REJECTED,
+    STALLED_REASON_PREFIX,
+    UNLOCK_REVERTED,
+    WORKSHOP_REVERTED,
+    WORLD_NOT_HELD,
     RetirementAbandoned,
 )
 from tower_rl.environment.run_port import RunPortError
+from tower_rl.environment.run_state import INVENTORY_TOO_WIDE, OUT_OF_RANGE_REASON
+from tower_rl.environment.upgrade_setup import UPGRADE_SETUP_DRIFT
 from tower_rl.learning.actor import Actor, EpisodeResult
 from tower_rl.learning.backbone import (
     Backbone,
@@ -88,6 +98,29 @@ from tower_rl.learning.replay import PrioritizedSequenceReplay
 #: (`STALE_OR_DUPLICATE`) for its own report; it is not imported from there
 #: because the learning package does not depend on a script.
 STALE_OR_DUPLICATE = "stale_or_duplicate"
+
+#: Every invalid reason that has a stable name, by the name a report and a
+#: metric carry it under, and the text that marks it in an episode's
+#: `termination_detail`. Pooled by `episode_health` into `invalid_reasons`, so
+#: a run's health says which of them ended its episodes rather than only how
+#: many ended. A reason that gains a name is added here, or it is invisible
+#: at every scope a run is read from until someone reads the episodes.
+INVALID_REASONS: Mapping[str, str] = {
+    "stale_or_duplicate": STALE_OR_DUPLICATE,
+    "bridge_event_divergence": BRIDGE_EVENT_DIVERGENCE,
+    "game_time_inflated": GAME_TIME_INFLATED,
+    "game_time_deflated": GAME_TIME_DEFLATED,
+    "world_not_held": WORLD_NOT_HELD,
+    "stalled": STALLED_REASON_PREFIX,
+    "advance_truncated_by_wall": ADVANCE_TRUNCATED_BY_WALL,
+    "mask_legal_purchase_rejected": MASK_LEGAL_PURCHASE_REJECTED,
+    "unlock_reverted": UNLOCK_REVERTED,
+    "workshop_reverted": WORKSHOP_REVERTED,
+    "upgrade_setup_drift": UPGRADE_SETUP_DRIFT,
+    "out_of_range": OUT_OF_RANGE_REASON,
+    "inventory_too_wide": INVENTORY_TOO_WIDE,
+    "death_boundary_transient": DEATH_BOUNDARY_TRANSIENT,
+}
 
 
 class EpisodeAbandoned(Exception):
@@ -165,9 +198,10 @@ class EpisodeHealth:
     #: reason like "the game did not honour speed_down: lifecycle_timeout" is
     #: counted and named here rather than surviving only as text on one episode.
     invalid_detail: dict[str, int]
-    bridge_event_divergence: int
-    stale_or_duplicate: int
-    game_time_inflated: int
+    #: How often the episodes' detail names each reason of `INVALID_REASONS`,
+    #: every name present and zero when unseen, so the shape does not depend
+    #: on the span.
+    invalid_reasons: dict[str, int]
     advances_cut_short: int
     #: Speed-pin failures the port recovered from at an episode boundary,
     #: pooled over the span. Recovered, so no episode is lost to one - which is
@@ -220,9 +254,10 @@ def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
         invalid_episodes=len(summaries) - valid,
         invalid_by_reason=by_reason,
         invalid_detail=detail,
-        bridge_event_divergence=sum(1 for text in all_detail if BRIDGE_EVENT_DIVERGENCE in text),
-        stale_or_duplicate=sum(1 for text in all_detail if STALE_OR_DUPLICATE in text),
-        game_time_inflated=sum(1 for text in all_detail if GAME_TIME_INFLATED in text),
+        invalid_reasons={
+            name: sum(1 for text in all_detail if marker in text)
+            for name, marker in INVALID_REASONS.items()
+        },
         advances_cut_short=sum(summary.advances_cut_short for summary in summaries),
         pin_restarts=sum(summary.pin_restarts for summary in summaries),
         episodes_not_started_fresh=sum(1 for summary in summaries if summary.starting_wave > 1),
@@ -848,6 +883,11 @@ class TrainingRun:
     #: aggregate - the fleet simply collects a little slower - so an unattended
     #: run has to be told about it when it happens, not only in the summary.
     on_withdrawal: Callable[[ActorProgress], None] | None = None
+    #: Called for every episode the port could not start, with the actor and
+    #: the failure. A failed start leaves no episode record, so this is where
+    #: an unattended run is told of one - and of what a retirement had cost -
+    #: as it happens.
+    on_failed_start: Callable[[ActorProgress, RunPortError], None] | None = None
     #: Runs exploration-free episodes on the same device. Its cost comes out of
     #: wall-clock time, never out of the budget, because evaluation is
     #: measurement rather than experience. It borrows an instance, so it may only
@@ -1212,6 +1252,8 @@ class TrainingRun:
                     if self._halted:
                         return
                     self._record_failure(progress, failure)
+                    if self.on_failed_start is not None:
+                        self.on_failed_start(progress, failure)
                     progress.decision_time = profile.snapshot()
                     withdrawn = progress.withdrawn is not None
                     if withdrawn:

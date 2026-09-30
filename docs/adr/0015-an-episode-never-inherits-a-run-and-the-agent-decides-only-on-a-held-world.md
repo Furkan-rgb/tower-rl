@@ -63,12 +63,12 @@ to the agent only while the world is held.**
     `RETIREMENT_WALL_CEILING_SECONDS` (300 s).
 
   The failure carries `retired_run_wave` and `retirement_wall_seconds`, which
-  no episode record will, in its message. A stop request (`stop_requested`)
-  abandons a retirement between advances (`RetirementAbandoned`), so a SIGINT is
-  not held up by it.
-  The first advance of a retirement can meet a running world (for example, a run left behind by an
-  earlier session's `release`). If that advance is refused, retirement reads
-  the latest state and sends it again.
+  no episode record will, in its message and in the `failed episode start` line
+  `train.log` gets. A stop request (`stop_requested`) abandons a retirement
+  between advances (`RetirementAbandoned`), so a SIGINT is not held up by it.
+  The first advance of a retirement can meet a running world (for example, a
+  run left behind by an earlier session's `release`). If that advance is
+  refused, retirement reads the latest state and sends it again.
 - **The hold.** `InstrumentedRunAdapter._start_round` ends the boundary with the
   game's own `pause`. This is the same `Main.Pause` an advance presses as it
   settles, so the first decision starts from the same held world, with its

@@ -20,6 +20,8 @@ from tower_rl.environment.decision_time import (
     DecisionTimeBreakdown,
 )
 from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
+from tower_rl.environment.run_environment import RetirementFailed
+from tower_rl.environment.run_port import RunPortError
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.evaluator import EvaluationReport, episode_record
 from tower_rl.learning.training import (
@@ -150,12 +152,11 @@ def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
         f"{prefix}advances_cut_short": float(health.advances_cut_short),
         f"{prefix}pin_restarts": float(health.pin_restarts),
         f"{prefix}episodes_not_started_fresh": float(health.episodes_not_started_fresh),
-        f"{prefix}bridge_event_divergence": float(health.bridge_event_divergence),
-        f"{prefix}stale_or_duplicate": float(health.stale_or_duplicate),
-        f"{prefix}game_time_inflated": float(health.game_time_inflated),
         f"{prefix}retirements": float(health.retirements),
         f"{prefix}retirement_wall_seconds": health.retirement_wall_seconds,
     }
+    for reason, count in health.invalid_reasons.items():
+        metrics[f"{prefix}{reason}"] = float(count)
     if health.round_budgeted_ratio is not None:
         metrics[f"{prefix}round_budgeted_ratio"] = health.round_budgeted_ratio
     if health.worst_round_budgeted_ratio is not None:
@@ -373,15 +374,17 @@ def window_line(window: CollectionWindow) -> str:
         f"{reason} {count}" for reason, count in sorted(health.invalid_by_reason.items())
     )
     invalid = f"{health.invalid_episodes} [{reasons}]" if reasons else "0"
+    named = ", ".join(
+        f"{reason} {count}" for reason, count in health.invalid_reasons.items() if count
+    )
     return (
         f"window {window.index} decisions {window.decisions_at_end} "
         f"mean final wave {window.mean_final_wave:.2f} se {error} "
         f"over {window.episodes} collected episodes, "
         f"wait {window.wait_fraction:.1%} purchases/episode "
         f"{window.purchases_per_episode:.1f} "
-        f"(invalid {invalid} stale_or_duplicate {health.stale_or_duplicate} "
+        f"(invalid {invalid} reasons [{named}] "
         f"cut_short {health.advances_cut_short} "
-        f"divergence {health.bridge_event_divergence} "
         f"retired {health.retirements} in {health.retirement_wall_seconds:.0f}s)"
     )
 
@@ -429,6 +432,22 @@ def invalid_episode_line(index: int, episode: CollectedEpisode) -> str:
         f"game_ms {summary.round_ms:.0f} starting_wave {summary.starting_wave} "
         f"final_wave {summary.final_wave} termination {summary.termination.value}: "
         f"{reason}{more}"
+    )
+
+
+def failed_start_line(actor_id: str, failure: RunPortError) -> str:
+    """One episode the port could not start, as it fails, with what its retirement cost.
+
+    A failed start leaves no episode record, so its reason and the wave and
+    wall time of the run it was retiring are printed when it happens. Both are
+    0 for a failure that had no run to retire.
+    """
+    retired = failure if isinstance(failure, RetirementFailed) else None
+    return (
+        f"failed episode start: actor {actor_id} reason {failure} "
+        f"retired_run_wave {0 if retired is None else retired.retired_run_wave} "
+        f"retirement_wall_seconds "
+        f"{0.0 if retired is None else retired.retirement_wall_seconds}"
     )
 
 

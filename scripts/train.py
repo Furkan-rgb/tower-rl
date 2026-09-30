@@ -144,7 +144,10 @@ from tower_rl.environment.upgrade_setup import (  # noqa: E402
     UpgradeSetup,
     UpgradeSetupReference,
 )
-from tower_rl.experiment.metrics import termination_code_names  # noqa: E402
+from tower_rl.experiment.metrics import (  # noqa: E402
+    failed_start_line,
+    termination_code_names,
+)
 from tower_rl.experiment.run_folder import (  # noqa: E402
     MANIFEST,
     SEGMENT_EPISODES,
@@ -605,6 +608,9 @@ def build_arm(
             flush=True,
         )
 
+    def on_failed_start(progress: ActorProgress, failure: RunPortError) -> None:
+        print(f"[{name}] {failed_start_line(progress.actor_id, failure)}", flush=True)
+
     # Learning is refused until the buffer holds `--warmup-sequences`. A
     # resumed run that reloaded its parent's buffer already does, so it learns
     # from its first episode on; one with no saved buffer re-warms it under the
@@ -669,6 +675,7 @@ def build_arm(
     arm.training.numbered_checkpoint = arm.numbered_checkpoint
     arm.training.on_episode = on_episode
     arm.training.on_withdrawal = on_withdrawal
+    arm.training.on_failed_start = on_failed_start
     manifest = run_dir / MANIFEST
     base = run_manifest(
         run_dir,

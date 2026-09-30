@@ -91,9 +91,7 @@ HEALTH_KEYS = {
     "invalid_episodes",
     "invalid_by_reason",
     "invalid_detail",
-    "bridge_event_divergence",
-    "stale_or_duplicate",
-    "game_time_inflated",
+    "invalid_reasons",
     "advances_cut_short",
     "pin_restarts",
     "episodes_not_started_fresh",
@@ -110,9 +108,6 @@ ZERO_HEALTH_COUNTERS = {
     "advances_cut_short",
     "pin_restarts",
     "episodes_not_started_fresh",
-    "bridge_event_divergence",
-    "stale_or_duplicate",
-    "game_time_inflated",
     "retirements",
     "retirement_wall_seconds",
 }
@@ -432,6 +427,7 @@ def test_the_report_accounts_for_every_actor_and_for_the_fleet(
         for counter in ZERO_HEALTH_COUNTERS:
             assert actor[counter] == 0
         assert actor["invalid_by_reason"] == {}
+        assert not any(actor["invalid_reasons"].values())
         assert actor["invalid_detail"] == {}
     for counter in ADDITIVE_HEALTH_COUNTERS:
         assert arm["health"][counter] == sum(actor[counter] for actor in actors)
@@ -555,7 +551,7 @@ def test_an_invalid_episode_is_logged_and_streamed_as_it_ends(tmp_path: Path) ->
         f"termination action_pipeline_failed: {invalid['termination_detail'][0]}"
     ) in log
     # The window it fell in names its reason beside the count.
-    assert "(invalid 1 [action_pipeline_failed 1] stale_or_duplicate 0 " in log
+    assert "(invalid 1 [action_pipeline_failed 1] reasons [" in log
 
     streamed = [json.loads(line) for line in (segment / "episodes.jsonl").read_text().splitlines()]
     # As the summary written at the end records them, once through JSON.

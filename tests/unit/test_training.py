@@ -15,13 +15,16 @@ from tower_rl.environment.episode import (
 from tower_rl.environment.run_actions import WAIT
 from tower_rl.environment.run_environment import (
     BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
+    WORLD_NOT_HELD,
     CadenceConfig,
     InstrumentedRunEnvironment,
+    RetirementFailed,
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.experiment.metrics import health_metrics
+from tower_rl.experiment.metrics import failed_start_line, health_metrics, window_line
 from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
@@ -29,6 +32,7 @@ from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.replay import R2D2_IMPORTANCE_SAMPLING_EXPONENT, PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 from tower_rl.learning.training import (
+    INVALID_REASONS,
     STALE_OR_DUPLICATE,
     CollectedEpisode,
     TrainingConfig,
@@ -451,6 +455,33 @@ def test_an_episode_the_port_refuses_is_counted_and_the_run_continues() -> None:
     assert report.episodes == len(report.episode_summaries) + report.failed_episodes
 
 
+def test_every_failed_start_is_reported_as_it_happens() -> None:
+    """A failed start leaves no episode record, so the run says so itself."""
+    training = _failing_run(budget_decisions=190)
+    seen: list[tuple[str, str]] = []
+    training.on_failed_start = lambda progress, failure: seen.append(
+        (progress.actor_id, str(failure))
+    )
+
+    report = training.run()
+
+    actor_id = training.actors[0].config.actor_id
+    assert seen == [(actor_id, failure) for failure in report.episode_failures]
+    assert len(seen) == 2
+
+
+def test_the_failed_start_line_names_the_actor_the_reason_and_what_retirement_cost() -> None:
+    retirement = RetirementFailed("the run left live did not end", 37, 301.5)
+
+    line = failed_start_line("actor-3", retirement)
+
+    assert line.startswith("failed episode start: actor actor-3 reason the run left live")
+    assert line.endswith("retired_run_wave 37 retirement_wall_seconds 301.5")
+    assert failed_start_line("actor-3", RunPortError("no start")).endswith(
+        "retired_run_wave 0 retirement_wall_seconds 0.0"
+    )
+
+
 def test_a_stop_reaches_the_environment_and_ends_a_retirement_without_counting_it() -> None:
     """The run's stop is what a retirement of minutes checks between its advances."""
     training = _run(budget_decisions=190)
@@ -740,16 +771,47 @@ def test_episode_health_counts_the_named_bridge_and_device_failures() -> None:
             valid=False,
             termination_detail=(f"{GAME_TIME_INFLATED}: round clock ran 1.4x",),
         ).summary,
+        _collected(
+            9,
+            valid=False,
+            termination_detail=(f"{GAME_TIME_DEFLATED}: round clock ran 0.5x",),
+        ).summary,
+        _collected(10, valid=False, termination_detail=(WORLD_NOT_HELD,)).summary,
     ]
 
     health = episode_health(summaries)
 
-    assert health.bridge_event_divergence == 1
-    assert health.stale_or_duplicate == 1
-    assert health.game_time_inflated == 1
+    assert health.invalid_reasons["game_time_deflated"] == 1
+    assert health.invalid_reasons["world_not_held"] == 1
+    assert set(health.invalid_reasons) == set(INVALID_REASONS), "every name, seen or not"
+    assert health.invalid_reasons["bridge_event_divergence"] == 1
+    assert health.invalid_reasons["stale_or_duplicate"] == 1
+    assert health.invalid_reasons["game_time_inflated"] == 1
     assert health.advances_cut_short == 0
     assert health.pin_restarts == 0
     assert health.episodes_not_started_fresh == 0
+
+
+def test_the_window_line_names_every_reason_it_counted_and_only_those() -> None:
+    windows = collection_windows(
+        [
+            _collected(4),
+            _collected(9, valid=False, termination_detail=(WORLD_NOT_HELD,)),
+            _collected(
+                8, valid=False, termination_detail=(f"{GAME_TIME_DEFLATED}: round clock ran 0.5x",)
+            ),
+            _collected(6),
+        ],
+        size=2,
+    )
+
+    line = window_line(windows[0])
+    metrics = health_metrics(windows[0].health, prefix="collection_")
+
+    assert "reasons [game_time_deflated 1, world_not_held 1]" in line
+    assert metrics["collection_world_not_held"] == 1.0
+    assert metrics["collection_game_time_deflated"] == 1.0
+    assert metrics["collection_stale_or_duplicate"] == 0.0
 
 
 def test_episode_health_counts_a_leftover_run_and_cut_short_advances() -> None:

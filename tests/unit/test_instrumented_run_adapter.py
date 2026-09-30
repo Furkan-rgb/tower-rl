@@ -73,7 +73,9 @@ class FakeClient:
         if message["kind"] == "advance":
             settled = _observation(sequence=7)
         else:
-            settled = self.state_by_action.get(message.get("action"))
+            # Every other result carries the observation the bridge sent just
+            # before it too, which is what says whether the run is in progress.
+            settled = self.state_by_action.get(message.get("action"), _observation())
         outcome = self.outcome
         reason = "ok"
         if message.get("action") in self.unhonoured_actions:
@@ -118,7 +120,7 @@ def test_an_episode_starts_through_the_games_own_control_and_reads_no_pixel() ->
 
     _adapter(client).begin_episode()
 
-    assert _actions(client) == ["start_round", "speed_max", "speed_down"]
+    assert _actions(client) == ["start_round", "speed_max", "speed_down", "pause"]
 
 
 def test_a_terminal_run_is_sent_home_before_the_round_is_started() -> None:
@@ -129,7 +131,7 @@ def test_a_terminal_run_is_sent_home_before_the_round_is_started() -> None:
 
     _adapter(client).begin_episode()
 
-    assert _actions(client) == ["go_home", "start_round", "speed_max", "speed_down"]
+    assert _actions(client) == ["go_home", "start_round", "speed_max", "speed_down", "pause"]
 
 
 def test_a_control_the_game_does_not_honour_fails_the_boundary() -> None:
@@ -268,6 +270,76 @@ def test_a_frozen_leftover_run_is_resumed_before_an_episode_begins() -> None:
     assert resume["expected_observation_sequence"] == 9
 
 
+def test_the_round_is_handed_over_held_as_every_advance_leaves_it() -> None:
+    """`#95`: the speed presses leave the world running and streaming.
+
+    A policy slower than the bridge's 250 ms stream then bound a sequence that
+    was already gone, and the first command of the episode was refused. The
+    boundary's last command is the game's own `pause`, bound to the latest
+    reading, so the sequence the environment reads first is one that stands.
+    """
+    client = FakeClient(
+        states=[BridgeRunUnavailable(1, "no_initialized_run")] * 2
+        + [_observation()] * 3
+        + [_observation(sequence=12)]
+    )
+
+    _adapter(client).begin_episode()
+
+    hold = client.sent[-1]
+    assert hold["kind"] == "lifecycle" and hold["action"] == "pause"
+    assert hold["expected_observation_sequence"] == 12
+
+
+def test_the_adapter_says_whether_the_world_is_held_by_the_bridges_own_rule() -> None:
+    """`RunPort.world_held`, mirrored from what each command did to the bridge's hold."""
+    client = FakeClient()
+    adapter = _adapter(client)
+    assert not adapter.world_held, "a bridge session starts with the world running"
+
+    adapter.begin_episode()
+    assert adapter.world_held, "the round is handed over held"
+
+    adapter.buy_upgrade("attack", 0, expected_sequence=1)
+    assert adapter.world_held, "a purchase leaves the hold as it was"
+
+    _advance(adapter)
+    assert adapter.world_held, "an advance that settles on a live run holds it"
+
+    client.stale_kinds = frozenset({"advance"})
+    with pytest.raises(RunPortError):
+        _advance(adapter)
+    assert adapter.world_held, "a refused command changes nothing"
+
+    adapter.release()
+    assert not adapter.world_held, "every lifecycle press but pause lets the world run"
+
+
+def test_an_advance_that_ends_the_run_leaves_nothing_held() -> None:
+    client = FakeClient()
+    adapter = _adapter(client)
+    adapter.begin_episode()
+
+    def ended(message: dict[str, object]) -> BridgeCommandResult:
+        return BridgeCommandResult(
+            request_id=str(message["request_id"]), outcome=CommandOutcome("confirmed"),
+            reason="event:run_ended", observation_sequence=1,
+            state=_observation(terminal=True),
+        )
+
+    client.send_command = ended  # type: ignore[method-assign]
+    _advance(adapter)
+
+    assert not adapter.world_held
+
+
+def test_a_hold_the_game_does_not_honour_fails_the_boundary() -> None:
+    client = FakeClient(unhonoured_actions=frozenset({"pause"}))
+
+    with pytest.raises(RunPortError, match="did not honour pause"):
+        _adapter(client).begin_episode()
+
+
 def test_a_run_that_will_not_resume_refuses_to_start_an_episode() -> None:
     client = FakeClient(states=[_observation(sequence=9)], outcome="ambiguous")
 
@@ -325,7 +397,8 @@ def test_the_speed_is_pinned_once_at_the_episode_boundary() -> None:
 
     assert pinned_at_the_boundary == 2, "the pin is a press to the ceiling and one step down"
     assert len(_speed_commands(client)) == 2, "an advance pinned the speed again"
-    assert len(client.sent) == 5, "an advance cost more than the one command asked for"
+    # The two speed presses and the hold, then one command per advance.
+    assert len(client.sent) == 6, "an advance cost more than the one command asked for"
 
 
 def test_a_command_the_environment_did_not_ask_for_cannot_be_sent_during_a_round() -> None:
@@ -418,7 +491,7 @@ def test_a_lost_pin_restarts_the_boundary_instead_of_ending_the_actor() -> None:
     # started - not a second press of the pin on the run that just ended.
     assert _actions(client) == [
         "unpause", "speed_max", "speed_down",
-        "go_home", "start_round", "speed_max", "speed_down",
+        "go_home", "start_round", "speed_max", "speed_down", "pause",
     ]
 
 

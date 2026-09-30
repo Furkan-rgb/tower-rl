@@ -266,6 +266,21 @@ GAME_TIME_DEFLATED = "the game simulated less time than the advance budgeted"
 ADVANCE_TRUNCATED_BY_WALL = "an advance was cut off by the bridge's wall-time ceiling"
 
 
+#: A state handed to the agent while the world behind it was still running. A
+#: running world streams a new observation every few hundred milliseconds, so
+#: whatever the agent decides would bind a sequence already gone: the decision
+#: is refused here, by name, rather than by the bridge as `stale_or_duplicate`
+#: some unknown fraction of the time (`#95`, ADR 0015).
+WORLD_NOT_HELD = "WORLD_NOT_HELD: the world was running when the agent was asked to decide"
+
+#: The game time each advance asks for while a run left live by the previous
+#: episode is being retired: the most the wire protocol carries
+#: (`MAX_ADVANCE_BUDGET_GAME_MS` in `simulation/instrumented_bridge.py`), since
+#: nothing is decided between these advances and each round trip only costs
+#: wall time.
+RETIREMENT_ADVANCE_GAME_MS = 10_000
+
+
 class _DeathBoundaryUnresolved(RunPortError):
     """The minimal advance that should have settled the death boundary failed.
 
@@ -338,6 +353,11 @@ class _EpisodeTally:
     #: an ordinary one; counted because an instance that needs the recovery
     #: often is an instance in trouble.
     pin_restarts: int = 0
+    #: The wave of the run the previous episode left live, which this episode's
+    #: reset played out to its death before starting a fresh round, and the
+    #: wall time that cost. 0 and 0.0 when there was none (ADR 0015).
+    retired_run_wave: int = 0
+    retirement_wall_seconds: float = 0.0
     #: The speed the run was seen executing at while it was still running. The
     #: final state is always terminal and the game has stopped time by then, so
     #: sampling there reports zero for every episode (M1B-E009).
@@ -538,6 +558,10 @@ class InstrumentedRunEnvironment:
         self._workshop_reverted = None
         self._workshop_read = None
         self._setup_drift = None
+        # Before the Workshop write and the round start: a run the previous
+        # episode left live is never continued (ADR 0015), and the write has to
+        # land before the round that is actually played.
+        retired_run_wave, retirement_wall_seconds = self._retire_live_run()
         if self.workshop_level > WORKSHOP_OFF:
             # Before the round, so whatever the game derives from the levels at
             # the round start sees them. Whether it derives them there, at load,
@@ -573,11 +597,112 @@ class InstrumentedRunEnvironment:
             starting_wave=state.wave,
             active_game_speed=state.game_speed,
             pin_restarts=pin_restarts,
+            retired_run_wave=retired_run_wave,
+            retirement_wall_seconds=retirement_wall_seconds,
         )
         self._tally.enter_wave(state)
         self._last_reasons = ()
-        self._state = self._first_choice_point(state)
+        self._state = self._hand_over(self._first_choice_point(state))
+        if WORLD_NOT_HELD in self._state.invalid_reasons:
+            raise RunPortError(f"the round was handed over running: {WORLD_NOT_HELD}")
         return self._state
+
+    def _hand_over(self, state: RunState) -> RunState:
+        """Return the state the agent is about to decide at, refused if the world is running.
+
+        The one place control returns to the agent - the end of `reset` and
+        of every `step` - and so the one place the invariant is enforced: the
+        agent decides only while the world stands still, on the state it is
+        shown (ADR 0015). A run that has ended is not decided at, so only a
+        run still in progress is checked. The refusal marks the state invalid,
+        which classifies the transition that produced it `OBSERVATION_INVALID`
+        with the reason attached, and fails `reset` outright.
+        """
+        if state.lifecycle != "active" or state.terminal or self.port.world_held:
+            return state
+        return replace(
+            state, valid=False, invalid_reasons=state.invalid_reasons + (WORLD_NOT_HELD,)
+        )
+
+    def _retire_live_run(self) -> tuple[int, float]:
+        """End a run the previous episode left live, through the game's own death.
+
+        An episode that ends any way but `GAME_OVER` - an invalid transition,
+        a stall, an operator stop - leaves the game's run still going, and the
+        port's `begin_episode` continues a live run rather than starting one.
+        The next episode then opened mid-game on a world the previous one had
+        already failed in (`#95`, ADR 0015). So the live run is played out
+        here with `WAIT` until the game ends it, and `begin_episode` meets a
+        finished run and takes the ordinary death-to-new-run path: home, a
+        fresh round at wave 1, and every per-round setting written and checked
+        again.
+
+        Nothing of the retired run is an episode: no tally, no transition, no
+        decision, so none of it can reach replay. It is reported only as the
+        wave it was retired from and the wall time the retirement cost, which
+        is `(0, 0.0)` when there was nothing to retire.
+
+        A retirement that stops moving the game clock for the stall window is
+        the same hung pipeline `STALLED` names inside an episode, and raises
+        `RunPortError` so the caller counts a failed episode start.
+        """
+        started = time.monotonic()
+        with self.profile.span(BRIDGE_ROUND_TRIP):
+            reading = self.port.read_state()
+        if reading is None or reading.lifecycle != "active":
+            return 0, 0.0
+        retired_wave = reading.wave
+        last_progress_at = started
+        while True:
+            # Health moving is not a reason to stop: only the run's end is.
+            result = self._advance_from_latest(RETIREMENT_ADVANCE_GAME_MS, 1.0)
+            if result is None:
+                return retired_wave, round(time.monotonic() - started, 3)
+            now = time.monotonic()
+            if result.game_ms > 0:
+                last_progress_at = now
+            elif now - last_progress_at > self.cadence.stall_window_wall_seconds:
+                raise RunPortError(
+                    f"the run left live at wave {retired_wave} did not end: "
+                    f"{STALLED_REASON_PREFIX} {self.cadence.stall_window_wall_seconds}s"
+                )
+
+    def _advance_from_latest(
+        self, budget_game_ms: int, health_change_fraction: float
+    ) -> AdvanceResultLike | None:
+        """Advance from the latest observation of an active run, or return None if none.
+
+        Only ever needed outside an episode, where the world may be running
+        free - a live run an earlier session's `release` unpaused, or one a
+        refused `reset` left behind - and a running world streams a new
+        observation every few hundred milliseconds, so a command bound to a
+        sequence read a moment ago can arrive after it is gone. That refusal is
+        the world outrunning the read, not a failure, so the read is taken
+        again and the advance re-sent - for as long as the stall window, after
+        which it is a pipeline that will not carry the command at all.
+
+        A confirmed advance leaves the world held paused, which is what makes
+        every command after it bind a sequence that stays current.
+        """
+        started = time.monotonic()
+        while True:
+            with self.profile.span(BRIDGE_ROUND_TRIP):
+                reading = self.port.read_state()
+            if reading is None or reading.lifecycle != "active":
+                return None
+            with self.profile.span(BRIDGE_ROUND_TRIP):
+                result = self.port.advance_until_event(
+                    expected_sequence=reading.sequence,
+                    budget_game_ms=budget_game_ms,
+                    frame_game_ms=self.cadence.frame_game_ms,
+                    health_change_fraction=health_change_fraction,
+                )
+            if result.outcome == "confirmed":
+                return result
+            if time.monotonic() - started > self.cadence.stall_window_wall_seconds:
+                raise RunPortError(
+                    f"an advance outside the episode was not carried: {result.reason}"
+                )
 
     @property
     def state(self) -> RunState:
@@ -614,6 +739,8 @@ class InstrumentedRunEnvironment:
             termination_detail=self._last_reasons,
             recovered_transients=self._tally.recovered_transients,
             starting_wave=self._tally.starting_wave,
+            retired_run_wave=self._tally.retired_run_wave,
+            retirement_wall_seconds=self._tally.retirement_wall_seconds,
             waves=tuple(
                 WaveRecord(
                     wave=wave.wave,
@@ -1255,6 +1382,8 @@ class InstrumentedRunEnvironment:
         advances: int,
         game_ms: float,
     ) -> RunTransition:
+        if next_state is not None:
+            next_state = self._hand_over(next_state)
         termination = _classify(next_state, outcome, reasons)
         if termination is not None:
             detail = list(reasons)

@@ -8,6 +8,8 @@ mid-game on the run that had just failed.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from fakes.fake_run_port import DEVICE_REAL_ROWS, FakeCommandResult, FakeRunPort
 
@@ -19,6 +21,7 @@ from tower_rl.environment.run_environment import (
     STALLED_REASON_PREFIX,
     CadenceConfig,
     InstrumentedRunEnvironment,
+    RetirementAbandoned,
     RetirementFailed,
     UpgradeAvailability,
 )
@@ -288,3 +291,24 @@ def test_a_retirement_that_keeps_progressing_still_ends_at_the_wall_ceiling(
     assert failed.value.retired_run_wave == cut_wave
     assert failed.value.retirement_wall_seconds > RETIREMENT_WALL_CEILING_SECONDS
     assert calls["count"] > 10, "the stall window, which it was not, did not end it"
+
+
+def test_a_stop_set_during_a_retirement_abandons_it_between_advances() -> None:
+    environment, port = _environment()
+    _cut_mid_game(environment, port)
+    stop = threading.Event()
+    environment.stop_requested = stop.is_set
+    real_advance = port.advance_until_event
+
+    def stop_during_the_first_advance(**kwargs: object) -> object:
+        stop.set()
+        return real_advance(**kwargs)  # type: ignore[arg-type]
+
+    port.advance_until_event = stop_during_the_first_advance  # type: ignore[method-assign]
+    advances_before = port.advances
+
+    with pytest.raises(RetirementAbandoned):
+        environment.reset()
+
+    assert port.advances == advances_before + 1
+    assert port.active, "nothing ended the run, so the next reset retires it"

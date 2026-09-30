@@ -63,7 +63,9 @@ to the agent only while the world is held.**
     `RETIREMENT_WALL_CEILING_SECONDS` (300 s).
 
   The failure carries `retired_run_wave` and `retirement_wall_seconds`, which
-  no episode record will, in its message.
+  no episode record will, in its message. A stop request (`stop_requested`)
+  abandons a retirement between advances (`RetirementAbandoned`), so a SIGINT is
+  not held up by it.
   The first advance of a retirement can meet a running world (for example, a run left behind by an
   earlier session's `release`). If that advance is refused, retirement reads
   the latest state and sends it again.

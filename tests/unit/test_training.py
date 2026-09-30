@@ -12,6 +12,7 @@ from tower_rl.environment.episode import (
     EpisodeSummary,
     TerminationOutcome,
 )
+from tower_rl.environment.run_actions import WAIT
 from tower_rl.environment.run_environment import (
     BRIDGE_EVENT_DIVERGENCE,
     GAME_TIME_INFLATED,
@@ -448,6 +449,34 @@ def test_an_episode_the_port_refuses_is_counted_and_the_run_continues() -> None:
     # Attempts are counted in `episodes`; only the ones that produced a record
     # leave a summary behind.
     assert report.episodes == len(report.episode_summaries) + report.failed_episodes
+
+
+def test_a_stop_reaches_the_environment_and_ends_a_retirement_without_counting_it() -> None:
+    """The run's stop is what a retirement of minutes checks between its advances."""
+    training = _run(budget_decisions=190)
+    environment = training.actors[0].environment
+    assert environment.stop_requested == training.stop.is_set
+    port = environment.port
+    assert isinstance(port, FakeRunPort)
+    port.damage_per_second = 0.1
+    port.continues_live_runs = True
+    environment.reset()
+    environment.step(WAIT)
+    advance = port.advance_until_event
+
+    def stop_during_the_first_advance(**kwargs: object) -> object:
+        training.stop.set()
+        return advance(**kwargs)  # type: ignore[arg-type]
+
+    port.advance_until_event = stop_during_the_first_advance  # type: ignore[method-assign]
+    advances = port.advances
+
+    report = training.run()
+
+    assert port.advances == advances + 1, "the retirement went on after the stop"
+    assert port.active, "the run was abandoned live, for the next session to retire"
+    assert report.episodes == 0 and report.failed_episodes == 0
+    assert report.decisions == 0
 
 
 def test_a_stale_sequence_costs_one_episode_and_not_the_run() -> None:

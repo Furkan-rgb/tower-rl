@@ -480,7 +480,12 @@ summary (`interrupted`, `final_evaluation_skipped: "interrupted"`). The main
 thread itself is never interrupted by that first SIGINT, except inside the
 final evaluation, a blocking call that polls nothing, where it raises
 `EvaluationAbandoned`. A second SIGINT raises `KeyboardInterrupt`: the
-exception path above. Before this, SIGINT raised `KeyboardInterrupt` in the
+exception path above. It does not exit at once: the process exits once the
+actor threads return from the bridge call each is in. An actor in a reset that
+is retiring a live run (ADR 0015) sees the stop between the retirement's
+advances (`InstrumentedRunEnvironment.stop_requested`, which the run points at
+`TrainingRun.stop`), abandons the retirement (`RetirementAbandoned`, caught
+beside `EpisodeAbandoned`) and counts nothing. Before this, SIGINT raised `KeyboardInterrupt` in the
 join, and the run left past the code that writes its summary (`M3-P015`,
 `M3-P016`).
 Both go through `_write_resume_point`: `PrioritizedSequenceReplay.image()`,

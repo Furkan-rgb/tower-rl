@@ -307,6 +307,14 @@ class RetirementFailed(RunPortError):
         self.retirement_wall_seconds = retirement_wall_seconds
 
 
+class RetirementAbandoned(Exception):
+    """A retirement given up because the run was asked to stop.
+
+    Not a `RunPortError`: the port did nothing wrong, and an operator's stop
+    must not count towards withdrawing the actor.
+    """
+
+
 class _DeathBoundaryUnresolved(RunPortError):
     """The minimal advance that should have settled the death boundary failed.
 
@@ -531,6 +539,12 @@ class InstrumentedRunEnvironment:
     #: watching one run; it is not a logging hook, and nothing it is handed is
     #: a record of anything (see `DecisionView`).
     on_decision: Callable[[DecisionView], None] | None = None
+    #: Whether the run this environment plays for has been asked to stop; the
+    #: retirement of a live run checks it between advances, so a stop is not
+    #: held up by a retirement of minutes. `None` - the default - never stops.
+    #: Set by whatever owns the stop (`learning.training.TrainingRun`); the
+    #: environment only asks.
+    stop_requested: Callable[[], bool] | None = None
     #: The upgrade setup this environment's episodes are held to. Its own by
     #: default; a run hands every environment of its fleet the same one, and a
     #: run that continues or plays a checkpoint seeds it with that checkpoint's
@@ -674,7 +688,8 @@ class InstrumentedRunEnvironment:
         retirement that moves no round clock for the stall window - the same
         hung pipeline `STALLED` names inside an episode - or that takes longer
         than `RETIREMENT_WALL_CEILING_SECONDS` altogether raises
-        `RetirementFailed`, so the caller counts a failed episode start.
+        `RetirementFailed`, so the caller counts a failed episode start. A stop
+        request abandons it (`RetirementAbandoned`).
         """
         started = time.monotonic()
         with self.profile.span(BRIDGE_ROUND_TRIP):
@@ -684,6 +699,8 @@ class InstrumentedRunEnvironment:
         retired_wave = reading.wave
         last_progress_at = started
         while True:
+            if self.stop_requested is not None and self.stop_requested():
+                raise RetirementAbandoned
             # Health moving is not a reason to stop: only the run's end is.
             try:
                 result = self._advance_from_latest(RETIREMENT_ADVANCE_GAME_MS, 1.0)

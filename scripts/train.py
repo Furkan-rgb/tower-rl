@@ -93,8 +93,10 @@ One SIGINT - what `run_stage.sh` sends the stage's process group - stops the
 run the way a kill bar does: every actor abandons the episode it is in before
 its next decision and starts no other, the resume point is written, the final
 evaluation is skipped (or abandoned, if it had started) and the segment's
-summary is written. A second SIGINT exits at once, writing the resume point
-only if it can. Each collected episode's record is also appended to
+summary is written. A second SIGINT raises `KeyboardInterrupt` and takes the
+exception path, writing the resume point only if it can; it exits once the actor
+threads return from the bridge call each is in, which a second SIGINT does not
+shorten. Each collected episode's record is also appended to
 `segments/<n>/episodes.jsonl` as it ends, and an invalid one is logged with its
 first reason, so a run that dies without its summary keeps both.
 
@@ -1705,8 +1707,9 @@ class OperatorStop:
     The one exception is the final evaluation, a blocking call of up to hours
     on the main thread that polls nothing: inside `abandoning_evaluation` the
     first SIGINT raises `EvaluationAbandoned` there instead. A second SIGINT,
-    anywhere, raises `KeyboardInterrupt`: the exit an operator who will not
-    wait asks for.
+    anywhere, raises `KeyboardInterrupt`, which takes the exception path. It
+    does not end the process at once: the process exits once the actor
+    threads return from the bridge call each is in.
 
     The handler sets an event and raises; it prints nothing, because it runs
     between two bytecodes of the main thread, which may be inside the log's

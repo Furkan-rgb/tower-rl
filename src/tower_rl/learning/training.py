@@ -64,7 +64,11 @@ from tower_rl.environment.decision_time import (
     DecisionTimeProfile,
 )
 from tower_rl.environment.episode import EpisodeSummary
-from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE, GAME_TIME_INFLATED
+from tower_rl.environment.run_environment import (
+    BRIDGE_EVENT_DIVERGENCE,
+    GAME_TIME_INFLATED,
+    RetirementAbandoned,
+)
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.learning.actor import Actor, EpisodeResult
 from tower_rl.learning.backbone import (
@@ -973,6 +977,8 @@ class TrainingRun:
             # in the same buckets. Wired here like the acting copy above, for
             # the same reason: the run owns what an actor is attached to.
             actor.environment.profile = actor.profile
+            # And the run's stop, so a retirement of minutes is not waited out.
+            actor.environment.stop_requested = self.stop.is_set
             self._since_sync[actor_id] = 0
             # Handed to the actor rather than run between its episodes: a
             # refresh at a cadence in decisions lands inside them, and so does
@@ -1192,9 +1198,10 @@ class TrainingRun:
             actor.model_version = acting.model_version
             try:
                 result = actor.run_episode()
-            except EpisodeAbandoned:
+            except (EpisodeAbandoned, RetirementAbandoned):
                 # Nothing of it was counted or added to replay: an episode is
-                # experience only once it has ended.
+                # experience only once it has ended. A retirement given up on
+                # the stop is the same: no episode had begun.
                 return
             except RunPortError as failure:
                 # The port could not deliver an episode. That is a counted

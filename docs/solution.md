@@ -2204,8 +2204,10 @@ in before its next decision (a save or a burst of gradient steps already under
 way finishes first), the resume point is written, the final evaluation is
 skipped, or abandoned if it had started, and the segment's summary is written
 with every collected episode's record, marked `interrupted`. A second SIGINT
-exits at once through the exception path, which still writes the resume point
-if it can. Each collected episode's record is also appended to
+takes the exception path, which still writes the resume point if it can; the
+process exits once the actor threads return from the bridge call each is in.
+A retirement (ADR 0015) checks the stop between its advances, so a SIGINT is
+not held up by a retirement of minutes either. Each collected episode's record is also appended to
 `segments/<n>/episodes.jsonl` as it ends, flushed per line, an invalid one is
 logged in `train.log` with its first reason as it ends, and each episode's
 `TerminationOutcome` is tracked as the `episode_termination` code (the mapping

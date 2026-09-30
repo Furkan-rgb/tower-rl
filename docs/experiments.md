@@ -77,7 +77,7 @@ recipe on the new baseline.
 | `M3-P013` | Does `M3-P009`'s recipe with refresh-per-episode (`--parameter-sync-decisions 0`, reverting `M3-P011`/`M3-P012`'s refresh-100) hold `M3-P009`'s near-greedy trajectory at the full 1,000,000-decision budget? | `--parameter-sync-decisions 0` (was `M3-P011`/`M3-P012`'s 100); all other flags at `M3-P012`'s values (γ 0.997, replay ratio 1.0, capacity 4096, AdamW ε 1e-8, left-padding on) | `M3-P009`'s near-greedy period means (table above), read as a screen; collapse-only kill bars | not evaluated — stopped at 11,174/1,000,000 decisions | STOPPED by developer decision, before period 1 — no performance evidence | Superseded by the recipe revision (`M3-P014`: SR-SPR-style resets, refresh 10) rather than resumed; validity 46/47 | `02fa689` (pre-registration), this commit (results) |
 | `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | PROVISIONAL: arm-n10 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83] (n=105 pending) | STOPPED by SIGINT at 1,005,709/1,000,000 decisions, during the built-in final evaluation; arm read at period 16 (near-greedy mean 55.28, n=29) | Well above `M3-P009`'s ~35-38-wave level on the provisional n=10 read; offline diagnosis finds a learner-limited, reactive Defense-Absolute/cash-hoarding strategy (spend share 58%/73% from wave 30 in Defense Absolute vs 3.1%/1.1% in Thorns, damage frozen at 57.3 from wave 30, no upgrade near max, post-100k final-wave SD 12.9 range 11-72), not an account ceiling | this commit (results) |
 | `M3-P015` | With `M3-P014`'s exact recipe and the discount horizon at the protocol's 0.999 per game-second (ADR 0013), survival reward scaled to hold the maximum return at V_REF, does the policy pair Defense Absolute with Thorns rather than turtling on Defense Absolute alone? | `--discount-per-game-second 0.999` (was 0.997); survival-time reward scaled to (1 − d) · V_REF (identical to `M3-P014`'s at 0.997, a third of the unscaled one at 0.999) | `M3-P014` (mlflow `156c54ce`), matched decisions; n=1 | pending | pending | pending | this commit (pre-registration) |
-| `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | pending | pending | pending | this commit (pre-registration) |
+| `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -1250,6 +1250,142 @@ above expected about 144,000 from collection alone and a learner cap near
 about 92 ms of its ~274 ms per decision blocked (bridge 128 ms, policy 20 ms
 in `summary.json`). The run was learner-bound. Peak memory (anon + shmem) is
 not recorded in `train.log`, `stage.out` or `summary.json`.
+
+### Diagnosis of the third attempt (2026-09-30, `#105`)
+
+Offline, read-only, on the end-of-run replay dump (`replay/d0637729`, 19,335
+sequences) and the run's checkpoints, with the MLflow series of attempts 1
+and 3. Methods: per-checkpoint probes of the world model, critic and actor on
+replay windows (past, future and late data relative to each checkpoint);
+critic value against the Monte-Carlo discounted survival return by distance to
+death; open-loop prior rollouts on the replayed actions from 30 steps before
+death; one-step value of each valid action from the model; the actor's
+agreement with the model's best action; acting-path replays of whole episodes
+under checkpoints a known number of learner steps away; the float32 acting
+path against the learner's bfloat16 view; the replay dump's purchases by
+action family. Checkpoints are named by decisions, "450k" is the one at
+450,082. One run per attempt, so every statement is n=1. The probe outputs
+were not kept in the repository; re-deriving a figure means re-running the
+method above. Each finding carries a confidence label: **proven** (measured
+directly), **likely** (consistent measurements, cause not isolated), **partial**
+(the evidence is compromised), **unresolved**, **ruled out**.
+
+**Not undertraining.** The world model's KL (raw, on replay windows the model
+has already seen) is flat at 5.4-6.6 across the eleven probed checkpoints from
+50k to 625k (5.64 at 50k, 5.41 at 300k, 6.63 at 625k). The critic's bias
+against the Monte-Carlo return stopped shrinking at about 400k (+5.80 at 50k,
++4.28 at 100k, +3.97 at 300k, +3.66 at 400k, then +3.19 to +3.63 through
+625k). The near-greedy period means average 31.7 over periods 7-12 (350k to
+600k) with no trend.
+
+**Likely: value and credit failure.**
+- The critic overestimates the survival value by +3.2 to +3.7 from 400k on
+  (V_REF is 9.51). Near death the error is proportionally worst: within 20
+  decisions of death the critic reads 2.2-3.1 (2.53 at 600k) against a true
+  0.17, and within 5 decisions 1.9-2.8 against 0.05. Its correlation with the
+  true return is 0.75-0.80, within-wave 0.48-0.59.
+- The replay-value target is bootstrapped by the imagined λ-returns
+  (`dreamer.py` `_loss`: `boot` takes `returns[:, 0]`), at λ 0.95, so it is
+  dominated by imagined values wherever imagination is wrong. This is read
+  from the loss code, not measured.
+- Imagination under-predicts death. Open-loop from 30 steps before death on
+  the real actions, the imagined probability of surviving through the death
+  step is 0.91 at 100k and 0.88 at 200k, then 0.47 (300k), 0.17 (400k), 0.33
+  (450k), 0.41 (500k), 0.24 (550k), 0.20 (600k), 0.46 (625k): 17-47% from 300k
+  on, against 0 in the data. The reward-implied per-step hazard in imagination
+  from replay states misses 43% of the real 0.00168 at 600k; it is noisier
+  across checkpoints (6-50% missed from 300k to 625k, and a 33% overshoot at
+  200k), so the hazard figure is weaker evidence than the open-loop one.
+- The one-step value of Defense Absolute against WAIT is about 0: the median
+  difference is -0.006 to +0.007 at 400k-625k (-0.028 to +0.050 over all
+  probed checkpoints), against 0.11-0.17 of imagination noise (400k-625k) in the
+  value of a repeated identical first action.
+- The replay dump shows the outcome. From wave 30, Defense Absolute is 13.7%
+  of Dreamer's spend (cost at purchase, 11,940 purchases) against 70.4% for
+  `M3-P014`'s DQN (3,567 purchases); Thorns is 6.1% against 1.3%. The mean
+  `cash_log` from wave 30 to wave 40 is 3.82-3.91 for Dreamer against
+  5.16-5.97 for the DQN: Dreamer does not hoard cash, and spends across many
+  families.
+
+**Likely: policy churn.** The actor's most probable action agrees with the
+model's best one-step action in 30-42% of states (a3: 0.304-0.419 over eleven
+checkpoints; attempt 1: 0.349-0.402), with a top-1 to top-2 gap of about 0.02
+in a value whose noise is 0.11-0.17: the policy is being steered by
+differences below the noise. Replaying whole episodes under a checkpoint a
+known number of learner steps from the weights that played them, the mean
+log-probability of the actions actually taken is -0.30 within 100 steps,
+-0.50 at 100-700, -0.66 at 700-3,000, -1.25 at 3,000-8,000 and -1.48 at
+15,000+ (the policy's own entropy is -0.23 to -0.31): the policy has moved
+away from itself on a scale of thousands of learner steps.
+
+**Proven: the period-10 drop is churn, not instability.** In the 460k-480k
+window every one of the seven actors fell to 20.4-25.8 (mean 22.4, n=40),
+from 38.0-40.7 at 420k-440k, and was back to 28.8-35.2 at 500k-520k and
+32.2-37.5 at 520k-540k. The median gradient norm (62.7 against 63.0 before),
+the weighted loss (9.49 against 9.48) and the value-fit correlation (0.79
+against 0.82) show no spike in that window, and the probed policy entropy
+(normalised 0.108 at 450k, 0.100 at 475k, 0.108 at 500k) does not move. A
+drop that hits all actors at once with nothing unusual in the optimiser is
+the policy changing, not training breaking.
+
+**Partial: the continue head.** The pre-registered check (median implied-dt
+relative error ≤ 0.10 after 100k) fails: the logged median sits at
+0.47-0.59 from 100k to 625k. The check conflates hazard with dt: the implied
+dt is derived from the continue probability and so also carries the
+probability of dying, which is what the head is worst at (implied minus true
+at 450k is +0.95 to +19.6 s within 20 steps of the end, depending on the data
+split, and about -0.3 to -0.5 s far from it). Far
+from death (more than 300 steps to the end) the implied/true ratio is
+0.70-0.93 over the 400k-625k checkpoints and the three data splits, with a
+median relative error of 0.21-0.34. The head is biased low but not absent, and
+the failure of the check is partly an artefact of the check.
+
+**Unresolved: attempt 1 against attempt 3.** Attempt 1's best near-greedy
+mean was 43.09 at 400,200 decisions; attempt 3's was 34.27 by 400k (32.09 in
+its period 8). With one run each, seed variance is possible and the data do
+not separate it from the difference in learner thread and bridge build. Attempt 3's
+learner-thread policy lag (its debt sat at the 256-step bound) falls in the
+100-700-step bin above, where the taken-action log-probability is -0.50
+against -0.30 at under 100 steps and -1.25 at several thousand: a modest part
+of the churn, not obviously the cause.
+
+**Ruled out.**
+- Return normalisation against entropy: the return normaliser's scale is
+  5.7-6.8 at 400k and later and the policy-gradient norm is 15-38 times the
+  entropy-gradient norm (21-38 on replay states at 400k-625k); the entropy
+  term is not flattening the policy.
+- Masking: of the actions the model decodes as valid, the share that are wrong
+  is 0.2-1.4% at 400k-625k (0.2% on seen data, 0.7-1.4% on future and 0.3-1.3%
+  on late data), carrying 0.2-3.6% of the policy's probability (0.6-2.1% on
+  late data).
+- The float32 acting path against the learner's bfloat16 view:
+  KL(float32 || bfloat16) ≤ 0.0001 at six checkpoints from 100k to 600k, with
+  mode agreement 0.997-1.000.
+- Port bugs: none found in the above.
+
+**Not ruled out: zero-start windows.** Acting carries the recurrent state
+through the whole episode; learning restarts it from zero every 64-step
+window. Reading a whole episode both ways (the 16-47 steps of each window), the
+policies differ: KL(full || window) averages 0.24-0.68 (median 0.000-0.077) at
+six checkpoints, and is larger late in an episode (0.56-1.15 at 400+ steps at
+450k and 625k). Whether that difference hurts learning was not tested.
+
+**What we did wrong.** We learned value through imagination on a reward whose
+information arrives only at death, about 1000 s of game time away, with
+nothing anchoring the critic to real returns; the imagined rollouts do not
+see death coming, so their values are wrong exactly where the return is
+decided. And we pre-registered a dt check that cannot separate hazard from dt,
+so its failure did not tell us which head was wrong.
+
+**Open questions, each discriminating one cause above (not tasks).**
+- Does a critic refit offline on real λ=1 returns, with the world model and
+  actor frozen, remove the near-death overestimate and change the actor's
+  agreement with the one-step values?
+- Does a dt head refit on survival-only transitions recover the implied/true
+  ratio, separating a dt fault from a hazard fault in the continue head?
+- Does a second seed reproduce attempt 3's plateau, or attempt 1's?
+- Does evaluating the policy's mode rather than a sample move the near-greedy
+  mean?
 
 ## M3-P015: `M3-P014`'s recipe at the protocol discount horizon, 0.999 per game-second, with the survival reward scaled to V_REF (pre-registered, written before the run)
 

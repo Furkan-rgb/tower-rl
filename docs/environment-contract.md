@@ -463,14 +463,20 @@ that did, so the environment checks the game's own round clock against the game
 time its advances budgeted and fails the episode by name rather than counting it
 (`environment/run_environment.py`):
 
+- `expected_round_ms` — the round time an advance should read:
+  `1.07 × max(0, game_ms − frame_game_ms)`. The first frame the advance loop
+  counts is never simulated, because `Unpause` lands a frame later. Each
+  simulated frame reads 107.0 ms of round clock at 100 ms a frame (`#58`
+  round-clock probe). The ratio the bounds judge is the round clock over this
+  expected time, summed over the episode so far. A healthy world reads 1.000
+  at any advance density.
 - `MAX_ROUND_CLOCK_RATIO = 1.25` and `GAME_TIME_INFLATED` — the world simulated
-  more time than was asked for. Six known-good episodes measured 1.069 of round
-  clock per budgeted millisecond; the same six at the account's 1.5x speed
-  ceiling measured 1.625 (`M1B-E023`). The ceiling sits between them.
+  more time than was asked for. The world left at the account's 1.5x speed
+  ceiling read 1.52 times the healthy world (`M1B-E023`). The ceiling sits
+  between the two.
 - `MIN_ROUND_CLOCK_RATIO = 0.99` and `GAME_TIME_DEFLATED` — the world simulated
-  less. Healthy runs pooled 1.007–1.014; a 150 ms-step arm that under-credited
-  simulated time measured 0.987. 1.0 would be the natural floor but leaves no
-  room for float noise.
+  more than 1% less than it was asked to. Healthy episodes read 1.0006–1.0010, and
+  1.0 would be the natural floor but leaves no room for float noise.
 - `MIN_RATIO_EVIDENCE_GAME_MS = 2000.0` — the ratio is taken over the episode so
   far and only once that much game time has been spent; one advance is too short
   a window to judge a clock by. The advance that ends a run is exempt from the

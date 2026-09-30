@@ -99,6 +99,108 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Round-clock probe: one frame per advance is never simulated, and the fidelity check now expects it (`#58`, 2026-10-01)
+
+**Question.** `M3-P017` stopped on its invalid-rate rule with four late
+`game_time_deflated` episodes at a printed 0.990x (`M3-P017`, "Stop and
+amendment"). Across every episode over 200 s of `M3-P016` attempt 3 (n=1,089)
+and `M3-P017` (n=209), the check's ratio, the round clock over the budgeted
+game time, fits `1.0705 − 0.1062 × (advances per budgeted game-second)`,
+r = 0.994 in both runs, residual SD 0.0004–0.0006. That says each advance
+credits one 100 ms frame the world never simulates, so an episode whose
+advances average under about 1,320 budgeted ms fails whatever the device's
+health. `M1B-E019` fitted the same law per advance
+(`round ≈ 1.07 · frame_game_ms · (loop_frames − 1)`) and left both of its
+terms unexplained. This probe asks where the frame goes, per advance, on the
+current training build.
+
+**Setup.** The training build `33d7ada0…`
+(`workshop-render-interval-16-nodelay`, reproduced byte for byte from
+`main@c78e469`) rebuilt with `-DTOWER_BRIDGE_DIAGNOSTICS=ON`, which enables
+the `clockprobe` line in `AdvanceUntilEvent`. Digest `d541eb74…1471`, in
+`state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe/`; nothing
+else was changed and `state/bridge/current` was not touched. One stage under
+`run_stage.sh`: `run_actors.py --actors 2 --episodes 3 --policy turtle
+--renderer host --frame-rate-hz 120 --cores 4 --upgrade-availability all
+--workshop-level 5 --frame-game-ms 100` (setup.md §11's benchmark on two
+instances), clone AVD `-read-only` on 5556 and 5558, offline by interface.
+The `tower_bridge` log tag was streamed from each instance. Each `clockprobe`
+line carries the round clock `t0` before `Unpause`, `t1` at the loop's last
+in-loop reading and `t2` after the pause settle, together with the loop's and
+the settle's frame counts. There are 5,074 advances; the 5 run-ending
+advances are excluded because the round clock resets. The analysis scripts
+are in the session scratchpad.
+
+**Result: confirmed, and exact.**
+
+- **The round clock's unit is 107.0 ms per simulated frame at
+  `frame_game_ms` 100.** The median round delta per credited frame is 107.000
+  ms. The deltas are quantised to whole multiples of 107 ms, to the
+  logged precision.
+- **Frames counted minus frames credited, at `t2`:** exactly 1 in 5,008 of
+  5,069 advances (98.8%), 0 in 61 (1.2%) and 2 in 8 (0.16%). All 8 two-frame
+  advances took 230–312 ms of wall time, against a typical 80–120 ms, so a
+  slow main thread is the likely cause.
+- **Where the frame goes: the start of the advance.** The loop reads the frame
+  count before it sends `Unpause`, and `Unpause` lands on the main thread one
+  frame later. That first counted frame is never simulated. At `t1`, two frames
+  are uncredited in 76% of advances and one in 24%. The second frame is the
+  loop's last one, which has already begun when the mid-frame reading is
+  taken. Its credit arrives in the settle window (`t2 − t1` = 107 ms), so it is
+  late, not lost. A two-frame advance shows `t1 = t0` after both frames have
+  started, so the uncredited frame is the first. Settle frames, run at
+  `captureDeltaTime` 0, credit nothing: there were 2 or 3 per advance. The
+  paused gap `t0(n) − t2(n−1)` is 0.0 ms in all 5,068 chained advances.
+- **The 1.07 is the game's own and is still unexplained.** It holds exactly
+  per frame, across waves 1–40 here and across whole episodes in `M3-P016`/
+  `M3-P017`, so it is a constant unit and not noise.
+
+**Per episode** (6 valid, final waves 38–40, 1,595–1,620 budgeted ms per
+advance):
+
+| ratio | range over the 6 episodes |
+| --- | --- |
+| old check, round / budget | 1.0036–1.0049 |
+| corrected, round / expected | 1.0006–1.0010 |
+| fingerprint, budget / round | 0.9951–0.9964 |
+
+The fixed-policy fingerprint's `round_clock_ratio` from `fleet.json` is
+0.9959 [0.9955, 0.9962], unchanged against the reference 0.996. That
+statistic is budget over round clock and is left as it is, so that it stays
+comparable with the references. Pooled over all advances, the corrected
+ratio is 1.0008. It sits above 1.000 because 1.2% of advances lose no frame.
+
+**Consequence: the check's expected time is corrected, not relaxed.** The
+check now uses `expected_round_ms` in `environment/run_environment.py`: per
+advance, `1.07 × max(0, game_ms − frame_game_ms)`, summed over the episode.
+`game_ms` is the budget the bridge counted. The ratio is the round clock
+over this expected time, and both bounds are unchanged: the 0.99 floor, 1.25
+ceiling and 2,000 ms evidence minimum. A healthy world now reads 1.000 at any
+advance density. A world that simulates more than 1% less than it was asked
+for fails at every density; the unit tests pin a world 3% short failing at
+500 ms and at 2,000 ms advances. Applied to `M3-P017`'s four late
+episodes (printed 0.990x at 1,313–1,330 budgeted ms per advance), the
+corrected ratio works out to 1.000–1.002. The advance behaviour and the
+budget, and so the game-side protocol, are unchanged.
+
+**Two findings not acted on.**
+
+- The two early `M3-P017` failures at 0.963x (episodes 72 and 91, at wave
+  1) are exactly `1.07 × 18/20`: one 20-frame advance that lost two frames,
+  judged on the first 2,000 ms of evidence. The corrected check reads such an
+  advance as 18/19 = 0.947 and still fails it. The episode may be the same
+  dispatch lag rather than a deflated world.
+- The rejection of `frame_game_ms` 150 and 200 in `M1B-E038` (pooled 0.989
+  and 0.983) was measured under the old accounting. The law predicts
+  `1.07 · (lf − 1)/lf` for a healthy world, which is about 0.99 or below at
+  those frame sizes, so that rejection may be this artifact too. The standing
+  frame size of 100 ms does not depend on it.
+
+**Cleanup.** Stage exit 0. On both instances: libunity SHA-256
+`ffc1f3ef…0040`, versionCode 1199, installer `com.android.vending`, 0
+libunity mounts and bridge artifacts removed. One instance exited during
+teardown. The host was verified with no qemu process and no adb device.
+
 ## DreamerV3 acting on each completed step: acting throughput, fake port (`#108`, 2026-09-30)
 
 **Question.** Loading the learner's snapshot before each decision after every
@@ -1179,6 +1281,50 @@ host verification afterwards. Stop after three consecutive unexplained
 failures, a failed device-safety check, or a cleanup that finds `libunity.so`
 SHA-256 other than `ffc1f3ef…0040`, versionCode other than 1199 or an
 installer other than `com.android.vending`. One device stage at a time.
+
+**Stop and amendment (2026-10-01, written after the stop and before the
+resume).**
+
+*The stop.* Run `m3-p017-dreamerv3-20260930T214001Z` crossed the invalid-rate
+rule at episode 213, with 11 of 213 invalid (5.16%). It was stopped by SIGINT
+at **79,869 decisions**. The resume point was saved: `latest.pt` and 79,625
+replay items, with no failed resume save. The final evaluation was skipped
+because the run was interrupted. At exit, 215 episodes were counted, 11 of
+them invalid (5.1%), and replay rejected 11 inadmissible transitions. Cleanup
+passed on all 7 instances.
+
+The 11 invalid episodes, by code:
+
+- **`game_time_deflated`, 6.** Two at 0.963x at wave 1: episodes 72 and 91.
+  Four at 0.990x at waves 30–34: episodes 190, 191, 195 and 213.
+- **`mask_legal_purchase_rejected`, 4.** Episodes 95, 106, 113 and 178, all
+  `precondition_failed` and all below wave 10.
+- **`bridge_event_divergence`, 1.** Episode 205, at wave 12.
+
+*The diagnosis.* The four late `game_time_deflated` episodes fail only on the
+check's accounting, not on the device. Each advance counts one frame that the
+world never simulates. The check held the round clock against the whole
+budget, so a policy whose events cut advances densely failed with a healthy
+world. `M3-P017`'s policy reaches waves 20–39, where advances are denser, and
+this explains its 1.9% rate against `M3-P016`'s 0.27%. The mechanism was
+confirmed on device, and the check corrected, in "Round-clock probe: one frame
+per advance is never simulated" (`#58`, above). Under the corrected check these
+four episodes read 1.000–1.002. They **stay counted as invalid in this
+record**: the run excluded them from training either way. What enters training
+is the measured round clock (transition `game_ms`), so no training data was
+affected. Parameter refresh and host load were ruled out as causes.
+
+*The resume.* The run resumes from its saved pair
+(`state/runs/m3-p017-dreamerv3-20260930T214001Z/checkpoints/latest.pt` and its
+replay) with `train.py --resume`, on `main` with the corrected check. Nothing
+else changes: the learner, the bridge build, the advance protocol and every
+flag stay as above.
+
+*Rule for the resume.* The invalid-rate stop (above 5% once 20 or more
+episodes are counted) is computed with the corrected check, over the episodes
+from the resume onward. Every other rule is unchanged, including the chain
+rule, `stale_or_duplicate`/`WORLD_NOT_HELD`, memory, the kill bars and the
+500k rule. Learner debt pauses remain not a stop condition.
 
 ## M3-P016: DreamerV3 at its published configuration under `M3-P015`'s task protocol (pre-registered, written before the run)
 

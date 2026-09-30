@@ -538,7 +538,7 @@ def decision_time_line(
             ("bridge_round_trip", "bridge"),
             ("observation_decode", "observe"),
             ("policy_forward", "policy"),
-            ("learner_step", "learn"),
+            ("parameter_load", "load"),
             ("blocked", "blocked"),
             ("residual", "residual"),
         )

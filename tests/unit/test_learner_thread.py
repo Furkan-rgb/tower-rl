@@ -295,27 +295,31 @@ def test_a_slow_learner_pauses_no_actor_and_no_actor_takes_a_step() -> None:
     assert training.learner_load().paused_actor_seconds == 0.0, "an actor paused on the bound"
 
 
-def test_a_refresh_waits_for_the_step_in_flight_and_copies_a_finished_one() -> None:
-    """The one place an actor waits on a learn step, ordered by events and not by time."""
-    events: list[str] = []
-    inside, release, about_to_refresh = (threading.Event() for _ in range(3))
+def test_a_refresh_never_waits_for_the_step_in_flight_and_loads_the_last_finished_one() -> None:
+    """An actor reads the last published snapshot; a step in flight holds nothing it needs.
+
+    Ordered by events, not by time: the refresh runs, and returns, while the
+    step is held shut inside, and it loads what the previous step published.
+    """
+    inside, release = threading.Event(), threading.Event()
 
     class Network:
         device = torch.device("cpu")
+        version = 0
 
         def learn(self, batch: object) -> LearnMetrics:
-            events.append("step begins")
             inside.set()
             release.wait()
-            events.append("step ends")
+            self.version += 1
             return METRICS
 
         def state_dict(self) -> dict[str, object]:
-            events.append("copy")
-            return {}
+            return {"version": torch.tensor(self.version)}
 
+    loaded: list[int] = []
+    acting = SimpleNamespace(load_state_dict=lambda state: loaded.append(int(state["version"])))
     learner = Learner(backbone=cast(Any, Network()))
-    acting = SimpleNamespace(load_state_dict=lambda state: None)
+    learner.publish()
     thread = LearnerThread(
         learner,
         lambda: learner.learn(cast(Any, None)),
@@ -326,16 +330,16 @@ def test_a_refresh_waits_for_the_step_in_flight_and_copies_a_finished_one() -> N
     thread.credit(1)  # one step owed, so no second can begin behind the first
     assert inside.wait(5)
 
-    def refresh() -> None:
-        about_to_refresh.set()
-        learner.publish_to(cast(Any, acting))
-
-    refresher = threading.Thread(target=refresh, daemon=True)
+    refresher = threading.Thread(
+        target=lambda: learner.publish_to(cast(Any, acting)), daemon=True
+    )
     refresher.start()
-    assert about_to_refresh.wait(5)
-    release.set()
     refresher.join(5)
+    stuck = refresher.is_alive()
+    release.set()
     thread.finish(drain=True)
 
-    assert not refresher.is_alive()
-    assert events == ["step begins", "step ends", "copy"], "the copy read a step in flight"
+    assert not stuck, "a refresh waited for the step in flight"
+    assert loaded == [0], "the refresh did not load the last finished step"
+    assert learner.publish_to(cast(Any, acting)) == learner.published == 2
+    assert loaded == [0, 1], "the finished step was not published"

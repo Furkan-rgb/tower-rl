@@ -34,9 +34,8 @@ from tower_rl.environment.workshop import WORKSHOP_OFF, workshop_rows
 from tower_rl.learning.checkpoint import CheckpointIdentity
 from tower_rl.learning.dreamer import DreamerConfig
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import PrioritizedSequenceReplay
 from tower_rl.learning.stacked_dqn import StackedDqnConfig
-from tower_rl.learning.training import TrainingConfig
+from tower_rl.learning.training import ArmReplay, TrainingConfig
 from tower_rl.learning.value_learning import V_REF
 
 #: The measured floors a learning curve has to be read against, carried in every
@@ -165,7 +164,7 @@ def resolved_config(
     config: TrainingConfig,
     learner: StackedDqnConfig,
     network: NetworkConfig,
-    replay: PrioritizedSequenceReplay,
+    replay: ArmReplay,
     cadence: CadenceConfig,
     decision_cadence: DecisionCadence,
     upgrade_availability: UpgradeAvailability,

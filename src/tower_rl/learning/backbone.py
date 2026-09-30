@@ -56,6 +56,11 @@ class LearnMetrics:
     #: its continue head and decoded mask (`DreamerBackbone.learn`). Empty for
     #: a learner that has none.
     diagnostics: Mapping[str, float] = field(default_factory=dict)
+    #: The posterior latents of the batch's trained steps, `deter` [batch,
+    #: time, deter] and the stochastic state's class indices [batch, time,
+    #: stoch], on the CPU: what DreamerV3 writes back into replay after each
+    #: step (`DreamerReplay.write_back`). None for a learner that stores none.
+    latents: tuple[Tensor, Tensor] | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,16 @@ class SequenceBatch:
     game_ms: Tensor
     weights: Tensor  # [batch]
     burn_in: int
+    #: A batch with stored latents is in DreamerV3's layout (`DreamerReplay`):
+    #: `rewards`, `dones` and `game_ms` describe the transition *into* each
+    #: step and `actions` the action taken at it; the first `burn_in` steps
+    #: are the replay context, read only for `context`, the stored latent of
+    #: the last of them - `deter` [batch, deter] and stochastic class indices
+    #: [batch, stoch]. `first` and `last` [batch, time] are `is_first` and
+    #: `is_last`. None in the window layout every other learner reads.
+    first: Tensor | None = None
+    last: Tensor | None = None
+    context: tuple[Tensor, Tensor] | None = None
 
     @property
     def batch_size(self) -> int:

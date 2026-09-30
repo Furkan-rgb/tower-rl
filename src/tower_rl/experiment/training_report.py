@@ -55,10 +55,12 @@ from tower_rl.learning.checkpoint import (
     capture_rng_state,
     write_checkpoint,
 )
+from tower_rl.learning.dreamer_replay import DreamerReplayImage
 from tower_rl.learning.evaluator import EvaluationReport, to_record
 from tower_rl.learning.learner import IDLE_LOAD, LearnerLoad
-from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayImage
+from tower_rl.learning.replay import ReplayImage
 from tower_rl.learning.training import (
+    ArmReplay,
     CollectionWindow,
     TrainingProgressReport,
     TrainingRun,
@@ -123,7 +125,7 @@ class TrainingReport:
     name: str
     run_dir: Path
     backbone: Backbone
-    replay: PrioritizedSequenceReplay
+    replay: ArmReplay
     training: TrainingRun
     identity: CheckpointIdentity
     resolved: dict[str, object]
@@ -265,7 +267,9 @@ class TrainingReport:
                     return
             self._write_resume_point(report, self.replay.image())
 
-    def _write_resume_point(self, report: TrainingProgressReport, image: ReplayImage) -> None:
+    def _write_resume_point(
+        self, report: TrainingProgressReport, image: ReplayImage | DreamerReplayImage
+    ) -> None:
         """Write the buffer, then `latest.pt` naming it, then delete every other dump.
 
         That order is what lets a kill at any moment leave a pair a resume can
@@ -328,7 +332,7 @@ class TrainingReport:
                 stale.unlink()
         print(
             f"[{self.name}] resume point at {report.decisions} decisions: latest.pt and "
-            f"{len(image.sequences)} replay sequences ({size / 1e9:.2f} GB) in "
+            f"{_held(image)} ({size / 1e9:.2f} GB) in "
             f"{time.monotonic() - started:.1f} s",
             flush=True,
         )
@@ -776,3 +780,10 @@ class TrainingReport:
             "evaluations": [to_record(item) for item in report.evaluations],
             "replay": self.replay.snapshot(),
         }
+
+
+def _held(image: ReplayImage | DreamerReplayImage) -> str:
+    """What a replay dump holds, in its own unit."""
+    if isinstance(image, DreamerReplayImage):
+        return f"{len(image.items)} replay items"
+    return f"{len(image.sequences)} replay sequences"

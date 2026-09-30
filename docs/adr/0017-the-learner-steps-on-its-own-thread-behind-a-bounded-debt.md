@@ -4,6 +4,11 @@
 and on the workstation GPU with fake ports; the device A/B against the
 fixed-policy benchmark (`#101`) is still to run.
 
+**Partly superseded by ADR 0018:** parameter publication and policy lag (the
+*Policy lag* and *Publication* points of the decision below) - DreamerV3 now
+loads the last completed step before every decision and carries its latent
+across the swap. The learner thread, the bounded debt and the rest stand.
+
 ## Context
 
 Until now the actor whose episode ended took every gradient step that episode

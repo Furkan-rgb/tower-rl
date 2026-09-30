@@ -655,36 +655,40 @@ def test_no_actor_is_ever_given_half_of_an_optimisation_step() -> None:
     assert watched.torn == []
 
 
-def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> None:
-    """Whatever the cadence, an episode begins on the learner's current parameters.
+def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_latest_parameters() -> None:
+    """Whatever the cadence, an episode begins on the last step the learner published.
 
     The copy is refreshed at every episode start, so an actor never carries
-    the last episode's parameters into the next one.
+    the last episode's parameters into the next one: what it opens on is at
+    least what the learner had published when the one before it opened. The
+    learner may be inside a step meanwhile, so the live network is not the
+    reference; its last published snapshot is (`Learner.publish_to`).
     """
     watched = WatchedBackbone(
         StackedDqnBackbone(
         config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
     )
     )
-    matched: list[bool] = []
+    opened_on: list[tuple[int, int]] = []
     instance = environment()
     training = fleet([instance], backbone=watched, budget_decisions=250)
-    acting = copies(training)[0]
+    actor_id = training.actors[0].config.actor_id
     opened = instance.reset
 
     def reset_and_witness() -> Any:
-        matched.append(
-            parameters_are_equal(acting.inner.online, watched.inner.online)
-            and acting.model_version == watched.model_version
-        )
+        opened_on.append((training._loaded[actor_id], training.learner.published))
         return opened()
 
     instance.reset = reset_and_witness  # type: ignore[method-assign]
 
     report = training.run()
 
-    assert report.optimisation_steps > 0 and len(matched) > 1
-    assert all(matched), "an episode began on parameters the learner had moved past"
+    assert report.optimisation_steps > 0 and len(opened_on) > 1
+    assert all(
+        loaded >= published_before
+        for (loaded, _), (_, published_before) in zip(opened_on[1:], opened_on, strict=False)
+    ), "an episode began on parameters older than the learner had published"
+    assert opened_on[-1][0] > opened_on[0][0], "no episode began on a newer publication"
 
 
 def test_even_a_fleet_of_one_learns_while_its_episode_is_played() -> None:
@@ -712,7 +716,7 @@ def test_even_a_fleet_of_one_learns_while_its_episode_is_played() -> None:
 
 
 def test_at_a_cadence_of_zero_no_refresh_lands_inside_an_episode() -> None:
-    """DreamerV3's setting: its recurrent latent must come from the parameters it holds."""
+    """`M3-P009`'s setting: the copy holds still through every episode."""
     training, _ = watched_fleet(2, budget_decisions=300, parameter_sync_decisions=0)
 
     training.run()
@@ -741,12 +745,14 @@ def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_decisions() ->
     report = training.run()
 
     assert report.episodes >= 4
-    # Before an episode's first decision, then after every seventh of it.
-    expected, start = [], 0
+    # Before an episode's first decision, then after every seventh of it - and
+    # only where the learner has published since the copy last loaded.
+    expected: set[int] = set()
+    start = 0
     for episode in training.report.episodes_of(training.actors[0].config.actor_id):
-        expected += range(start, start + max(episode.summary.decisions, 1), 7)
+        expected.update(range(start, start + max(episode.summary.decisions, 1), 7))
         start += episode.summary.decisions
-    assert acting.publish_positions == expected
+    assert acting.publish_positions and set(acting.publish_positions) <= expected
     inside = set(acting.publish_positions) - episode_boundaries(
         training, training.actors[0].config.actor_id
     )
@@ -961,12 +967,17 @@ def play(training: TrainingRun, waves: Sequence[int], *, actor: int = 0) -> None
     """Give one actor the final waves its episodes will be worth, in order.
 
     The last wave repeats for ever, so an actor that outlives its script keeps
-    collecting at that level rather than raising out of its own thread.
+    collecting at that level rather than raising out of its own thread. Each
+    episode yields for a millisecond first, as a real one waits on its socket,
+    so a fleet's threads interleave rather than one playing every episode.
     """
     script = chain(waves, repeat(waves[-1]))
-    training.actors[actor].run_episode = lambda: scripted_episode(  # type: ignore[method-assign]
-        next(script)
-    )
+
+    def episode() -> EpisodeResult:
+        time.sleep(0.001)
+        return scripted_episode(next(script))
+
+    training.actors[actor].run_episode = episode  # type: ignore[method-assign]
 
 
 def period_means(means: Sequence[int]) -> list[int]:
@@ -1087,8 +1098,7 @@ def test_a_period_is_measured_over_the_near_greedy_actors_alone() -> None:
         selection_period_decisions=PERIOD_DECISIONS,
         early_stop_patience_periods=2,
         # A scripted episode takes no decision through the actor, so only a
-        # refresh between episodes applies to it. That refresh is also what
-        # interleaves the racing threads, as it always has.
+        # refresh between episodes applies to it.
         parameter_sync_decisions=0,
     )
     # The bottom two rungs of a ladder of three are near-greedy; actor 0, at

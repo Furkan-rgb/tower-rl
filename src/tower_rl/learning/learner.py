@@ -25,14 +25,25 @@ periodic evaluation, the run's last resume point - reads one completed step.
 (`Learner.stream`), while actors act on the default stream. PyTorch's side
 streams do not synchronise with the default stream, so a forward pass is not
 queued behind a gradient step's kernels; the two share the device's time. The
-price is that nothing orders the two streams for us, so `Learner` does it at
-the two places they meet: a step synchronises its stream before it releases
-`Learner.lock`, so a publication copies finished parameters, and a publication
-synchronises the actor's stream before it releases the lock, so the next step
-cannot overwrite parameters still being copied. What reads the network under
-`held` - a save, an evaluation - runs on the default stream and waits on the
-host for what it read (a save copies to host memory, an evaluation reads each
-action back), so the step after the hold cannot overtake it either.
+price is that nothing orders the two streams for us, so `Learner` does it
+where they meet. A step ends by cloning the network into a new snapshot and
+synchronising its stream before it publishes it, so the snapshot an actor
+copies from is finished; and a copy synchronises the actor's stream before it
+lets the snapshot go, so its memory is not reused while still being read.
+What reads the network under `held` - a save, an evaluation - runs on the
+default stream and waits on the host for what it read (a save copies to host
+memory, an evaluation reads each action back), so the step after the hold
+cannot overtake it either.
+
+**Publication.** Parameters reach the actors as the official agent's do
+(`embodied/jax/agent.py` 243-247, 279-282): every completed step publishes a
+snapshot of the network with a number, and an actor whose copy is older loads
+the latest before a decision: before every one under DreamerV3, on the refresh
+cadence under stacked-dqn (`TrainingConfig.parameter_sync_decisions`). The
+actor's carried state is its own and survives the load. A snapshot is never
+written once published - each step makes a new one - so `Learner.lock` guards
+only the moment a snapshot is handed over or loaded, never a step: an actor
+never waits out a gradient step to refresh.
 
 **Locks, in the one order they are ever taken:** the run's progress lock
 (`TrainingRun._lock`), then `LearnerThread.held`, then the replay buffer's
@@ -51,6 +62,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from typing import Any
 
 import torch
 
@@ -73,17 +85,23 @@ class Learner:
     """The one training copy of the network, and how its parameters reach actors.
 
     No actor acts through this. Each acts from its own copy (`acting_copy`), so
-    a forward pass contends with neither the learner nor another actor. What is
-    left shared is the moment a copy is refreshed, and that is what the lock is
-    for: an optimisation step and a publication never overlap, so what an actor
-    copies out is always the parameters of some completed step and never half
-    of one.
+    a forward pass contends with neither the learner nor another actor. What
+    reaches a copy is the snapshot the last completed step published
+    (`published`), so a copy is always the parameters of some completed step
+    and never half of one, and taking it never waits for the step in flight.
     """
 
     backbone: Backbone
+    #: Guards `_snapshot` and `published`: held to hand a new snapshot over and
+    #: to load one into a copy, never across a step.
     lock: threading.Lock = field(default_factory=threading.Lock)
     #: The CUDA stream gradient steps are issued on, or None off the GPU.
     stream: torch.cuda.Stream | None = field(default=None, init=False)
+    #: The number of the latest snapshot; it rises by one per publication. An
+    #: acting copy that last loaded an older number is behind.
+    published: int = field(default=0, init=False)
+    #: The backbone's state as of the last publication, never written after.
+    _snapshot: dict[str, Any] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         device = self.backbone.device
@@ -107,32 +125,57 @@ class Learner:
             yield
 
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
+        """Take one gradient step and publish the parameters it left."""
+        metrics = self.backbone.learn(batch)
+        self.publish()
+        return metrics
+
+    def publish(self) -> None:
+        """Publish the backbone as it stands as the next snapshot.
+
+        Called at the end of every step, on the learner thread, and by the run
+        as a collection block starts, with the learner not running - which is
+        what picks up a checkpoint loaded after the run was built. The clone is
+        finished before it is handed over, so a copy taken from it on another
+        stream reads a whole step.
+        """
+        snapshot = _cloned(self.backbone.state_dict())
+        if self.stream is not None:
+            torch.cuda.current_stream(self.backbone.device).synchronize()
         with self.lock:
-            metrics = self.backbone.learn(batch)
-            if self.stream is not None:
-                # The step's kernels are finished before the lock is released,
-                # so a publication that takes it next copies a whole step.
-                self.stream.synchronize()
-            return metrics
+            self._snapshot = snapshot
+            self.published += 1
 
-    def publish_to(self, acting: Backbone) -> None:
-        """Copy the learner's parameters into one actor's acting copy.
+    def publish_to(self, acting: Backbone) -> int:
+        """Load the latest snapshot into one actor's acting copy; return its number.
 
-        Called on that actor's own thread between two of its decisions, which
-        is the other half of the no-torn-read guarantee: the lock keeps the
-        source still while it is read, and an actor that is copying is by
-        construction not acting, so no forward pass can see the copy half
-        written. Every decision is therefore taken on one complete version.
-
-        This is the one place an actor can wait on a gradient step: for the
-        step in flight, at most one, at each refresh.
+        Called on that actor's own thread between two of its decisions, so no
+        forward pass can see the copy half written, and the snapshot is never
+        written after its publication, so what is loaded is one completed step.
+        Every decision is therefore taken on one complete version. The lock is
+        held against a publication only, which is a hand-over of a finished
+        clone: an actor never waits for a step here.
         """
         with self.lock:
-            acting.load_state_dict(self.backbone.state_dict())
+            if self._snapshot is None:
+                raise RuntimeError("nothing has been published yet")
+            acting.load_state_dict(self._snapshot)
             if self.stream is not None:
-                # The copy ran on this thread's stream; finish it before the
-                # learner's next step may write the parameters it read.
+                # The load ran on this thread's stream; finish it before the
+                # snapshot may be let go and its memory reused.
                 torch.cuda.current_stream(self.backbone.device).synchronize()
+            return self.published
+
+
+def _cloned(state: Any) -> Any:
+    """A state dict with every tensor cloned, so later steps cannot change it."""
+    if isinstance(state, torch.Tensor):
+        return state.detach().clone()
+    if isinstance(state, dict):
+        return {key: _cloned(value) for key, value in state.items()}
+    if isinstance(state, list | tuple):
+        return type(state)(_cloned(value) for value in state)
+    return state
 
 
 @dataclass(frozen=True)

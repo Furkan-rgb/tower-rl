@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 import pytest
-from fakes.fake_run_port import FakeRunPort
+from fakes.fake_run_port import FakeCommandResult, FakeRunPort
 
 from tower_rl.environment.episode import TerminationOutcome
 from tower_rl.environment.run_actions import WAIT, upgrade_action
@@ -108,16 +108,27 @@ def _purchase_then_a_choice_point_span(
 def _death_boundary_recovery(
     environment: InstrumentedRunEnvironment, port: FakeRunPort
 ) -> RunState | None:
+    """A step whose first advance ends on the death boundary, settled by a second one."""
     environment.reset()
-    original = port.read_state
-    port.read_state = lambda: (  # type: ignore[method-assign]
-        None if (reading := original()) is None
-        else replace(reading, health=-2.0, lifecycle="active", terminal=False)
-    )
-    state = environment._read_state()
-    port.read_state = original  # type: ignore[method-assign]
+    original = port.advance_until_event
+    calls = {"count": 0}
+
+    def boundary_on_the_first_advance(**kwargs: object) -> FakeCommandResult:
+        calls["count"] += 1
+        result = original(**kwargs)  # type: ignore[arg-type]
+        if calls["count"] > 1:
+            return result
+        assert result.state is not None
+        return replace(
+            result,
+            state=replace(result.state, health=-2.0, lifecycle="active", terminal=False),
+        )
+
+    port.advance_until_event = boundary_on_the_first_advance  # type: ignore[method-assign]
+    transition = environment.step(WAIT)
+    assert calls["count"] == 2, "the boundary was settled by a second advance"
     assert environment._tally.recovered_transients == 1
-    return state
+    return transition.next_state
 
 
 PATHS: dict[str, Callable[[InstrumentedRunEnvironment, FakeRunPort], RunState | None]] = {

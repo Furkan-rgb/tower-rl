@@ -51,11 +51,20 @@ to the agent only while the world is held.**
   decision or view, so none of it can reach replay. The next episode reports
   only `retired_run_wave` (0 when nothing was retired) and
   `retirement_wall_seconds`.
-- **Bound.** Retirement has no bound of its own. It uses the existing `STALLED`
-  window: if the game clock does not move for `stall_window_wall_seconds`,
-  `reset` raises `RunPortError`. The actor then counts a failed start and
-  withdraws under the existing consecutive-failure rule. The first advance of a
-  retirement can meet a running world (for example, a run left behind by an
+- **Bound.** Two, both failing `reset` with `RetirementFailed`, a
+  `RunPortError`, so the actor counts a failed start and withdraws under the
+  existing consecutive-failure rule:
+  - the existing `STALLED` window, measured on the game's own round clock
+    (`round_ms`), not on the game time the bridge credited: if the round clock
+    does not move for `stall_window_wall_seconds` it fails, and frames
+    rendering while it stands still (the `GAME_TIME_DEFLATED` signature) are
+    not progress;
+  - a wall-time ceiling on the whole retirement,
+    `RETIREMENT_WALL_CEILING_SECONDS` (300 s).
+
+  The failure carries `retired_run_wave` and `retirement_wall_seconds`, which
+  no episode record will, in its message.
+  The first advance of a retirement can meet a running world (for example, a run left behind by an
   earlier session's `release`). If that advance is refused, retirement reads
   the latest state and sends it again.
 - **The hold.** `InstrumentedRunAdapter._start_round` ends the boundary with the
@@ -81,7 +90,9 @@ to the agent only while the world is held.**
 ## Consequences
 
 - An invalid end costs its own episode and one retirement. Measured on the
-  device, retiring a wave-12 cut took 19.3 s of wall time.
+  device, retirement took 19-30 s of wall time at waves 7-12 (19.3 s for a
+  wave-12 cut). Deep cuts at waves 30-50 are estimated, not measured, at 1-3
+  minutes, and are bounded by the 300 s ceiling above.
 - Outcomes stay distinct:
   - the cut episode keeps its own termination and reason;
   - its last transition is a truncation;

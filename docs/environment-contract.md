@@ -442,9 +442,11 @@ Workshop, availability and setup are written and checked again, just as after a
 death. The retired run is no episode: none of its advances is tallied,
 transitioned or emitted, so none can reach replay. The next summary records it
 only as `retired_run_wave` (0 when there was none) and
-`retirement_wall_seconds`. A retirement whose game clock does not move for the
-stall window fails the `reset` with `RunPortError`. Retiring a wave-12 cut took
-19.3 s on the device ("Invalid cuts no longer cascade" in `docs/experiments.md`).
+`retirement_wall_seconds`. A retirement whose round clock does not move for the
+stall window, or that takes more than 300 s in all, fails the `reset` with
+`RunPortError` (`RetirementFailed`, which carries the same two numbers). Retiring
+a cut at waves 7-12 took 19-30 s on the device ("Invalid cuts no longer
+cascade" in `docs/experiments.md`); deeper cuts are estimated at 1-3 minutes.
 
 The agent decides only on a held world. `RunPort.world_held` says whether the
 world stands still. Every return of control to the agent, at the end of `reset`

@@ -280,6 +280,32 @@ WORLD_NOT_HELD = "WORLD_NOT_HELD: the world was running when the agent was asked
 #: wall time.
 RETIREMENT_ADVANCE_GAME_MS = 10_000
 
+#: The most wall time one retirement may cost, however it is progressing.
+#: Measured at 19-30 s from waves 7-12 (`docs/experiments.md`, "Invalid cuts no
+#: longer cascade"); a cut at wave 30-50 is estimated at 1-3 minutes, so this
+#: leaves margin over that and still ends a retirement that is only crawling
+#: (`#95`, ADR 0015).
+RETIREMENT_WALL_CEILING_SECONDS = 300.0
+
+
+class RetirementFailed(RunPortError):
+    """A live run could not be played out to the game's own death, so no episode began.
+
+    A `RunPortError`, so the caller counts a failed episode start; it carries
+    what the retirement had cost, which no episode record will, since none is
+    made. Both are in the message too, for the counts that keep only text.
+    """
+
+    def __init__(
+        self, reason: str, retired_run_wave: int, retirement_wall_seconds: float
+    ) -> None:
+        super().__init__(
+            f"{reason} (retired_run_wave {retired_run_wave}, "
+            f"retirement_wall_seconds {retirement_wall_seconds})"
+        )
+        self.retired_run_wave = retired_run_wave
+        self.retirement_wall_seconds = retirement_wall_seconds
+
 
 class _DeathBoundaryUnresolved(RunPortError):
     """The minimal advance that should have settled the death boundary failed.
@@ -642,9 +668,13 @@ class InstrumentedRunEnvironment:
         wave it was retired from and the wall time the retirement cost, which
         is `(0, 0.0)` when there was nothing to retire.
 
-        A retirement that stops moving the game clock for the stall window is
-        the same hung pipeline `STALLED` names inside an episode, and raises
-        `RunPortError` so the caller counts a failed episode start.
+        Progress is the game's own round clock advancing, not the game time the
+        bridge credited: frames rendering while the round clock stands still
+        is the `GAME_TIME_DEFLATED` signature, and is not progress. A
+        retirement that moves no round clock for the stall window - the same
+        hung pipeline `STALLED` names inside an episode - or that takes longer
+        than `RETIREMENT_WALL_CEILING_SECONDS` altogether raises
+        `RetirementFailed`, so the caller counts a failed episode start.
         """
         started = time.monotonic()
         with self.profile.span(BRIDGE_ROUND_TRIP):
@@ -655,16 +685,27 @@ class InstrumentedRunEnvironment:
         last_progress_at = started
         while True:
             # Health moving is not a reason to stop: only the run's end is.
-            result = self._advance_from_latest(RETIREMENT_ADVANCE_GAME_MS, 1.0)
-            if result is None:
-                return retired_wave, round(time.monotonic() - started, 3)
+            try:
+                result = self._advance_from_latest(RETIREMENT_ADVANCE_GAME_MS, 1.0)
+            except RunPortError as failure:
+                raise RetirementFailed(
+                    str(failure), retired_wave, round(time.monotonic() - started, 3)
+                ) from failure
             now = time.monotonic()
-            if result.game_ms > 0:
+            if result is None:
+                return retired_wave, round(now - started, 3)
+            if result.round_ms > 0:
                 last_progress_at = now
+            failed = None
+            if now - started > RETIREMENT_WALL_CEILING_SECONDS:
+                failed = f"the retirement took over {RETIREMENT_WALL_CEILING_SECONDS}s"
             elif now - last_progress_at > self.cadence.stall_window_wall_seconds:
-                raise RunPortError(
-                    f"the run left live at wave {retired_wave} did not end: "
-                    f"{STALLED_REASON_PREFIX} {self.cadence.stall_window_wall_seconds}s"
+                failed = f"{STALLED_REASON_PREFIX} {self.cadence.stall_window_wall_seconds}s"
+            if failed is not None:
+                raise RetirementFailed(
+                    f"the run left live at wave {retired_wave} did not end: {failed}",
+                    retired_wave,
+                    round(now - started, 3),
                 )
 
     def _advance_from_latest(

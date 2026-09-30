@@ -15,9 +15,11 @@ from tower_rl.environment import run_environment
 from tower_rl.environment.episode import ActionOutcome, TerminationOutcome
 from tower_rl.environment.run_actions import WAIT, action_index, upgrade_action
 from tower_rl.environment.run_environment import (
+    RETIREMENT_WALL_CEILING_SECONDS,
     STALLED_REASON_PREFIX,
     CadenceConfig,
     InstrumentedRunEnvironment,
+    RetirementFailed,
     UpgradeAvailability,
 )
 from tower_rl.environment.run_port import RunPortError
@@ -210,3 +212,79 @@ def test_a_stale_first_retirement_advance_reads_again_and_carries_on() -> None:
 
     assert state.wave == 1
     assert environment.summarize(TerminationOutcome.OPERATOR_STOP).retired_run_wave == cut_wave
+
+
+def _a_clock_that_ticks_a_second_a_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = [1_000.0]
+
+    def ticking() -> float:
+        clock[0] += 1.0
+        return clock[0]
+
+    monkeypatch.setattr(run_environment.time, "monotonic", ticking)
+
+
+def test_frames_rendering_on_a_frozen_round_clock_is_not_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `GAME_TIME_DEFLATED` signature: the bridge credits game time, the game's clock stands.
+
+    Progress is the round clock, so this retirement fails at the stall window
+    rather than going on for as long as the bridge keeps crediting frames.
+    """
+    environment, port = _environment()
+    cut_wave = _cut_mid_game(environment, port)
+    environment.cadence = CadenceConfig(max_quiet_game_ms=1000, stall_window_wall_seconds=10.0)
+    calls = {"count": 0}
+
+    def frames_but_no_round_clock(**_: object) -> FakeCommandResult:
+        calls["count"] += 1
+        return FakeCommandResult(
+            "confirmed",
+            "budget_exhausted",
+            frames=100,
+            game_ms=10_000.0,
+            round_ms=0.0,
+            state=port._observe(),
+        )
+
+    monkeypatch.setattr(port, "advance_until_event", frames_but_no_round_clock)
+    _a_clock_that_ticks_a_second_a_read(monkeypatch)
+
+    with pytest.raises(RetirementFailed, match=STALLED_REASON_PREFIX) as failed:
+        environment.reset()
+
+    assert 1 < calls["count"] < 20, "it failed at the bound, not after the bridge gave up"
+    assert failed.value.retired_run_wave == cut_wave
+    assert failed.value.retirement_wall_seconds > 10.0
+    assert f"retired_run_wave {cut_wave}" in str(failed.value)
+
+
+def test_a_retirement_that_keeps_progressing_still_ends_at_the_wall_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that will not die is bounded by wall time whatever its clock does."""
+    environment, port = _environment()
+    cut_wave = _cut_mid_game(environment, port)
+    calls = {"count": 0}
+
+    def progressing_forever(**_: object) -> FakeCommandResult:
+        calls["count"] += 1
+        return FakeCommandResult(
+            "confirmed",
+            "budget_exhausted",
+            frames=100,
+            game_ms=10_000.0,
+            round_ms=10_000.0,
+            state=port._observe(),
+        )
+
+    monkeypatch.setattr(port, "advance_until_event", progressing_forever)
+    _a_clock_that_ticks_a_second_a_read(monkeypatch)
+
+    with pytest.raises(RetirementFailed, match="took over") as failed:
+        environment.reset()
+
+    assert failed.value.retired_run_wave == cut_wave
+    assert failed.value.retirement_wall_seconds > RETIREMENT_WALL_CEILING_SECONDS
+    assert calls["count"] > 10, "the stall window, which it was not, did not end it"

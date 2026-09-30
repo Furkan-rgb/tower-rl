@@ -75,8 +75,8 @@ class TowerTrunk(nn.Module):
     def output_width(self) -> int:
         return self.config.hidden * 3
 
-    def forward(self, scalars: Tensor, rows: Tensor) -> tuple[Tensor, Tensor]:
-        """Return the encoded rows and the pooled state summary.
+    def encode(self, scalars: Tensor, rows: Tensor) -> tuple[Tensor, Tensor]:
+        """Return every row encoded by the shared weights, and the encoded scalars.
 
         `scalars` is `[batch, time, scalar_count * history_length]` and `rows` is
         `[batch, time, row_count, row_width]`.
@@ -86,10 +86,15 @@ class TowerTrunk(nn.Module):
         identities = torch.arange(cfg.row_count, device=rows.device)
         identity = self.identity(identities).expand(batch, time, cfg.row_count, cfg.identity_dim)
         encoded_rows = self.row_encoder(torch.cat((rows, identity), dim=-1))
+        return encoded_rows, self.scalar_encoder(scalars)
+
+    def forward(self, scalars: Tensor, rows: Tensor) -> tuple[Tensor, Tensor]:
+        """Return the encoded rows and the pooled state summary (`encode`'s shapes)."""
+        encoded_rows, encoded_scalars = self.encode(scalars, rows)
         # Mean and max pooling together: the mean says what the roster looks like
         # overall, the max says whether any single slot is compelling right now.
         pooled = torch.cat(
-            (encoded_rows.mean(dim=2), encoded_rows.amax(dim=2), self.scalar_encoder(scalars)),
+            (encoded_rows.mean(dim=2), encoded_rows.amax(dim=2), encoded_scalars),
             dim=-1,
         )
         return encoded_rows, pooled
@@ -124,7 +129,7 @@ class DuelingHeads(nn.Module):
         wait = self.wait_advantage(core)
         expanded = core.unsqueeze(2).expand(batch, time, cfg.row_count, cfg.core_hidden)
         rows_advantage = self.row_advantage(torch.cat((encoded_rows, expanded), dim=-1)).squeeze(-1)
-        return _dueling_masked_q(value, torch.cat((wait, rows_advantage), dim=-1), mask)
+        return dueling_masked_q(value, torch.cat((wait, rows_advantage), dim=-1), mask)
 
 
 class StackedPolicyNetwork(nn.Module):
@@ -190,7 +195,7 @@ class StackedPolicyNetwork(nn.Module):
         return self.heads(self.core(pooled), encoded_rows, mask), self.carry(scalars, state)
 
 
-def _dueling_masked_q(value: Tensor, advantages: Tensor, mask: Tensor) -> Tensor:
+def dueling_masked_q(value: Tensor, advantages: Tensor, mask: Tensor) -> Tensor:
     """Combine value and advantage, centring over valid actions only.
 
     Subtracting the mean over *all* actions would let the many permanently invalid

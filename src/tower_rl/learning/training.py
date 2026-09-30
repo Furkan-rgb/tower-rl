@@ -829,6 +829,11 @@ class TrainingRun:
     #: measurement rather than experience. It borrows an instance, so it may only
     #: run while the fleet is not collecting.
     evaluate: Callable[[], EvaluationReport] | None = None
+    #: Writes the resume point: `latest.pt` and the replay beside it, as one
+    #: pair at one decision count. Called with `_lock` held - so no count moves
+    #: and no gradient step is taken while it writes - and never with the
+    #: buffer's lock, which it takes itself only for as long as it needs to
+    #: capture the buffer (`PrioritizedSequenceReplay.image`).
     checkpoint: Callable[[TrainingProgressReport], None] | None = None
     #: Called when a selection period closes or the fleet crosses a multiple of
     #: `checkpoint_every_decisions`, to write a checkpoint under its own name.
@@ -1338,7 +1343,10 @@ class TrainingRun:
         A numbered checkpoint is written where a selection period closes, so
         every period has the checkpoint its mean belongs to, and additionally
         on the `checkpoint_every_decisions` cadence. Each is answered once per
-        crossing: an episode is far shorter than either period.
+        crossing: an episode is far shorter than either period. The resume
+        point is written every `checkpoint_every_episodes` and beside every
+        numbered checkpoint, so the resume point and its replay are never
+        behind the newest checkpoint on disk.
         """
         period = self.config.evaluate_every_episodes
         if self.evaluate is not None and period and report.episodes % period == 0:
@@ -1349,20 +1357,27 @@ class TrainingRun:
                 # episode, and the port can fail under it exactly as it can
                 # under collection. Either way the point is lost, not the run.
                 report.evaluation_failures.append(str(failure))
-        period = self.config.checkpoint_every_episodes
-        if self.checkpoint is not None and period and report.episodes % period == 0:
-            self.checkpoint(report)
-            report.checkpoints_written += 1
         before, self._periodic_at = self._periodic_at, report.decisions
 
         def crossed(every: int) -> bool:
             return bool(every) and report.decisions // every > before // every
 
         period_closed = crossed(self.config.selection_period_decisions)
+        wrote_numbered = False
         if self.numbered_checkpoint is not None and (
             period_closed or crossed(self.config.checkpoint_every_decisions)
         ):
             self.numbered_checkpoint(report)
+            report.checkpoints_written += 1
+            wrote_numbered = True
+        # The resume point on its own cadence, and wherever a numbered one was
+        # just written too, so every checkpoint the run writes has a resume
+        # point - with its replay - at the same decision count beside it.
+        period = self.config.checkpoint_every_episodes
+        if self.checkpoint is not None and (
+            wrote_numbered or (period and report.episodes % period == 0)
+        ):
+            self.checkpoint(report)
             report.checkpoints_written += 1
         if period_closed:
             # After the checkpoint, so a run that stops here has written the

@@ -98,6 +98,46 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Crash-safe resume point: save cost at 1,000,000 replay steps (`#97`, 2026-09-30)
+
+**Purpose.** `M3-P016` was killed by systemd-oomd at 425,078 decisions and
+lost its replay, which was saved only as a run ended. ADR 0014 writes the
+replay with every `latest.pt` instead. This entry measures what one such save
+costs at the size a 1,000,000-decision DreamerV3 run reaches, against the
+bound of about 30 s of stall and no multiple of memory. No device was used.
+
+**Setup.** The workstation (125 GB RAM, 32 cores), writing to its NVMe disk.
+A synthetic uniform buffer shaped like DreamerV3's: 1,000 episodes of 1,000
+decisions with random features at the real widths (42 scalars, 60 × 9 rows,
+61-action masks), cut into 64-step windows at stride 32, 31,000 sequences
+over 1,000,000 distinct steps. The process's resident size with the buffer
+built was 22.7–23.2 GB. Peak memory was read as `VmHWM` after resetting it
+through `/proc/self/clear_refs`.
+
+**Results.**
+
+| Writer | Save time | Dump size | Peak memory above the buffer |
+|---|---|---|---|
+| Before (one `numpy` memmap per field, written at run end) | 11.5 s | 4.76 GB | +4.2 GB |
+| ADR 0014 (`image()` under the lock, `ReplayImage.write`, 8,192-row chunks, page cache dropped behind them) | 11.5–11.6 s, of which capture 1 ms | 4.76 GB | +0.20 GB |
+
+Two saves in a row measured the same. Reloading the dump took 14.7 s, and
+the reloaded buffer held the same sequences, priorities and sampler state as
+the saved one. At 100,000 steps the save took 1.3 s, +87 MB.
+
+**Reading.** A full rewrite of the buffer fits the bound with room to spare,
+so no incremental format was built (ADR 0014 gives the reasons). The save
+holds the training run's progress lock throughout, so learning and episode
+counting stall about 12 s per save at this size; actors keep playing. At the
+default `--checkpoint-every-episodes 25` and about 1,000 decisions per
+episode late in `M3-P016`, that is one save per ~25,000 decisions. The disk
+holds one dump, plus a second while the next is written.
+
+**Limits.** The features are random, not game states, so compressibility is
+not measured (the dump is not compressed either way). The buffer is uniform;
+stacked-dqn's prioritized buffer adds one float64 per sequence. No real run
+has yet written or resumed a pair.
+
 ## Workshop runway device verification (`#80`, 2026-09-27)
 
 **Purpose.** Confirm the Workshop runway profile (ADR 0012,

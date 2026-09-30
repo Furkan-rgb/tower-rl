@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import shutil
 import sys
 import threading
@@ -21,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import numpy
 import pytest
 import torch
 import train
@@ -43,14 +45,22 @@ from tower_rl.experiment.training_report import (
     numbered_checkpoint_name,
 )
 from tower_rl.learning.actor import Actor, ActorConfig
-from tower_rl.learning.checkpoint import Checkpoint, identity_hash, load, save
+from tower_rl.learning.checkpoint import (
+    Checkpoint,
+    identity_hash,
+    load,
+    restore_rng_state,
+    save,
+)
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import Policy, checkpoint_policy
 from tower_rl.learning.replay import (
     R2D2_PRIORITY_EXPONENT,
+    REPLAY_DUMP_METADATA,
     PrioritizedSequenceReplay,
+    ReplayImage,
     ReplayStep,
     read_replay_metadata,
 )
@@ -1027,17 +1037,18 @@ def latest_checkpoint(report: dict[str, Any]) -> Path:
 
 
 def resume_from(
-    run_dir: Path, checkpoint: Path, budget: int, profile_id: str = PROFILE
+    run_dir: Path, checkpoint: Path, budget: int, profile_id: str = PROFILE, **flags: str
 ) -> Any:
     """The parsed `--resume` of a second segment, as `main` reads it.
 
     The profile is the one the bridge reported, which is what the checkpoint's
-    identity is checked against before anything is brought up.
+    identity is checked against before anything is brought up. `flags` are the
+    segment's own, a `--run-name` among them.
     """
     return train.resume_point(
         arguments(
             run_dir,
-            **{"--budget-decisions": str(budget), "--resume": str(checkpoint)},
+            **{"--budget-decisions": str(budget), "--resume": str(checkpoint), **flags},
         ),
         profile_id=profile_id,
         revision="test",
@@ -1491,13 +1502,31 @@ def test_a_run_split_in_two_covers_the_budget_the_whole_run_does(tmp_path: Path)
     assert min(crossings(second)) > max(crossings(first))
 
 
-# -- replay saved as a run ends, reloaded on resume -------------------------
+# -- replay saved with every latest.pt, reloaded on resume (board #97) --------
 
 
 def saved_replay(run_dir: Path) -> Path:
-    """The one run directory's saved buffer under `run_dir`, found as an operator would."""
-    (dump,) = run_dir.glob(f"*/{REPLAY_DIRECTORY}")
+    """The dump the one run directory's `latest.pt` under `run_dir` names.
+
+    Found as a resume finds it, and the only one kept: every other is deleted
+    once that `latest.pt` is in place.
+    """
+    (latest,) = run_dir.glob("*/checkpoints/latest.pt")
+    folder = latest.parent.parent
+    paired = load(latest).paired_replay
+    assert paired is not None, "every latest.pt is written with its replay"
+    dump = folder / paired
+    assert list((folder / REPLAY_DIRECTORY).iterdir()) == [dump]
     return dump
+
+
+def paired_decisions(dump: Path) -> tuple[int, int]:
+    """The decision counts a dump and the `latest.pt` naming it each record."""
+    checkpoint = load(dump.parent.parent / "checkpoints" / "latest.pt")
+    return (
+        read_replay_metadata(dump)["run"]["decisions"],
+        checkpoint.progress.environment_decisions,
+    )
 
 
 def test_a_run_saves_its_replay_beside_the_latest_checkpoint_it_ends_with(
@@ -1506,13 +1535,33 @@ def test_a_run_saves_its_replay_beside_the_latest_checkpoint_it_ends_with(
     first = numbered(tmp_path, 200)
     dump = saved_replay(tmp_path)
 
-    assert dump.parent == latest_checkpoint(first).parent.parent
+    assert dump.parent.parent == latest_checkpoint(first).parent.parent
     metadata = read_replay_metadata(dump)
     checkpoint = load(latest_checkpoint(first))
     assert metadata["run"]["decisions"] == checkpoint.progress.environment_decisions
     assert metadata["run"]["identity"] == asdict(checkpoint.identity)
     assert metadata["sequences"] == first["arm"]["replay"]["sequences"] > 0
     assert (metadata["capacity"], metadata["alpha"]) == (64, R2D2_PRIORITY_EXPONENT)
+
+
+def test_every_latest_checkpoint_a_run_writes_is_written_with_its_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not only the last: a kill between two of them leaves a matching pair."""
+    pairs: list[tuple[int, int]] = []
+    write = train.TrainingReport._write_resume_point
+
+    def recorded(self: Any, report: Any, image: ReplayImage) -> None:
+        write(self, report, image)
+        pairs.append(paired_decisions(saved_replay(self.run_dir.parent)))
+
+    monkeypatch.setattr(train.TrainingReport, "_write_resume_point", recorded)
+    first = numbered(tmp_path, 300)
+
+    # Every other episode, every numbered checkpoint, and the run's end.
+    assert len(pairs) >= len(numbered_checkpoints(first)[2]) + 1
+    assert all(dump == checkpoint for dump, checkpoint in pairs)
+    assert pairs[-1][1] == first["arm"]["decisions"]
 
 
 def test_a_resume_from_that_checkpoint_reloads_the_replay_and_says_so(tmp_path: Path) -> None:
@@ -1526,6 +1575,8 @@ def test_a_resume_from_that_checkpoint_reloads_the_replay_and_says_so(tmp_path: 
     assert resume.replay_dump == dump
     assert list(arm.replay._items) == list(expected._items)
     assert list(arm.replay._priorities) == list(expected._priorities)
+    # The sampler goes on from where it stood, not from the seed.
+    assert arm.replay._random.getstate() == expected._random.getstate()
     assert arm.resolved["replay_restored_from"] == str(dump)
     manifest = json.loads((arm.run_dir / "manifest.json").read_text())
     assert manifest["replay_restored_from"] == str(dump)
@@ -1533,15 +1584,66 @@ def test_a_resume_from_that_checkpoint_reloads_the_replay_and_says_so(tmp_path: 
     assert arm.training._warm()
 
 
+def test_a_resume_puts_back_the_random_streams_the_checkpoint_was_written_with(
+    tmp_path: Path,
+) -> None:
+    first = numbered(tmp_path / "first", 200)
+    saved = load(latest_checkpoint(first)).rng_state
+    assert saved is not None
+
+    resumed_arm(tmp_path / "second", latest_checkpoint(first), budget=400)
+    drawn = (random.random(), numpy.random.random(), torch.rand(3))
+    restore_rng_state(saved)
+    expected = (random.random(), numpy.random.random(), torch.rand(3))
+
+    assert drawn[:2] == expected[:2]
+    assert torch.equal(drawn[2], expected[2])
+
+
 def test_a_resume_with_no_saved_replay_re_warms_as_before(tmp_path: Path) -> None:
     first = numbered(tmp_path / "first", 200)
-    shutil.rmtree(saved_replay(tmp_path / "first"))
+    # Moved aside whole, as an operator re-warms on purpose.
+    shutil.rmtree(saved_replay(tmp_path / "first").parent)
 
     arm, resume = resumed_arm(tmp_path / "second", latest_checkpoint(first), budget=400)
 
     assert resume.replay_dump is None
     assert len(arm.replay) == 0
     assert arm.resolved["replay_restored_from"] is None
+
+
+def test_a_latest_checkpoint_whose_replay_is_gone_is_refused(tmp_path: Path) -> None:
+    """`replay/` there without the dump `latest.pt` names is a broken pair, not a re-warm."""
+    first = numbered(tmp_path / "first", 200)
+    shutil.rmtree(saved_replay(tmp_path / "first"))
+
+    with pytest.raises(SystemExit, match="the resume point is broken"):
+        resume_from(tmp_path / "second", latest_checkpoint(first), 400)
+
+
+def test_a_latest_checkpoint_and_a_replay_at_another_count_are_refused(tmp_path: Path) -> None:
+    first = numbered(tmp_path / "first", 200)
+    dump = saved_replay(tmp_path / "first")
+    metadata = read_replay_metadata(dump)
+    metadata["run"]["decisions"] -= 1
+    (dump / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata))
+
+    with pytest.raises(SystemExit, match="mismatched pair"):
+        resume_from(tmp_path / "second", latest_checkpoint(first), 400)
+
+
+def test_a_numbered_checkpoint_reloads_the_replay_saved_with_it(tmp_path: Path) -> None:
+    """The pair written at a numbered checkpoint is as good a resume point until replaced."""
+    first = numbered(tmp_path / "first", 200)
+    dump = saved_replay(tmp_path / "first")
+    decisions = read_replay_metadata(dump)["run"]["decisions"]
+    _, directory, _ = numbered_checkpoints(first)
+    # The run's last latest.pt is its end, past any numbered one; standing in for
+    # a run killed straight after one, the numbered file at that count is its own.
+    at_the_dump = directory / numbered_checkpoint_name(decisions)
+    save(replace(load(latest_checkpoint(first)), paired_replay=None), at_the_dump)
+
+    assert resume_from(tmp_path / "second", at_the_dump, 400).replay_dump == dump
 
 
 def test_a_resume_from_an_earlier_checkpoint_is_refused_while_the_replay_is_there(
@@ -1556,8 +1658,8 @@ def test_a_resume_from_an_earlier_checkpoint_is_refused_while_the_replay_is_ther
         resume_from(tmp_path / "second", earlier, 600)
 
     # Moved aside by hand, it is the ordinary resume with an empty buffer.
-    dump = saved_replay(tmp_path / "first")
-    dump.rename(dump.with_name("replay-set-aside"))
+    replays = saved_replay(tmp_path / "first").parent
+    replays.rename(replays.with_name("replay-set-aside"))
     assert resume_from(tmp_path / "second", earlier, 600).replay_dump is None
 
 
@@ -1596,7 +1698,7 @@ def test_a_resumed_run_learns_from_the_reloaded_replay_without_re_warming(
     )
     assert second["arm"]["optimisation_steps"] > parent_steps
 
-    shutil.rmtree(saved_replay(tmp_path / "first"))
+    shutil.rmtree(saved_replay(tmp_path / "first").parent)
     third = session(
         tmp_path / "third",
         budget=str(budget),
@@ -1630,11 +1732,9 @@ def test_a_run_that_fails_still_writes_its_resume_point_and_replay(
     with pytest.raises(type(failure)):
         interrupted_session(tmp_path, monkeypatch, failure)
 
-    dump = saved_replay(tmp_path)
-    checkpoint = load(dump.parent / "checkpoints" / "latest.pt")
-    decisions = checkpoint.progress.environment_decisions
+    dump_decisions, decisions = paired_decisions(saved_replay(tmp_path))
     assert 100 <= decisions < 400
-    assert read_replay_metadata(dump)["run"]["decisions"] == decisions
+    assert dump_decisions == decisions
 
 
 def test_an_interrupt_while_the_fleet_collects_leaves_a_matching_resume_point(
@@ -1676,17 +1776,14 @@ def test_an_interrupt_while_the_fleet_collects_leaves_a_matching_resume_point(
     fleet.join(timeout=60)
     assert not fleet.is_alive(), "the actors stopped at the halt"
 
-    dump = saved_replay(tmp_path)
-    checkpoint = load(dump.parent / "checkpoints" / "latest.pt")
-    assert read_replay_metadata(dump)["run"]["decisions"] == (
-        checkpoint.progress.environment_decisions
-    )
+    dump_decisions, decisions = paired_decisions(saved_replay(tmp_path))
+    assert dump_decisions == decisions
 
 
 def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_point(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failure mid-update must not overwrite the last good latest.pt with a broken one."""
+    """A failure mid-update must not overwrite the last good pair with a broken one."""
 
     def run_then_break(self: TrainingRun) -> Any:
         self.advance(100)
@@ -1700,27 +1797,30 @@ def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_poi
 
     (checkpoint,) = tmp_path.glob("*/checkpoints/latest.pt")
     assert not non_finite_tensors(dict(load(checkpoint).backbone_state))
-    assert not list(tmp_path.glob(f"*/{REPLAY_DIRECTORY}"))
+    # The periodic pair, still whole.
+    dump_decisions, decisions = paired_decisions(saved_replay(tmp_path))
+    assert dump_decisions == decisions
 
 
-def test_a_failed_replay_save_neither_masks_the_error_nor_stops_the_checkpoint(
+def refuse_to_write(self: ReplayImage, directory: Path, **kwargs: Any) -> int:
+    raise OSError("disk full")
+
+
+def test_a_failed_replay_save_neither_masks_the_error_nor_moves_the_resume_point(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def refuse(self: PrioritizedSequenceReplay, directory: Path, **kwargs: Any) -> int:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", refuse)
+    """A `latest.pt` without its replay would be a resume point that loses the buffer."""
+    monkeypatch.setattr(ReplayImage, "write", refuse_to_write)
     with pytest.raises(RuntimeError, match="the run failed"):
         interrupted_session(tmp_path / "failed", monkeypatch)
-    (checkpoint,) = (tmp_path / "failed").glob("*/checkpoints/latest.pt")
-    assert load(checkpoint).progress.environment_decisions >= 100
+    assert not list((tmp_path / "failed").glob("*/checkpoints/latest.pt"))
 
     # A run that spends its budget is not failed by it either.
     monkeypatch.undo()
-    monkeypatch.setattr(PrioritizedSequenceReplay, "save_to", refuse)
+    monkeypatch.setattr(ReplayImage, "write", refuse_to_write)
     report = session(tmp_path / "finished", budget="200")
     assert report["arm"]["decisions"] >= 200
-    assert not list((tmp_path / "finished").glob(f"*/{REPLAY_DIRECTORY}"))
+    assert not list((tmp_path / "finished").glob(f"*/{REPLAY_DIRECTORY}/*"))
 
 
 # -- discounting by game time (board #81) ------------------------------------
@@ -1871,6 +1971,16 @@ def dreamer_resume(run_dir: Path, checkpoint: Path, *flags: str) -> Any:
             profile_id=PROFILE,
             revision="test",
         )
+
+
+def test_a_dreamerv3_run_writes_and_reloads_the_same_resume_pair(tmp_path: Path) -> None:
+    """The shared replay: its uniform buffer is saved with every latest.pt as well."""
+    checkpoint = latest_checkpoint(dreamer_session(tmp_path / "first"))
+    dump = saved_replay(tmp_path / "first")
+
+    dump_decisions, decisions = paired_decisions(dump)
+    assert dump_decisions == decisions
+    assert dreamer_resume(tmp_path / "second", checkpoint).replay_dump == dump
 
 
 def test_a_dreamerv3_run_resumes_only_under_its_own_discount_and_reward(

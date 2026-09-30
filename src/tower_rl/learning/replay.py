@@ -51,9 +51,17 @@ R2D2_PRIORITY_MIX = 0.9
 PRIORITY_FLOOR = 1e-6
 
 
-#: The layout of a saved buffer (`PrioritizedSequenceReplay.save_to`). A dump
-#: in any other layout is refused rather than read as this one.
-REPLAY_DUMP_FORMAT_VERSION = 1
+#: The layout of a saved buffer (`ReplayImage.write`). Version 2 added the
+#: sampling stream's state (`sampler_state` in the metadata), so a reloaded
+#: buffer draws on where the saved one left off; its arrays are version 1's.
+#: A version 1 dump - every run's end-of-run save before periodic saving - is
+#: still read, and draws from its own seed. Any other layout is refused rather
+#: than read as this one.
+REPLAY_DUMP_FORMAT_VERSION = 2
+READABLE_DUMP_FORMAT_VERSIONS = (1, 2)
+#: Rows converted and written at a time. A table is never built whole in
+#: memory: 8,192 steps are about 38 MB at float64.
+_WRITE_CHUNK_ROWS = 8192
 #: The dump's one metadata file, beside its arrays.
 REPLAY_DUMP_METADATA = "replay.json"
 
@@ -329,10 +337,10 @@ class PrioritizedSequenceReplay:
         sequences saved under R2D2's priorities and continued uniformly, or the
         other way round, would be a replay neither recipe names.
         """
-        if metadata.get("format_version") != REPLAY_DUMP_FORMAT_VERSION:
+        if metadata.get("format_version") not in READABLE_DUMP_FORMAT_VERSIONS:
             raise ReplayDumpError(
-                f"replay dump format {metadata.get('format_version')} is not "
-                f"{REPLAY_DUMP_FORMAT_VERSION}"
+                f"replay dump format {metadata.get('format_version')} is not one of "
+                f"{READABLE_DUMP_FORMAT_VERSIONS}"
             )
         saved = (metadata.get("capacity"), metadata.get("alpha"), metadata.get("beta"))
         if saved != (self.capacity, self.alpha, self.beta):
@@ -342,101 +350,35 @@ class PrioritizedSequenceReplay:
                 f"{self.alpha}, beta {self.beta}"
             )
 
+    def image(self) -> ReplayImage:
+        """Everything a dump holds, captured at this moment; the caller holds `lock`.
+
+        Cheap - references to the stored sequences, not copies of them - so the
+        lock is held for as long as it takes to copy one list of references and
+        one of priorities. The sequences are immutable, so the image stays the
+        buffer as it was however the buffer moves on while it is written:
+        eviction drops a sequence from the buffer, not from the image.
+        """
+        return ReplayImage(
+            capacity=self.capacity,
+            alpha=self.alpha,
+            beta=self.beta,
+            sequences=tuple(self._items),
+            priorities=tuple(self._priorities),
+            compatibility=self._compatibility,
+            stats=asdict(self.stats),
+            sampler_state=self._random.getstate(),
+        )
+
     def save_to(self, directory: Path, *, run: Mapping[str, Any]) -> int:
         """Write the whole buffer to `directory` atomically; return the bytes written.
 
-        The caller holds `lock` and keeps whatever else it must still - the dump
-        is a snapshot of one moment. `run` is the caller's account of that
-        moment (its decision count and identity), stored beside the buffer's own
-        so a resume can refuse a dump from any other one.
-
-        Everything sampling depends on is saved: every stored sequence, its
-        priority, the order they were inserted in - the buffer is a FIFO held
-        oldest first, so that order is its cursor and says what is evicted next
-        - the compatibility key and the counters. The sampling stream is not:
-        a resumed buffer draws from its own seed.
-
-        Plain `.npy` arrays and one JSON file, never a pickle. Overlapping
-        windows share their steps in memory, so each distinct step is written
-        once to a step table and sequences hold indices into it; that also
-        keeps the reload from doubling the buffer's size. Each array is written
-        row by row through a memory map, so no second copy of the buffer is
-        made in memory. The files go to a sibling directory that is renamed
-        into place only once all of them are on disk, so a dump that exists is
-        a complete one.
+        The caller holds `lock` throughout. `ReplayImage.write` says what is saved.
         """
-        if directory.exists():
-            # A run saves once, into a directory of its own, so an existing
-            # dump is some other save's and is not overwritten.
-            raise ReplayDumpError(f"a replay dump already exists at {directory}")
-        steps: dict[int, int] = {}
-        distinct_steps: list[ReplayStep] = []
-        episodes: dict[int, int] = {}
-        distinct_episodes: list[SequenceMetadata] = []
-        step_index: list[int] = []
-        sequence_episode: list[int] = []
-        for sequence in self._items:
-            # By object identity: the steps and the metadata are alive in the
-            # buffer throughout, so an id cannot be reused while this runs.
-            episode = episodes.setdefault(id(sequence.metadata), len(distinct_episodes))
-            if episode == len(distinct_episodes):
-                distinct_episodes.append(sequence.metadata)
-            sequence_episode.append(episode)
-            for step in sequence.steps:
-                index = steps.setdefault(id(step), len(distinct_steps))
-                if index == len(distinct_steps):
-                    distinct_steps.append(step)
-                step_index.append(index)
-
-        temporary = directory.with_name(directory.name + ".partial")
-        shutil.rmtree(temporary, ignore_errors=True)
-        temporary.mkdir(parents=True)
-        try:
-            for name, (dtype, width, value) in _STEP_FIELDS.items():
-                _write_rows(temporary / f"step_{name}.npy", dtype, width, distinct_steps, value)
-            for name, (dtype, width, value) in _EPISODE_FIELDS.items():
-                _write_rows(
-                    temporary / f"episode_{name}.npy", dtype, width, distinct_episodes, value
-                )
-            sequences = {
-                "steps": [len(sequence.steps) for sequence in self._items],
-                "burn_in": [sequence.burn_in for sequence in self._items],
-                "episode": sequence_episode,
-                "step_index": step_index,
-            }
-            for name, values in sequences.items():
-                numpy.save(temporary / f"sequence_{name}.npy", numpy.asarray(values, numpy.int64))
-            numpy.save(
-                temporary / "sequence_priority.npy",
-                numpy.asarray(self._priorities, numpy.float64),
-            )
-            metadata = {
-                "format_version": REPLAY_DUMP_FORMAT_VERSION,
-                "capacity": self.capacity,
-                "alpha": self.alpha,
-                "beta": self.beta,
-                "sequences": len(self._items),
-                "steps": len(distinct_steps),
-                "step_slots": len(step_index),
-                "episodes": len(distinct_episodes),
-                "compatibility": list(self._compatibility) if self._compatibility else None,
-                "stats": asdict(self.stats),
-                "run": dict(run),
-            }
-            (temporary / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata, indent=2))
-            size = 0
-            for path in temporary.iterdir():
-                with path.open("rb") as stream:
-                    os.fsync(stream.fileno())
-                size += path.stat().st_size
-            _move_into_place(temporary, directory)
-        except BaseException:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
-        return size
+        return self.image().write(directory, run=run)
 
     def load_from(self, directory: Path) -> None:
-        """Restore a buffer `save_to` wrote into this empty one.
+        """Restore a dump `ReplayImage.write` wrote into this empty buffer.
 
         Checked by size and shape rather than by hash: the atomic rename already
         guarantees a dump that exists was written whole, and what is left - a
@@ -476,13 +418,20 @@ class PrioritizedSequenceReplay:
             items = self._sequences_from(arrays, step_index, metadata)
         except ReplayRejected as refused:
             # A burn-in, an action or a game time the buffer would never have
-            # accepted: the dump is not one `save_to` wrote.
+            # accepted: the dump is not one `ReplayImage.write` wrote.
             raise ReplayDumpError(f"replay dump holds an invalid sequence: {refused}") from refused
         self._items = items
         self._priorities = deque(arrays["sequence_priority"].tolist())
         compatibility = metadata["compatibility"]
         self._compatibility = None if compatibility is None else tuple(compatibility)
         self.stats = ReplayStats(**metadata["stats"])
+        sampler = metadata.get("sampler_state")
+        if sampler is not None:
+            # Where the saved buffer's stream was, so the resumed run draws on
+            # from there rather than restarting its seed's sequence. A version 1
+            # dump did not record it, and the buffer draws from its own seed.
+            version, internal, gauss = sampler
+            self._random.setstate((version, tuple(internal), gauss))
         # No batch is outstanding: the next update follows the next sample.
         self._evictions_at_sample = self.stats.evicted
 
@@ -514,6 +463,120 @@ class PrioritizedSequenceReplay:
             )
             start = end
         return items
+
+
+@dataclass(frozen=True)
+class ReplayImage:
+    """A buffer as it stood at one moment, ready to be written as a dump.
+
+    Taken by `PrioritizedSequenceReplay.image` under the buffer's lock and
+    written without it, so the actors can go on adding to the buffer while a
+    gigabyte-sized dump of an earlier moment goes to disk.
+    """
+
+    capacity: int
+    alpha: float
+    beta: float
+    #: The stored sequences, oldest first, and each one's priority.
+    sequences: tuple[ReplaySequence, ...]
+    priorities: tuple[float, ...]
+    compatibility: tuple[str, str, str, str] | None
+    stats: Mapping[str, Any]
+    #: `random.Random.getstate()` of the sampling stream.
+    sampler_state: tuple[Any, ...]
+
+    def write(self, directory: Path, *, run: Mapping[str, Any]) -> int:
+        """Write this image to `directory` atomically; return the bytes written.
+
+        `run` is the caller's account of the moment (its decision count and
+        identity), stored beside the buffer's own so a resume can refuse a
+        dump from any other one.
+
+        Everything sampling depends on is saved: every stored sequence, its
+        priority, the order they were inserted in - the buffer is a FIFO held
+        oldest first, so that order is its cursor and says what is evicted next
+        - the compatibility key, the counters and the sampling stream's state.
+
+        Plain `.npy` arrays and one JSON file, never a pickle. Overlapping
+        windows share their steps in memory, so each distinct step is written
+        once to a step table and sequences hold indices into it; that also
+        keeps the reload from doubling the buffer's size. Each table is
+        converted and written a chunk of rows at a time and dropped from the
+        page cache once on disk, so no second copy of the buffer is made in
+        memory (+0.2 GB peak at 1M steps, where a memory map cost +4.2 GB). The
+        files go to a sibling directory that is renamed into place only once
+        all of them are on disk, so a dump that exists is a complete one.
+        """
+        if directory.exists():
+            # Every save goes to a directory of its own, so an existing dump is
+            # some other save's and is not overwritten.
+            raise ReplayDumpError(f"a replay dump already exists at {directory}")
+        steps: dict[int, int] = {}
+        distinct_steps: list[ReplayStep] = []
+        episodes: dict[int, int] = {}
+        distinct_episodes: list[SequenceMetadata] = []
+        step_index: list[int] = []
+        sequence_episode: list[int] = []
+        for sequence in self.sequences:
+            # By object identity: the image holds every step and every metadata
+            # alive throughout, so an id cannot be reused while this runs.
+            episode = episodes.setdefault(id(sequence.metadata), len(distinct_episodes))
+            if episode == len(distinct_episodes):
+                distinct_episodes.append(sequence.metadata)
+            sequence_episode.append(episode)
+            for step in sequence.steps:
+                index = steps.setdefault(id(step), len(distinct_steps))
+                if index == len(distinct_steps):
+                    distinct_steps.append(step)
+                step_index.append(index)
+
+        temporary = directory.with_name(directory.name + ".partial")
+        shutil.rmtree(temporary, ignore_errors=True)
+        temporary.mkdir(parents=True)
+        try:
+            for name, (dtype, width, value) in _STEP_FIELDS.items():
+                _write_rows(temporary / f"step_{name}.npy", dtype, width, distinct_steps, value)
+            for name, (dtype, width, value) in _EPISODE_FIELDS.items():
+                _write_rows(
+                    temporary / f"episode_{name}.npy", dtype, width, distinct_episodes, value
+                )
+            sequences = {
+                "steps": [len(sequence.steps) for sequence in self.sequences],
+                "burn_in": [sequence.burn_in for sequence in self.sequences],
+                "episode": sequence_episode,
+                "step_index": step_index,
+            }
+            for name, values in sequences.items():
+                numpy.save(temporary / f"sequence_{name}.npy", numpy.asarray(values, numpy.int64))
+            numpy.save(
+                temporary / "sequence_priority.npy",
+                numpy.asarray(self.priorities, numpy.float64),
+            )
+            metadata = {
+                "format_version": REPLAY_DUMP_FORMAT_VERSION,
+                "capacity": self.capacity,
+                "alpha": self.alpha,
+                "beta": self.beta,
+                "sequences": len(self.sequences),
+                "steps": len(distinct_steps),
+                "step_slots": len(step_index),
+                "episodes": len(distinct_episodes),
+                "compatibility": list(self.compatibility) if self.compatibility else None,
+                "stats": dict(self.stats),
+                "sampler_state": list(self.sampler_state),
+                "run": dict(run),
+            }
+            (temporary / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata, indent=2))
+            size = 0
+            for path in temporary.iterdir():
+                with path.open("rb") as stream:
+                    os.fsync(stream.fileno())
+                size += path.stat().st_size
+            _move_into_place(temporary, directory)
+        except BaseException:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return size
 
 
 def read_replay_metadata(directory: Path) -> dict[str, Any]:
@@ -562,17 +625,27 @@ def _write_rows(
     rows: list[Any],
     value: Callable[[Any], object],
 ) -> None:
-    """One field of a table, written row by row into a memory-mapped `.npy`."""
+    """One field of a table as a `.npy`, converted and written a chunk of rows at a time.
+
+    Synced and then dropped from the page cache, so a dump of gigabytes does
+    not sit in memory as dirty pages beside the buffer it was written from.
+    """
     if dtype is numpy.str_:
         # Episodes are few, and a string array's width is its longest value.
         numpy.save(path, numpy.asarray([value(row) for row in rows], numpy.str_))
         return
     shape = (len(rows),) if width is None else (len(rows), width)
-    array = numpy.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
-    for index, row in enumerate(rows):
-        array[index] = value(row)
-    array.flush()
-    del array
+    with path.open("wb") as stream:
+        numpy.lib.format.write_array_header_1_0(
+            stream,
+            {"descr": numpy.dtype(dtype).str, "fortran_order": False, "shape": shape},
+        )
+        for start in range(0, len(rows), _WRITE_CHUNK_ROWS):
+            chunk = rows[start : start + _WRITE_CHUNK_ROWS]
+            stream.write(numpy.asarray([value(row) for row in chunk], dtype=dtype).tobytes())
+        stream.flush()
+        os.fsync(stream.fileno())
+        os.posix_fadvise(stream.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
 
 
 def _read_array(directory: Path, name: str, shape: tuple[int, ...]) -> Any:

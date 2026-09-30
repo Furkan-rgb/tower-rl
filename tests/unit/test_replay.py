@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from tower_rl.learning.replay import (
     R2D2_IMPORTANCE_SAMPLING_EXPONENT,
     R2D2_PRIORITY_EXPONENT,
     R2D2_PRIORITY_MIX,
+    REPLAY_DUMP_METADATA,
     PrioritizedSequenceReplay,
     ReplayDumpError,
     ReplayRejected,
@@ -444,10 +446,49 @@ def test_a_saved_buffer_reloads_exactly_and_samples_identically(
     # the buffer past the one it was saved from.
     assert saved._items[1].steps[2] is saved._items[2].steps[0]
     assert loaded._items[1].steps[2] is loaded._items[2].steps[0]
-    # From one seed, the two draw the same batches with the same weights.
-    saved._random.seed(11)
+    # The sampling stream travels with the buffer, so the reloaded one draws on
+    # from where the saved one was: the same batches with the same weights,
+    # although `_filled` already drew from it before the save.
     for _ in range(3):
         assert loaded.sample(4) == saved.sample(4)
+
+
+def test_an_image_is_the_buffer_at_the_moment_it_was_taken(tmp_path: Path) -> None:
+    """Captured under the lock, written without it: what moves meanwhile is not in it."""
+    replay = _filled(_prioritized())
+    before = (list(replay._items), list(replay._priorities), replay.stats.evicted)
+    image = replay.image()
+    # The buffer moves on while the image is written: an eviction, a priority.
+    for sequence in _episode_windows("episode-late", cash=900.0):
+        replay.add(sequence)
+    indices, _, _ = replay.sample(2)
+    replay.update_priorities(indices, ((7.0,), (8.0,)))
+
+    image.write(tmp_path / "replay", run={"decisions": 5})
+
+    loaded = _prioritized()
+    loaded.load_from(tmp_path / "replay")
+    assert (list(loaded._items), list(loaded._priorities), loaded.stats.evicted) == before
+
+
+def test_a_dump_from_before_the_sampler_was_saved_still_loads(tmp_path: Path) -> None:
+    """Format 1: every end-of-run dump before periodic saving; its arrays are the same."""
+    saved = _filled(_prioritized())
+    saved.save_to(tmp_path / "replay", run={"decisions": 1})
+    metadata_path = tmp_path / "replay" / REPLAY_DUMP_METADATA
+    metadata = json.loads(metadata_path.read_text())
+    metadata["format_version"] = 1
+    del metadata["sampler_state"]
+    metadata_path.write_text(json.dumps(metadata))
+
+    loaded = _prioritized()
+    loaded.load_from(tmp_path / "replay")
+
+    assert list(loaded._items) == list(saved._items)
+    assert list(loaded._priorities) == list(saved._priorities)
+    # With no stream saved, it draws from its own seed, as every reload did.
+    fresh = _prioritized()
+    assert loaded._random.getstate() == fresh._random.getstate()
 
 
 def test_an_empty_buffer_saves_and_reloads_empty(tmp_path: Path) -> None:

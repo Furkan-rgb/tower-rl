@@ -49,10 +49,11 @@ from tower_rl.learning.backbone import Backbone
 from tower_rl.learning.checkpoint import (
     CheckpointIdentity,
     TrainingProgress,
+    capture_rng_state,
     write_checkpoint,
 )
 from tower_rl.learning.evaluator import EvaluationReport, to_record
-from tower_rl.learning.replay import PrioritizedSequenceReplay
+from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayImage
 from tower_rl.learning.training import (
     CollectionWindow,
     TrainingProgressReport,
@@ -62,12 +63,26 @@ from tower_rl.learning.training import (
     episode_health,
 )
 
-#: Where in a run's directory its replay buffer is saved as the run ends,
-#: beside `checkpoints/`: `<run_dir>/replay/`.
+#: Where in a run's directory its replay buffer is saved, beside
+#: `checkpoints/`: `<run_dir>/replay/`. Each save is a dump of its own inside
+#: it (`replay_dump_name`), and `latest.pt` names the one it was written with
+#: (`Checkpoint.paired_replay`); every other is deleted once that `latest.pt` is
+#: in place. A run from before format 5 saved one dump, as it ended, as
+#: `replay/` itself.
 REPLAY_DIRECTORY = "replay"
-#: Where the dump being replaced waits while its successor is written. Left
-#: behind only by a process killed mid-save; a resume refuses to guess past it.
+#: Where that one end-of-run dump waited while a resumed segment's replaced it.
+#: Left behind only by a process of that era killed mid-save; a resume refuses
+#: to guess past it. Nothing writes it any more.
 REPLAY_BACKUP_DIRECTORY = "replay.previous"
+
+
+def replay_dump_name(decisions: int) -> str:
+    """A replay dump's directory inside `replay/`, from the decisions it was saved at.
+
+    Like a numbered checkpoint's name, it only says which save it is; the
+    decisions a resume checks are read out of the dump's metadata.
+    """
+    return f"d{decisions:07d}"
 
 
 def non_finite_tensors(state: Any, name: str = "") -> list[str]:
@@ -190,34 +205,28 @@ class TrainingReport:
         return self.run_dir / "checkpoints" / "latest.pt"
 
     def checkpoint(self, report: TrainingProgressReport) -> None:
-        """The resume point, overwritten in place as the run proceeds."""
-        self.last_checkpoint_fingerprint = self._write(report, self.checkpoint_path)
+        """The resume point, rewritten as the run proceeds: `latest.pt` and its replay.
 
-    @property
-    def replay_path(self) -> Path:
-        return self.run_dir / REPLAY_DIRECTORY
+        Called with the run's progress lock held (`TrainingRun.checkpoint`), so
+        nothing is counted or learned until it returns. The buffer's lock is
+        taken only to capture the buffer, so the actors go on playing - and
+        adding what they play - while it is written; an actor that finishes an
+        episode meanwhile waits for the progress lock to count it.
+        """
+        with self.replay.lock:
+            image = self.replay.image()
+        self._write_resume_point(report, image)
 
     def save_resume_point(self, *, after_failure: bool = False) -> None:
-        """Write `latest.pt` and the replay buffer beside it, at one decision count.
+        """Write the resume point once more as the run ends, with the fleet held still.
 
-        Called once, as the run ends, however it ends: the buffer is gigabytes,
-        so it is saved there and never periodically. The fleet is held still
-        for both, so the checkpoint and the buffer describe the same moment and
-        a resume can require one to match the other.
-
-        A dump already in the run folder is an earlier segment's, which this
-        segment resumed from; it is replaced, since `latest.pt` has moved past it.
-        It is renamed aside to `replay.previous/` first and deleted only once the
-        new dump is written, so a failed save leaves it where it was.
-
-        A failed replay save is reported and not raised: the checkpoint is
-        already written, and a resume from it re-warms replay exactly as it did
-        before replay was saved at all.
+        However the run ends short of a hard kill: the actors stop at their
+        next lock, so nothing is counted or checkpointed after it.
 
         `after_failure` is the run ending on an exception or an interrupt, which
         may have struck mid-update. Then a backbone holding a non-finite weight
-        or optimizer moment writes neither file: the last periodic `latest.pt`
-        is a better resume point than a broken one written over it.
+        or optimizer moment writes nothing: the last periodic resume point is a
+        better one than a broken one written over it.
         """
         with self.training.held_still():
             report = self.training.report
@@ -230,48 +239,63 @@ class TrainingReport:
                         flush=True,
                     )
                     return
-            self.checkpoint(report)
-            print(
-                f"[{self.name}] saving replay ({len(self.replay)} sequences) to "
-                f"{self.replay_path}; this can take a minute or two",
-                flush=True,
-            )
-            started = time.monotonic()
-            try:
-                size = self._replace_replay_dump(report.decisions)
-            except Exception as failure:  # noqa: BLE001 - best effort; see above
-                print(
-                    f"[{self.name}] replay not saved ({failure}); a resume re-warms it",
-                    flush=True,
-                )
-                return
-            print(
-                f"[{self.name}] replay saved: {len(self.replay)} sequences, "
-                f"{size / 1e9:.2f} GB in {time.monotonic() - started:.1f} s "
-                f"to {self.replay_path}",
-                flush=True,
-            )
+            self._write_resume_point(report, self.replay.image())
 
-    def _replace_replay_dump(self, decisions: int) -> int:
-        """Save the buffer over the dump an earlier segment left, keeping that
-        dump until the new one is written; return the bytes written."""
-        backup = self.run_dir / REPLAY_BACKUP_DIRECTORY
-        replacing = self.replay_path.exists()
-        if replacing:
-            self.replay_path.rename(backup)
+    def _write_resume_point(self, report: TrainingProgressReport, image: ReplayImage) -> None:
+        """Write the buffer, then `latest.pt` naming it, then delete every other dump.
+
+        That order is what lets a kill at any moment leave a pair a resume can
+        restore: the new dump is complete (`ReplayImage.write` renames it into
+        place) before the `latest.pt` that names it replaces the old one
+        (`checkpoint.save`, atomic with its checksum), and the old dump is
+        deleted only after that. Until the rename, the old `latest.pt` and the
+        dump it names are both still there; after it, the new ones are. Both
+        name the one decision count, in the dump's metadata and in the
+        checkpoint's progress, and a resume refuses a pair where they differ.
+
+        A failed replay save moves nothing: it is reported, not raised, and the
+        previous pair stands - a `latest.pt` without its replay would be a
+        resume point that loses the buffer. Only one dump is kept, whatever the
+        number of numbered checkpoints: the resume point is `latest.pt` alone.
+        """
+        replays = self.run_dir / REPLAY_DIRECTORY
+        dump = replays / replay_dump_name(report.decisions)
+        # A second save at the same count - the run's last, straight after a
+        # periodic one - is a dump of its own, not a rewrite of the one the
+        # current `latest.pt` names.
+        repeat = 0
+        while dump.exists():
+            repeat += 1
+            dump = replays / f"{replay_dump_name(report.decisions)}-{repeat}"
+        started = time.monotonic()
         try:
-            size = self.replay.save_to(
-                self.replay_path,
-                run={"decisions": decisions, "identity": asdict(self.identity)},
+            size = image.write(
+                dump, run={"decisions": report.decisions, "identity": asdict(self.identity)}
             )
-        except BaseException:
-            if replacing:
-                shutil.rmtree(self.replay_path, ignore_errors=True)
-                backup.rename(self.replay_path)
-            raise
-        if replacing:
-            shutil.rmtree(backup)
-        return size
+        except Exception as failure:  # noqa: BLE001 - best effort; see above
+            print(
+                f"[{self.name}] resume point not moved: replay not saved ({failure}); "
+                "latest.pt and the replay it names stand",
+                flush=True,
+            )
+            return
+        self.last_checkpoint_fingerprint = self._write(
+            report, self.checkpoint_path, paired_replay=dump.relative_to(self.run_dir).as_posix()
+        )
+        for stale in replays.iterdir():
+            if stale == dump:
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                # The files of a dump from before format 5, saved as `replay/`.
+                stale.unlink()
+        print(
+            f"[{self.name}] resume point at {report.decisions} decisions: latest.pt and "
+            f"{len(image.sequences)} replay sequences ({size / 1e9:.2f} GB) in "
+            f"{time.monotonic() - started:.1f} s",
+            flush=True,
+        )
 
     def numbered_checkpoint(self, report: TrainingProgressReport) -> None:
         """One candidate model of the run, named by the decisions behind it.
@@ -292,7 +316,9 @@ class TrainingReport:
         self.run.log_artifact(path, directory=f"checkpoints/{digest}")
         print(f"[{self.name}] checkpoint {path.name}", flush=True)
 
-    def _write(self, report: TrainingProgressReport, path: Path) -> str:
+    def _write(
+        self, report: TrainingProgressReport, path: Path, *, paired_replay: str | None = None
+    ) -> str:
         """Write one checkpoint and return the digest of the weights in it."""
         return write_checkpoint(
             path,
@@ -325,6 +351,8 @@ class TrainingReport:
                 "restored_from": self.replay_restored_from,
             },
             tracking_run_id=self.tracking_run_id,
+            paired_replay=paired_replay,
+            rng_state=capture_rng_state(),
         )
 
     def record_point(

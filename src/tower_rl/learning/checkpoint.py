@@ -2,8 +2,10 @@
 
 A checkpoint is written to a temporary sibling, flushed, checksummed and then
 renamed, so a crash mid-write cannot destroy the previous known-good resume
-point.  Resume is verified rather than assumed: the payload is checksummed on
-read and the restored backbone must reproduce the saved fingerprint.
+point - including the moment between the file's rename and its checksum
+sidecar's (`save`).  Resume is verified rather than assumed: the payload is
+checksummed on read and the restored backbone must reproduce the saved
+fingerprint.
 """
 
 from __future__ import annotations
@@ -11,12 +13,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy
 import torch
 
 from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailability
@@ -36,8 +40,12 @@ from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailab
 #: its selection-period counters are counted in decisions. Versions 1 to 3 still
 #: load, for evaluation; `scripts/train.py` refuses to resume them, because
 #: their plateau counters were counted over other periods.
-CHECKPOINT_FORMAT_VERSION = 4
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4)
+#: Version 5 added `paired_replay`, the replay dump written with a `latest.pt`
+#: as one resume point, and `rng_state`, the process's random streams. Both are
+#: None in a version 4 file, which still resumes: with the end-of-run dump found
+#: by its decision count, and with random streams starting from the seed.
+CHECKPOINT_FORMAT_VERSION = 5
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5)
 #: The first format a run may resume from. Named rather than compared against
 #: the current version, so a later format does not make version 4 unresumable.
 DECISION_BUDGET_FORMAT_VERSION = 4
@@ -215,7 +223,47 @@ class Checkpoint:
     #: beside it. None when the run was not tracked, and absent from every
     #: version 1 checkpoint.
     tracking_run_id: str | None = None
+    #: The replay dump this checkpoint was written with as one resume point,
+    #: relative to its run folder (`replay/d0425078`): the buffer at this
+    #: checkpoint's decision count, which a resume from it reloads. None for a
+    #: checkpoint written without one - every numbered checkpoint, and every
+    #: file before version 5.
+    paired_replay: str | None = None
+    #: The process's random streams as the checkpoint was written
+    #: (`capture_rng_state`), restored by a resume so it draws on rather than
+    #: starting each stream again from the seed. None before version 5.
+    rng_state: Mapping[str, Any] | None = None
     format_version: int = CHECKPOINT_FORMAT_VERSION
+
+
+def capture_rng_state() -> dict[str, Any]:
+    """The process-wide random streams: Python's, NumPy's, torch's CPU and CUDA ones.
+
+    The streams a component keeps for itself are not here: replay's sampler
+    travels in its dump, and each acting copy's exploration stream is seeded
+    again from its actor's identity when the fleet is built.
+    """
+    return {
+        "python": random.getstate(),
+        "numpy": numpy.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+    }
+
+
+def restore_rng_state(state: Mapping[str, Any]) -> None:
+    """Put back the streams `capture_rng_state` took.
+
+    CUDA's only onto the same number of devices it was taken from: a resume on
+    another host draws CUDA randomness from its own seed, which is no worse than
+    a resume before these were saved at all.
+    """
+    random.setstate(state["python"])
+    numpy.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    cuda = state["torch_cuda"]
+    if cuda and torch.cuda.is_available() and torch.cuda.device_count() == len(cuda):
+        torch.cuda.set_rng_state_all(cuda)
 
 
 def fingerprint(state: Mapping[str, Any]) -> str:
@@ -240,6 +288,12 @@ def save(checkpoint: Checkpoint, path: Path) -> str:
 
     The temporary file is a sibling so the rename stays on one filesystem, which
     is what makes it atomic. A failed write leaves the previous file untouched.
+
+    The file and its checksum sidecar are two renames, and a process killed
+    between them would leave a checkpoint its sidecar refuses. So the sidecar
+    is first replaced by one naming both the file in place and the new one,
+    then the file, then the sidecar by one naming the new file alone: at every
+    moment the file on disk is one its sidecar names (`load` accepts any line).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -250,6 +304,8 @@ def save(checkpoint: Checkpoint, path: Path) -> str:
         "resolved_config": dict(checkpoint.resolved_config),
         "replay_provenance": dict(checkpoint.replay_provenance),
         "tracking_run_id": checkpoint.tracking_run_id,
+        "paired_replay": checkpoint.paired_replay,
+        "rng_state": checkpoint.rng_state,
         "backbone_fingerprint": fingerprint(checkpoint.backbone_state),
     }
 
@@ -261,9 +317,14 @@ def save(checkpoint: Checkpoint, path: Path) -> str:
             stream.flush()
             os.fsync(stream.fileno())
         checksum = _file_checksum(temporary)
-        temporary.with_suffix(".sha256").write_text(checksum)
+        sidecar = temporary.with_suffix(".sha256")
+        if path.exists():
+            _write_synced(sidecar, f"{_file_checksum(path)}\n{checksum}")
+            os.replace(sidecar, _checksum_path(path))
         os.replace(temporary, path)
-        os.replace(temporary.with_suffix(".sha256"), _checksum_path(path))
+        _write_synced(sidecar, checksum)
+        os.replace(sidecar, _checksum_path(path))
+        _sync_directory(path.parent)
     except Exception as error:  # noqa: BLE001 - re-raised as a checkpoint failure
         temporary.unlink(missing_ok=True)
         temporary.with_suffix(".sha256").unlink(missing_ok=True)
@@ -280,6 +341,8 @@ def write_checkpoint(
     resolved_config: Mapping[str, Any],
     replay_provenance: Mapping[str, Any],
     tracking_run_id: str | None = None,
+    paired_replay: str | None = None,
+    rng_state: Mapping[str, Any] | None = None,
 ) -> str:
     """Assemble one checkpoint, write it atomically, return its weight digest.
 
@@ -295,6 +358,8 @@ def write_checkpoint(
             resolved_config=resolved_config,
             replay_provenance=replay_provenance,
             tracking_run_id=tracking_run_id,
+            paired_replay=paired_replay,
+            rng_state=rng_state,
         ),
         path,
     )
@@ -308,7 +373,8 @@ def load(path: Path, *, expected: CheckpointIdentity | None = None) -> Checkpoin
     recorded = _checksum_path(path)
     if recorded.exists():
         actual = _file_checksum(path)
-        if actual != recorded.read_text().strip():
+        # Two lines only while `save` is between its renames; see there.
+        if actual not in recorded.read_text().split():
             raise CheckpointError(f"checkpoint {path} failed its checksum")
 
     payload = torch.load(path, map_location="cpu", weights_only=False)
@@ -333,6 +399,8 @@ def load(path: Path, *, expected: CheckpointIdentity | None = None) -> Checkpoin
         resolved_config=payload.get("resolved_config", {}),
         replay_provenance=payload.get("replay_provenance", {}),
         tracking_run_id=payload.get("tracking_run_id"),
+        paired_replay=payload.get("paired_replay"),
+        rng_state=payload.get("rng_state"),
         format_version=int(payload["format_version"]),
     )
 
@@ -346,8 +414,8 @@ class ResumeState:
     and optimizer moments to go on learning from, the decision counter every
     schedule and every cadence is derived from, and the tracking run its curve
     belongs on. The replay buffer is not in the checkpoint: it is saved beside
-    it as a run ends, and `replay_dump` names that save once the caller has
-    found it matches this checkpoint.
+    it, `paired_replay` names the dump a `latest.pt` was written with, and
+    `replay_dump` is the dump the caller found matches this checkpoint.
     """
 
     #: The parent, as a measurement cites it: the file it was read from and the
@@ -386,6 +454,11 @@ class ResumeState:
     #: The parent's upgrade setup digest, which the resumed run's first episode
     #: must reproduce; None for a parent written before it was recorded.
     upgrade_setup_digest: str | None = None
+    #: `Checkpoint.paired_replay`: the dump the parent wrote with this file, relative
+    #: to its run folder; None for a numbered checkpoint and before version 5.
+    paired_replay: str | None = None
+    #: `Checkpoint.rng_state`, restored once the run is built; None before version 5.
+    rng_state: Mapping[str, Any] | None = None
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:
@@ -405,6 +478,8 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
         periods_without_improvement=checkpoint.progress.periods_without_improvement or 0,
         resolved_config=checkpoint.resolved_config,
         upgrade_setup_digest=checkpoint.identity.upgrade_setup_digest,
+        paired_replay=checkpoint.paired_replay,
+        rng_state=checkpoint.rng_state,
     )
 
 
@@ -426,6 +501,22 @@ def write_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
 
 def _checksum_path(path: Path) -> Path:
     return path.with_name(path.name + ".sha256")
+
+
+def _write_synced(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _sync_directory(directory: Path) -> None:
+    """Make the renames inside `directory` durable."""
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _file_checksum(path: Path) -> str:

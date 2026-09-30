@@ -201,7 +201,8 @@ environment and nothing that observes or drives it.
 - `dreamer_math.py` — DreamerV3's network-free parts: symlog, twohot, the
   masked categorical, λ-returns, the percentile return normaliser, LaProp.
 - `value_learning.py` — n-step targets, the weighted sequence loss, TD errors.
-- `replay.py` — `PrioritizedSequenceReplay` over `ReplaySequence`.
+- `replay.py` — `PrioritizedSequenceReplay` over `ReplaySequence`, and
+  `ReplayImage`, the buffer captured at one moment and written as a dump.
 - `actor.py` — `Actor`, which plays one episode against one
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
@@ -214,7 +215,8 @@ environment and nothing that observes or drives it.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
   `EvaluationReport`.
 - `checkpoint.py` — `Checkpoint`, `CheckpointIdentity`, `save`/`load`, the
-  checksum sidecar and `write_manifest`.
+  checksum sidecar, `write_manifest`, and `capture_rng_state` /
+  `restore_rng_state` for the process-wide random streams.
 
 **Exploration.** Every actor's rate falls linearly from `epsilon_start` over
 `--epsilon-anneal-decisions` and is held afterwards; what it falls *to* is the
@@ -442,7 +444,7 @@ folder as `segments/<n+1>/`; any other checkpoint — a numbered one, or one of 
 run written before run folders (`state/runs/session-*/<run id>/`) — starts a
 new folder, so no earlier evidence is overwritten, and a folder that already
 holds a manifest is refused for anything but its own continuation. The
-segment's replay save replaces the dump it reloaded. `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
+segment's first resume point replaces the dump it reloaded. `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
 device is touched — refusing one whose `CheckpointIdentity` names another arm,
 profile or schema, a stacked-dqn one whose recorded discount differs from the
 command's (`docs/solution.md` §9.4d), and one that has already spent
@@ -457,27 +459,37 @@ refuses it by name. `build_arm` continues
 the parent's tracked run through `open_run` when it had one, and names the
 parent in `resolved_config.parent_checkpoint`.
 
-Replay is saved once, as a run ends, never periodically (a DreamerV3 buffer is
-gigabytes). However `train_session` ends — budget, early stop, kill bar, an
-exception or an interrupt, anything that runs Python cleanup —
-`TrainingReport.save_resume_point` holds the fleet still
-(`TrainingRun.held_still`: the progress lock, then the buffer's) and writes
-`latest.pt` and `PrioritizedSequenceReplay.save_to(<run_dir>/replay/)` at one
-decision count, and halts the run: actors still collecting after an interrupt
-return at their next lock, counting and checkpointing nothing more. The dump is `.npy` arrays (a shared step table, the sequences
-as indices into it, their priorities, in FIFO order) plus `replay.json` with
-the capacity, the sampling exponents, the counters, and the run's decision
-count and `CheckpointIdentity`; it is written to a sibling and renamed into
-place, and checked by shape rather than hash on load. Sequences an actor had
-not yet emitted are not in it. A failed replay save is printed, never raised
-over the error that ended the run. On `--resume`, `with_parent_replay` looks for
-`replay/` beside the checkpoint's `checkpoints/`: with none, the buffer
-re-warms under the loaded policy; with one saved at the checkpoint's decision
-count, into the same capacity, sampling and identity, `build_arm` reloads it
-(`load_from`) and records it in `resolved_config.replay_restored_from` and in
-each checkpoint's replay provenance; any other dump — from a later point than an
-earlier numbered checkpoint, say — is refused before bring-up. The warm-up gate
-reads the buffer's length, so a reloaded buffer learns from the first episode.
+The resume point is a pair, `latest.pt` and the replay dump it names, and a
+kill at any moment leaves one whole pair (ADR 0014). `TrainingRun` calls
+`TrainingReport.checkpoint` under its progress lock every
+`--checkpoint-every-episodes`, and after every numbered checkpoint; however
+`train_session` ends short of a hard kill — budget, early stop, kill bar, an
+exception or an interrupt — `TrainingReport.save_resume_point` holds the fleet
+still (`TrainingRun.held_still`: the progress lock, then the buffer's), writes
+the pair once more, and halts the run: actors still collecting after an
+interrupt return at their next lock, counting and checkpointing nothing more.
+Both go through `_write_resume_point`: `PrioritizedSequenceReplay.image()`,
+taken under the buffer's lock, is written by `ReplayImage.write` to
+`<run_dir>/replay/d<decisions>.partial/`, fsynced and renamed into place; then
+`latest.pt` is written naming it (`paired_replay`, with the process's random
+streams in `rng_state`); then every other entry in `replay/` is deleted. A
+replay save that fails is printed and moves nothing. The dump is `.npy`
+arrays (a shared step table, the sequences as indices into it, their
+priorities, in FIFO order) plus `replay.json` with the capacity, the sampling
+exponents, the counters, the sampler's state, and the run's decision count and
+`CheckpointIdentity`; it is checked by shape rather than hash on load.
+Sequences an actor had not yet emitted are not in it. On `--resume`,
+`with_parent_replay` looks in `replay/` beside the checkpoint's
+`checkpoints/`: a `latest.pt` that names a dump reloads that one, and is
+refused if it is missing or records another decision count; any other
+checkpoint reloads a complete dump at its own decision count and is refused
+while only dumps at other counts are there; with no `replay/`, the buffer
+re-warms under the loaded policy. A reloaded dump must match the capacity,
+sampling and identity; `build_arm` loads it (`load_from`, priorities and
+sampler included), records it in `resolved_config.replay_restored_from` and
+in each checkpoint's replay provenance, and then restores the parent's random
+streams. The warm-up gate reads the buffer's length, so a reloaded buffer
+learns from the first episode.
 
 ### The post-hoc selection path
 

@@ -1780,6 +1780,47 @@ def test_an_interrupt_while_the_fleet_collects_leaves_a_matching_resume_point(
     assert dump_decisions == decisions
 
 
+def test_a_run_stopped_mid_collection_resumes_from_the_steps_its_weights_took(
+    tmp_path: Path,
+) -> None:
+    """The learner thread is quiesced at the stop's resume point (ADR 0014, 0017).
+
+    The run's stop is set from outside while the fleet collects and the learner
+    steps beside it. The resume point it leaves counts exactly the steps its
+    weights took, and a second segment picks both up and learns on.
+    """
+    advance = TrainingRun.advance
+
+    def stopped_part_way(self: TrainingRun) -> Any:
+        def stop_after_some_learning() -> None:
+            deadline = time.monotonic() + 60
+            while self.report.decisions < 150 and time.monotonic() < deadline:
+                time.sleep(0.002)
+            self.stop.set()
+
+        threading.Thread(target=stop_after_some_learning, daemon=True).start()
+        return advance(self, self.config.budget_decisions)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(TrainingRun, "run", stopped_part_way)
+        first = session(tmp_path / "first", budget="1000000", actors=2)
+    assert first["arm"]["interrupted"] is True
+    parent = load(latest_checkpoint(first))
+    steps = parent.progress.optimisation_steps
+    assert steps == first["arm"]["optimisation_steps"] > 0
+
+    arm, _ = resumed_arm(tmp_path / "second", latest_checkpoint(first), budget=1_000_000)
+    assert arm.backbone.model_version == steps, "the weights took the steps counted"
+
+    budget = parent.progress.environment_decisions + 100
+    second = session(
+        tmp_path / "third",
+        budget=str(budget),
+        resume=resume_from(tmp_path / "third", latest_checkpoint(first), budget),
+    )
+    assert second["arm"]["optimisation_steps"] > steps
+
+
 def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_point(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2362,7 +2403,10 @@ def test_the_learner_resets_are_logged_as_they_happen(tmp_path: Path) -> None:
     resolved = summary["arm"]["resolved_config"]
     # 200 decisions at 0.2 buy 40 steps, and the last interval is left alone.
     assert (resolved["reset_every_steps"], resolved["last_reset_step"]) == (5, 35)
-    assert logged[-1] == 7.0
+    # Logged at the episode that first sees each one. The learner steps on its
+    # own thread (ADR 0017), so the steps it pays at the block's end have no
+    # episode after them to be logged at: the last may go unlogged.
+    assert 1.0 <= logged[-1] <= 7.0
 
 
 def test_a_resume_is_held_to_its_reset_interval() -> None:

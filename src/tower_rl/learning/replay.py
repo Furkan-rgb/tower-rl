@@ -178,11 +178,12 @@ class PrioritizedSequenceReplay:
 
     #: Held by every caller that adds, samples or updates priorities, because
     #: several actors write into one buffer while the learner reads it. It is
-    #: not taken inside the methods below: `update_priorities` refuses indices
-    #: an eviction has shifted, so the learner must hold this across `sample`,
-    #: `learn` and `update_priorities` together rather than around each of them,
-    #: and a lock already held by the caller could not be taken again here. An
-    #: actor holds it for the sequences of one episode.
+    #: not taken inside the methods below, so that a caller can make several of
+    #: them one step (an actor holds it for the sequences of one episode) and a
+    #: lock already held by the caller could not be taken again here. The
+    #: learner holds it to sample and again to update priorities, not across
+    #: the gradient step between them: `update_priorities` follows the
+    #: evictions made meanwhile.
     lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     _items: deque[ReplaySequence] = field(default_factory=deque, init=False)
@@ -289,27 +290,23 @@ class PrioritizedSequenceReplay:
     ) -> None:
         """Fold learner feedback back into sampling priorities.
 
-        An index is a position in the buffer, and eviction shifts every position
-        down by one. So an update must reach the buffer before anything is added
-        to a full buffer; otherwise it would land on a different sequence, which
-        is worse than not landing at all. The training loop samples, learns and
-        updates without collecting in between, and this states that rather than
-        assuming it.
+        An index is a position in the buffer at the last `sample`. The buffer
+        only ever evicts its oldest sequence, which shifts every position down
+        by one, so an index sampled before `n` evictions now names position
+        `index - n`, and one below zero names a sequence that is gone. The
+        learner adds nothing itself, so the actors' evictions since its sample
+        are the only shift there is (ADR 0017).
         """
         if len(indices) != len(td_errors):
             raise ValueError("each index needs its own sequence of TD errors")
-        if self.stats.evicted != self._evictions_at_sample:
-            raise ReplayRejected(
-                "eviction has shifted every index since these were sampled; "
-                "priorities must be updated before more sequences are added"
-            )
-        for index, errors in zip(indices, td_errors, strict=True):
+        shift = self.stats.evicted - self._evictions_at_sample
+        for sampled, errors in zip(indices, td_errors, strict=True):
             if not errors:
                 raise ValueError("a priority update needs at least one TD error")
+            index = sampled - shift
             if not 0 <= index < len(self._priorities):
-                # An index the buffer never held. Dropping it is correct; the
-                # dangerous case, an index that still lands but on the wrong
-                # sequence, is refused above rather than tolerated here.
+                # Evicted since the sample, or an index the buffer never held:
+                # there is no sequence left for this error to describe.
                 continue
             magnitudes = [abs(error) for error in errors]
             priority = R2D2_PRIORITY_MIX * max(magnitudes) + (1.0 - R2D2_PRIORITY_MIX) * (

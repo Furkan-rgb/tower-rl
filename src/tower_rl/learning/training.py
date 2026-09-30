@@ -44,7 +44,14 @@ every actor reading the one live network would have put fifty decisions a
 second and a dozen gradient steps a second through one lock.  What
 that costs is the discipline in this file - the run's progress is mutated only
 under `_lock`, the buffer only under the replay's own lock, and the learner's
-parameters are read only through `Learner.publish_to`.
+parameters are read only through `Learner.publish_to` or with the learner held
+still.
+
+No actor takes a gradient step.  The learner is a thread of its own
+(`learning/learner.py`, ADR 0017): each decision an actor takes credits it
+with the steps that decision earns, it takes them while the actors carry on
+collecting, and an actor pauses only when more than
+`learner_debt_bound_decisions` decisions' worth are owed.
 """
 
 from __future__ import annotations
@@ -54,7 +61,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from functools import partial
 
@@ -84,12 +91,12 @@ from tower_rl.learning.actor import Actor, EpisodeResult
 from tower_rl.learning.backbone import (
     Backbone,
     LearnMetrics,
-    SequenceBatch,
     acting_copy,
     collate,
 )
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
+from tower_rl.learning.learner import Learner, LearnerLoad, LearnerThread
 from tower_rl.learning.replay import PrioritizedSequenceReplay
 
 #: The device's own rejection reason for a stale or duplicate command, carried
@@ -268,38 +275,6 @@ def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
     )
 
 
-@dataclass
-class Learner:
-    """The one training copy of the network, and how its parameters reach actors.
-
-    No actor acts through this. Each acts from its own copy (`acting_copy`), so
-    a forward pass contends with neither the learner nor another actor - the
-    whole reason a fleet of twenty can act at all. What is left shared is the
-    moment a copy is refreshed, and that is what the lock is still for: an
-    optimisation step and a publication never overlap, so what an actor copies
-    out is always the parameters of some completed step and never half of one.
-    """
-
-    backbone: Backbone
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def learn(self, batch: SequenceBatch) -> LearnMetrics:
-        with self.lock:
-            return self.backbone.learn(batch)
-
-    def publish_to(self, acting: Backbone) -> None:
-        """Copy the learner's parameters into one actor's acting copy.
-
-        Called on that actor's own thread between two of its decisions, which
-        is the other half of the no-torn-read guarantee: the lock keeps the
-        source still while it is read, and an actor that is copying is by
-        construction not acting, so no forward pass can see the copy half
-        written. Every decision is therefore taken on one complete version.
-        """
-        with self.lock:
-            acting.load_state_dict(self.backbone.state_dict())
-
-
 @dataclass(frozen=True)
 class TrainingConfig:
     """One arm's budget and schedules, recorded with its result."""
@@ -382,6 +357,20 @@ class TrainingConfig:
     #: Pre-registered floors on the decision axis the run stops itself on; see
     #: `KillBar`. Empty is off, which is every run before run 4.
     kill_bars: tuple[KillBar, ...] = ()
+    #: The most gradient steps the learner may owe, in the decisions that earn
+    #: them, before actors pause collecting (`LearnerThread`, ADR 0017). It is
+    #: what holds the replay ratio exact over any window, to within itself, and
+    #: it is the policy lag the learner running beside collection adds.
+    #: Principle: the smallest debt that never pauses an actor while the
+    #: learner keeps up on average, which is the one covering the longest
+    #: ordinary gap in its work - a resume-point save, during which it is held
+    #: still. Quantity: that save takes 11.5 s at 1,000,000 steps (ADR 0014),
+    #: while seven actors collect up to about 34 decisions a second (`M3-P016`:
+    #: at most 17,549 decisions an hour each), so about 390 decisions. Value:
+    #: 512, the next power of two, and below the 7 x 100 = 700 steps of lag the
+    #: default refresh cadence already accepts. 512 gradient steps at
+    #: stacked-dqn's 1.0, 256 at DreamerV3's 0.5.
+    learner_debt_bound_decisions: int = 512
 
     def __post_init__(self) -> None:
         if self.budget_decisions < 1:
@@ -402,6 +391,8 @@ class TrainingConfig:
             raise ValueError("a selection period must be positive")
         if self.early_stop_patience_periods < 0:
             raise ValueError("early-stopping patience cannot be negative")
+        if self.learner_debt_bound_decisions < 1:
+            raise ValueError("the learner's debt bound must be at least one decision")
 
 
 @dataclass(frozen=True)
@@ -894,10 +885,10 @@ class TrainingRun:
     #: run while the fleet is not collecting.
     evaluate: Callable[[], EvaluationReport] | None = None
     #: Writes the resume point: `latest.pt` and the replay beside it, as one
-    #: pair at one decision count. Called with `_lock` held - so no count moves
-    #: and no gradient step is taken while it writes - and never with the
-    #: buffer's lock, which it takes itself only for as long as it needs to
-    #: capture the buffer (`PrioritizedSequenceReplay.image`).
+    #: pair at one decision count. Called with `_lock` held and the learner held
+    #: still - so no count moves and no gradient step is taken while it writes
+    #: - and never with the buffer's lock, which it takes itself only for as
+    #: long as it needs to capture the buffer (`PrioritizedSequenceReplay.image`).
     checkpoint: Callable[[TrainingProgressReport], None] | None = None
     #: Called when a selection period closes or the fleet crosses a multiple of
     #: `checkpoint_every_decisions`, to write a checkpoint under its own name.
@@ -910,18 +901,31 @@ class TrainingRun:
     report: TrainingProgressReport = field(default_factory=TrainingProgressReport)
     #: The training copy of the network, and the only thing that updates it.
     learner: Learner = field(init=False)
+    #: The thread that takes the gradient steps, and the debt it serves.
+    learner_thread: LearnerThread = field(init=False)
     #: One acting copy per actor, keyed by actor id: what that actor actually
     #: chooses its actions from, refreshed from the learner on the configured
     #: cadence. Built here and handed to the actors so that no caller can put an
     #: actor back on the learner's own network.
     acting: dict[str, Backbone] = field(init=False)
-    #: Guards everything the fleet shares except the buffer and the network: the
-    #: progress report, the gradient debt and the hooks. An actor holds it
-    #: between episodes and never while it is collecting, so at the cadence a
-    #: real instance runs at it costs nothing.
+    #: Guards everything the fleet shares except the buffer, the network and
+    #: the learner's debt: the progress report, the warm-up flag and the hooks.
+    #: An actor holds it between episodes and never while it is collecting, so
+    #: at the cadence a real instance runs at it costs nothing. The learner
+    #: thread never takes it.
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
-    #: Gradient steps earned but not yet taken, carried across blocks.
-    _owed: float = field(default=0.0, init=False)
+    #: Whether the buffer has held `warmup_sequences`. Until it has, no decision
+    #: earns a gradient step: a debt banked while the buffer fills would be
+    #: paid as a burst of updates on almost no data. Set under `_lock`; read
+    #: without it by the actors, for whom a decision late to see it changes
+    #: only when the credit arrives (`_settle_debt` squares it).
+    _warmed: bool = field(default=False, init=False)
+    #: Decisions each actor has credited the learner with in the episode it is
+    #: playing, by actor id. An episode's decisions are credited as they are
+    #: taken, and squared with what it counted when it ends: taken back if it
+    #: never counts, as an abandoned or failed one does not. Each actor touches
+    #: only its own entry, as with `_since_sync`.
+    _credited: dict[str, int] = field(default_factory=dict, init=False)
     #: The decisions the periodic hook last looked at. Episodes end whole, so
     #: the counter jumps past a multiple of a period rather than landing on it;
     #: a multiple lying between this and the current count is a crossing, and
@@ -992,6 +996,12 @@ class TrainingRun:
                 f"{len(self.actors)} actors"
             )
         self.learner = Learner(self.backbone)
+        self.learner_thread = LearnerThread(
+            self.learner,
+            self._take_gradient_step,
+            steps_per_decision=self.config.gradient_steps_per_decision,
+            bound_decisions=self.config.learner_debt_bound_decisions,
+        )
         # The cadences are continued rather than restarted: a run resumed at
         # 50,123 decisions has already answered the multiple of 15,000 at
         # 45,000, and the next period it owes closes at 60,000.
@@ -1020,6 +1030,7 @@ class TrainingRun:
             # And the run's stop, so a retirement of minutes is not waited out.
             actor.environment.stop_requested = self.stop.is_set
             self._since_sync[actor_id] = 0
+            self._credited[actor_id] = 0
             # Handed to the actor rather than run between its episodes: a
             # refresh at a cadence in decisions lands inside them, and so does
             # a stop, which must not wait out an episode that can run for
@@ -1083,6 +1094,12 @@ class TrainingRun:
         work that is not waiting, so threads collect from four instances at once
         while sharing the buffer and the network directly - which is the whole
         reason this needs no parameter server and no queues of tensors.
+
+        The learner thread runs for the block beside them. Once the actors have
+        joined it pays what is still owed before the block returns, so a block
+        ends, as it always did, with every step its decisions earned taken. An
+        exception - an actor's, or a second SIGINT in this join - ends it after
+        the step in flight instead, and a step that raised is raised here.
         """
         if decisions < 1:
             raise ValueError("a block must be at least one decision")
@@ -1100,20 +1117,32 @@ class TrainingRun:
         self._refuse_evaluation_during_collection(len(collecting))
 
         started = time.monotonic()
-        with ThreadPoolExecutor(max_workers=len(collecting)) as pool:
-            futures = [pool.submit(self._collect, actor, target) for actor in collecting]
-            # Leaving the pool joins every actor, so the block ends with no
-            # episode in flight and nothing still writing to the report.
+        with self._lock:
+            # A buffer reloaded on a resume is warm from its first decision.
+            self._warmed = self._warm()
+        self.learner_thread.start()
+        try:
+            with ThreadPoolExecutor(max_workers=len(collecting)) as pool:
+                futures = [pool.submit(self._collect, actor, target) for actor in collecting]
+                # Leaving the pool joins every actor, so the block ends with no
+                # episode in flight and nothing still writing to the report.
+            errors = [future.exception() for future in futures]
+            fatal = next(
+                (error for error in errors if error and not isinstance(error, RunPortError)),
+                None,
+            )
+            self.learner_thread.finish(drain=fatal is None)
+        finally:
+            self.learner_thread.finish(drain=False)
+            with self._lock:
+                self._absorb_learning()
         report.wall_seconds = round(report.wall_seconds + time.monotonic() - started, 2)
+        if fatal is not None:
+            raise fatal
+        if self.learner_thread.failure is not None:
+            raise self.learner_thread.failure
 
-        withdrawals: list[RunPortError] = []
-        for future in futures:
-            error = future.exception()
-            if error is None:
-                continue
-            if not isinstance(error, RunPortError):
-                raise error
-            withdrawals.append(error)
+        withdrawals = [error for error in errors if isinstance(error, RunPortError)]
         if withdrawals and all(
             progress.withdrawn is not None for progress in report.actors.values()
         ):
@@ -1137,11 +1166,30 @@ class TrainingRun:
         so nothing is counted, learned or checkpointed after the snapshot. An
         actor that has added its episode to replay but not yet counted it can
         still be caught between the two, so after an interrupt the snapshot may
-        hold up to one episode per actor ahead of the count.
+        hold up to one episode per actor ahead of the count. The learner is held
+        still too, so the weights written are one completed step, and the steps
+        it took are counted into the report first.
         """
-        with self._lock, self.replay.lock:
+        with self._lock, self._learner_still(), self.replay.lock:
             self._halted = True
             yield
+
+    @contextmanager
+    def _learner_still(self) -> Iterator[None]:
+        """Hold the learner still, with every step it has taken in the report.
+
+        For whatever reads the training network while the run's progress lock
+        is held: a checkpoint, an evaluation, the run's end. The caller holds
+        `_lock`, which the learner thread never takes, so this cannot deadlock
+        on it.
+        """
+        with self.learner_thread.held():
+            self._absorb_learning()
+            yield
+
+    def learner_load(self) -> LearnerLoad:
+        """What the learner thread has done so far, and what it owes now."""
+        return self.learner_thread.load()
 
     def _refuse_evaluation_during_collection(self, collecting: int) -> None:
         """Refuse a periodic evaluation that would share an instance with an actor.
@@ -1166,14 +1214,11 @@ class TrainingRun:
         )
 
     def _collect(self, actor: Actor, target: int) -> None:
-        """One actor's thread: collect episodes, and learn from what it collected.
+        """One actor's thread: collect episodes, and count what it collected.
 
-        The learning an episode earns is taken here, on the collecting thread,
-        under `_lock`, so exactly one episode is being accounted for at a time
-        while the other actors carry on playing. That is also what makes a fleet
-        of one identical to the loop this file had before there were fleets: the
-        single actor takes its own gradient steps between its own episodes, in
-        the same order, against a lock nothing else ever holds.
+        Each episode is accounted for here under `_lock`, one at a time, while
+        the other actors carry on playing. The learning it earns is not taken
+        here: its decisions credited the learner thread as they were taken.
         """
         actor_id = actor.config.actor_id
         progress = self.report.actors[actor_id]
@@ -1201,13 +1246,19 @@ class TrainingRun:
             with profile.acquiring(self._lock):
                 if self._halted:
                     return
-                if self.report.decisions >= target or self.stopped_early or self.interrupted:
+                if (
+                    self.report.decisions >= target
+                    or self.stopped_early
+                    or self.interrupted
+                    or self.learner_thread.failure is not None
+                ):
                     # The budget, or the run's own decision to stop: a plateau
                     # is answered at the episode boundary after the crossing
                     # that found it, so every actor finishes the episode it is
                     # in and none of them starts another. A stop from outside
                     # is answered here too, and inside an episode as well
-                    # (`_before_decision`).
+                    # (`_before_decision`), as is a learner that failed:
+                    # collecting on without learning is not the run.
                     return
                 # This actor's own rate, which under a ladder is not the rate
                 # any other actor is drawing - and beside it the one number the
@@ -1241,13 +1292,16 @@ class TrainingRun:
             except (EpisodeAbandoned, RetirementAbandoned):
                 # Nothing of it was counted or added to replay: an episode is
                 # experience only once it has ended. A retirement given up on
-                # the stop is the same: no episode had begun.
+                # the stop is the same: no episode had begun. Nor does it earn
+                # the learner anything.
+                self._take_back_credit(actor_id)
                 return
             except RunPortError as failure:
                 # The port could not deliver an episode. That is a counted
                 # outcome, not the end of the run: an episode classified
                 # invalid by the environment already continues, and an episode
                 # the port refused outright must not be treated more harshly.
+                self._take_back_credit(actor_id)
                 with profile.acquiring(self._lock):
                     if self._halted:
                         return
@@ -1266,12 +1320,13 @@ class TrainingRun:
                 continue
             with profile.acquiring(self._lock):
                 if self._halted:
+                    self._take_back_credit(actor_id)
                     return
                 self._record_episode(progress, result)
-                with profile.span(LEARNER_STEP):
-                    self._learn(result.summary.decisions)
-                # Published before the hooks, so a hook reading the fleet's
-                # decomposition sees this episode's learning in it.
+                self._settle_debt(actor_id, result.summary.decisions)
+                # Before the hooks, so a hook reading the learner's figures
+                # reads every step taken so far.
+                self._absorb_learning()
                 progress.decision_time = profile.snapshot()
                 self._after_episode(profile)
                 barren = progress.withdrawn
@@ -1298,17 +1353,50 @@ class TrainingRun:
         Called by the actor before each forward pass (`Actor.before_decision`),
         so a refresh lands between two decisions and never inside one, and a
         stop abandons the episode between two decisions rather than inside a
-        step. At a cadence of zero nothing is refreshed here: the copy holds
-        still through the whole episode.
+        step. The decision credits the learner as it is taken, once the buffer
+        is warm, and the actor pauses here if the learner is more than the
+        bound behind. At a cadence of zero nothing is refreshed here: the copy
+        holds still through the whole episode.
         """
-        if self.interrupted:
+        if self._abandoning():
             raise EpisodeAbandoned(actor_id)
+        if self._warmed:
+            self._credited[actor_id] += 1
+            self.learner_thread.credit(1)
+            self.learner_thread.make_room(profile, self._abandoning)
+            if self._abandoning():
+                raise EpisodeAbandoned(actor_id)
         cadence = self.config.parameter_sync_decisions
         if not cadence:
             return
         if self._since_sync[actor_id] >= cadence:
             self._refresh(actor_id, acting, profile)
         self._since_sync[actor_id] += 1
+
+    def _abandoning(self) -> bool:
+        """Whether an episode in flight should be given up at its next decision."""
+        return self.interrupted or self.learner_thread.failure is not None
+
+    def _settle_debt(self, actor_id: str, counted: int) -> None:
+        """Square the learner's credit for an episode with what the episode counted.
+
+        Called under `_lock` once the episode is in replay. Decisions credit the
+        learner as they are taken only once the buffer is warm; the episode
+        that warms it earns all of its decisions here, as every episode that
+        ends with the buffer warm always has, so the steps a run takes are the
+        ratio of the decisions it counts from the first warm episode on.
+        """
+        credited = self._credited[actor_id]
+        self._credited[actor_id] = 0
+        if not self._warmed and self._warm():
+            self._warmed = True
+        self.learner_thread.credit((counted if self._warmed else 0) - credited)
+
+    def _take_back_credit(self, actor_id: str) -> None:
+        """Withdraw what an episode that was never counted credited the learner."""
+        credited = self._credited[actor_id]
+        self._credited[actor_id] = 0
+        self.learner_thread.credit(-credited)
 
     def _record_failure(self, progress: ActorProgress, failure: RunPortError) -> None:
         """Count an episode the port could not deliver, against run and actor."""
@@ -1387,18 +1475,17 @@ class TrainingRun:
             if self.on_episode is not None:
                 self.on_episode(self.report)
 
-    def _learn(self, decisions: int) -> None:
-        """Take the gradient steps these decisions earned.
+    def _absorb_learning(self) -> None:
+        """Count into the report the gradient steps the learner thread has taken.
 
-        The debt is the fleet's: every actor's decisions credit the one counter,
-        so four actors buy four times the gradient steps in an hour and the
-        configured replay ratio is what the run actually trains at.
+        Called under `_lock`. The debt is the fleet's: every actor's decisions
+        credit the one counter, so four actors buy four times the gradient steps
+        in an hour and the configured replay ratio is what the run trains at.
         """
         report = self.report
-        self._owed += decisions * self.config.gradient_steps_per_decision
-        while self._owed >= 1.0 and self._warm():
-            metrics = self._optimise()
-            report.optimisation_steps += 1
+        steps, recent = self.learner_thread.take_metrics()
+        report.optimisation_steps += steps
+        for metrics in recent:
             report.recent_weighted_losses.append(metrics.weighted_loss)
             report.recent_unweighted_td_errors.append(
                 metrics.unweighted_mean_absolute_td_error
@@ -1413,21 +1500,15 @@ class TrainingRun:
                 report.recent_taken_q_maxes.append(metrics.taken_q_max)
             for name, value in metrics.diagnostics.items():
                 report.recent_diagnostics.setdefault(name, []).append(value)
-            for window in (
-                report.recent_weighted_losses,
-                report.recent_unweighted_td_errors,
-                report.recent_gradient_norms,
-                report.recent_value_fits,
-                report.recent_taken_q_maxes,
-                *report.recent_diagnostics.values(),
-            ):
-                del window[:-100]
-            self._owed -= 1.0
-        if not self._warm():
-            # Do not bank a debt of gradient steps while the buffer fills, or
-            # the first warm episode would be followed by a burst of updates
-            # on almost no data.
-            self._owed = 0.0
+        for window in (
+            report.recent_weighted_losses,
+            report.recent_unweighted_td_errors,
+            report.recent_gradient_norms,
+            report.recent_value_fits,
+            report.recent_taken_q_maxes,
+            *report.recent_diagnostics.values(),
+        ):
+            del window[:-100]
 
     def _warm(self) -> bool:
         """Whether the buffer holds enough sequences for the first step."""
@@ -1444,43 +1525,54 @@ class TrainingRun:
         point is written every `checkpoint_every_episodes` and beside every
         numbered checkpoint, so the resume point and its replay are never
         behind the newest checkpoint on disk.
+
+        The learner is held still across whatever reads its network - the
+        evaluation acts through it, and a point, the numbered checkpoint named
+        for it and the resume point beside that must all carry the same
+        parameters - and only then, so an episode end with nothing due waits
+        on no step.
         """
         period = self.config.evaluate_every_episodes
-        if self.evaluate is not None and period and report.episodes % period == 0:
-            try:
-                report.evaluations.append(self.evaluate())
-            except RetirementAbandoned:
-                # The evaluation borrows an actor's environment, and with it
-                # the run's stop: a stop during its reset is the run's own,
-                # answered at the next lock, and loses only the point.
-                pass
-            except (RunPortError, ValueError) as failure:
-                # `evaluate` refuses to score an arm that produced no valid
-                # episode, and the port can fail under it exactly as it can
-                # under collection. Either way the point is lost, not the run.
-                report.evaluation_failures.append(str(failure))
+        evaluating = (
+            self.evaluate is not None and bool(period) and report.episodes % period == 0
+        )
         before, self._periodic_at = self._periodic_at, report.decisions
 
         def crossed(every: int) -> bool:
             return bool(every) and report.decisions // every > before // every
 
         period_closed = crossed(self.config.selection_period_decisions)
-        wrote_numbered = False
-        if self.numbered_checkpoint is not None and (
+        numbering = self.numbered_checkpoint is not None and (
             period_closed or crossed(self.config.checkpoint_every_decisions)
-        ):
-            self.numbered_checkpoint(report)
-            report.checkpoints_written += 1
-            wrote_numbered = True
-        # The resume point on its own cadence, and wherever a numbered one was
-        # just written too, so every checkpoint the run writes has a resume
-        # point - with its replay - at the same decision count beside it.
+        )
+        # The resume point on its own cadence, and wherever a numbered one is
+        # written too, so every checkpoint the run writes has a resume point -
+        # with its replay - at the same decision count beside it.
         period = self.config.checkpoint_every_episodes
         on_cadence = bool(period) and report.episodes % period == 0
-        if self.checkpoint is not None and (wrote_numbered or on_cadence):
-            self.checkpoint(report)
-            if on_cadence:
+        resuming = self.checkpoint is not None and (numbering or on_cadence)
+        reading = evaluating or numbering or resuming
+        with self._learner_still() if reading else nullcontext():
+            if evaluating and self.evaluate is not None:
+                try:
+                    report.evaluations.append(self.evaluate())
+                except RetirementAbandoned:
+                    # The evaluation borrows an actor's environment, and with it
+                    # the run's stop: a stop during its reset is the run's own,
+                    # answered at the next lock, and loses only the point.
+                    pass
+                except (RunPortError, ValueError) as failure:
+                    # `evaluate` refuses to score an arm that produced no valid
+                    # episode, and the port can fail under it exactly as it can
+                    # under collection. Either way the point is lost, not the run.
+                    report.evaluation_failures.append(str(failure))
+            if numbering and self.numbered_checkpoint is not None:
+                self.numbered_checkpoint(report)
                 report.checkpoints_written += 1
+            if resuming and self.checkpoint is not None:
+                self.checkpoint(report)
+                if on_cadence:
+                    report.checkpoints_written += 1
         if period_closed:
             # After the checkpoint, so a run that stops here has written the
             # model the period it stopped on produced.
@@ -1563,18 +1655,20 @@ class TrainingRun:
         if plateau.plateaued(self.config.early_stop_patience_periods):
             plateau.stopped_at_period = plateau.periods_closed
 
-    def _optimise(self) -> LearnMetrics:
-        # The buffer's lock is held across sampling, learning and the priority
-        # update together: an actor adding to a full buffer in between would
-        # evict a sequence and shift every index this batch was sampled at,
-        # which replay refuses outright rather than applying to the wrong one.
+    def _take_gradient_step(self) -> LearnMetrics:
+        """One gradient step, on the learner thread.
+
+        The buffer's lock is held to sample and to update priorities, not across
+        the step between them, so an actor adding its episode never waits on a
+        step. An eviction in between shifts the sampled indices, which
+        `update_priorities` accounts for.
+        """
         with self.replay.lock:
             indices, sequences, weights = self.replay.sample(self.config.batch_size)
-            # Built where the parameters are: a CPU batch handed to a CUDA model
-            # fails on the first optimisation step, which is the worst place to
-            # discover it after an hour of collection.
-            metrics = self.learner.learn(
-                collate(sequences, weights, device=self.backbone.device)
-            )
+        # Built where the parameters are: a CPU batch handed to a CUDA model
+        # fails on the first optimisation step, which is the worst place to
+        # discover it after an hour of collection.
+        metrics = self.learner.learn(collate(sequences, weights, device=self.backbone.device))
+        with self.replay.lock:
             self.replay.update_priorities(indices, metrics.td_errors)
         return metrics

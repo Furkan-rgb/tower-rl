@@ -583,11 +583,39 @@ inside one — the behaviour every run before this used. A sequence's
 `model_version` is the version its episode's first decision was taken with, so
 under a cadence in decisions it is the oldest version in the episode.
 
-`--actors 1` is unchanged against the runs already measured. A single actor
-takes its gradient steps between its own episodes, so its copy is fresh at
-every episode start, as its acting network was before the fleet existed, and a
-refresh inside an episode copies the version it already holds
-(`tests/unit/test_fleet_training.py`, the fleet-of-one tests).
+**The learner thread (ADR 0017).** No actor takes a gradient step. One learner
+thread (`learning/learner.py`, `LearnerThread`) takes them while the actors
+collect. Each decision credits it `gradient_steps_per_decision` steps as it is
+taken, once the buffer is warm; the debt is derived from integer counts of
+decisions credited and steps taken, so the steps over any window are the
+configured ratio of its decisions, short by at most the bound. An actor that
+finds more than `learner_debt_bound_decisions` (512) decisions' worth owed
+pauses before its next decision until the learner is back under it, charged to
+`blocked`. An episode is squared when counted: the one that warms the buffer
+earns all its decisions, an abandoned or failed one takes its credit back, and
+a block ends by paying what is still owed. The bound is the smallest debt that
+never pauses an actor while the learner keeps up on average: it covers a
+resume-point save (11.5 s at 1,000,000 steps, ADR 0014) at up to ~34 fleet
+decisions/s (`M3-P016`), about 390 decisions. So the learner is at most
+`bound + actors` decisions behind collection (519 at 7 actors: 519 steps for
+stacked-dqn, 260 for DreamerV3), plus each copy's refresh cadence as above.
+
+A checkpoint, a periodic evaluation and the run's last resume point hold the
+learner still (`LearnerThread.held`): no step begins and the one in flight is
+waited out, so each reads one completed step and `optimisation_steps` equals
+the weights' own count. The learner holds the replay lock only to sample and
+to update priorities, never across a step, and `update_priorities` follows the
+evictions actors made in between. A publication still takes `Learner.lock`,
+which a step holds, so a refresh can wait for the one step in flight; that is
+the one wait on a learn step left to an actor. On CUDA the learner issues on a
+stream of its own and actors act on the default stream, with each side
+synchronising its stream before releasing `Learner.lock`.
+
+`--actors 1` is no longer the loop it was before fleets: its parameters move
+inside its episodes as the learner steps beside it, and which transitions a
+batch draws depends on timing, so a fleet of one is no longer reproducible
+from its seed (ADR 0017; `tests/unit/test_fleet_training.py`,
+`tests/unit/test_learner_thread.py`).
 
 **Learner step profile.** At production shapes (batch 8 × 80 steps, burn-in 7,
 n = 10, 197,379 parameters) on the RTX 4090, one gradient step — `collate` plus
@@ -2007,6 +2035,8 @@ Actors poll or receive notification between inference steps and swap weights ato
 
 As built (§6.10), each actor copies the learner's parameters into its own acting network at every episode start and every `--parameter-sync-decisions` of its own decisions after it (default 100; the stacked-dqn recipe runs 10, §9.4), on its own thread before a decision's forward pass and under the learner's lock, so a swap can land inside an episode but never inside a decision or an optimisation step. A sequence records the version its episode's first decision used, which is the oldest in that episode. DreamerV3 refreshes at episode starts only (`0`).
 
+The learner steps on its own thread (ADR 0017), so the version a refresh copies is at most `learner_debt_bound_decisions` plus one decision per actor behind the decisions collected so far; the refresh cadence adds its own lag on top. The per-decision timing line reports the learner's steps, its utilisation, the debt against the bound and actors' paused time, which is where a learner that cannot keep up shows.
+
 ### 9.7 Training stability checks
 
 Alert or stop on:
@@ -2206,8 +2236,9 @@ not claimed to be bit-identical to one that never stopped.
 
 One SIGINT - what `run_stage.sh` sends the stage's process group - stops a run
 the way a kill bar does, at any moment: every actor abandons the episode it is
-in before its next decision (a save or a burst of gradient steps already under
-way finishes first), the resume point is written, the final evaluation is
+in before its next decision (a save already under way finishes first), the
+learner thread pays what the counted episodes still owe it (at most the debt
+bound, ADR 0017), the resume point is written, the final evaluation is
 skipped, or abandoned if it had started, and the segment's summary is written
 with every collected episode's record, marked `interrupted`. A second SIGINT
 takes the exception path, which still writes the resume point if it can; the
@@ -2591,7 +2622,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
 | Episodes independent after an invalid end; decisions on a held world (ADR 0015) | `InstrumentedRunEnvironment._retire_live_run` / `_hand_over` + `InstrumentedRunAdapter._hold_the_world` | `tests/unit/test_live_run_retirement.py`, `tests/unit/test_world_held_at_handoff.py`, device probe in `docs/experiments.md` ("Invalid cuts no longer cascade") |
 | Parallel real-game actors | Supervisor + actors | Scale benchmark and overnight run |
-| Recurrent replay-based learner | Learner + replay | Math tests and resolved run config |
+| Recurrent replay-based learner | Learner + replay | Math tests, `tests/unit/test_learner_thread.py` (replay ratio held within the debt bound, ADR 0017) and resolved run config |
 | Resume-safe training | `TrainingReport` resume point + `train.with_parent_replay` (ADR 0014), `train.OperatorStop` | `tests/unit/test_resume_point_crash.py` (SIGKILL mid-save), `tests/unit/test_operator_stop.py` (SIGINT at five moments, and twice), resume round trips in `test_train_entry_point.py` and `test_run_folder.py` |
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |

@@ -56,6 +56,7 @@ from tower_rl.learning.checkpoint import (
     write_checkpoint,
 )
 from tower_rl.learning.evaluator import EvaluationReport, to_record
+from tower_rl.learning.learner import IDLE_LOAD, LearnerLoad
 from tower_rl.learning.replay import PrioritizedSequenceReplay, ReplayImage
 from tower_rl.learning.training import (
     CollectionWindow,
@@ -150,6 +151,8 @@ class TrainingReport:
     #: Each actor's cumulative decomposition at the last emission, which the
     #: next one is measured against.
     decision_time_baseline: dict[str, DecisionTimeBreakdown] = field(default_factory=dict)
+    #: The learner thread's cumulative load at the last emission, likewise.
+    learner_baseline: LearnerLoad = IDLE_LOAD
     decision_time_emitted: float = 0.0
     #: What the parent segment had already spent, when this run resumed one.
     #: Zero for a run that started from scratch. This is the one source of that
@@ -396,12 +399,16 @@ class TrainingReport:
         Each point gets its own checkpoint file rather than sharing the resume
         point, which is overwritten as the run proceeds: the strongest model of a
         run is the one a point names, and a fingerprint pointing at a file that
-        has since moved on would name nothing.
+        has since moved on would name nothing. The file is named by the model
+        version as well as the decisions: the learner steps on its own thread
+        (ADR 0017), so the final evaluation can score weights that a periodic
+        point at the same decision count did not.
         """
         progress = self.training.report
         window = self.training.config.collection_window_episodes
         recent = action_distribution(progress.collected[-window:])
-        path = self.run_dir / "checkpoints" / f"decisions-{progress.decisions:07d}.pt"
+        name = f"decisions-{progress.decisions:07d}-v{evaluation.model_version}.pt"
+        path = self.run_dir / "checkpoints" / name
         digest = self._write(progress, path)
         spread = evaluation.distribution
         floor = scripted_reference(self.identity.workshop_level)
@@ -581,7 +588,10 @@ class TrainingReport:
             # Nothing was collected in this interval; an empty decomposition
             # would divide by zero and say nothing.
             return
+        learner_now = self.training.learner_load()
+        learner = learner_now.since(self.learner_baseline)
         self.decision_time_baseline = current
+        self.learner_baseline = learner_now
         self.decision_time_emitted = now
         self.decision_time_curve.append(
             {
@@ -593,12 +603,13 @@ class TrainingReport:
                     actor_id: breakdown.as_record() for actor_id, breakdown in interval.items()
                 },
                 "fleet": fleet.as_record(),
+                "learner": learner.as_record(),
             }
         )
         self.run.log_metrics(
-            decision_time_metrics(fleet, len(interval)), decisions=report.decisions
+            decision_time_metrics(fleet, len(interval), learner), decisions=report.decisions
         )
-        print(decision_time_line(self.name, fleet, len(interval)), flush=True)
+        print(decision_time_line(self.name, fleet, len(interval), learner), flush=True)
 
     def _early_stopping(self) -> dict[str, object]:
         """Whether the run stopped itself, and on what.

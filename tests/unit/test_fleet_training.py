@@ -656,12 +656,10 @@ def test_no_actor_is_ever_given_half_of_an_optimisation_step() -> None:
 
 
 def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> None:
-    """`--actors 1` must be the run it always was, or the references move.
+    """Whatever the cadence, an episode begins on the learner's current parameters.
 
-    A single actor used to act from the learner's own network, which only ever
-    moved between its episodes. Its copy is refreshed at every episode start,
-    so what it acts from at every episode is what it would have acted from
-    before.
+    The copy is refreshed at every episode start, so an actor never carries
+    the last episode's parameters into the next one.
     """
     watched = WatchedBackbone(
         StackedDqnBackbone(
@@ -689,17 +687,16 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_parameters() -> 
     assert all(matched), "an episode began on parameters the learner had moved past"
 
 
-def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
-    """The single-actor path is the loop it always was: collect, then learn.
+def test_even_a_fleet_of_one_learns_while_its_episode_is_played() -> None:
+    """The learner thread steps beside the actor, so parameters move inside an episode.
 
-    One actor takes its own gradient steps between its own episodes, so the
-    parameters it acts from never move inside an episode, even though its copy
-    is refreshed there: a refresh inside one copies the version it already
-    holds. That is not true of a fleet, where another actor's learning lands
-    mid-episode, and it is what keeps a run configured with `--actors 1`
-    reproducible.
+    Before ADR 0017 a single actor took its own gradient steps between its own
+    episodes, and a refresh inside one copied the version it already held.
+    Now the learner is owed a step as each decision is taken, so a refresh
+    inside an episode hands over a newer version - which is what ends a fleet
+    of one's reproducibility, and what the ADR records.
     """
-    training, watched = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=7)
+    training, _ = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=7)
     acting = copies(training)[0]
     boundaries: list[int] = []
     training.on_episode = lambda _: boundaries.append(acting.acts)
@@ -707,14 +704,11 @@ def test_a_fleet_of_one_learns_only_between_its_own_episodes() -> None:
     report = training.run()
 
     assert report.optimisation_steps > 0 and len(boundaries) > 1
-    start = 0
+    start, moved_inside = 0, False
     for end in boundaries:
-        within = set(acting.versions[start:end])
-        assert len(within) <= 1, "the parameters moved inside a single episode"
+        moved_inside |= len(set(acting.versions[start:end])) > 1
         start = end
-    assert len(set(acting.versions)) > 1, "and they did move between episodes"
-    # Refreshes did land inside episodes, and changed nothing there.
-    assert set(acting.publish_positions) - {0, *boundaries}
+    assert moved_inside, "no refresh inside an episode brought a newer version"
 
 
 def test_at_a_cadence_of_zero_no_refresh_lands_inside_an_episode() -> None:

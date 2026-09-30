@@ -290,6 +290,11 @@ def resolved_config(
         # refresh, 0 for once per episode. Every file written before it
         # recorded `parameter_sync_episodes` instead, always 1 in practice.
         "parameter_sync_decisions": config.parameter_sync_decisions,
+        # The other half of that lag: gradient steps are taken on a thread of
+        # their own, at most this many decisions' worth behind collection
+        # (ADR 0017). Absent from every file written while the finishing actor
+        # took them itself, between episodes.
+        "learner_debt_bound_decisions": config.learner_debt_bound_decisions,
         # The cadence the environment was actually built with, not what was
         # asked for on the command line.
         "frame_game_ms": cadence.frame_game_ms,

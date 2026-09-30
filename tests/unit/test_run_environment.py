@@ -31,12 +31,14 @@ from tower_rl.environment.run_environment import (
     BRIDGE_EVENT_DIVERGENCE,
     GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
+    MIN_RATIO_EVIDENCE_GAME_MS,
     UNLOCK_NOT_APPLIED,
     UNLOCK_REVERTED,
     CadenceConfig,
     DecisionCadence,
     InstrumentedRunEnvironment,
     UpgradeAvailability,
+    expected_round_ms,
 )
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import (
@@ -401,8 +403,9 @@ def test_the_summary_reports_what_advancing_cost_the_game_clock() -> None:
     summary = environment.summarize(transition.termination)
     assert summary.frames > 0
     assert summary.game_ms > 0.0
-    # The game's own clock, beside the budgeted game time it is meant to equal.
-    assert summary.round_ms == pytest.approx(summary.game_ms)
+    # The game's own clock, beside the budgeted game time. The round clock reads
+    # less: every advance counts one frame the world never simulates.
+    assert 0.0 < summary.round_ms < summary.game_ms
     # Wall time inside advances, which the report subtracts from total wall time
     # to show what the decision boundaries cost. The double invents its own
     # figure, so only that it is carried through is testable here.
@@ -732,9 +735,10 @@ def test_a_mask_legal_purchase_the_bridge_rejects_ends_the_episode() -> None:
 def test_an_episode_longer_than_the_old_decision_cap_is_not_truncated() -> None:
     """No decision-count cap: a slowly-dying episode may outlast the old 20,000.
 
-    `EVERY_SLICE` makes each decision exactly one frame here (the budget equals
-    one frame), so decision count is deterministic: `max_health / (damage_per_second
-    * frame_seconds)` decisions pass before death.
+    `EVERY_SLICE` makes each decision exactly one simulated frame here (the
+    budget is two frames, the first of which an advance never simulates), so
+    decision count is deterministic: `max_health / (damage_per_second *
+    frame_seconds)` decisions pass before death.
     """
     environment, _ = _environment(
         decision_cadence=DecisionCadence.EVERY_SLICE,
@@ -742,7 +746,7 @@ def test_an_episode_longer_than_the_old_decision_cap_is_not_truncated() -> None:
         max_health=5.0,
         seconds_per_wave=10_000.0,
     )
-    environment.cadence = CadenceConfig(frame_game_ms=100.0, max_quiet_game_ms=100)
+    environment.cadence = CadenceConfig(frame_game_ms=100.0, max_quiet_game_ms=200)
     environment.reset()
 
     termination = None
@@ -995,6 +999,75 @@ def test_a_world_that_keeps_to_its_budget_is_not_accused_of_running_slow() -> No
         assert transition.admissible
         assert not any(GAME_TIME_DEFLATED in reason for reason in transition.invalid_reasons)
     assert environment.summarize(TerminationOutcome.OPERATOR_STOP).invalid_transitions == 0
+
+
+def test_an_advance_expects_the_round_time_of_the_frames_it_simulated() -> None:
+    """The device law the fidelity check is held to (`#58` round-clock probe).
+
+    Every frame after the first credits 107.0 ms of round clock at 100 ms a
+    frame; the first is counted before `Unpause` lands and credits nothing.
+    """
+    assert expected_round_ms(2000.0, 100.0) == pytest.approx(2033.0)
+    assert expected_round_ms(500.0, 100.0) == pytest.approx(428.0)
+    assert expected_round_ms(100.0, 100.0) == 0.0
+    assert expected_round_ms(0.0, 100.0) == 0.0
+
+
+def _deflation_verdicts(world_time_scale: float, advance_game_ms: int) -> list[str]:
+    """The fidelity reasons an episode raises, advancing at most `advance_game_ms` at once.
+
+    The advance budget is what sets how densely a world's advances fall, which
+    is what moved the old check's healthy ratio and must not move this one.
+    """
+    environment, _ = _environment(world_time_scale=world_time_scale, damage_per_second=0.1)
+    environment.cadence = CadenceConfig(max_quiet_game_ms=advance_game_ms)
+    environment.reset()
+    reasons: list[str] = []
+    for _ in range(60):
+        transition = environment.step(WAIT)
+        reasons.extend(
+            reason
+            for reason in transition.invalid_reasons
+            if GAME_TIME_DEFLATED in reason or GAME_TIME_INFLATED in reason
+        )
+        if transition.termination is not None:
+            break
+    summary = environment.summarize(transition.termination or TerminationOutcome.OPERATOR_STOP)
+    assert summary.game_ms >= MIN_RATIO_EVIDENCE_GAME_MS, "too short to judge a clock by"
+    return reasons
+
+
+@pytest.mark.parametrize("advance_game_ms", [300, 500, 2000])
+def test_a_healthy_world_is_not_accused_of_running_slow_however_dense_its_advances(
+    advance_game_ms: int,
+) -> None:
+    """M3-P017: healthy episodes averaging under ~1,320 ms an advance failed.
+
+    Held against the whole budget, a 500 ms advance's round clock reads
+    1.07 x 4/5 = 0.856 of it - the frame the world never simulates, not a
+    deflated world. Held against what the simulated frames credit, it reads 1.0.
+    """
+    assert _deflation_verdicts(1.0, advance_game_ms) == []
+
+
+@pytest.mark.parametrize("advance_game_ms", [500, 2000])
+def test_a_world_three_percent_short_fails_at_dense_and_sparse_advances(
+    advance_game_ms: int,
+) -> None:
+    """The correction is not a relaxation: a genuinely deflated world still fails."""
+    verdicts = _deflation_verdicts(0.97, advance_game_ms)
+    assert verdicts
+    assert all(GAME_TIME_DEFLATED in reason for reason in verdicts)
+
+
+@pytest.mark.parametrize("advance_game_ms", [500, 2000])
+@pytest.mark.parametrize(("world_time_scale", "fails"), [(0.991, False), (0.989, True)])
+def test_the_deflation_floor_sits_one_percent_under_the_simulated_game_time(
+    advance_game_ms: int, world_time_scale: float, fails: bool
+) -> None:
+    verdicts = _deflation_verdicts(world_time_scale, advance_game_ms)
+    assert bool(verdicts) is fails
+    assert all(GAME_TIME_DEFLATED in reason for reason in verdicts)
 
 
 def test_the_final_advance_of_a_healthy_run_does_not_trip_the_lower_bound() -> None:

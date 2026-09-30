@@ -249,7 +249,7 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
     assert state.decisions == 900 and state.episodes == 12
     # Game time travels beside it as a statistic.
     assert state.game_ms == 1_800_000.0
-    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 5
+    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 6
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
     assert "optimizer" in state.backbone_state, "the moments travel with the weights"
@@ -291,8 +291,8 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
 
     # A version this code does not know is still refused rather than guessed at.
     future = tmp_path / "future.pt"
-    torch.save({"format_version": 6, "identity": {}}, future)
-    with pytest.raises(CheckpointError, match="format 6 is not supported"):
+    torch.save({"format_version": 7, "identity": {}}, future)
+    with pytest.raises(CheckpointError, match="format 7 is not supported"):
         load(future)
 
 

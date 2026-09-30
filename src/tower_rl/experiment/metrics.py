@@ -24,6 +24,7 @@ from tower_rl.environment.run_environment import RetirementFailed
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.evaluator import EvaluationReport, episode_record
+from tower_rl.learning.learner import LearnerLoad
 from tower_rl.learning.training import (
     ActorProgress,
     CollectedEpisode,
@@ -495,13 +496,16 @@ def fleet_decision_time(report: TrainingProgressReport) -> dict[str, DecisionTim
     }
 
 
-def decision_time_metrics(fleet: DecisionTimeBreakdown, actors: int) -> dict[str, float]:
+def decision_time_metrics(
+    fleet: DecisionTimeBreakdown, actors: int, learner: LearnerLoad
+) -> dict[str, float]:
     """The decomposition as MLflow scalars, in milliseconds per decision.
 
     `busy_fraction` is the headline: the share of an actor thread's wall time
     that was executing Python at all. A fleet idle on its emulators sits low
     and flat as actors are added; a fleet contending for the interpreter does
-    not.
+    not. Beside it, the learner thread over the same interval: the share of
+    its time it spent stepping, and the debt it held when read (ADR 0017).
     """
     per_decision = 1000.0 / fleet.decisions if fleet.decisions else 0.0
     metrics = {
@@ -517,10 +521,15 @@ def decision_time_metrics(fleet: DecisionTimeBreakdown, actors: int) -> dict[str
         bucket = fleet.buckets[name]
         metrics[f"decision_wall_ms_{name}"] = round(bucket.wall_seconds * per_decision, 3)
         metrics[f"decision_cpu_ms_{name}"] = round(bucket.cpu_seconds * per_decision, 3)
+    metrics["learner_utilization"] = round(learner.utilization, 4)
+    metrics["learner_debt_steps"] = round(learner.owed_steps, 3)
+    metrics["learner_paused_ms"] = round(learner.paused_actor_seconds * per_decision, 3)
     return metrics
 
 
-def decision_time_line(name: str, fleet: DecisionTimeBreakdown, actors: int) -> str:
+def decision_time_line(
+    name: str, fleet: DecisionTimeBreakdown, actors: int, learner: LearnerLoad
+) -> str:
     per_decision = 1000.0 / fleet.decisions if fleet.decisions else 0.0
     parts = " ".join(
         f"{label} {fleet.buckets[key].wall_seconds * per_decision:.1f}"
@@ -540,7 +549,10 @@ def decision_time_line(name: str, fleet: DecisionTimeBreakdown, actors: int) -> 
         f"{fleet.cpu_seconds * per_decision:.1f}ms cpu, "
         f"busy {fleet.busy_fraction:.1%}, "
         f"{fleet.decisions_per_hour:.0f} decisions/hour per actor; "
-        f"wall/cpu ms per decision: {parts}"
+        f"wall/cpu ms per decision: {parts}; "
+        f"learner {learner.gradient_steps} steps, busy {learner.utilization:.1%}, "
+        f"debt {learner.owed_steps:.1f}/{learner.bound_steps:.0f} steps, "
+        f"paused {learner.paused_actor_seconds * per_decision:.1f}ms"
     )
 
 

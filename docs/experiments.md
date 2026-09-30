@@ -203,6 +203,74 @@ the bridge) should take a decision from ~125 to ~82 ms solo and from ~151 to
 to be verified against this reference, with the fingerprint unchanged. Frame
 rate and cores are not levers at this operating point.
 
+## The learner thread: what is verified, and what is not measured (`#102`, 2026-09-30)
+
+**Purpose.** ADR 0017 moves the gradient steps off the actors' threads onto one
+learner thread behind a bounded debt. This entry records the evidence the
+change rests on. **Nothing about speed is measured yet.** The device A/B
+against the fixed-policy benchmark (`#101`) is still to run, and until it has,
+no claim that the fleet collects faster rests on this change.
+
+**What was run, and what it shows.**
+
+- *Unit and contract tests, fake ports, CPU.* `tests/unit/test_learner_thread.py`
+  drives `LearnerThread` with a counting step, so the debt's arithmetic is
+  exact: the bound pauses an actor and the drain releases it; the steps over
+  any window are the ratio of its decisions, short by at most the bound; a hold
+  waits out the step in flight and starts none; a raising step is kept for the
+  run; an abort ends after the step in flight. On a fleet it shows that no
+  actor thread takes a step, that a run ends every block owing under one step
+  with `optimisation_steps == int(ratio * warm decisions)`, that a checkpoint
+  is written with the learner held (counted steps equal the weights' own
+  `model_version`), and that a refresh copies only a finished step. Beside
+  them, a resume carries its parent's fractional debt so the steps over the two
+  segments stay the ratio of the decisions, and a checkpoint from before format
+  6 is refused for resume and still loads for evaluation.
+  An earlier version of the throughput test asserted a wall-clock ratio
+  (actors' waiting under half the learner's stepping time) and failed 2 in 16
+  under 8 parallel runs of the suite; it was replaced by counts and events
+  (steps taken on actor threads, actor pauses on the bound, the order of a
+  step's end and a refresh's copy), which have no timing threshold.
+- *Timing lines of the runs the change is for.* `M3-P016`'s 7-actor segments
+  (`state/runs/m3-p016-dreamerv3-v2-20260929T201403Z` and
+  `…-20260930T062633Z`, `segments/1/train.log`, local) show learn 27.7-35.9 ms
+  and blocked 0-107 ms per decision beside a bridge round trip of 137-259 ms,
+  at 9,168-17,549 decisions per hour per actor. That is the cost the change
+  targets; it is the "before", read from the old arrangement.
+- *GPU smoke on fake ports, workstation GPU.* `train.train_session` on the
+  unit tests' fake ports, CUDA, learner on its own stream: stacked-dqn with 2
+  actors collected 691 decisions and took 138 steps, learner busy 93.5%;
+  DreamerV3 (small config, `torch.compile`d) with 1 actor collected 349
+  decisions and took 87 steps, learner busy 88.0%. No errors, no paused actor,
+  and the timing line carries the learner's part. This checks that the
+  streams, the locks and the compiled model work together; the fake ports'
+  decisions cost a few milliseconds, so it says nothing about throughput on a
+  device.
+
+**The collection rate the learner will have to keep up with.** From
+`stage.out` of `M3-P016` (local, `state/runs/…/stage.out`, the episode lines):
+
+| Attempt | Span | Decisions | Rate |
+|---|---|---|---|
+| First, `…20260929T201403Z` | 22:19:49-03:00:13 | 425,078 | 25.3 / s over the attempt; 21.9-27.6 / s over one-hour windows |
+| Second, `…20260930T062633Z` | 08:32:23-09:29:37 (57 min) | 71,307 | 20.8 / s |
+
+Sustained fleet collection was therefore about 21-25 decisions/s. About 34/s
+is the upper bound: the best per-actor window, 17,549 decisions/hour, times 7
+actors. A DreamerV3 learn step is about 60 ms (27.7-35.9 ms of learn per
+decision at 0.5 steps per decision, so 55-72 ms a step), and 0.5 steps per
+decision is `train_ratio` 512 over the batch's 1,024 steps
+(`DreamerConfig.gradient_steps_per_decision`). One learner at 60 ms a
+step therefore serves about 33 decisions/s, which is near that upper bound.
+**Once collection speeds up, the learner may become the bottleneck**, and the
+debt bound then paces the actors; the timing line's paused figure and
+`learner_utilization` say when.
+
+**Not measured.** Throughput on a device with or without the thread; whether
+the learner keeps up at 7 actors; the effect of the changed policy lag (up to
+`bound + actors` decisions, ADR 0017) on learning; `torch.compile` graph
+behaviour on a non-default stream beyond the small-config smoke above.
+
 ## Invalid cuts no longer cascade (`#95`, 2026-09-30)
 
 **Purpose.** In M3 runs, one invalid end was followed by episodes that opened

@@ -2,11 +2,12 @@
 
 Each case runs a training session in a child process, which sends itself
 SIGINT at one moment - while the replay is still warming, part way through an
-episode, part way through the gradient steps an episode earned, part way
+episode, part way through a gradient step on the learner thread, part way
 through writing a periodic resume point, or during the final evaluation - and
 then carries on as the signal leaves it. The signal is sent to the process, as
 `run_stage.sh` sends it to the stage's process group, from whichever thread
-reached the moment, which is an actor's in every case but the last.
+reached the moment: the learner's for a gradient step, the main thread's for
+the final evaluation, and an actor's otherwise.
 
 The child must exit normally, having written what a stopped run owes: the
 segment's summary with every collected episode's record in it, the same
@@ -103,7 +104,7 @@ def stepped(self, *arguments, **given):
 
 
 InstrumentedRunEnvironment.step = stepped
-# Inside the gradient steps an episode earned, under the progress lock.
+# Inside a gradient step, on the learner thread (ADR 0017).
 wrap(training.Learner, "learn", "mid-learn", 3)
 # While a periodic resume point's replay is being written.
 wrap(ReplayImage, "write", "mid-save", 1)

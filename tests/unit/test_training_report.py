@@ -321,6 +321,19 @@ def test_the_run_ends_on_one_pre_registered_exploration_free_evaluation(
     assert headline == [final] == [arm["learning_curve"][-1]]
 
 
+def test_a_curve_points_checkpoint_is_named_by_its_decisions_and_model_version(
+    trained: dict[str, Any],
+) -> None:
+    """The learner steps on its own thread (ADR 0017), so two points at one
+    decision count can score different weights: the version keeps them apart."""
+    points = trained["arm"]["learning_curve"]
+
+    assert points
+    for point in points:
+        name = Path(point["checkpoint_path"]).name
+        assert name == f"decisions-{point['decisions']:07d}-v{point['model_version']}.pt"
+
+
 def test_the_record_names_the_pre_registered_point_rather_than_its_caller(
     tmp_path: Path,
 ) -> None:

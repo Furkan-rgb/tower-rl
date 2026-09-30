@@ -6,11 +6,11 @@ recorded could say whether the host was *idle waiting on emulators* or *busy and
 contended inside Python*.  This module answers that, and only that.
 
 One decision's wall time is cut into disjoint buckets - the bridge round trip,
-host-side observation decoding, the policy forward pass, learner work, time
-blocked acquiring a shared lock, and a residual that makes the rest add up to
-the measured total.  Each bucket carries two clocks: elapsed wall time
-(`perf_counter`) and the thread's own CPU time (`thread_time`).  That pair is
-the discriminator the decay hypothesis needed:
+host-side observation decoding, the policy forward pass, parameter publication,
+time blocked on a shared lock or on the learner's debt bound, and a residual
+that makes the rest add up to the measured total.  Each bucket carries two
+clocks: elapsed wall time (`perf_counter`) and the thread's own CPU time
+(`thread_time`).  That pair is the discriminator the decay hypothesis needed:
 
 * wall high, CPU near zero, inside `bridge_round_trip` - the host is idle,
   waiting for an emulator to simulate;
@@ -19,7 +19,8 @@ the discriminator the decay hypothesis needed:
   I/O (`observation_decode`, `policy_forward`) - the thread was runnable but not
   running, which on CPython means it was waiting for the interpreter lock;
 * wall high inside `blocked` - the thread was waiting for one of *this* code's
-  locks, which is a different failure with a different fix.
+  locks, or for the learner to catch up, which is a different failure with a
+  different fix.
 
 Nothing here is shared between actors.  Each actor accumulates into its own
 profile on its own thread, and a run publishes an immutable snapshot of it at
@@ -41,10 +42,13 @@ BRIDGE_ROUND_TRIP = "bridge_round_trip"
 OBSERVATION_DECODE = "observation_decode"
 #: Action selection.
 POLICY_FORWARD = "policy_forward"
-#: Gradient steps and parameter publication, taken on the actor's own thread.
+#: Parameter publication into the actor's own copy, on the actor's thread. The
+#: gradient steps themselves are the learner thread's and are not in any
+#: actor's decomposition (ADR 0017).
 LEARNER_STEP = "learner_step"
-#: Waiting to acquire a lock the fleet shares. The acquisition only; whatever
-#: the caller then does under the lock is charged where it belongs.
+#: Waiting to acquire a lock the fleet shares, or paused because the learner is
+#: owed more than its bound. The wait only; whatever the caller then does under
+#: the lock is charged where it belongs.
 BLOCKED = "blocked"
 #: Measured total minus everything above, so nothing can hide unaccounted.
 RESIDUAL = "residual"

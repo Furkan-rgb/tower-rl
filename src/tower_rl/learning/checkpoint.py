@@ -44,11 +44,19 @@ from tower_rl.environment.run_environment import DecisionCadence, UpgradeAvailab
 #: as one resume point, and `rng_state`, the process's random streams. Both are
 #: None in a version 4 file, which still resumes: with the end-of-run dump found
 #: by its decision count, and with random streams starting from the seed.
-CHECKPOINT_FORMAT_VERSION = 5
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5)
+#: Version 6 is the learner-thread era (ADR 0017): `progress.learner_debt_steps`
+#: records the gradient steps the learner still owed, which a resume pays. A
+#: file from before it was trained under the actor-thread learner, whose steps
+#: were taken by whichever actor ended an episode; versions 1 to 5 still load,
+#: for evaluation and selection, and `scripts/train.py` refuses to resume them,
+#: because continuing would make the run a mixed one.
+CHECKPOINT_FORMAT_VERSION = 6
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5, 6)
 #: The first format a run may resume from. Named rather than compared against
 #: the current version, so a later format does not make version 4 unresumable.
 DECISION_BUDGET_FORMAT_VERSION = 4
+#: The first format written by a run trained on the learner thread.
+LEARNER_THREAD_FORMAT_VERSION = 6
 
 
 class CheckpointError(RuntimeError):
@@ -207,6 +215,10 @@ class TrainingProgress:
     checkpoint_periods_closed: int | None = None
     best_period_near_greedy_mean: float | None = None
     periods_without_improvement: int | None = None
+    #: Gradient steps the learner still owed on the episodes counted so far
+    #: (`LearnerThread.counted_debt_steps`). Zero in a file before format 6,
+    #: which has no such debt and cannot be resumed.
+    learner_debt_steps: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -459,6 +471,8 @@ class ResumeState:
     paired_replay: str | None = None
     #: `Checkpoint.rng_state`, restored once the run is built; None before version 5.
     rng_state: Mapping[str, Any] | None = None
+    #: `TrainingProgress.learner_debt_steps`: what the learner still owed the parent.
+    learner_debt_steps: float = 0.0
 
 
 def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> ResumeState:
@@ -480,6 +494,7 @@ def resume_state(path: Path, *, expected: CheckpointIdentity | None = None) -> R
         upgrade_setup_digest=checkpoint.identity.upgrade_setup_digest,
         paired_replay=checkpoint.paired_replay,
         rng_state=checkpoint.rng_state,
+        learner_debt_steps=checkpoint.progress.learner_debt_steps,
     )
 
 

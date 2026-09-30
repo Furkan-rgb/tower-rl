@@ -205,7 +205,11 @@ environment and nothing that observes or drives it.
   `ReplayImage`, the buffer captured at one moment and written as a dump.
 - `actor.py` — `Actor`, which plays one episode against one
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
-- `training.py` — `Learner`, `TrainingConfig`, `TrainingRun`,
+- `learner.py` — `Learner`, the one training copy of the network and how its
+  parameters reach the actors' copies; `LearnerThread`, the thread that takes
+  every gradient step and the debt that paces it (ADR 0017); `LearnerLoad`,
+  what it has done, for the timing line.
+- `training.py` — `TrainingConfig`, `TrainingRun`,
   `TrainingProgressReport`, `episode_health`, `collection_windows`,
   `SelectionPeriod`, `NearGreedyPlateau`, and
   `KillBar`/`KillBarCheck`.
@@ -289,21 +293,35 @@ on resume.
 **State.** `TrainingRun` owns everything the fleet shares: one
 `PrioritizedSequenceReplay` all actors write into, one `Backbone` inside
 `Learner`, one acting copy per actor in `acting`, the `TrainingProgressReport`,
-the gradient debt `_owed`, and `_since_sync`. Three locks, each guarding one
-thing:
+the `LearnerThread` that trains the `Learner`, `_since_sync`, and each actor's
+decisions credited to the learner in its current episode (`_credited`). The
+learner thread owns the gradient debt: decisions credited and steps taken.
+Four locks, taken only in this order - progress lock, learner held, replay
+lock, `Learner.lock` - each guarding one thing:
 
+- `TrainingRun._lock` guards the progress report and the hooks. An actor holds
+  it between its episodes and never while collecting. The learner thread never
+  takes it.
+- `LearnerThread.held` holds the learner still: no step begins and the one in
+  flight is waited out. A checkpoint, a periodic evaluation and the run's last
+  resume point are written under it, with `_lock` held, so what they read is
+  one completed step and the report counts exactly the steps the weights took.
+  The debt's condition variable behind it is a leaf: nothing else is taken
+  while it is held.
+- `PrioritizedSequenceReplay.lock` guards the buffer, and is the one taken by
+  the *caller* rather than inside the methods. The learner thread takes it to
+  sample and again to update priorities, not across the step between them;
+  `update_priorities` follows the evictions actors made in between.
 - `Learner.lock` guards the training network. It is what keeps an optimisation
   step and a parameter publication from overlapping, so what an actor copies out
-  is always some completed step and never half of one.
-- `TrainingRun._lock` guards the progress report, the gradient debt and the
-  hooks. An actor holds it between its episodes and never while collecting.
-- `PrioritizedSequenceReplay.lock` guards the buffer, and is the one taken by
-  the *caller* rather than inside the methods: `update_priorities` refuses
-  indices an eviction has shifted, so the learner must hold it across `sample`,
-  `learn` and `update_priorities` together.
+  is always some completed step and never half of one. A publication therefore
+  waits for at most the one step in flight. On CUDA the learner issues on a
+  stream of its own, and each side synchronises its stream before releasing
+  this lock.
 
-`_since_sync` needs no lock: each actor touches only its own entry of a dict
-whose keys are all present from construction.
+`_since_sync` and `_credited` need no lock: each actor touches only its own
+entry of a dict whose keys are all present from construction, and `_credited`
+is read by the actor's own thread alone.
 
 ## 5. `experiment` — observing a run
 
@@ -423,7 +441,10 @@ neither is part of a run:
    under stacked-dqn, board #85). The n-step anneal and the resets
    (`--reset-every-steps`) alone count gradient steps. Game time is still measured and reported, as a
    statistic. Actors collect concurrently into the one buffer;
-   the `Learner` takes gradient steps against the configured replay ratio;
+   the `LearnerThread` takes gradient steps beside them against the configured
+   replay ratio, as each decision credits it, and an actor pauses only while
+   more than `learner_debt_bound_decisions` decisions' worth are owed; the
+   block ends by paying what is still owed;
    each actor refreshes its acting copy at every episode start and then every
    `parameter_sync_decisions` of its own decisions, before a decision's
    forward pass and so inside an episode (0, DreamerV3's setting, refreshes at
@@ -460,7 +481,12 @@ both — so epsilon, the selection periods and the numbered-checkpoint
 cadence are derived where a run that never stopped would have them. A
 checkpoint before format 4 (`DECISION_BUDGET_FORMAT_VERSION`) is from the
 game-time budget era: `load` still reads it for evaluation, but `resume_point`
-refuses it by name. `build_arm` continues
+refuses it by name. So does one before format 6
+(`LEARNER_THREAD_FORMAT_VERSION`): it was trained with its gradient steps on
+the actors' threads, and continuing it would make a mixed run (ADR 0017). A
+format 6 checkpoint carries the debt the learner still owed
+(`progress.learner_debt_steps`), which a resume with its buffer pays first.
+`build_arm` continues
 the parent's tracked run through `open_run` when it had one, and names the
 parent in `resolved_config.parent_checkpoint`.
 
@@ -479,13 +505,16 @@ for the whole of `train_session`. The first sets `TrainingRun.stop`, an event
 handed to the run as it is built: each actor returns at its next progress lock,
 or abandons its episode before its next decision (`_before_decision` raises
 `EpisodeAbandoned`, which the collection loop catches; nothing of that episode
-is counted or added to replay), so the main thread's join returns and the run
-ends down the kill bar's path — resume point, final evaluation skipped,
+is counted or added to replay, and the credit it gave the learner is taken
+back), so the main thread's join returns, the learner thread pays what is still
+owed (at most the debt bound, ADR 0017), and the run ends down the kill bar's
+path — resume point, final evaluation skipped,
 summary (`interrupted`, `final_evaluation_skipped: "interrupted"`). The main
 thread itself is never interrupted by that first SIGINT, except inside the
 final evaluation, a blocking call that polls nothing, where it raises
 `EvaluationAbandoned`. A second SIGINT raises `KeyboardInterrupt`: the
-exception path above. It does not exit at once: the process exits once the
+exception path above, on which the learner thread ends after the step in
+flight rather than paying its debt. It does not exit at once: the process exits once the
 actor threads return from the bridge call each is in. An actor in a reset that
 is retiring a live run (ADR 0015) sees the stop between the retirement's
 advances (`InstrumentedRunEnvironment.stop_requested`, which the run points at

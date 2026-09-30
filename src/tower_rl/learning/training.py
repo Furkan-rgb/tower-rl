@@ -94,10 +94,15 @@ from tower_rl.learning.backbone import (
     acting_copy,
     collate,
 )
+from tower_rl.learning.dreamer_replay import DreamerReplay
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.learner import Learner, LearnerLoad, LearnerThread
 from tower_rl.learning.replay import PrioritizedSequenceReplay
+
+#: The buffer an arm collects into: stacked-dqn's windows, or DreamerV3's
+#: step replay (`dreamer_replay.py`, docs/solution.md 9.4c).
+ArmReplay = PrioritizedSequenceReplay | DreamerReplay
 
 #: The device's own rejection reason for a stale or duplicate command, carried
 #: into an episode's `termination_detail` free text exactly as it comes off the
@@ -865,7 +870,7 @@ class TrainingRun:
     """
 
     actors: list[Actor]
-    replay: PrioritizedSequenceReplay
+    replay: ArmReplay
     backbone: Backbone
     config: TrainingConfig
     on_episode: Callable[[TrainingProgressReport], None] | None = None
@@ -1674,6 +1679,8 @@ class TrainingRun:
         step. An eviction in between shifts the sampled indices, which
         `update_priorities` accounts for.
         """
+        if isinstance(self.replay, DreamerReplay):
+            return self._take_dreamer_step(self.replay)
         with self.replay.lock:
             indices, sequences, weights = self.replay.sample(self.config.batch_size)
         # Built where the parameters are: a CPU batch handed to a CUDA model
@@ -1683,3 +1690,19 @@ class TrainingRun:
         with self.replay.lock:
             self.replay.update_priorities(indices, metrics.td_errors)
         return metrics
+
+    def _take_dreamer_step(self, replay: DreamerReplay) -> LearnMetrics:
+        """`embodied/run/train.py` `trainfn`: sample, train, write the latents back.
+
+        The latents leave the metrics here, so the learner's recent window
+        does not hold a hundred batches of them.
+        """
+        with replay.lock:
+            sample = replay.sample(self.config.batch_size)
+        metrics = self.learner.learn(sample.batch(device=self.backbone.device))
+        if metrics.latents is None:
+            raise RuntimeError("a learner on DreamerV3's replay must return its latents")
+        deter, stoch = metrics.latents
+        with replay.lock:
+            replay.write_back(sample, deter.numpy(), stoch.numpy())
+        return replace(metrics, latents=None)

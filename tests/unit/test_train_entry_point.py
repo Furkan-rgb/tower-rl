@@ -320,10 +320,10 @@ def dreamer_session(run_dir: Path, *flags: str) -> dict[str, Any]:
             train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
         )
         patch.setattr(train, "DREAMER_WARMUP_SEQUENCES", 2)
+        patch.setattr(train, "DREAMER_REPLAY_CAPACITY", 64)
         parsed = dreamer_arguments(
             run_dir,
             "--budget-decisions", "200",
-            "--replay-capacity", "64",
             "--evaluate-every-episodes", "1",
             "--evaluation-episodes", "2",
             "--collection-window-episodes", "2",
@@ -344,7 +344,9 @@ def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     assert (parsed.sequence_length, parsed.stacked_burn_in) == (64, 0)
     assert parsed.batch_size == 16
     assert parsed.gradient_steps_per_decision == 0.5
-    assert parsed.warmup_sequences == 25
+    # One batch of items, and the official replay size in items (steps).
+    assert parsed.warmup_sequences == 16 * 64
+    assert parsed.replay_capacity == 5_000_000
     assert parsed.exploration == "uniform"
     assert (parsed.epsilon_start, parsed.epsilon_end) == (0.0, 0.0)
 
@@ -2066,9 +2068,10 @@ def dreamer_resume(run_dir: Path, checkpoint: Path, *flags: str) -> Any:
         patch.setattr(
             train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
         )
+        patch.setattr(train, "DREAMER_REPLAY_CAPACITY", 64)
         return train.resume_point(
             dreamer_arguments(
-                run_dir, "--budget-decisions", "400", "--replay-capacity", "64",
+                run_dir, "--budget-decisions", "400",
                 "--resume", str(checkpoint), *flags,
             ),
             profile_id=PROFILE,
@@ -2077,13 +2080,39 @@ def dreamer_resume(run_dir: Path, checkpoint: Path, *flags: str) -> Any:
 
 
 def test_a_dreamerv3_run_writes_and_reloads_the_same_resume_pair(tmp_path: Path) -> None:
-    """The shared replay: its uniform buffer is saved with every latest.pt as well."""
+    """Its step replay - latents, final observations, the queue - is saved with every latest.pt."""
     checkpoint = latest_checkpoint(dreamer_session(tmp_path / "first"))
     dump = saved_replay(tmp_path / "first")
 
     dump_decisions, decisions = paired_decisions(dump)
     assert dump_decisions == decisions
     assert dreamer_resume(tmp_path / "second", checkpoint).replay_dump == dump
+    from tower_rl.learning.dreamer_replay import DreamerReplay
+
+    restored = DreamerReplay(capacity=64, length=6 + 1)
+    restored.load_from(dump)
+    assert len(restored) > 0 and restored.steps_held > len(restored)
+
+
+def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_resume(
+    tmp_path: Path,
+) -> None:
+    """Format 6: zero-start windows and no stored latents. Resuming it would mix two replays."""
+    checkpoint = latest_checkpoint(dreamer_session(tmp_path / "first"))
+    parent = load(checkpoint)
+    settings = {**parent.resolved_config, "dreamer_actor_unimix": 0.01}
+    older = tmp_path / "older.pt"
+    save(replace(parent, format_version=6, resolved_config=settings), older)
+    with pytest.raises(SystemExit, match="mixed run"):
+        dreamer_resume(tmp_path / "second", older)
+    # It still plays, with the actor unimix it was trained with.
+    policy, _ = checkpoint_policy(
+        older,
+        decision_cadence=settings["decision_cadence"],
+        upgrade_availability=settings["upgrade_availability"],
+        workshop_level=0,
+    )
+    assert policy.config.actor_unimix == 0.01
 
 
 def test_a_dreamerv3_run_resumes_only_under_its_own_discount_and_reward(

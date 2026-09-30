@@ -184,6 +184,7 @@ from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
 from tower_rl.learning.checkpoint import (  # noqa: E402
     DECISION_BUDGET_FORMAT_VERSION,
+    DREAMER_STEP_REPLAY_FORMAT_VERSION,
     LEARNER_THREAD_FORMAT_VERSION,
     CheckpointError,
     CheckpointIdentity,
@@ -193,6 +194,11 @@ from tower_rl.learning.checkpoint import (  # noqa: E402
     write_manifest,
 )
 from tower_rl.learning.dreamer import DREAMERV3, DreamerBackbone, DreamerConfig  # noqa: E402
+from tower_rl.learning.dreamer_replay import (  # noqa: E402
+    DREAMER_REPLAY_CAPACITY,
+    DREAMER_REPLAY_CONTEXT,
+    DreamerReplay,
+)
 from tower_rl.learning.evaluator import EvaluationReport, evaluate  # noqa: E402
 from tower_rl.learning.exploration import (  # noqa: E402
     EXPLORATION_OPTIONS,
@@ -211,6 +217,7 @@ from tower_rl.learning.replay import (  # noqa: E402
 from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig  # noqa: E402
 from tower_rl.learning.training import (  # noqa: E402
     ActorProgress,
+    ArmReplay,
     KillBar,
     NearGreedyPlateau,
     TrainingConfig,
@@ -337,14 +344,19 @@ def last_reset_step(arguments: argparse.Namespace) -> int:
     return max(0, steps - int(arguments.reset_every_steps))
 
 
-def build_replay(arguments: argparse.Namespace) -> PrioritizedSequenceReplay:
+def build_replay(arguments: argparse.Namespace) -> ArmReplay:
     """The empty buffer the arm collects into.
 
-    Each backbone samples as its own recipe does, and neither is an option:
-    DreamerV3 uniformly (solution.md 9.4c), stacked-dqn by R2D2's priorities.
+    Each backbone replays as its own recipe does, and neither is an option:
+    DreamerV3 from the official step replay (solution.md 9.4c), stacked-dqn
+    from windows by R2D2's priorities.
     """
     if arguments.backbone == DREAMERV3:
-        return PrioritizedSequenceReplay.uniform(arguments.replay_capacity, seed=arguments.seed)
+        return DreamerReplay(
+            capacity=arguments.replay_capacity,
+            length=arguments.sequence_length + DREAMER_REPLAY_CONTEXT,
+            seed=arguments.seed,
+        )
     return PrioritizedSequenceReplay(capacity=arguments.replay_capacity, seed=arguments.seed)
 
 
@@ -785,10 +797,10 @@ def run_manifest(
     }
 
 
-#: Replay sequences before DreamerV3's first update. The official loop trains
-#: once replay holds one batch of steps (16 x 64 = 1,024; `embodied/run/train.py`);
-#: at a stride of 32, less the window each episode's edge costs, that is about 25.
-DREAMER_WARMUP_SEQUENCES = 25
+#: Replay items before DreamerV3's first update: the official loop trains once
+#: replay holds one batch of steps' worth of items (16 x 64 = 1,024;
+#: `embodied/run/train.py` 71). An item is a step with a whole window after it.
+DREAMER_WARMUP_SEQUENCES = 16 * 64
 
 #: Flags only stacked-dqn reads. Given with `--backbone dreamerv3` they would be
 #: silently unused, so they are refused.
@@ -812,9 +824,11 @@ def dreamer_loop_settings() -> dict[str, object]:
     """The training-loop settings DreamerV3 fixes, by argument name (solution.md 9.4c)."""
     config = DreamerConfig()
     return {
+        # The window trained on; replay adds the context step before it.
         "sequence_length": config.batch_length,
-        # Every window starts from the zero state (`replay_context: 0`).
         "stacked_burn_in": 0,
+        # Items, which are steps: the official `replay.size`.
+        "replay_capacity": DREAMER_REPLAY_CAPACITY,
         "batch_size": config.batch_size,
         "gradient_steps_per_decision": config.gradient_steps_per_decision,
         "warmup_sequences": DREAMER_WARMUP_SEQUENCES,
@@ -1385,6 +1399,16 @@ def resume_point(
             "checkpoint: its run was trained under the actor-thread learner, and "
             "continuing it on the learner thread (ADR 0017) would make it a mixed "
             "run. It can still be evaluated or selected; start a new run instead"
+        )
+    if (
+        arguments.backbone == DREAMERV3
+        and state.format_version < DREAMER_STEP_REPLAY_FORMAT_VERSION
+    ):
+        raise SystemExit(
+            f"--resume {arguments.resume} is a format {state.format_version} DreamerV3 "
+            "checkpoint: its run learned from zero-start windows without stored latents, "
+            "and continuing it on the step replay (ADR 0018) would make it a mixed run. "
+            "It can still be evaluated or selected; start a new run instead"
         )
     if arguments.backbone == DREAMERV3 and "dreamer_horizon" in state.resolved_config:
         # From before the game-time discount: its continue head and critic

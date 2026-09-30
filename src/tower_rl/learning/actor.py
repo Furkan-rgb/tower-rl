@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
+
+import numpy
 
 from tower_rl.environment.decision_time import (
     OBSERVATION_DECODE,
@@ -25,6 +28,7 @@ from tower_rl.environment.features import StateFeatures, encode_state
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION, WAIT, action_at, action_index
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
+from tower_rl.learning.dreamer_replay import DreamerReplay, episode_steps
 from tower_rl.learning.policies import Policy
 from tower_rl.learning.replay import (
     PrioritizedSequenceReplay,
@@ -90,7 +94,9 @@ class Actor:
     environment: InstrumentedRunEnvironment
     policy: Policy
     config: ActorConfig = field(default_factory=ActorConfig)
-    replay: PrioritizedSequenceReplay | None = None
+    #: DreamerV3's step replay stores the policy's latent at every step, read
+    #: off it by `replay_entry`, and the episode's final observation.
+    replay: PrioritizedSequenceReplay | DreamerReplay | None = None
     model_version: int = 0
     #: Where this actor's decision time goes, accumulated on its own thread and
     #: never shared with another actor. Most of a decision is spent inside the
@@ -108,6 +114,9 @@ class Actor:
         state = self.environment.reset()
         carried_state = self.policy.initial_state()
         steps: list[ReplayStep] = []
+        latents: list[tuple[Any, Any]] = []
+        final: StateFeatures | None = None
+        storing_latents = isinstance(self.replay, DreamerReplay)
         total_reward = 0.0
         termination = TerminationOutcome.OPERATOR_STOP
 
@@ -122,6 +131,7 @@ class Actor:
             if not any(features.mask):
                 # No action is available, which means the run is already over.
                 termination = TerminationOutcome.GAME_OVER
+                final = features
                 break
             if self.before_decision is not None:
                 self.before_decision()
@@ -129,6 +139,8 @@ class Actor:
                 action_index, carried_state = self.policy.act(
                     features, carried_state, epsilon=self.config.epsilon
                 )
+                if storing_latents:
+                    latents.append(self.policy.replay_entry(carried_state))  # type: ignore[attr-defined]
             transition = self.environment.step(action_at(action_index))
             total_reward += transition.reward
             steps.append(
@@ -143,12 +155,18 @@ class Actor:
             )
             if transition.termination is not None:
                 termination = transition.termination
+                if storing_latents and transition.next_state is not None:
+                    with self.profile.span(OBSERVATION_DECODE):
+                        final = encode_state(transition.next_state)
                 break
             if transition.next_state is not None:
                 state = transition.next_state
 
         summary = self.environment.summarize(termination)
-        offered, accepted = self._emit(steps, summary)
+        if isinstance(self.replay, DreamerReplay):
+            offered, accepted = self._emit_stream(self.replay, steps, latents, final, summary)
+        else:
+            offered, accepted = self._emit(steps, summary)
         return EpisodeResult(
             summary,
             offered,
@@ -162,10 +180,8 @@ class Actor:
             longest_option=int(getattr(self.policy, "longest_option", 0)),
         )
 
-    def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:
-        if self.replay is None:
-            return 0, 0
-        metadata = SequenceMetadata(
+    def _metadata(self, summary: EpisodeSummary) -> SequenceMetadata:
+        return SequenceMetadata(
             episode_id=summary.episode_id,
             actor_id=self.config.actor_id,
             profile_id=summary.profile_id,
@@ -176,6 +192,66 @@ class Actor:
             epsilon=self.config.epsilon,
             game_speed=summary.game_speed,
         )
+
+    def _emit_stream(
+        self,
+        replay: DreamerReplay,
+        steps: list[ReplayStep],
+        latents: list[tuple[Any, Any]],
+        final: StateFeatures | None,
+        summary: EpisodeSummary,
+    ) -> tuple[int, int]:
+        """Append the episode to this actor's stream in Dreamer's layout.
+
+        Step t is observation t with the action taken at it and the reward,
+        termination and game time of the transition into it. The last step is
+        the final observation - the terminal one when the run died - with no
+        action. The stream stops at the first inadmissible transition: its
+        own observation was the admissible one before it led to, and is the
+        episode's last; what it led to may not be valid (`DreamerReplay`).
+        The final observation's latent is never read: the step after it
+        starts an episode and resets the model, so zeros stand in for it
+        until the learner writes its posterior back.
+        """
+        if not steps:
+            # The run was already over when the episode opened.
+            return 0, 0
+        kept = next((i for i, step in enumerate(steps) if not step.admissible), None)
+        if kept is None:
+            observations = [step.features for step in steps]
+            if final is not None:
+                observations.append(final)
+        else:
+            # Observation `kept` is the admissible transition `kept - 1`'s
+            # valid next state; with none before it there is nothing to keep.
+            observations = [step.features for step in steps[: kept + 1]] if kept else []
+            replay.stats.reject("inadmissible_transition")
+        if not observations:
+            return 1, 0
+        count = len(observations)
+        into: list[ReplayStep | None] = [None, *steps[: count - 1]]
+        blank = (numpy.zeros_like(latents[0][0]), numpy.zeros_like(latents[0][1]))
+        entries = [*latents[:count], *[blank] * (count - len(latents))]
+        episode = episode_steps(
+            scalars=[o.scalars for o in observations],
+            rows=[o.rows for o in observations],
+            mask=[o.mask for o in observations],
+            action=[steps[t].action_index if t < count - 1 else 0 for t in range(count)],
+            reward=[0.0 if s is None else s.reward for s in into],
+            terminal=[False if s is None else s.done for s in into],
+            game_ms=[0.0 if s is None else s.game_ms for s in into],
+            deter=[deter for deter, _ in entries],
+            stoch=[stoch for _, stoch in entries],
+        )
+        with self.profile.acquiring(replay.lock):
+            accepted = replay.add(self.config.actor_id, self._metadata(summary), episode)
+        return 1, int(accepted)
+
+    def _emit(self, steps: list[ReplayStep], summary: EpisodeSummary) -> tuple[int, int]:
+        if self.replay is None:
+            return 0, 0
+        assert isinstance(self.replay, PrioritizedSequenceReplay)
+        metadata = self._metadata(summary)
         offered = accepted = 0
         # One acquisition for the whole episode: several actors write into the
         # one buffer while the learner samples it, and replay leaves that

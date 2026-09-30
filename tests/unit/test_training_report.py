@@ -97,6 +97,8 @@ HEALTH_KEYS = {
     "advances_cut_short",
     "pin_restarts",
     "episodes_not_started_fresh",
+    "retirements",
+    "retirement_wall_seconds",
     "round_budgeted_ratio",
     "worst_round_budgeted_ratio",
 }
@@ -111,6 +113,8 @@ ZERO_HEALTH_COUNTERS = {
     "bridge_event_divergence",
     "stale_or_duplicate",
     "game_time_inflated",
+    "retirements",
+    "retirement_wall_seconds",
 }
 
 #: Health counters that sum straightforwardly across actors. The two free-text
@@ -166,6 +170,8 @@ EPISODE_RECORD_KEYS = {
     "pin_restarts",
     "recovered_transients",
     "starting_wave",
+    "retired_run_wave",
+    "retirement_wall_seconds",
     "waves",
     "final_upgrade_levels",
     "final_cash",
@@ -549,7 +555,7 @@ def test_an_invalid_episode_is_logged_and_streamed_as_it_ends(tmp_path: Path) ->
         f"termination action_pipeline_failed: {invalid['termination_detail'][0]}"
     ) in log
     # The window it fell in names its reason beside the count.
-    assert "(invalid 1 [action_pipeline_failed 1] " in log
+    assert "(invalid 1 [action_pipeline_failed 1] stale_or_duplicate 0 " in log
 
     streamed = [json.loads(line) for line in (segment / "episodes.jsonl").read_text().splitlines()]
     # As the summary written at the end records them, once through JSON.

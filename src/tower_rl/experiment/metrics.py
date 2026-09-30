@@ -153,6 +153,8 @@ def health_metrics(health: EpisodeHealth, *, prefix: str) -> dict[str, float]:
         f"{prefix}bridge_event_divergence": float(health.bridge_event_divergence),
         f"{prefix}stale_or_duplicate": float(health.stale_or_duplicate),
         f"{prefix}game_time_inflated": float(health.game_time_inflated),
+        f"{prefix}retirements": float(health.retirements),
+        f"{prefix}retirement_wall_seconds": health.retirement_wall_seconds,
     }
     if health.round_budgeted_ratio is not None:
         metrics[f"{prefix}round_budgeted_ratio"] = health.round_budgeted_ratio
@@ -377,8 +379,10 @@ def window_line(window: CollectionWindow) -> str:
         f"over {window.episodes} collected episodes, "
         f"wait {window.wait_fraction:.1%} purchases/episode "
         f"{window.purchases_per_episode:.1f} "
-        f"(invalid {invalid} cut_short {health.advances_cut_short} "
-        f"divergence {health.bridge_event_divergence})"
+        f"(invalid {invalid} stale_or_duplicate {health.stale_or_duplicate} "
+        f"cut_short {health.advances_cut_short} "
+        f"divergence {health.bridge_event_divergence} "
+        f"retired {health.retirements} in {health.retirement_wall_seconds:.0f}s)"
     )
 
 

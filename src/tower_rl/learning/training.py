@@ -170,6 +170,11 @@ class EpisodeHealth:
     #: exactly why it has to be pooled somewhere a long run is read from (`#57`).
     pin_restarts: int
     episodes_not_started_fresh: int
+    #: Episodes whose reset first retired a run the previous episode left live
+    #: (`retired_run_wave` above 0), and the wall time those retirements cost:
+    #: time the span spent collecting nothing (ADR 0015).
+    retirements: int
+    retirement_wall_seconds: float
     #: The game's round clock over the budgeted game time, pooled across every
     #: episode that spent measurable game time. None until one has.
     round_budgeted_ratio: float | None
@@ -217,6 +222,8 @@ def episode_health(summaries: Sequence[EpisodeSummary]) -> EpisodeHealth:
         advances_cut_short=sum(summary.advances_cut_short for summary in summaries),
         pin_restarts=sum(summary.pin_restarts for summary in summaries),
         episodes_not_started_fresh=sum(1 for summary in summaries if summary.starting_wave > 1),
+        retirements=sum(1 for summary in summaries if summary.retired_run_wave > 0),
+        retirement_wall_seconds=sum(summary.retirement_wall_seconds for summary in summaries),
         round_budgeted_ratio=pooled_ratio,
         worst_round_budgeted_ratio=worst_ratio,
     )

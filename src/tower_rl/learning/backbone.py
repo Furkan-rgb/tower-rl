@@ -87,9 +87,17 @@ class SequenceBatch:
     #: the last of them - `deter` [batch, deter] and stochastic class indices
     #: [batch, stoch]. `first` and `last` [batch, time] are `is_first` and
     #: `is_last`. None in the window layout every other learner reads.
+    #: R2D2's replay (`R2D2Replay`) uses the same step layout, with its own
+    #: meanings: `burn_in` is the steps unrolled before the trace, `first`
+    #: and `last` mark an episode's first and last steps, and `context` is
+    #: the stored LSTM state (h, c), each [batch, state], from before the
+    #: window's first step.
     first: Tensor | None = None
     last: Tensor | None = None
     context: tuple[Tensor, Tensor] | None = None
+    #: R2D2's observation-action-reward input: the action taken at the step
+    #: before each step, 0 at an episode's start. [batch, time] or None.
+    previous_actions: Tensor | None = None
 
     @property
     def batch_size(self) -> int:

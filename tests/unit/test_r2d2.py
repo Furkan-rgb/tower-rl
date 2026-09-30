@@ -16,8 +16,10 @@ from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.backbone import Backbone, SequenceBatch, acting_copy
 from tower_rl.learning.network import dueling_masked_q
 from tower_rl.learning.r2d2 import (
+    GRADIENT_CLIP_NORM,
     R2D2Backbone,
     R2D2Config,
+    R2D2Network,
     signed_hyperbolic,
     signed_parabolic,
     trace_targets,
@@ -28,7 +30,6 @@ from tower_rl.learning.r2d2_replay import (
     R2D2_SEQUENCE_PERIOD,
     R2D2_STATE_SIZE,
     R2D2Replay,
-    sequence_priority,
 )
 from tower_rl.learning.replay import SequenceMetadata
 from tower_rl.learning.step_arrays import StepArrays
@@ -137,20 +138,22 @@ def _reference_targets(
     return targets
 
 
-@pytest.mark.parametrize("real", [9, 7])
-def test_the_n_step_game_time_target_matches_a_hand_computation(real: int) -> None:
+@pytest.mark.parametrize(("real", "died"), [(9, False), (7, True), (7, False)])
+def test_the_n_step_game_time_target_matches_a_hand_computation(real: int, died: bool) -> None:
     """Varied game time, a purchase (0 ms), a terminal inside the window, and rlax's end.
 
     With 9 real steps the trace runs to its end: the last steps' returns are
-    shortened to bootstrap from the last value (rlax). With 7 the episode dies
-    into step 6 and the rest is padding.
+    shortened to bootstrap from the last value (rlax). With 7 that died, the
+    episode dies into step 6 and the rest is padding. With 7 that did not,
+    the stream was cut there: step 6 is a live observation, and the returns
+    running past it bootstrap from its value, not from a pad's.
     """
     steps = 9
     game_ms = [0.0, 2000.0, 0.0, 1500.0, 3000.0, 1000.0, 500.0, 2500.0, 700.0]
     dones = [False] * steps
     padding = [False] * steps
     if real < steps:
-        dones[real - 1] = True
+        dones[real - 1] = died
         for index in range(real, steps):
             game_ms[index] = 0.0
             padding[index] = True
@@ -158,7 +161,7 @@ def test_the_n_step_game_time_target_matches_a_hand_computation(real: int) -> No
     mask = torch.rand(steps, ACTIONS, generator=generator) < 0.4
     mask[:, 0] = True
     if real < steps:
-        mask[real - 1 :] = False
+        mask[real if not died else real - 1 :] = False
     advantages = torch.randn(steps, ACTIONS, generator=generator)
     online_q = dueling_masked_q(torch.randn(steps, 1, generator=generator), advantages, mask)
     target_q = dueling_masked_q(
@@ -266,7 +269,7 @@ def test_pad_steps_and_the_terminal_step_touch_neither_loss_nor_priority() -> No
     first = _backbone()
     second = copy.deepcopy(first)
     metrics = first.learn(batch)
-    assert [len(errors) for errors in metrics.td_errors] == [19, 19]
+    assert metrics.priorities is not None and metrics.priorities.shape == (2,)
 
     noise = torch.randn_like(batch.scalars[:, 59:])
     changed = dataclasses.replace(
@@ -279,21 +282,27 @@ def test_pad_steps_and_the_terminal_step_touch_neither_loss_nor_priority() -> No
     )
     again = second.learn(changed)
     assert again.weighted_loss == pytest.approx(metrics.weighted_loss, rel=1e-6)
-    numpy.testing.assert_allclose(
-        numpy.array(again.td_errors), numpy.array(metrics.td_errors), rtol=1e-5
+    assert again.priorities is not None
+    numpy.testing.assert_allclose(again.priorities, metrics.priorities, rtol=1e-5)
+
+
+def test_an_item_with_no_valid_trace_step_gets_priority_zero() -> None:
+    """A 41-step episode is one item whose trace is its terminal step alone."""
+    metrics = _backbone().learn(_batch(41))
+    assert metrics.priorities is not None and metrics.priorities.tolist() == [0.0, 0.0]
+    assert metrics.weighted_loss == 0.0 and metrics.taken_q_max is None
+
+
+def test_the_gradient_norm_is_clipped_at_40() -> None:
+    """Ape-X's clip, through Table 2: the step applies the clipped gradient."""
+    backbone = _backbone()
+    batch = _batch(200)
+    metrics = backbone.learn(dataclasses.replace(batch, weights=batch.weights * 1e4))
+    assert metrics.gradient_norm > GRADIENT_CLIP_NORM
+    applied = torch.nn.utils.get_total_norm(
+        [p.grad for p in backbone.online.parameters() if p.grad is not None]
     )
-
-
-def test_an_items_priority_mixes_the_max_and_mean_of_its_valid_steps() -> None:
-    metrics = _backbone().learn(_batch(150))
-    for errors in metrics.td_errors:
-        # A 150-step episode's items start at 0 (121 steps) and 40 (110 steps).
-        assert len(errors) in (80, 69)
-        assert all(math.isfinite(error) for error in errors)
-        magnitudes = numpy.abs(errors)
-        assert sequence_priority(errors) == pytest.approx(
-            0.9 * magnitudes.max() + 0.1 * magnitudes.mean()
-        )
+    assert float(applied) == pytest.approx(GRADIENT_CLIP_NORM, rel=1e-4)
 
 
 def test_the_target_is_copied_at_step_2500_and_not_before() -> None:
@@ -416,3 +425,151 @@ def test_a_checkpoint_resumes_the_learner_exactly() -> None:
     assert learner.learn(batch).weighted_loss == pytest.approx(
         resumed.learn(batch).weighted_loss, rel=1e-6
     )
+
+
+# -- the learn step's wiring, against an independent reference --------------------
+
+
+def _wiring_batch() -> SequenceBatch:
+    """Three items built by hand, each exercising one path of `learn`.
+
+    Item 0 is real throughout; item 1 dies into step 10 (padding after); item
+    2 is a stream cut at step 11 - real, alive, with no done - and padded
+    after. The stored states are non-zero, the IS weights unequal, the wave
+    `reward` non-zero (the network must never see it), the game times long
+    enough that the survival reward is far outside tanh's linear range, and
+    the previous actions are not the actions shifted.
+    """
+    generator = torch.Generator().manual_seed(11)
+    size, length, burn_in = 3, 14, 4
+    padding = torch.zeros(size, length, dtype=torch.bool)
+    padding[1, 11:] = True
+    padding[2, 12:] = True
+    dones = torch.zeros(size, length, dtype=torch.bool)
+    dones[1, 10] = True
+    mask = torch.rand(size, length, ACTIONS, generator=generator) < 0.3
+    mask[..., 0] = True
+    mask[1, 10:] = False
+    mask[2, 12:] = False
+    choices = torch.tensor([0.0, 500.0, 30_000.0, 900_000.0])
+    game_ms = choices[torch.randint(0, 4, (size, length), generator=generator)]
+    game_ms[padding] = 0.0
+
+    def valid_actions() -> torch.Tensor:
+        scores = torch.rand(size, length, ACTIONS, generator=generator)
+        return torch.where(mask, scores, -1.0).argmax(dim=-1)
+
+    return SequenceBatch(
+        scalars=torch.randn(size, length, SCALAR_COUNT, generator=generator),
+        rows=torch.randn(size, length, ROW_COUNT, ROW_WIDTH, generator=generator),
+        mask=mask,
+        actions=valid_actions(),
+        rewards=torch.rand(size, length, generator=generator) * 3.0 + 1.0,
+        dones=dones,
+        padding=padding,
+        game_ms=game_ms,
+        weights=torch.tensor([1.0, 0.3, 0.6]),
+        burn_in=burn_in,
+        context=(
+            torch.randn(size, R2D2_STATE_SIZE, generator=generator) * 2.0,
+            torch.randn(size, R2D2_STATE_SIZE, generator=generator) * 2.0,
+        ),
+        previous_actions=valid_actions(),
+    )
+
+
+def _reference_q(
+    network: R2D2Network,
+    batch: SequenceBatch,
+    span: slice,
+    state: tuple[torch.Tensor, torch.Tensor],
+) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    """R2D2's network written out from its parts, not through `R2D2Network.forward`."""
+    encoded_rows, encoded_scalars = network.trunk.encode(
+        batch.scalars[:, span], batch.rows[:, span]
+    )
+    torso_linear = network.torso[0]
+    assert isinstance(torso_linear, torch.nn.Linear)
+    torso = torch.relu(torso_linear(torch.cat((encoded_rows.flatten(2), encoded_scalars), -1)))
+    discounts = GAMMA ** (batch.game_ms[:, span].double() / 1000.0)
+    previous_reward = ((1.0 - discounts) * V_REF).float()
+    assert batch.previous_actions is not None
+    embedded = torch.cat(
+        (
+            torso,
+            torch.nn.functional.one_hot(batch.previous_actions[:, span], ACTIONS).float(),
+            torch.tanh(previous_reward).unsqueeze(-1),
+        ),
+        -1,
+    )
+    core, after = network.core(embedded, state)
+    q = dueling_masked_q(network.value(core), network.advantage(core), batch.mask[:, span])
+    return q, after
+
+
+def _reference_loss(
+    backbone: R2D2Backbone, batch: SequenceBatch, n: int = 5
+) -> tuple[float, list[float]]:
+    """The loss and priorities of one learn step, computed one item and one step at a time."""
+    online, target = copy.deepcopy(backbone.online), copy.deepcopy(backbone.target)
+    burn, length = batch.burn_in, batch.scalars.shape[1]
+    assert batch.context is not None
+    start = (batch.context[0][None], batch.context[1][None])
+    with torch.no_grad():
+        target_q, _ = _reference_q(target, batch, slice(0, length), start)
+        _, burnt = _reference_q(online, batch, slice(0, burn), start)
+        online_q, _ = _reference_q(online, batch, slice(burn, length), burnt)
+    target_q = target_q[:, burn:]
+    losses, priorities = [], []
+    for item in range(batch.batch_size):
+        real = int((~batch.padding[item, burn:]).sum())
+        game_ms = batch.game_ms[item, burn:].tolist()
+        dones = batch.dones[item, burn:].tolist()
+        mask = batch.mask[item, burn:]
+        targets = _reference_targets(
+            online_q[item], target_q[item], mask, game_ms, dones, real, n
+        )
+        errors = []
+        for t in range(real - 1):
+            action = int(batch.actions[item, burn + t])
+            errors.append(targets[t] - float(online_q[item, t, action]))
+        magnitudes = numpy.abs(errors) if errors else numpy.zeros(1)
+        losses.append(float(batch.weights[item]) * 0.5 * float(numpy.square(errors).sum()))
+        priorities.append(0.9 * magnitudes.max() + 0.1 * magnitudes.mean())
+    return float(numpy.mean(losses)), priorities
+
+
+def test_the_learn_step_is_wired_as_the_reference_computes_it() -> None:
+    """Stored state for both networks, the online burn-in, OAR inputs, h, IS weights, 0.5."""
+    backbone = _backbone()
+    batch = _wiring_batch()
+    expected_loss, expected_priorities = _reference_loss(backbone, batch)
+    metrics = backbone.learn(batch)
+    assert metrics.weighted_loss == pytest.approx(expected_loss, rel=1e-5)
+    assert metrics.priorities is not None
+    assert metrics.priorities.tolist() == pytest.approx(expected_priorities, rel=1e-5)
+
+
+def test_the_vectorised_value_fit_is_the_shared_one() -> None:
+    """`_value_fit` against `value_learning.value_fit_correlation`'s loop over time."""
+    from tower_rl.learning.r2d2 import _value_fit
+    from tower_rl.learning.value_learning import value_fit_correlation
+
+    generator = torch.Generator().manual_seed(3)
+    size, time_steps = 4, 12
+    values = torch.randn(size, time_steps, ACTIONS, generator=generator)
+    mask = torch.rand(size, time_steps, ACTIONS, generator=generator) < 0.5
+    mask[..., 0] = True
+    mask[0, 7:] = False
+    rewards = torch.rand(size, time_steps, generator=generator, dtype=torch.float64)
+    discounts = torch.rand(size, time_steps, generator=generator, dtype=torch.float64)
+    dones = torch.zeros(size, time_steps, dtype=torch.bool)
+    dones[0, 6] = dones[1, 9] = dones[2, 3] = True
+    valid = torch.ones(size, time_steps, dtype=torch.bool)
+    valid[0, 7:] = False
+    correlation, count = _value_fit(values, mask, rewards, discounts, dones, valid)
+    expected = value_fit_correlation(
+        values, mask, rewards.float(), dones, valid.float(), discounts=discounts
+    )
+    assert expected is not None and int(count) == 7 + 10 + 4
+    assert float(correlation) == pytest.approx(expected, rel=1e-5)

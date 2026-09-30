@@ -61,6 +61,11 @@ class LearnMetrics:
     #: stoch], on the CPU: what DreamerV3 writes back into replay after each
     #: step (`DreamerReplay.write_back`). None for a learner that stores none.
     latents: tuple[Tensor, Tensor] | None = None
+    #: Each sampled item's replay priority [batch], on the CPU, from a learner
+    #: that computes them itself as Acme's R2D2 learner does
+    #: (`R2D2Replay.update_priorities`); None for one that reports
+    #: `td_errors` instead.
+    priorities: numpy.ndarray | None = None
 
 
 @dataclass(frozen=True)

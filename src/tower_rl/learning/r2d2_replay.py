@@ -57,7 +57,7 @@ import math
 import os
 import shutil
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -70,7 +70,6 @@ from tower_rl.learning.backbone import SequenceBatch
 from tower_rl.learning.replay import (
     R2D2_IMPORTANCE_SAMPLING_EXPONENT,
     R2D2_PRIORITY_EXPONENT,
-    R2D2_PRIORITY_MIX,
     REPLAY_DUMP_METADATA,
     ReplayDumpError,
     ReplayRejected,
@@ -136,16 +135,6 @@ def item_layout(step_count: int) -> tuple[numpy.ndarray, numpy.ndarray]:
     return starts, numpy.minimum(R2D2_ITEM_LENGTH, step_count - starts)
 
 
-def sequence_priority(td_errors: Sequence[float]) -> float:
-    """eta * max |delta| + (1 - eta) * mean |delta| (learning.py 153-157); 0 for no step."""
-    if not td_errors:
-        return 0.0
-    magnitudes = numpy.abs(numpy.asarray(td_errors, numpy.float64))
-    return float(
-        R2D2_PRIORITY_MIX * magnitudes.max() + (1.0 - R2D2_PRIORITY_MIX) * magnitudes.mean()
-    )
-
-
 @dataclass
 class _Episode:
     number: int
@@ -176,7 +165,7 @@ class R2D2Sample:
 
     def batch(self, device: torch.device | None = None) -> SequenceBatch:
         """The sample as a `SequenceBatch` in the step layout, starting from its stored states."""
-        a = {name: torch.as_tensor(value, device=device) for name, value in self.arrays.items()}
+        a = {name: _moved(value, device) for name, value in self.arrays.items()}
         size, length = a["action"].shape
         return SequenceBatch(
             scalars=a["scalars"],
@@ -187,13 +176,21 @@ class R2D2Sample:
             dones=a["terminal"],
             padding=a["padding"],
             game_ms=a["game_ms"],
-            weights=torch.as_tensor(self.weights, device=device),
+            weights=_moved(self.weights, device),
             burn_in=R2D2_BURN_IN,
             first=a["first"],
             last=a["last"],
             context=(a["h"], a["c"]),
             previous_actions=a["previous_action"],
         )
+
+
+def _moved(array: numpy.ndarray, device: torch.device | None) -> torch.Tensor:
+    """`array` on `device`; to a GPU through pinned memory, so the copy does not block."""
+    tensor = torch.from_numpy(numpy.ascontiguousarray(array))
+    if device is None or device.type != "cuda":
+        return tensor.to(device) if device is not None else tensor
+    return tensor.pin_memory().to(device, non_blocking=True)
 
 
 @dataclass
@@ -379,20 +376,19 @@ class R2D2Replay:
         arrays["c"] = states[:, 1]
         return arrays
 
-    def update_priorities(
-        self, keys: numpy.ndarray, td_errors: Sequence[Sequence[float]]
-    ) -> None:
-        """Each sampled item's priority from its valid trace steps' TD errors (`sequence_priority`).
+    def update_priorities(self, keys: numpy.ndarray, priorities: numpy.ndarray) -> None:
+        """Set each sampled item's priority, as the learner computed it (`r2d2.item_priorities`).
 
         An item evicted since it was sampled is skipped, as Reverb skips a
         missing key.
         """
-        if len(keys) != len(td_errors):
-            raise ValueError("each key needs its own sequence of TD errors")
+        if keys.shape != priorities.shape:
+            raise ValueError("each key needs exactly one priority")
         oldest = self._inserted - self._live
-        for key, errors in zip(keys.tolist(), td_errors, strict=True):
-            if oldest <= key < self._inserted:
-                self._set_priority(key % self.capacity, sequence_priority(errors))
+        live = (keys >= oldest) & (keys < self._inserted)
+        slots = keys[live] % self.capacity
+        self._priority[slots] = priorities[live]
+        self._scaled[slots] = self._priority[slots] ** self.alpha
 
     def _set_priority(self, slot: int, priority: float) -> None:
         self._priority[slot] = priority

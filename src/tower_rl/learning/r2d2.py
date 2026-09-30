@@ -21,10 +21,13 @@ What it follows:
   value rescaling h (P section 2.3, `signed_hyperbolic`) and rlax's shortened
   returns at the item's end (`transformed_n_step_targets`). The loss is 0.5
   times the sum of squared TD errors over the trace, weighted by the item's
-  importance-sampling weight and averaged over the batch; no Huber loss and
-  no clipping (learning.py 144-151). Adam at the paper's lr 1e-4 and epsilon
-  1e-3 (P Table 2). The target is a hard copy every 2,500 learner steps
-  (learning.py 184-185).
+  importance-sampling weight and averaged over the batch; no Huber loss
+  (learning.py 144-151). An item's priority is 0.9 max + 0.1 mean of its
+  |delta| (learning.py 153-157). Adam at the paper's lr 1e-4 and epsilon 1e-3
+  (P Table 2), with the gradient norm clipped at 40: Table 2 names no clip
+  and sends every missing parameter to Ape-X, which clips at 40 (Horgan et
+  al. 2018, Appendix); Acme's R2D2 has none. The target is a hard copy every
+  2,500 learner steps (learning.py 184-185).
 - **Acting.** The LSTM state, the previous action and the previous reward are
   carried across decisions (`R2D2State`); an episode starts from zeros. The
   greedy action is the argmax of Q; with probability epsilon it is uniform.
@@ -35,8 +38,9 @@ What differs, each forced:
   shared row encoder of `TowerTrunk` stands for the convolution's shared
   weights, and its 60 encoded rows, flattened in order - row i is action
   i + 1 - with the encoded scalars, stand for the convolution's flattened
-  output. Then Acme's torso MLP: Linear 512, LayerNorm, ReLU
-  (atari.py `DeepAtariTorso(hidden_sizes=[512], use_layer_norm=True)`).
+  output. Then Acme's torso head: Linear 512 and ReLU (atari.py
+  `DeepAtariTorso`'s `hk.nets.MLP([512], activate_final=True)`). Its
+  LayerNorm belongs to the ResNet this replaces, not to the head.
 - **The action mask** (docs/environment-contract.md): advantages are centred
   over the valid actions and invalid actions are -inf (`dueling_masked_q`);
   the greedy action, the double-Q argmax and an exploratory action are over
@@ -74,12 +78,11 @@ from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, StateFeatures
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
 from tower_rl.learning.network import NetworkConfig, TowerTrunk, dueling_masked_q
 from tower_rl.learning.r2d2_replay import R2D2_STATE_SIZE
+from tower_rl.learning.replay import R2D2_PRIORITY_MIX
 from tower_rl.learning.value_learning import (
     evaluated_next_values,
     game_time_discounts,
-    real_step_td_errors,
     survival_rewards,
-    value_fit_correlation,
 )
 
 #: The name a run, its checkpoints and `--backbone` file this backbone under.
@@ -88,6 +91,9 @@ R2D2 = "r2d2"
 TORSO_SIZE = 512
 #: Acme `DuellingMLP(num_actions, hidden_sizes=[512])`: each stream's hidden layer.
 HEAD_HIDDEN = 512
+#: Ape-X's gradient-norm clip (Horgan et al. 2018, Appendix), which P Table 2
+#: defers to for a parameter it does not name.
+GRADIENT_CLIP_NORM = 40.0
 #: P section 2.3's h(x) = sign(x)(sqrt(|x| + 1) - 1) + eps x; rlax's default eps.
 VALUE_RESCALING_EPSILON = 1e-3
 
@@ -197,6 +203,53 @@ def trace_targets(
     return targets.to(online_q.dtype), ~padding[:, 1:]
 
 
+def item_priorities(absolute: Tensor, counts: Tensor) -> Tensor:
+    """Each item's priority, eta max |delta| + (1 - eta) mean |delta| (learning.py 153-157).
+
+    `absolute` [B, T] is zero off an item's valid trace steps and `counts` [B]
+    how many it has; an item with none gets 0 and is not drawn again.
+    """
+    mean = absolute.sum(dim=1) / counts.clamp(min=1)
+    return R2D2_PRIORITY_MIX * absolute.amax(dim=1) + (1.0 - R2D2_PRIORITY_MIX) * mean
+
+
+def _value_fit(
+    values: Tensor,
+    mask: Tensor,
+    rewards: Tensor,
+    discounts: Tensor,
+    dones: Tensor,
+    valid: Tensor,
+) -> tuple[Tensor, Tensor]:
+    """`value_learning.value_fit_correlation` without a loop over time or a host read.
+
+    The correlation of max_a Q(s_t, a) with the return realised from t, over
+    the valid steps whose episode ends inside the trace, and how many steps
+    that is; the caller reads a correlation over fewer than two as none.
+    `rewards`, `discounts` and `dones` [B, T] are of the transition out of
+    each step. The return from t is sum over k >= t of (prod over t <= j < k
+    of g_j) r_k, g = d (1 - done): one [B, T, T] product.
+    """
+    time = rewards.shape[1]
+    carry = (discounts * (~dones)).to(rewards.dtype)
+    rewards = rewards.to(carry.dtype)
+    steps = torch.arange(time, device=rewards.device)
+    later = steps[None, :] > steps[:, None]  # [t, k]: k > t
+    factors = torch.where(later, carry[:, None, :].roll(1, dims=2), torch.ones_like(carry)[:, None])
+    reach = torch.where(later | (steps[None, :] == steps[:, None]), factors.cumprod(dim=2), 0.0)
+    returns = (reach * rewards[:, None, :]).sum(dim=2)
+    ends_inside = dones.flip(1).cummax(dim=1).values.flip(1)
+    predicted = torch.where(mask, values, torch.full_like(values, -math.inf)).amax(dim=-1)
+    keep = ends_inside & valid & torch.isfinite(predicted)
+    weight = keep.to(returns.dtype)
+    count = weight.sum()
+    predicted = torch.where(keep, predicted, 0.0).to(returns.dtype)
+    predicted = (predicted - (predicted * weight).sum() / count.clamp(min=1)) * weight
+    realised = (returns - (returns * weight).sum() / count.clamp(min=1)) * weight
+    correlation = (predicted * realised).sum() / (predicted.norm() * realised.norm())
+    return correlation, count
+
+
 # -- network -------------------------------------------------------------------
 
 
@@ -209,9 +262,7 @@ class R2D2Network(nn.Module):
         cfg = self.config
         self.trunk = TowerTrunk(cfg)
         self.torso = nn.Sequential(
-            nn.Linear(cfg.row_count * cfg.hidden + cfg.hidden, TORSO_SIZE),
-            nn.LayerNorm(TORSO_SIZE),
-            nn.ReLU(),
+            nn.Linear(cfg.row_count * cfg.hidden + cfg.hidden, TORSO_SIZE), nn.ReLU()
         )
         self.core = nn.LSTM(TORSO_SIZE + cfg.action_count + 1, R2D2_STATE_SIZE, batch_first=True)
         self.value = nn.Sequential(
@@ -319,6 +370,8 @@ class R2D2Backbone:
     target: R2D2Network = field(init=False)
     optimizer: torch.optim.Adam = field(init=False)
     _steps: int = field(default=0, init=False)
+    #: The online parameters Adam updates: all but the LSTM's frozen `bias_hh`.
+    _trained: list[nn.Parameter] = field(init=False)
     #: The stream every exploratory draw comes from; `acting_copy` reseeds it per actor.
     _random: random.Random = field(init=False)
 
@@ -329,8 +382,9 @@ class R2D2Backbone:
         self.target = R2D2Network(self.network_config).to(self.device)
         self.target.load_state_dict(self.online.state_dict())
         self.target.requires_grad_(False)
+        self._trained = [p for p in self.online.parameters() if p.requires_grad]
         self.optimizer = torch.optim.Adam(
-            [parameter for parameter in self.online.parameters() if parameter.requires_grad],
+            self._trained,
             lr=self.config.learning_rate,
             eps=self.config.adam_epsilon,
         )
@@ -443,35 +497,53 @@ class R2D2Backbone:
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()  # type: ignore[no-untyped-call]
-        gradient_norm = torch.nn.utils.get_total_norm(
-            [p.grad for p in self.online.parameters() if p.grad is not None]
-        )
+        gradient_norm = torch.nn.utils.clip_grad_norm_(self._trained, GRADIENT_CLIP_NORM)
         self.optimizer.step()
         self._steps += 1
         if self._steps % self.config.target_update_period == 0:
             self.target.load_state_dict(self.online.state_dict())
 
-        absolute = errors.detach().abs()
-        real = valid.to(absolute.dtype)
         with torch.no_grad():
-            fit = value_fit_correlation(
+            absolute = errors.detach().abs()
+            counts = valid.sum(dim=1)
+            taken_values = torch.where(
+                valid, signed_parabolic(chosen.detach()), torch.full_like(chosen, -math.inf)
+            )
+            fit, fitted = _value_fit(
                 signed_parabolic(online_q.detach()[:, :trace]),
                 mask[:, :trace],
-                rewards_into[:, burn_in + 1 :].to(torch.float32),
+                rewards_into[:, burn_in + 1 :],
+                discounts_into[:, burn_in + 1 :],
                 batch.dones[:, burn_in + 1 :],
-                real,
-                discounts=discounts_into[:, burn_in + 1 :],
+                valid,
             )
-        taken_values = signed_parabolic(chosen.detach()[valid])
+            # Every figure the host reads, moved in one copy: the step's only sync.
+            scalars = torch.stack(
+                (
+                    loss.detach(),
+                    absolute.sum() / counts.sum().clamp(min=1),
+                    gradient_norm,
+                    taken_values.max(),
+                    fit,
+                    fitted,
+                )
+            ).to(torch.float64)
+            moved = (
+                torch.cat((scalars, item_priorities(absolute, counts).to(torch.float64)))
+                .cpu()
+                .numpy()
+            )
+        weighted, mean_error, norm, taken_max, correlation, fitted_steps = moved[:6].tolist()
         return LearnMetrics(
-            weighted_loss=float(loss.detach().item()),
-            unweighted_mean_absolute_td_error=float(
-                (absolute.sum() / real.sum().clamp(min=1.0)).item()
+            weighted_loss=weighted,
+            unweighted_mean_absolute_td_error=mean_error,
+            gradient_norm=norm,
+            td_errors=(),
+            value_fit_correlation=(
+                correlation if fitted_steps >= 2 and math.isfinite(correlation) else None
             ),
-            gradient_norm=float(gradient_norm.item()),
-            td_errors=real_step_td_errors(absolute, real),
-            value_fit_correlation=fit,
-            taken_q_max=float(taken_values.max().item()) if taken_values.numel() else None,
+            taken_q_max=taken_max if math.isfinite(taken_max) else None,
+            priorities=moved[6:],
         )
 
     # -- persistence -------------------------------------------------------------

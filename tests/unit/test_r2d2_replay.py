@@ -20,7 +20,6 @@ from tower_rl.learning.r2d2_replay import (
     R2D2_SEQUENCE_PERIOD,
     R2D2Replay,
     item_layout,
-    sequence_priority,
 )
 from tower_rl.learning.replay import (
     REPLAY_DUMP_METADATA,
@@ -201,22 +200,16 @@ def test_fifo_evicts_the_oldest_item_and_frees_an_episode_with_its_last() -> Non
 def test_new_items_enter_at_priority_one() -> None:
     replay = _replay(121)
     sample = replay.sample(1)
-    replay.update_priorities(sample.keys, [[5.0, 7.0]])
+    replay.update_priorities(sample.keys, numpy.array([0.9 * 7 + 0.1 * 6]))
     replay.add(METADATA, _steps(121), _states(121))
     image = replay.image()
     assert image.item_priority.tolist() == [pytest.approx(0.9 * 7 + 0.1 * 6), 1.0]
 
 
-def test_the_priority_mixes_the_max_and_the_mean_over_valid_steps() -> None:
-    assert sequence_priority([1.0, -3.0, 2.0]) == pytest.approx(0.9 * 3 + 0.1 * 2)
-    assert sequence_priority([0.5]) == pytest.approx(0.5)
-    assert sequence_priority([]) == 0.0
-
-
 def test_sampling_probabilities_and_weights_are_acmes() -> None:
     replay = _replay(121, 121, 121, seed=3)
     keys = numpy.array([0, 1, 2])
-    replay.update_priorities(keys, [[1.0], [2.0], [4.0]])
+    replay.update_priorities(keys, numpy.array([1.0, 2.0, 4.0]))
     sample = replay.sample(64)
     scaled = numpy.array([1.0, 2.0, 4.0]) ** 0.9
     chances = scaled / scaled.sum()
@@ -226,9 +219,20 @@ def test_sampling_probabilities_and_weights_are_acmes() -> None:
     assert sample.weights.max() == 1.0
 
 
+def test_importance_weights_are_normalised_by_the_batchs_largest_not_the_buffers() -> None:
+    """The least likely item is not drawn, so the batch's largest weight is not the buffer's."""
+    replay = _replay(121, 121, 121, seed=5)
+    replay.update_priorities(numpy.array([0, 1, 2]), numpy.array([1.0, 2.0, 1e-6]))
+    sample = replay.sample(8)
+    assert 2 not in sample.keys.tolist()
+    raw = (1.0 / (sample.probabilities + 1e-6)) ** 0.6
+    assert sample.weights.tolist() == pytest.approx((raw / raw.max()).tolist(), rel=1e-6)
+    assert sample.weights.max() == 1.0
+
+
 def test_an_item_with_priority_zero_is_not_drawn_again() -> None:
     replay = _replay(30, 121)
-    replay.update_priorities(numpy.array([0]), [[]])
+    replay.update_priorities(numpy.array([0]), numpy.array([0.0]))
     assert set(replay.sample(100).keys.tolist()) == {1}
 
 
@@ -236,7 +240,7 @@ def test_a_priority_update_skips_an_item_evicted_since_its_sample() -> None:
     replay = _replay(121, capacity=1)
     sample = replay.sample(1)
     replay.add(METADATA, _steps(121), _states(121))
-    replay.update_priorities(sample.keys, [[9.0]])
+    replay.update_priorities(sample.keys, numpy.array([9.0]))
     assert replay.image().item_priority.tolist() == [1.0]
 
 
@@ -248,7 +252,7 @@ def test_the_rate_limiter_is_an_eighth_of_a_learner_step_per_decision() -> None:
 def test_a_dump_round_trips_items_priorities_states_and_the_sampler(tmp_path: Path) -> None:
     replay = _replay(162, 50, 522, capacity=12)
     first = replay.sample(4)
-    replay.update_priorities(first.keys, [[1.5], [0.25, 3.0], [], [2.0]])
+    replay.update_priorities(first.keys, numpy.array([1.5, 2.725, 0.0, 2.0]))
     replay.save_to(tmp_path / "dump", run={"decisions": 7})
     loaded = R2D2Replay(capacity=12, seed=99, state_size=STATE)
     loaded.load_from(tmp_path / "dump")

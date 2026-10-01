@@ -1656,12 +1656,13 @@ def test_a_resumed_run_learns_from_the_reloaded_replay_without_re_warming(
     tmp_path: Path,
 ) -> None:
     """End to end: a warm-up the new segment alone could not reach is already met."""
-    first = numbered(tmp_path / "first", 200)
+    first = numbered(tmp_path / "first", 400)
     parent_steps = first["arm"]["optimisation_steps"]
-    budget = first["arm"]["decisions"] + 60
-    # More items than 60 decisions can collect, but no more than were saved.
-    warmup = {"warmup_items": 5}
-    assert first["arm"]["replay"]["sequences"] >= 5
+    # One more episode: at most 4 items (an episode of about 130 decisions), so
+    # more than it can collect alone, but no more than were saved (at least 8).
+    budget = first["arm"]["decisions"] + 1
+    warmup = {"warmup_items": 6}
+    assert first["arm"]["replay"]["sequences"] >= 6
 
     second = session(
         tmp_path / "second",

@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 import run_episodes
 import train
+from test_train_entry_point import R2D2_FLAGS
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 
@@ -30,7 +31,7 @@ POINTER = "/tmp/tower-bridge-live.latest"
     ("module", "argv"),
     [
         (run_episodes, ["run_episodes.py"]),
-        (train, ["train.py", "--budget-decisions", "1000", "--no-track"]),
+        (train, ["train.py", "--budget-decisions", "1000", "--no-track", *R2D2_FLAGS]),
     ],
     ids=["run_episodes", "train"],
 )

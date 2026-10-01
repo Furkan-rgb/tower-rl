@@ -430,7 +430,7 @@ LEARNER_KEYS = {
 }
 
 #: Long enough for the arm to play about ten episodes against the fake port.
-EPISODE_BUDGET = "300"
+EPISODE_BUDGET = "600"
 
 
 @pytest.fixture(scope="module")

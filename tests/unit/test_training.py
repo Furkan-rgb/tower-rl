@@ -287,7 +287,8 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
-        gradient_steps_per_decision=0.2,
+        gradient_steps_per_item=1.0,
+        learner_debt_bound_items=4,
         evaluate_every_episodes=2,
         checkpoint_every_episodes=3,
     )
@@ -310,7 +311,8 @@ def test_the_resume_point_beside_a_numbered_checkpoint_is_not_counted_again() ->
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
-        gradient_steps_per_decision=0.2,
+        gradient_steps_per_item=1.0,
+        learner_debt_bound_items=4,
         checkpoint_every_episodes=3,
         checkpoint_every_decisions=40,
     )
@@ -352,7 +354,8 @@ def test_evaluation_does_not_consume_the_budget() -> None:
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
-        gradient_steps_per_decision=0.2,
+        gradient_steps_per_item=1.0,
+        learner_debt_bound_items=4,
         evaluate_every_episodes=1,
     )
     training.evaluate = lambda: EvaluationReport(

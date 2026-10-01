@@ -256,6 +256,24 @@ MAX_ROUND_CLOCK_RATIO = 1.25
 #: that simulates more than 1% less than it was asked to.
 MIN_ROUND_CLOCK_RATIO = 0.99
 
+#: Frames of round clock an episode may fall short by before the floor is
+#: applied. The bridge sends `Pause` from its own thread as soon as it sees the
+#: frame count move, and the main thread takes the message at its next dispatch.
+#: Usually that is the following frame; when the frame just counted is slow to
+#: reach its dispatch, `Pause` lands inside it, and that frame is counted but
+#: never simulated - one whole frame (107.0 ms here), never recovered, never
+#: more than one per advance. On the device 98 of 29,427 advances (0.33%) lost
+#: one, 96 of them at `Pause`, at the same rate from the first advance to the
+#: last, and 0.08% to 1.9% as the frame grows from under 6 ms to over 12 ms
+#: (early-deflation probe, `#112`). Every frame that was simulated credited
+#: exactly 107.0 ms. Against the first few seconds of an episode that one frame
+#: alone reads up to 5% short and failed about 2% of healthy episodes at wave 1;
+#: against more than 10.7 s of expected round time it is under the 1% floor.
+#: Allowing it once per episode keeps the floor at 0.99 and leaves a world that
+#: is really short failing: one 3% short fails once about 5.4 s of round time is
+#: expected.
+PAUSE_RACE_FRAME_ALLOWANCE = 1
+
 #: One advance is too short a window to judge a clock by, so the ratio is taken
 #: over the episode so far and only once a full backstop budget of game time has
 #: been spent. A world running at 1.5x trips the upper bound inside the first
@@ -1198,6 +1216,12 @@ class InstrumentedRunEnvironment:
         frame's worth to match would hide the wrong assumption and keep the
         numbers incomparable.
 
+        The lower bound allows the episode one frame the bridge counted but
+        the world never simulated (`PAUSE_RACE_FRAME_ALLOWANCE`): which frame
+        `Pause` lands in is a race the bridge cannot see, and one frame is
+        several percent of the first seconds' evidence while saying nothing
+        about the rate the world runs at.
+
         The advance that ends a run is exempt from the lower bound alone: the
         round clock resets with the round, so that one advance legitimately
         reports none of it while still having spent game time reaching the end,
@@ -1212,7 +1236,11 @@ class InstrumentedRunEnvironment:
         ratio = self._tally.round_ms / self._tally.expected_round_ms
         if ratio > MAX_ROUND_CLOCK_RATIO:
             return (f"{GAME_TIME_INFLATED}: round clock ran {ratio:.3f}x the simulated game time",)
-        if ratio < MIN_ROUND_CLOCK_RATIO and not advance_ended_run:
+        pause_race_ms = (
+            ROUND_CLOCK_MS_PER_BUDGETED_MS * PAUSE_RACE_FRAME_ALLOWANCE * self.cadence.frame_game_ms
+        )
+        floor_ms = MIN_ROUND_CLOCK_RATIO * self._tally.expected_round_ms - pause_race_ms
+        if self._tally.round_ms < floor_ms and not advance_ended_run:
             return (f"{GAME_TIME_DEFLATED}: round clock ran {ratio:.3f}x the simulated game time",)
         return ()
 

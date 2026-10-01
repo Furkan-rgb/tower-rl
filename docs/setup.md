@@ -193,6 +193,7 @@ f9d5f161c33b3af98787d161c9e73f26b1286f519b1648c41b167bffd62a96c3   source with A
 f5e9d9a4971718822462369ae8e2b849a9ba8aede6b0339003ecaaa3da0e1601   the Workshop source with the transport fix (#103), 2026-09-30; state/bridge/builds/workshop-default-nodelay/, not installed
 33d7ada0b7709970b82755b06199ff114dbebf83f08fb65f5ae2d32534b53ef8   the same with TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16, 2026-09-30; state/bridge/builds/workshop-render-interval-16-nodelay/
 d541eb742f74b781ed62c31a1b7b69829b060466deb867098d39340cd9531471   33d7ada0… with TOWER_BRIDGE_DIAGNOSTICS=ON (the clockprobe line), 2026-10-01; state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe/, a probe build only
+a0bac6d0675fe1c5e5f5d345c277e97bef203bf667b868089b10de2d28d5c644   the same with the clockprobe line's frame-timing fields (#112), 2026-10-01; state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe2/, a probe build only
 ```
 
 `f5e9d9a4…` and `33d7ada0…` are the ones to run. Each is `33de6826…` and

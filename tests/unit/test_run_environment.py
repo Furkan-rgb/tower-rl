@@ -1013,20 +1013,34 @@ def test_an_advance_expects_the_round_time_of_the_frames_it_simulated() -> None:
     assert expected_round_ms(0.0, 100.0) == 0.0
 
 
-def _deflation_verdicts(world_time_scale: float, advance_game_ms: int) -> list[str]:
+def _deflation_verdicts(
+    world_time_scale: float,
+    advance_game_ms: int,
+    steps: int = 60,
+    pause_race_advances: frozenset[int] = frozenset(),
+    damage_per_second: float = 0.1,
+) -> list[tuple[float, str]]:
     """The fidelity reasons an episode raises, advancing at most `advance_game_ms` at once.
 
-    The advance budget is what sets how densely a world's advances fall, which
-    is what moved the old check's healthy ratio and must not move this one.
+    Each reason comes with the round time the episode had read when it was
+    raised, so a test can say how early a world was caught. The advance budget
+    is what sets how densely a world's advances fall, which is what moved the
+    old check's healthy ratio and must not move this one.
     """
-    environment, _ = _environment(world_time_scale=world_time_scale, damage_per_second=0.1)
+    environment, _ = _environment(
+        world_time_scale=world_time_scale,
+        damage_per_second=damage_per_second,
+        pause_race_advances=pause_race_advances,
+    )
     environment.cadence = CadenceConfig(max_quiet_game_ms=advance_game_ms)
     environment.reset()
-    reasons: list[str] = []
-    for _ in range(60):
+    verdicts: list[tuple[float, str]] = []
+    round_ms = 0.0
+    for _ in range(steps):
         transition = environment.step(WAIT)
-        reasons.extend(
-            reason
+        round_ms += transition.game_ms
+        verdicts.extend(
+            (round_ms, reason)
             for reason in transition.invalid_reasons
             if GAME_TIME_DEFLATED in reason or GAME_TIME_INFLATED in reason
         )
@@ -1034,7 +1048,7 @@ def _deflation_verdicts(world_time_scale: float, advance_game_ms: int) -> list[s
             break
     summary = environment.summarize(transition.termination or TerminationOutcome.OPERATOR_STOP)
     assert summary.game_ms >= MIN_RATIO_EVIDENCE_GAME_MS, "too short to judge a clock by"
-    return reasons
+    return verdicts
 
 
 @pytest.mark.parametrize("advance_game_ms", [300, 500, 2000])
@@ -1057,7 +1071,47 @@ def test_a_world_three_percent_short_fails_at_dense_and_sparse_advances(
     """The correction is not a relaxation: a genuinely deflated world still fails."""
     verdicts = _deflation_verdicts(0.97, advance_game_ms)
     assert verdicts
-    assert all(GAME_TIME_DEFLATED in reason for reason in verdicts)
+    assert all(GAME_TIME_DEFLATED in reason for _, reason in verdicts)
+
+
+@pytest.mark.parametrize("advance_game_ms", [500, 2000])
+@pytest.mark.parametrize("pause_race_advances", [frozenset(), frozenset({0})])
+def test_a_world_three_percent_short_fails_at_episode_start(
+    advance_game_ms: int, pause_race_advances: frozenset[int]
+) -> None:
+    """The Pause-race allowance does not let a short world through the first seconds.
+
+    One frame is 107 ms of round clock; a world 3% short is further behind
+    than that once about 5.4 s of round time is expected, so it fails inside
+    the first wave's first few seconds - also when a Pause race has already
+    cost the episode its one allowed frame.
+    """
+    verdicts = _deflation_verdicts(
+        0.97, advance_game_ms, pause_race_advances=pause_race_advances
+    )
+    assert verdicts
+    first_round_ms, first_reason = verdicts[0]
+    assert GAME_TIME_DEFLATED in first_reason
+    assert first_round_ms <= 6_500
+
+
+@pytest.mark.parametrize("advance_game_ms", [500, 2000])
+def test_one_frame_lost_to_the_pause_race_does_not_fail_a_healthy_episode_start(
+    advance_game_ms: int,
+) -> None:
+    """`#112`: one frame `Pause` landed inside read 0.947x on the first 2 s.
+
+    The world simulated every frame it ran at exactly the healthy rate; the
+    frame the bridge counted and the world never ran is the whole shortfall.
+    """
+    assert _deflation_verdicts(1.0, advance_game_ms, pause_race_advances=frozenset({0})) == []
+
+
+def test_a_second_frame_lost_in_the_first_seconds_still_fails() -> None:
+    """The allowance is one frame an episode, not one an advance."""
+    verdicts = _deflation_verdicts(1.0, 2000, pause_race_advances=frozenset({0, 1}))
+    assert verdicts
+    assert all(GAME_TIME_DEFLATED in reason for _, reason in verdicts)
 
 
 @pytest.mark.parametrize("advance_game_ms", [500, 2000])
@@ -1065,9 +1119,17 @@ def test_a_world_three_percent_short_fails_at_dense_and_sparse_advances(
 def test_the_deflation_floor_sits_one_percent_under_the_simulated_game_time(
     advance_game_ms: int, world_time_scale: float, fails: bool
 ) -> None:
-    verdicts = _deflation_verdicts(world_time_scale, advance_game_ms)
+    """The floor itself is unchanged: 0.989 fails once the episode is long enough.
+
+    With one frame allowed, 0.1% under the floor is caught once 107 s of round
+    time is expected, so the tower is made to live that long.
+    """
+    steps = 200_000 // advance_game_ms
+    verdicts = _deflation_verdicts(
+        world_time_scale, advance_game_ms, steps=steps, damage_per_second=0.03
+    )
     assert bool(verdicts) is fails
-    assert all(GAME_TIME_DEFLATED in reason for reason in verdicts)
+    assert all(GAME_TIME_DEFLATED in reason for _, reason in verdicts)
 
 
 def test_the_final_advance_of_a_healthy_run_does_not_trip_the_lower_bound() -> None:

@@ -221,6 +221,13 @@ class FakeRunPort:
     #: to model it; a test of the round-clock guard's lower bound turns it on to
     #: exercise that legitimate zero without it being mistaken for a defect.
     round_clock_resets_on_death: bool = False
+    #: Advances, counted from 0 over the port's life, whose `Pause` lands
+    #: inside the last frame the loop counted, so that frame is never
+    #: simulated and credits no round time - the device's Pause race
+    #: (`PAUSE_RACE_FRAME_ALLOWANCE`). Empty by default: most fakes have no
+    #: reason to model it.
+    pause_race_advances: frozenset[int] = frozenset()
+    advances_made: int = field(default=0, init=False)
     #: Set to have `begin_episode` continue a run that is still live instead of
     #: starting one, which is what the real adapter does: only a finished run
     #: is sent home and a fresh round started (`#95`). Off by default so the
@@ -548,7 +555,11 @@ class FakeRunPort:
                 break
         # The frames this world simulated, read in the round clock's own unit
         # at whatever rate this world really runs, as the device's clock reads.
-        round_ms = self.world_time_scale * expected_round_ms(spent, frame_game_ms)
+        simulated = spent
+        if self.advances_made in self.pause_race_advances:
+            simulated -= frame_game_ms
+        self.advances_made += 1
+        round_ms = self.world_time_scale * expected_round_ms(simulated, frame_game_ms)
         self.world_held = self.active and self.holds_after_advance
         if reason == "event:run_ended" and self.round_clock_resets_on_death:
             round_ms = 0.0

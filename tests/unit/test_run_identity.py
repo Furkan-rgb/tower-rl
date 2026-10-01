@@ -14,10 +14,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import pytest
 import torch
 import train
-from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environment
+from test_train_entry_point import PROFILE, R2D2_SMOKE_REFRESH, arguments, environment, reduced_r2d2
 
 from tower_rl.environment.episode import REWARD_SCHEMA_VERSION
 from tower_rl.environment.run_actions import ACTION_SCHEMA_VERSION
@@ -33,12 +32,13 @@ from tower_rl.experiment.run_identity import (
 )
 from tower_rl.learning.checkpoint import identity_hash
 
+BACKBONE = "r2d2"
+
 
 def _arm(run_dir: Path, **overrides: str | None) -> Any:
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+    with reduced_r2d2():
         arm, _ = train.build_arm(
-            train.BACKBONE,
+            BACKBONE,
             arguments(run_dir, **overrides),
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
@@ -54,59 +54,47 @@ def _arm(run_dir: Path, **overrides: str | None) -> Any:
 
 
 def test_every_flag_reaches_the_thing_it_configures(tmp_path: Path) -> None:
-    """A flag that reaches nothing is worse than no flag: it looks like a knob."""
+    """A flag that reaches nothing is worse than no flag: it looks like a knob.
+
+    R2D2 reads the task's discount, the seed and the collection window; every
+    other loop setting is fixed (ADR 0018), so the run must record those.
+    """
     arm = _arm(
         tmp_path,
         **{
-            "--n-step": "3",
-            "--discount": "0.9",
-            "--learning-rate": "0.002",
-            "--target-ema-decay": "0.9",
-            "--warmup-sequences": "7",
-            "--epsilon-start": "0.8",
-            "--epsilon-end": "0.02",
-            "--epsilon-anneal-decisions": "77",
+            "--discount-per-game-second": "0.9",
+            "--seed": "5",
             "--collection-window-episodes": "5",
-            "--gradient-steps-per-decision": "0.25",
-            "--batch-size": "4",
-            "--parameter-sync-decisions": "40",
         },
     )
 
     learner = arm.backbone.config
-    assert (learner.n_step, learner.discount, learner.learning_rate) == (3, 0.9, 0.002)
-    assert learner.target_ema_decay == 0.9
+    assert learner.discount_per_game_second == 0.9 and learner.seed == 5
     config = arm.training.config
-    assert config.warmup_sequences == 7
-    assert (config.exploration.epsilon_start, config.exploration.epsilon_end) == (0.8, 0.02)
-    assert config.exploration.anneal_decisions == 77
-    assert config.exploration.option == "uniform" and config.exploration.floors == ()
     assert config.collection_window_episodes == 5
-    assert (config.batch_size, config.gradient_steps_per_decision) == (4, 0.25)
-    assert config.parameter_sync_decisions == 40
+    assert config.warmup_sequences == 2
+    assert config.batch_size == 2  # the smoke size, `reduced_r2d2`
+    assert config.exploration.epsilon_start == 0.4 and config.exploration.anneal_decisions == 0
+    assert config.exploration.floors != ()
+    assert config.parameter_sync_decisions == R2D2_SMOKE_REFRESH
     # And the run records what it was actually built with.
     resolved = arm.resolved
-    assert resolved["n_step"] == 3 and resolved["discount"] == 0.9
-    assert resolved["epsilon_anneal_decisions"] == 77
-    assert resolved["target_ema_decay"] == 0.9
-    assert resolved["parameter_sync_decisions"] == 40
+    assert resolved["discount_per_game_second"] == 0.9
+    assert resolved["r2d2_discount_per_game_second"] == 0.9
+    assert resolved["epsilon_anneal_decisions"] == 0
+    assert resolved["parameter_sync_decisions"] == R2D2_SMOKE_REFRESH
 
 
-def test_the_burn_in_the_arm_is_built_with_is_the_one_that_fills_the_window(
-    tmp_path: Path,
-) -> None:
-    """Burn-in only fills the history window; anything longer throws steps away."""
-    stacked = _arm(tmp_path / "stacked", **{"--stacked-burn-in": "3"})
-
-    assert stacked.training.actors[0].config.burn_in == 3
-    assert stacked.resolved["burn_in"] == 3
+def test_the_run_records_the_burn_in_r2d2_is_fixed_to(tmp_path: Path) -> None:
+    """The record of a run says the burn-in its stored states were taken with."""
+    assert _arm(tmp_path / "r2d2").resolved["burn_in"] == train.R2D2_BURN_IN
 
 
 def test_a_run_id_names_its_backbone_and_collides_with_nothing() -> None:
     """Two runs started in the same second are still two runs."""
-    first, second = new_run_id(train.BACKBONE), new_run_id(train.BACKBONE)
+    first, second = new_run_id(BACKBONE), new_run_id(BACKBONE)
 
-    assert first.startswith(f"{train.BACKBONE}-") and first != second
+    assert first.startswith(f"{BACKBONE}-") and first != second
 
 
 def test_a_checkpoint_key_is_derived_from_the_run_rather_than_assembled_by_a_script() -> None:
@@ -117,11 +105,11 @@ def test_a_checkpoint_key_is_derived_from_the_run_rather_than_assembled_by_a_scr
     line. It passes a profile id and gets both identities back instead.
     """
     identity = RunIdentity.started_now(
-        train.BACKBONE, profile_id="fake-profile-v1", source_revision="abc1234"
+        BACKBONE, profile_id="fake-profile-v1", source_revision="abc1234"
     )
     key = checkpoint_identity(identity)
 
-    assert key.run_id == identity.run_id and key.backbone == train.BACKBONE
+    assert key.run_id == identity.run_id and key.backbone == BACKBONE
     assert key.profile_id == "fake-profile-v1" and key.source_revision == "abc1234"
     assert key.observation_schema == OBSERVATION_SCHEMA_VERSION
     assert key.action_schema == ACTION_SCHEMA_VERSION
@@ -135,10 +123,10 @@ def test_a_later_run_may_resume_an_earlier_one_s_checkpoint() -> None:
     may not differ is the arm, the device profile and all three schemas.
     """
     first = checkpoint_identity(
-        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+        RunIdentity.started_now(BACKBONE, profile_id="p", source_revision="abc")
     )
     second = checkpoint_identity(
-        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="def")
+        RunIdentity.started_now(BACKBONE, profile_id="p", source_revision="def")
     )
     other_arm = checkpoint_identity(
         RunIdentity.started_now("other", profile_id="p", source_revision="abc")
@@ -185,14 +173,14 @@ def test_a_run_1_checkpoint_refuses_to_be_resumed_under_choice_points() -> None:
     """
     run_one = checkpoint_identity(
         RunIdentity.started_now(
-            train.BACKBONE,
+            BACKBONE,
             profile_id="p",
             source_revision="abc",
             decision_cadence=DecisionCadence.EVERY_SLICE,
         )
     )
     today = checkpoint_identity(
-        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+        RunIdentity.started_now(BACKBONE, profile_id="p", source_revision="abc")
     )
 
     reasons = run_one.incompatibilities(today)
@@ -210,7 +198,7 @@ def test_a_checkpoint_from_the_previous_observation_schema_is_refused_by_name() 
     surfaces as a torch error nobody can attribute.
     """
     today = checkpoint_identity(
-        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+        RunIdentity.started_now(BACKBONE, profile_id="p", source_revision="abc")
     )
     v1 = replace(today, observation_schema="observation-v1")
 
@@ -245,11 +233,11 @@ def test_an_arm_that_could_buy_every_row_refuses_to_resume_one_that_could_not() 
     already cited in a record still resolves.
     """
     image = checkpoint_identity(
-        RunIdentity.started_now(train.BACKBONE, profile_id="p", source_revision="abc")
+        RunIdentity.started_now(BACKBONE, profile_id="p", source_revision="abc")
     )
     unlocked = checkpoint_identity(
         RunIdentity.started_now(
-            train.BACKBONE,
+            BACKBONE,
             profile_id="p",
             source_revision="abc",
             upgrade_availability=UpgradeAvailability.ALL,
@@ -280,13 +268,3 @@ def test_the_resolved_configuration_says_which_rows_the_run_could_buy(
 
     assert unlocked.resolved["upgrade_availability"] == "all"
     assert unlocked.identity.upgrade_availability == UpgradeAvailability.ALL
-
-
-def test_the_resolved_configuration_says_whether_exploration_was_ez_greedy(
-    tmp_path: Path,
-) -> None:
-    """False is every run before board #83."""
-    assert _arm(tmp_path / "off").resolved["ez_greedy"] is False
-    arm = _arm(tmp_path / "on", **{"--ez-greedy": None})
-    assert arm.backbone.config.ez_greedy is True
-    assert arm.resolved["ez_greedy"] is True

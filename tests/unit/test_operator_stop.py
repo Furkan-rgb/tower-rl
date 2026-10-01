@@ -48,7 +48,7 @@ from test_train_entry_point import session
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.learning import training
 from tower_rl.learning.actor import Actor
-from tower_rl.learning.replay import ReplayImage
+from tower_rl.learning.r2d2_replay import R2D2ReplayImage
 
 moment, run_dir, times = sys.argv[2], Path(sys.argv[3]), int(sys.argv[4])
 calls = {}
@@ -108,16 +108,23 @@ InstrumentedRunEnvironment.step = stepped
 # Inside a gradient step, on the learner thread (ADR 0017).
 wrap(training.Learner, "learn", "mid-learn", 3)
 # While a periodic resume point's replay is being written.
-wrap(ReplayImage, "write", "mid-save", 1)
+wrap(R2D2ReplayImage, "write", "mid-save", 1)
 # The final evaluation, which runs on the main thread.
 wrap(train, "evaluate", "final-evaluation", 1)
 
 settings = {"--evaluate-every-episodes": "0"}
 budget = "200" if moment == "final-evaluation" else "1000000"
 actors = 1 if moment == "final-evaluation" else 2
-if moment == "warm-up":
-    settings["--warmup-sequences"] = "60"
-report = session(run_dir, budget=budget, actors=actors, settings=settings)
+report = session(
+    run_dir,
+    budget=budget,
+    actors=actors,
+    settings=settings,
+    warmup_items=60 if moment == "warm-up" else 2,
+    # Episodes of about a hundred decisions: R2D2 learns only from steps after
+    # its burn-in, so a buffer of 30-decision episodes could not be sampled.
+    damage_per_second=0.5,
+)
 print("finished", report["arm"]["decisions"], flush=True)
 """
 

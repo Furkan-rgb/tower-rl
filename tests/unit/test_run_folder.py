@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +25,9 @@ from test_train_entry_point import (
 
 from tower_rl.experiment.run_folder import run_ids
 from tower_rl.experiment.training_report import REPLAY_BACKUP_DIRECTORY, REPLAY_DIRECTORY
-from tower_rl.learning.checkpoint import load, save
-from tower_rl.learning.replay import REPLAY_DUMP_METADATA, ReplayImage, read_replay_metadata
+from tower_rl.learning.checkpoint import load
+from tower_rl.learning.r2d2_replay import R2D2ReplayImage
+from tower_rl.learning.replay import read_replay_metadata
 
 
 def manifest_of(folder: Path) -> dict[str, Any]:
@@ -56,7 +56,7 @@ def test_a_fresh_run_keeps_everything_in_one_folder_named_for_the_backbone_and_t
     folder = Path(report["run_folder"])
 
     assert folder.parent == tmp_path
-    assert folder.name.startswith("stacked-dqn-") and folder.name.endswith("Z")
+    assert folder.name.startswith("r2d2-") and folder.name.endswith("Z")
     assert report["segment"] == 1
     assert (folder / "checkpoints" / "latest.pt").exists()
     assert sorted(folder.glob("checkpoints/checkpoint-d*.pt"))
@@ -65,7 +65,7 @@ def test_a_fresh_run_keeps_everything_in_one_folder_named_for_the_backbone_and_t
     assert summary["arm"]["run_id"] == report["arm"]["run_id"]
     log = (folder / "segments" / "1" / "train.log").read_text()
     assert f"run folder {folder}, segment 1" in log
-    assert "[stacked-dqn] episode 1 decisions" in log
+    assert "[r2d2] episode 1 decisions" in log
     manifest = manifest_of(folder)
     (segment,) = manifest["segments"]
     assert segment["segment"] == 1
@@ -194,7 +194,7 @@ def test_a_checkpoint_of_the_old_layout_still_resumes_into_a_new_folder(
 
     folder = Path(second["run_folder"])
     assert folder.parent == tmp_path / "runs"
-    assert folder.name.startswith("stacked-dqn-")
+    assert folder.name.startswith("r2d2-")
     assert second["arm"]["decisions"] >= 400
     # The saved replay beside the old checkpoint was reloaded, not moved.
     paired = load(latest).paired_replay
@@ -212,37 +212,6 @@ def test_a_checkpoint_of_the_old_layout_still_resumes_into_a_new_folder(
     assert run_ids(old) == [first["arm"]["run_id"]]
 
 
-def test_a_run_saved_with_a_single_dump_resumes_in_place_with_its_replay(
-    tmp_path: Path,
-) -> None:
-    """M3-P015's layout: one dump as `replay/` itself, a `latest.pt` naming none."""
-    first = numbered(tmp_path, 200)
-    folder = Path(first["run_folder"])
-    latest = latest_checkpoint(first)
-    checkpoint = load(latest)
-    assert checkpoint.paired_replay is not None
-    # Rebuilt as that run left it: the dump's files straight under `replay/`,
-    # in dump format 1, which had no sampler state.
-    replays = folder / REPLAY_DIRECTORY
-    staged = shutil.move(folder / checkpoint.paired_replay, folder / "staged")
-    replays.rmdir()
-    Path(staged).rename(replays)
-    metadata = read_replay_metadata(replays)
-    del metadata["sampler_state"]
-    metadata["format_version"] = 1
-    (replays / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata))
-    save(replace(checkpoint, paired_replay=None, rng_state=None), latest)
-
-    second = resumed(tmp_path, latest, 400)
-
-    assert Path(second["run_folder"]) == folder
-    assert second["arm"]["resolved_config"]["replay_restored_from"] == str(replays)
-    # Its first resume point replaced the old dump with one of its own.
-    paired = load(latest).paired_replay
-    assert paired is not None
-    assert list(replays.iterdir()) == [folder / paired]
-
-
 def dump_bytes(dump: Path) -> dict[Path, bytes]:
     return {path.relative_to(dump): path.read_bytes() for path in dump.rglob("*") if path.is_file()}
 
@@ -255,13 +224,13 @@ def test_a_replay_save_that_fails_leaves_the_earlier_pair_in_place_and_is_counte
     latest = latest_checkpoint(first)
     before = (latest.read_bytes(), dump_bytes(folder / REPLAY_DIRECTORY))
 
-    def fails(self: ReplayImage, directory: Path, **_: Any) -> int:
+    def fails(self: R2D2ReplayImage, directory: Path, **_: Any) -> int:
         partial = directory.with_name(directory.name + ".partial")
         partial.mkdir()
         (partial / "partial").write_bytes(b"half a dump")
         raise OSError("disk full")
 
-    monkeypatch.setattr(ReplayImage, "write", fails)
+    monkeypatch.setattr(R2D2ReplayImage, "write", fails)
     segment = resumed(tmp_path, latest, 400)
 
     # A resume point that no longer advances is loud and counted, not silent.

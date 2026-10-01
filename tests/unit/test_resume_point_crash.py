@@ -12,17 +12,16 @@ is removed.
 
 The killed save is the second of a fresh run, or the first of a segment
 resumed from a folder as an older layout left it: a `latest.pt` naming no
-pair beside the dump of its own decision count, or `M3-P015`'s single dump as
-`replay/` itself. (Such a run's own checkpoints are refused for resume now,
-ADR 0017, so these are current-format files in the older layouts.) A kill is
+pair beside the dump of its own decision count. (Such a run's own checkpoints
+are refused for resume now, ADR 0017, so these are current-format files in the
+older layout.) `M3-P015`'s single dump as `replay/` itself is not a case: it
+is a stacked-dqn replay format, which R2D2's replay refuses to load. A kill is
 what the OOM killer does; nothing in the process gets to clean up.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -42,7 +41,6 @@ from tower_rl.experiment.training_report import REPLAY_DIRECTORY
 from tower_rl.learning.checkpoint import load, save
 from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.replay import (
-    REPLAY_DUMP_METADATA,
     read_replay_metadata,
 )
 
@@ -64,7 +62,7 @@ import shutil
 import train
 from test_train_entry_point import RESUME_PERIOD, numbered, resume_from, session
 from tower_rl.experiment import training_report
-from tower_rl.learning import checkpoint, replay
+from tower_rl.learning import checkpoint, r2d2_replay
 
 kill_at, run_dir, kill_save, resume = sys.argv[2], Path(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 saves = 0
@@ -92,7 +90,7 @@ def counted(self, report, image):
 
 training_report.TrainingReport._write_resume_point = counted
 
-write_rows = replay._write_rows
+write_rows = r2d2_replay.write_rows
 rows_written = 0
 
 
@@ -104,7 +102,7 @@ def rows(*arguments):
         kill("mid-dump")
 
 
-replay._write_rows = rows
+r2d2_replay.write_rows = rows
 
 write_checkpoint = training_report.write_checkpoint
 
@@ -153,18 +151,6 @@ def removed(path, *arguments, **given):
 
 training_report.shutil.rmtree = removed
 
-unlink = Path.unlink
-
-
-def unlinked(self, *arguments, **given):
-    unlink(self, *arguments, **given)
-    # A dump saved as `replay/` itself is deleted file by file.
-    if self.parent.name == "replay":
-        kill("mid-old-dump-deletion")
-
-
-Path.unlink = unlinked
-
 if resume == "-":
     numbered(run_dir, 400)
 else:
@@ -186,26 +172,10 @@ def as_unpaired(latest: Path) -> None:
     save(replace(load(latest), paired_replay=None, rng_state=None), latest)
 
 
-def as_single_dump(latest: Path) -> None:
-    """`M3-P015`'s layout: one dump, in dump format 1, saved as `replay/` itself."""
-    folder = latest.parent.parent
-    checkpoint = load(latest)
-    assert checkpoint.paired_replay is not None
-    replays = folder / REPLAY_DIRECTORY
-    staged = shutil.move(folder / checkpoint.paired_replay, folder / "staged")
-    replays.rmdir()
-    Path(staged).rename(replays)
-    metadata = read_replay_metadata(replays)
-    del metadata["sampler_state"]
-    metadata["format_version"] = 1
-    (replays / REPLAY_DUMP_METADATA).write_text(json.dumps(metadata))
-    as_unpaired(latest)
-
-
 #: What each case starts from: nothing (a fresh run, killed at its second
 #: save), or the folder of a run of an older layout, killed at the first save
 #: of the segment that resumes it.
-FRESH, UNPAIRED, SINGLE_DUMP = "fresh", "unpaired", "single-dump"
+FRESH, UNPAIRED = "fresh", "unpaired"
 
 #: Each kill, and which save's pair survives it: the one before the killed
 #: save ("earlier") or the killed save's own ("killed").
@@ -217,8 +187,8 @@ FRESH_KILLS = [
     ("mid-old-dump-deletion", "killed"),
     ("old-dump-deleted", "killed"),
 ]
-#: `M3-P015`'s dump is files rather than a directory, so it has no single
-#: moment of "deleted"; the two older layouts are killed the other five ways.
+#: The unpaired layout's dump is the one its own count names, deleted by the
+#: save that pairs it; it is killed the other five ways.
 RESUMED_KILLS = [kill for kill in FRESH_KILLS if kill[0] != "old-dump-deleted"]
 
 
@@ -255,8 +225,7 @@ def run_killed_child(
 @pytest.mark.parametrize(
     ("layout", "kill_at", "survivor"),
     [(FRESH, kill, survivor) for kill, survivor in FRESH_KILLS]
-    + [(UNPAIRED, kill, survivor) for kill, survivor in RESUMED_KILLS]
-    + [(SINGLE_DUMP, kill, survivor) for kill, survivor in RESUMED_KILLS],
+    + [(UNPAIRED, kill, survivor) for kill, survivor in RESUMED_KILLS],
 )
 def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pair(
     tmp_path: Path, layout: str, kill_at: str, survivor: str
@@ -271,7 +240,7 @@ def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pai
         first = numbered(runs, 200)
         latest = latest_checkpoint(first)
         earlier_dump = latest.parent.parent / str(load(latest).paired_replay)
-        {UNPAIRED: as_unpaired, SINGLE_DUMP: as_single_dump}[layout](latest)
+        as_unpaired(latest)
         parent = load(latest).progress.environment_decisions
         saves = run_killed_child(runs, kill_at, 1, latest)
         assert set(saves) == {1}
@@ -286,7 +255,7 @@ def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pai
         # The older layout, its `latest.pt` not yet replaced: the dump it was
         # written with is still where a resume looks for it.
         assert layout != FRESH and survivor == "earlier"
-        dump = replays if layout == SINGLE_DUMP else earlier_dump
+        dump = earlier_dump
     else:
         dump = folder / paired
     assert dump is not None
@@ -303,9 +272,9 @@ def test_a_run_killed_while_writing_its_resume_point_resumes_from_a_matching_pai
     left = [
         entry
         for entry in replays.iterdir()
-        if (entry.is_dir() if dump == replays else entry != dump)
+        if entry != dump
     ]
-    if kill_at == "mid-old-dump-deletion" and layout != SINGLE_DUMP:
+    if kill_at == "mid-old-dump-deletion":
         # The old dump, part deleted: fewer files than the complete one.
         (partly,) = left
         assert 0 < len(list(partly.iterdir())) < len(list(dump.iterdir()))

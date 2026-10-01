@@ -26,8 +26,8 @@ from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, St
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
 from tower_rl.environment.run_state import RunStateBuilder
-from tower_rl.learning.actor import Actor
-from tower_rl.learning.backbone import SequenceBatch, acting_copy, collate
+from tower_rl.learning.actor import Actor, Decision
+from tower_rl.learning.backbone import SequenceBatch, acting_copy
 from tower_rl.learning.dreamer import WAIT_INDEX, DreamerBackbone, DreamerConfig
 from tower_rl.learning.dreamer_math import symlog
 from tower_rl.learning.dreamer_replay import (
@@ -38,11 +38,7 @@ from tower_rl.learning.dreamer_replay import (
 )
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.learner import Learner
-from tower_rl.learning.replay import (
-    ReplaySequence,
-    ReplayStep,
-    SequenceMetadata,
-)
+from tower_rl.learning.replay import SequenceMetadata
 from tower_rl.learning.training import TrainingConfig, TrainingRun
 
 ACTIONS = len(RUN_ACTIONS)
@@ -65,38 +61,12 @@ def _features(*, valid: tuple[int, ...] = (0, 1, 2), seed: float = 0.5) -> State
     )
 
 
-def _sequence(*, padding: int = 0, filler: float = 0.0, done: bool = True) -> ReplaySequence:
-    """One window; padded steps carry `filler` in their features and action.
-
-    Their reward is 0 and they never end an episode, as the actor pads: that is
-    the reward and termination the episode's first real step is trained on,
-    matching the official `is_first` target.
-    """
-    steps = tuple(
-        ReplayStep(
-            features=_features(seed=filler if index < padding else 0.1 * index),
-            action_index=int(filler * 7) % 3 if index < padding else index % 3,
-            reward=0.0 if index < padding else 1.0 + index,
-            done=done and index == LENGTH - 1,
-            admissible=True,
-            game_ms=1000.0,
-            padding=index < padding,
-        )
-        for index in range(LENGTH)
-    )
-    return ReplaySequence(
-        SequenceMetadata(
-            episode_id="e", actor_id="a", profile_id="p",
-            observation_schema="observation-v1", action_schema="run-action-v1",
-            reward_schema="reward-v1", model_version=0, epsilon=0.0, game_speed=8.0,
-        ),
-        steps,
-        0,
-    )
-
-
 def _metadata() -> SequenceMetadata:
-    return _sequence().metadata
+    return SequenceMetadata(
+        episode_id="e", actor_id="a", profile_id="p",
+        observation_schema="observation-v1", action_schema="run-action-v1",
+        reward_schema="reward-v1", model_version=0, epsilon=0.0, game_speed=8.0,
+    )
 
 
 def _episode(
@@ -198,8 +168,6 @@ def test_learning_refuses_a_batch_of_another_shape_or_without_stored_latents() -
     batch = _batch()
     with pytest.raises(ValueError, match="latents"):
         backbone.learn(replace(batch, context=None))
-    with pytest.raises(ValueError, match="latents"):
-        backbone.learn(collate((_sequence(), _sequence()), (1.0, 1.0)))
     with pytest.raises(ValueError, match="batches"):
         backbone.learn(_windows(_episode()))
 
@@ -611,19 +579,6 @@ def _timed_batch(*, wave_reward: float = 0.0) -> SequenceBatch:
     )
 
 
-def _timed_sequences(*, wave_reward: float = 0.0) -> SequenceBatch:
-    """`_timed_batch`'s transitions in stacked-dqn's replay: each step's is the one out of it."""
-    def window(done: bool) -> ReplaySequence:
-        sequence = _sequence(done=done)
-        steps = tuple(
-            replace(step, game_ms=span, reward=wave_reward)
-            for step, span in zip(sequence.steps, SPANS_MS, strict=True)
-        )
-        return replace(sequence, steps=steps)
-
-    return collate((window(True), window(False)), (1.0, 1.0))
-
-
 def _continue_targets(
     backbone: DreamerBackbone, batch: SequenceBatch, monkeypatch: pytest.MonkeyPatch
 ) -> torch.Tensor:
@@ -658,10 +613,7 @@ def test_the_continue_target_carries_each_transitions_own_game_time_discount(
 
 
 def _learn_rewards(learn: Any, batch: SequenceBatch, module: Any) -> torch.Tensor:
-    """The per-transition rewards a learner's `learn` takes its return from, in replay's layout.
-
-    Both backbones hand exactly these to `value_fit_correlation`.
-    """
+    """The per-transition rewards a learner's `learn` takes its return from, in replay's layout."""
     seen: list[torch.Tensor] = []
     original = module.value_fit_correlation
 
@@ -676,29 +628,21 @@ def _learn_rewards(learn: Any, batch: SequenceBatch, module: Any) -> torch.Tenso
 
 
 @pytest.mark.parametrize("survival", [True, False])
-def test_dreamer_learns_from_exactly_stacked_dqns_reward(survival: bool) -> None:
-    """One task reward (ADR 0013): (1 - d) * V_REF, or the wave change d * r, for the same spans."""
-    from tower_rl.learning import dreamer, stacked_dqn, value_learning
+def test_dreamer_learns_the_task_reward(survival: bool) -> None:
+    """One task reward (ADR 0013): (1 - d) * V_REF, or the wave change d * r, for each span."""
+    from tower_rl.learning import dreamer, value_learning
 
-    batch = _timed_batch(wave_reward=1.0)
-    sequences = _timed_sequences(wave_reward=1.0)
-    stacked = stacked_dqn.StackedDqnBackbone(
-        config=stacked_dqn.StackedDqnConfig(
-            history_length=1, discount_per_game_second=0.999, survival_time_reward=survival
-        )
-    )
     learner = _backbone(replace(SMALL, survival_time_reward=survival))
 
-    ours = _learn_rewards(learner.learn, batch, dreamer)
-    theirs = _learn_rewards(stacked.learn, sequences, stacked_dqn)
-    # The same reward per transition. Dreamer's fit starts one later: its
-    # window's first value is the one after the context's transition in.
-    assert torch.equal(ours, theirs[:, 1:])
+    rewards = _learn_rewards(learner.learn, _timed_batch(wave_reward=1.0), dreamer)
+
     discounts = 0.999 ** (torch.tensor(SPANS_MS, dtype=torch.float64) / 1000.0)
     expected = (1.0 - discounts) * value_learning.V_REF if survival else discounts
-    assert torch.allclose(theirs[0].double(), expected, rtol=1e-6, atol=0.0)
+    # Dreamer's fit starts one later: its window's first value is the one after
+    # the context's transition in.
+    assert torch.allclose(rewards[0].double(), expected[1:], rtol=1e-6, atol=0.0)
     # A purchase earns no survival time; its wave change is not discounted.
-    assert theirs[0, 0].item() == (0.0 if survival else 1.0)
+    assert rewards[0, 1].item() == (0.0 if survival else 1.0)
 
 
 def test_the_diagnostics_read_the_continue_head_and_the_decoded_mask() -> None:
@@ -849,7 +793,7 @@ def test_an_episodes_stream_stops_at_its_first_inadmissible_transition() -> None
     actor = Actor(environment=environment, policy=acting_copy(_backbone()), replay=None)
     replay = DreamerReplay(capacity=256, length=LENGTH + 1, seed=0)
     steps = [
-        ReplayStep(
+        Decision(
             features=_features(seed=0.1 * index),
             action_index=1,
             reward=float(index),

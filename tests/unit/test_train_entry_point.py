@@ -17,10 +17,12 @@ import shutil
 import sys
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import numpy
 import pytest
@@ -44,7 +46,7 @@ from tower_rl.experiment.training_report import (
     non_finite_tensors,
     numbered_checkpoint_name,
 )
-from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.actor import ActorConfig
 from tower_rl.learning.checkpoint import (
     Checkpoint,
     identity_hash,
@@ -55,22 +57,17 @@ from tower_rl.learning.checkpoint import (
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.exploration import ape_x_floors
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.policies import Policy, checkpoint_policy
+from tower_rl.learning.policies import checkpoint_policy
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay, R2D2ReplayImage
 from tower_rl.learning.replay import (
     R2D2_PRIORITY_EXPONENT,
     REPLAY_DUMP_METADATA,
-    PrioritizedSequenceReplay,
-    ReplayImage,
-    ReplayStep,
     read_replay_metadata,
 )
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone
 from tower_rl.learning.training import TrainingRun
-from tower_rl.learning.value_learning import V_REF, n_step_targets
+from tower_rl.learning.value_learning import V_REF
 from tower_rl.simulation.instance import CloneInstance
-
-#: Tensors this small spend their time handing work between threads rather than
-#: computing: one thread runs the whole file about fifteen times faster.
 
 PROFILE = "fake-profile-v1"
 
@@ -78,24 +75,60 @@ PROFILE = "fake-profile-v1"
 #: production width every decision is a CPU forward pass and dominates the run;
 #: what is under test here is the plumbing around the learner, not its capacity,
 #: which the backbone contract suite covers.
-SMALL_NETWORK = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
+SMALL_NETWORK = NetworkConfig(hidden=16, identity_dim=4)
 
-def arguments(run_dir: Path, **overrides: str | None) -> argparse.Namespace:
-    """The real parser, so the entry point's own defaults and checks are used.
+#: R2D2 reduced for the CPU: a target copy every 3 steps, a refresh every 10
+#: decisions, two items to warm, a batch of two, room for 64 items. Test-only.
+R2D2_SMOKE_TARGET_PERIOD = 3
+R2D2_SMOKE_REFRESH = 10
+R2D2_SMOKE_CAPACITY = 64
+
+#: The task's discount and reward, which an R2D2 run must give (ADR 0013).
+R2D2_TASK: dict[str, str | None] = {
+    "--discount-per-game-second": "0.999",
+    "--survival-time-reward": None,
+}
+
+
+@contextmanager
+def reduced_r2d2(warmup_items: int = 2) -> Iterator[None]:
+    """The entry point's R2D2 constants at the smoke size, for parsing and for building.
+
+    The published sizes are fixed settings the parser refuses to contradict, so
+    the reduction is made where they are read: the parser and `build_arm` see
+    the same small buffer, batch and refresh, and a resume sees its parent's.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+        patch.setattr(
+            train,
+            "R2D2Config",
+            lambda **given: R2D2Config(target_update_period=R2D2_SMOKE_TARGET_PERIOD, **given),
+        )
+        patch.setattr(train, "R2D2_MIN_REPLAY_ITEMS", warmup_items)
+        patch.setattr(train, "R2D2_BATCH_SIZE", 2)
+        patch.setattr(train, "R2D2_REPLAY_CAPACITY", R2D2_SMOKE_CAPACITY)
+        patch.setattr(train, "ACTOR_REFRESH_DECISIONS", R2D2_SMOKE_REFRESH)
+        yield
+
+
+#: What `main` is given beside the budget: the arm and the task's discount and reward.
+R2D2_FLAGS = [
+    "--backbone", "r2d2", "--discount-per-game-second", "0.999", "--survival-time-reward",
+]
+
+
+def arguments(
+    run_dir: Path, *, warmup_items: int = 2, **overrides: str | None
+) -> argparse.Namespace:
+    """The real parser at the R2D2 smoke size, so the entry point's own checks are used.
 
     A value of None gives the flag alone, as a switch is given.
     """
-    argv: list[str] = []
-    settings = {
+    argv = ["--backbone", "r2d2"]
+    settings: dict[str, str | None] = {
+        **R2D2_TASK,
         "--budget-decisions": "200",
-        "--batch-size": "2",
-        "--gradient-steps-per-decision": "0.2",
-        "--warmup-sequences": "2",
-        "--sequence-length": "6",
-        # Exactly `history-length - 1`, which is what fills the window.
-        "--stacked-burn-in": "3",
-        "--history-length": "4",
-        "--replay-capacity": "64",
         "--evaluate-every-episodes": "1",
         "--evaluation-episodes": "2",
         # A run this short would never close a hundred-episode window.
@@ -108,7 +141,8 @@ def arguments(run_dir: Path, **overrides: str | None) -> argparse.Namespace:
     settings.update(overrides)
     for flag, value in settings.items():
         argv += [flag] if value is None else [flag, value]
-    return train.parse_arguments(argv)
+    with reduced_r2d2(warmup_items):
+        return train.parse_arguments(argv)
 
 
 def environment(**overrides: Any) -> InstrumentedRunEnvironment:
@@ -137,6 +171,7 @@ def session(
     settings: dict[str, str | None] | None = None,
     tracker: Any = None,
     resume: Any = None,
+    warmup_items: int = 2,
     **fake: Any,
 ) -> dict[str, Any]:
     overrides = {"--budget-decisions": budget, **(settings or {})}
@@ -151,10 +186,10 @@ def session(
                 "--evaluate-every-episodes": "0",
             }
         )
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+    parsed = arguments(run_dir, warmup_items=warmup_items, **overrides)
+    with reduced_r2d2(warmup_items):
         return train.train_session(
-            arguments(run_dir, **overrides),
+            parsed,
             fleet(actors, **fake),
             profile_id=PROFILE,
             revision="test",
@@ -179,7 +214,7 @@ def trained(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 def test_the_backbone_trains_under_one_budget(trained: dict[str, Any]) -> None:
     arm = trained["arm"]
 
-    assert arm["backbone"] == "stacked-dqn"
+    assert arm["backbone"] == "r2d2"
     assert arm["decisions"] >= int(TRAINING_BUDGET), "the arm spends the budget"
     assert arm["episodes"] > 0
     assert arm["optimisation_steps"] > 0
@@ -245,49 +280,10 @@ def test_an_ambiguous_advance_is_classified_and_the_session_continues(
     }
 
 
-def test_the_regime_the_run_is_pinned_to_is_what_the_defaults_say(tmp_path: Path) -> None:
-    """The settings of the second training run, where the developer reads them.
-
-    Pinned as a test because every one of them was chosen against a measured
-    failure of the first run; a silent drift back would cost another run of
-    device time to discover.
-    """
-    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
-
-    # M3-P009's replay ratio, reverted from M3-P010's 0.114 (board #85,
-    # solution.md 9.4).
-    assert defaults.gradient_steps_per_decision == 1.0
-    assert defaults.batch_size == 8
-    assert defaults.warmup_sequences == 100
-    assert defaults.sequence_length == 80
-    assert defaults.stacked_burn_in == defaults.history_length - 1 == 7
-    assert defaults.n_step == 10
-    assert defaults.discount == 0.99
-    assert defaults.learning_rate == 1e-4
-    assert defaults.target_ema_decay == 0.995
-    assert (defaults.epsilon_start, defaults.epsilon_end) == (1.0, 0.05)
-    assert defaults.epsilon_anneal_decisions == 10_000
-    assert defaults.exploration == "uniform", "run 1's schedule is the default"
-    # M3-P009's known-good capacity, reverted from M3-P010's 25,000 (board #85).
-    assert defaults.replay_capacity == 4096
-    assert defaults.collection_window_episodes == 100
-    assert defaults.evaluate_every_episodes == 0, "no frequent mid-run evaluation"
-    assert defaults.evaluation_episodes == 30
-    # Ape-X's refresh of every 400 frames, 100 agent steps: a fleet's actors act
-    # from copies of the network, refreshed inside an episode as well.
-    assert defaults.parameter_sync_decisions == 100
-
-
-def test_a_stacked_burn_in_too_short_for_the_window_is_refused(tmp_path: Path) -> None:
-    """Checked before the device is touched, not an hour into collection."""
-    with pytest.raises(SystemExit, match="cannot fill a window"):
-        arguments(tmp_path, **{"--stacked-burn-in": "2"})
-
-
 # -- --backbone dreamerv3 ------------------------------------------------------
 #
 # Its fixed loop settings, and one session at a size that trains in seconds, as
-# this suite shrinks stacked-dqn's network; the published sizes are what
+# this suite shrinks R2D2's network; the published sizes are what
 # `DreamerConfig()` holds and what the parse tests read without the patch.
 
 #: Batch 2 x 6 at a train ratio of 3: 0.25 gradient steps per decision (a size
@@ -341,7 +337,7 @@ def dreamer_session(run_dir: Path, *flags: str) -> dict[str, Any]:
 def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     parsed = dreamer_arguments(tmp_path)
     assert parsed.backbone == "dreamerv3"
-    assert (parsed.sequence_length, parsed.stacked_burn_in) == (64, 0)
+    assert (parsed.sequence_length, parsed.burn_in) == (64, 0)
     assert parsed.batch_size == 16
     assert parsed.gradient_steps_per_decision == 0.5
     # One batch of items, and the official replay size in items (steps).
@@ -351,9 +347,11 @@ def test_dreamerv3_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     assert (parsed.epsilon_start, parsed.epsilon_end) == (0.0, 0.0)
 
 
-def test_the_default_backbone_is_stacked_dqn(tmp_path: Path) -> None:
-    parsed = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
-    assert parsed.backbone == "stacked-dqn"
+def test_the_backbone_has_no_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The backbone is the arm: a run that does not name one is refused, not guessed."""
+    with pytest.raises(SystemExit):
+        train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    assert "--backbone" in capsys.readouterr().err
 
 
 def test_a_flag_that_repeats_a_dreamerv3_value_is_accepted(tmp_path: Path) -> None:
@@ -366,7 +364,7 @@ def test_a_flag_that_repeats_a_dreamerv3_value_is_accepted(tmp_path: Path) -> No
     [
         ("--batch-size", "8"),
         ("--sequence-length", "80"),
-        ("--stacked-burn-in", "7"),
+        ("--burn-in", "7"),
         ("--gradient-steps-per-decision", "1.0"),
         ("--warmup-sequences", "100"),
         ("--epsilon-start", "1.0"),
@@ -381,23 +379,45 @@ def test_a_flag_that_contradicts_a_dreamerv3_value_is_refused(
         dreamer_arguments(tmp_path, flag, value)
 
 
-@pytest.mark.parametrize(
-    "flags",
-    [
-        ("--history-length", "8"),
-        ("--n-step", "3"),
-        ("--discount", "0.99"),
-        ("--learning-rate", "1e-4"),
-        ("--target-ema-decay", "0.995"),
-        ("--n-step-final", "3", "--n-step-anneal-steps", "100"),
-        ("--epsilon-anneal-decisions", "8000"),
-    ],
-)
-def test_a_stacked_dqn_flag_is_refused_under_dreamerv3(
-    tmp_path: Path, flags: tuple[str, ...]
+#: The flags of the deleted stacked-dqn backbone (cb2f324 is the last commit that
+#: has it): gone from the parser, so a command line that still gives one fails
+#: loudly under either backbone rather than being read as something else.
+RETIRED_STACKED_DQN_FLAGS = [
+    ("--history-length", "8"),
+    ("--stacked-burn-in", "7"),
+    ("--n-step", "3"),
+    ("--discount", "0.99"),
+    ("--learning-rate", "1e-4"),
+    ("--target-ema-decay", "0.995"),
+    ("--n-step-final", "3"),
+    ("--n-step-anneal-steps", "100"),
+    ("--reset-every-steps", "1000"),
+    ("--ez-greedy",),
+    ("--priority-alpha", "0"),
+]
+
+
+@pytest.mark.parametrize("flags", RETIRED_STACKED_DQN_FLAGS)
+@pytest.mark.parametrize("backbone", ["dreamerv3", "r2d2"])
+def test_a_retired_stacked_dqn_flag_is_refused_as_unrecognized(
+    tmp_path: Path, backbone: str, flags: tuple[str, ...], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with pytest.raises(SystemExit, match="stacked-dqn setting"):
-        dreamer_arguments(tmp_path, *flags)
+    with pytest.raises(SystemExit):
+        train.parse_arguments(
+            [
+                "--budget-decisions", "1000", "--run-dir", str(tmp_path),
+                "--backbone", backbone, *DREAMER_DISCOUNT, "--survival-time-reward", *flags,
+            ]
+        )
+    assert f"unrecognized arguments: {flags[0]}" in capsys.readouterr().err
+
+
+def test_stacked_dqn_is_not_a_backbone(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        train.parse_arguments(
+            ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--backbone", "stacked-dqn"]
+        )
+    assert "invalid choice: 'stacked-dqn'" in capsys.readouterr().err
 
 
 def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_streams(
@@ -413,15 +433,14 @@ def test_a_dreamerv3_session_trains_and_its_checkpoint_plays_per_instance_stream
     assert arm["decisions"] >= 200 and arm["optimisation_steps"] > 0
     assert arm["failed_episodes"] == 0
     resolved = arm["resolved_config"]
-    assert (resolved["sequence_length"], resolved["burn_in"], resolved["stride"]) == (6, 0, 3)
+    assert (resolved["sequence_length"], resolved["burn_in"]) == (6, 0)
     assert resolved["dreamer_deter"] == 16 and resolved["dreamer_train_ratio"] == 3.0
     # On the CPU the learner computes in float32; on CUDA, in bfloat16.
     assert resolved["dreamer_compute_dtype"] == "float32"
     # Uniform replay, as the official loop samples; not an option (board #85).
     assert (resolved["priority_alpha"], resolved["importance_beta"]) == (0.0, 0.0)
-    for stacked in ("history_length", "n_step", "discount", "learning_rate", "network_hidden"):
-        assert resolved[stacked] is None, stacked
-    # The task's discount and reward, under the keys stacked-dqn records them under.
+    assert resolved["network_hidden"] is None
+    # The task's discount and reward, under the keys every backbone records them under.
     assert resolved["discount_per_game_second"] == 0.999
     assert resolved["survival_time_reward"] is False
     assert resolved["survival_reward_bound"] is None
@@ -537,7 +556,7 @@ def test_a_numbered_checkpoint_carries_the_run_it_came_from(tmp_path: Path) -> N
     for decisions in written:
         checkpoint = load(directory / numbered_checkpoint_name(decisions))
         assert checkpoint.identity.run_id == arm["run_id"]
-        assert checkpoint.identity.backbone == "stacked-dqn"
+        assert checkpoint.identity.backbone == "r2d2"
         assert checkpoint.identity.profile_id == PROFILE
         # The name is the decisions the progress in the file records, not an
         # aspiration; a reader still goes by the file, never by the name.
@@ -553,7 +572,7 @@ def test_by_default_numbered_checkpoints_are_written_only_where_periods_close(
     tmp_path: Path,
 ) -> None:
     """No cadence by default, and a run shorter than one period writes none."""
-    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    defaults = r2d2_arguments(tmp_path)
     assert defaults.checkpoint_every_decisions == 0
     assert defaults.selection_period_decisions == 15_000
 
@@ -567,34 +586,19 @@ def test_early_stopping_is_off_by_default_and_resolved_with_its_threshold(
     tmp_path: Path,
 ) -> None:
     """Every run measured so far spent its whole budget; that stays the default."""
-    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    defaults = r2d2_arguments(tmp_path)
 
     assert defaults.early_stop_patience_periods == 0
     assert defaults.early_stop_min_improvement == 0.2
 
 
-def test_the_n_step_anneal_and_kill_bars_are_off_by_default(tmp_path: Path) -> None:
-    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
-
-    assert defaults.n_step == 10
-    assert defaults.n_step_final is None and defaults.n_step_anneal_steps == 0
-    assert defaults.kill_bars == []
-
-
-def test_a_half_configured_n_step_anneal_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="together"):
-        arguments(tmp_path, **{"--n-step-final": "3"})
-    with pytest.raises(SystemExit, match="together"):
-        arguments(tmp_path, **{"--n-step-anneal-steps": "100"})
+def test_kill_bars_are_off_by_default(tmp_path: Path) -> None:
+    assert arguments(tmp_path).kill_bars == []
 
 
 def test_a_kill_bar_is_parsed_as_at_start_minimum(tmp_path: Path) -> None:
-    parsed = train.parse_arguments(
-        [
-            "--budget-decisions", "1000", "--run-dir", str(tmp_path),
-            "--kill-bar", "12000:8000:8.6",
-            "--kill-bar", "26262:8000:10.2",
-        ]
+    parsed = r2d2_arguments(
+        tmp_path, "--kill-bar", "12000:8000:8.6", "--kill-bar", "26262:8000:10.2"
     )
 
     assert [
@@ -603,21 +607,20 @@ def test_a_kill_bar_is_parsed_as_at_start_minimum(tmp_path: Path) -> None:
     ] == [(12000, 8000, 8.6), (26262, 8000, 10.2)]
     for malformed in ("12000:8000", "8000:12000:8.6", "a:b:c"):
         with pytest.raises(SystemExit):
-            train.parse_arguments(
-                ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--kill-bar", malformed]
-            )
+            r2d2_arguments(tmp_path, "--kill-bar", malformed)
 
 
 def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> None:
-    """The stop is the run's own and is recorded like the plateau stop."""
+    """The stop is the run's own and is recorded like the plateau stop.
+
+    Two actors: a bar reads the near-greedy ones, and a lone actor's ladder is
+    its base rate of 0.4.
+    """
     report = session(
         tmp_path,
         budget=TRAINING_BUDGET,
-        settings={
-            "--kill-bar": "100:0:1000",
-            "--n-step-final": "3",
-            "--n-step-anneal-steps": "5",
-        },
+        actors=2,
+        settings={"--kill-bar": "100:0:1000"},
     )
 
     arm = report["arm"]
@@ -632,11 +635,6 @@ def test_a_run_below_its_kill_bar_stops_and_says_which_bar(tmp_path: Path) -> No
     assert arm["final_evaluation_skipped"] == "kill_bar"
     resolved = arm["resolved_config"]
     assert resolved["kill_bars"] == [[100, 0, 1000.0]]
-    assert (resolved["n_step"], resolved["n_step_final"], resolved["n_step_anneal_steps"]) == (
-        10,
-        3,
-        5,
-    )
 
 
 def test_a_run_not_stopped_on_a_kill_bar_still_takes_its_final_evaluation(
@@ -653,6 +651,7 @@ def test_a_plateau_stop_still_takes_its_final_evaluation(tmp_path: Path) -> None
     report = session(
         tmp_path,
         budget="1000",
+        actors=2,
         settings={
             "--selection-period-decisions": "50",
             "--early-stop-patience-periods": "1",
@@ -684,9 +683,7 @@ def test_the_budget_is_the_only_progress_flag_and_it_is_in_decisions(tmp_path: P
         "--checkpoint-every-game-seconds",
     ):
         with pytest.raises(SystemExit):
-            train.parse_arguments(
-                ["--budget-decisions", "1000", "--run-dir", str(tmp_path), retired, "100"]
-            )
+            r2d2_arguments(tmp_path, retired, "100")
 
 
 #: Two fake instances, which is the fleet arrangement a device run takes: every
@@ -724,18 +721,18 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """One emulator refusing every episode costs an actor, not the run."""
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+    parsed = arguments(
+        tmp_path,
+        **{
+            "--budget-decisions": "40",
+            "--actors": "2",
+            "--serial": CloneInstance(index=0).serial,
+            "--evaluate-every-episodes": "0",
+        },
+    )
+    with reduced_r2d2():
         report = train.train_session(
-            arguments(
-                tmp_path,
-                **{
-                    "--budget-decisions": "40",
-                    "--actors": "2",
-                    "--serial": CloneInstance(index=0).serial,
-                    "--evaluate-every-episodes": "0",
-                },
-            ),
+            parsed,
             [
                 train.ActorInstance(serial="fake-0", environment=environment()),
                 train.ActorInstance(
@@ -748,8 +745,8 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
         )
 
     arm = report["arm"]
-    dead = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-1:stacked-dqn")
-    alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:stacked-dqn")
+    dead = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-1:r2d2")
+    alive = next(actor for actor in arm["actors"] if actor["actor_id"] == "fake-0:r2d2")
     assert dead["withdrawn"] is not None and dead["failed_episodes"] > 0
     assert arm["actors_withdrawn"] == 1
     assert alive["decisions"] == arm["decisions"] > 0
@@ -760,12 +757,12 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
     announcement = next(
         line for line in capsys.readouterr().out.splitlines() if "withdrawn" in line
     )
-    assert "fake-1:stacked-dqn" in announcement and dead["withdrawn"] in announcement
+    assert "fake-1:r2d2" in announcement and dead["withdrawn"] in announcement
 
 
 def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
     """The default, and the configuration the in-flight run is reproducible from."""
-    parsed = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
+    parsed = r2d2_arguments(tmp_path)
     assert parsed.actors == 1
 
     report = session(tmp_path)
@@ -773,7 +770,7 @@ def test_a_single_actor_run_records_exactly_one_actor(tmp_path: Path) -> None:
     assert report["actors"] == 1 and report["actor_serials"] == ["fake-0"]
     arm = report["arm"]
     assert arm["resolved_config"]["actors"] == 1
-    assert [actor["actor_id"] for actor in arm["actors"]] == ["fake-0:stacked-dqn"]
+    assert [actor["actor_id"] for actor in arm["actors"]] == ["fake-0:r2d2"]
     assert arm["actors"][0]["decisions"] == arm["decisions"]
 
 
@@ -864,7 +861,9 @@ def test_an_instance_whose_bring_up_fails_is_still_torn_down(
 
     monkeypatch.setattr(train, "train_session", fake_train_session)
     monkeypatch.setattr(
-        sys, "argv", ["train.py", "--budget-decisions", "1000", "--actors", "2", "--no-track"]
+        sys,
+        "argv",
+        ["train.py", "--budget-decisions", "1000", "--actors", "2", "--no-track", *R2D2_FLAGS],
     )
 
     exit_code = train.main()
@@ -936,7 +935,7 @@ def test_a_fleet_raises_every_instance_after_its_own_bring_up(
     monkeypatch.setattr(train, "raise_frame_rate", fake_raise_frame_rate)
     monkeypatch.setattr(
         sys, "argv", ["train.py", "--budget-decisions", "1000", "--actors", "2",
-         "--frame-rate-hz", "90", "--no-track"]
+         "--frame-rate-hz", "90", "--no-track", *R2D2_FLAGS]
     )
 
     exit_code = train.main()
@@ -989,7 +988,9 @@ def test_a_single_actor_run_raises_no_rate(
     monkeypatch.setattr(
         train, "raise_frame_rate", lambda instance, frame_rate_hz: raise_calls.append(instance)
     )
-    monkeypatch.setattr(sys, "argv", ["train.py", "--budget-decisions", "1000", "--no-track"])
+    monkeypatch.setattr(
+        sys, "argv", ["train.py", "--budget-decisions", "1000", "--no-track", *R2D2_FLAGS]
+    )
 
     exit_code = train.main()
 
@@ -1076,10 +1077,9 @@ def resumed_arm(
         },
     )
     resume = train.resume_point(settings, profile_id=PROFILE, revision="test")
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+    with reduced_r2d2():
         arm, _ = train.build_arm(
-            train.BACKBONE,
+            "r2d2",
             settings,
             instances=fleet(1),
             device=torch.device("cpu"),
@@ -1099,21 +1099,13 @@ def test_the_exploration_a_run_collected_under_is_on_its_record(
     tmp_path: Path,
 ) -> None:
     """A curve read months later cannot be told from a uniform one without it."""
-    uniform = session(tmp_path / "uniform", actors=2)["arm"]["resolved_config"]
-    assert uniform["exploration"] == "uniform"
-    assert uniform["exploration_epsilon_floors"] == []
+    resolved = session(tmp_path, actors=2)["arm"]["resolved_config"]
 
-    ladder = session(
-        tmp_path / "ladder", actors=2, settings={"--exploration": "ladder"}
-    )["arm"]["resolved_config"]
-    assert ladder["exploration"] == "ladder"
-    assert ladder["exploration_epsilon_floors"] == pytest.approx(list(ape_x_floors(2)))
-    # The ladder is the fleet's exploration, not its identity: everything a
-    # checkpoint is compatibility-checked on is untouched by it.
-    assert ladder["parent_checkpoint"] is None
-    assert {key: ladder[key] for key in ("backbone", "actors", "actor_ids")} == {
-        key: uniform[key] for key in ("backbone", "actors", "actor_ids")
-    }
+    assert resolved["exploration"] == "ladder"
+    assert resolved["exploration_epsilon_floors"] == pytest.approx(list(ape_x_floors(2)))
+    # Fixed from the first decision: nothing anneals.
+    assert resolved["epsilon_anneal_decisions"] == 0
+    assert resolved["epsilon_start"] == 0.4
 
 
 def test_an_epsilon_end_passed_with_the_ladder_is_refused(tmp_path: Path) -> None:
@@ -1123,39 +1115,10 @@ def test_an_epsilon_end_passed_with_the_ladder_is_refused(tmp_path: Path) -> Non
     # The equals form is the same flag and is refused the same way: what is read
     # is the parsed value, not the shape of the argument vector.
     with pytest.raises(SystemExit, match="--epsilon-end"):
-        train.parse_arguments(
-            ["--budget-decisions", "1000", "--run-dir", str(tmp_path),
-             "--exploration", "ladder", "--epsilon-end=0.05"]
-        )
+        r2d2_arguments(tmp_path, "--exploration", "ladder", "--epsilon-end=0.05")
 
-    # Either alone is ordinary, and an unset flag resolves to the uniform floor.
-    ladder = arguments(tmp_path, **{"--exploration": "ladder"})
-    assert (ladder.exploration, ladder.epsilon_end) == ("ladder", 0.05)
-    assert arguments(tmp_path, **{"--epsilon-end": "0.001"}).epsilon_end == 0.001
-
-
-def test_a_run_can_be_resumed_onto_the_ladder(tmp_path: Path) -> None:
-    """A second sitting may explore differently from the one it continues.
-
-    Exploration is not part of what a checkpoint is refused for, so a segment
-    collected uniformly can be continued under the ladder: what the resume
-    restores is the weights and the counters, and what the ladder changes is
-    only how the fleet collects from here on.
-    """
-    first = numbered(tmp_path / "first", 300)
-    checkpoint = latest_checkpoint(first)
-
-    arm, resume = resumed_arm(
-        tmp_path / "second", checkpoint, budget=600, **{"--exploration": "ladder"}
-    )
-
-    exploration = arm.training.config.exploration
-    assert exploration.option == "ladder"
-    assert exploration.floors == pytest.approx(list(ape_x_floors(1)))
-    assert arm.resolved["exploration"] == "ladder"
-    # The identity the resume was accepted on is the parent's, unchanged.
-    assert resume.parent_checkpoint == arm.resolved["parent_checkpoint"]
-    assert arm.training.report.decisions == resume.decisions > 0
+    # The ladder alone is what R2D2 fixes, so repeating it is ordinary.
+    assert arguments(tmp_path, **{"--exploration": "ladder"}).exploration == "ladder"
 
 
 def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) -> None:
@@ -1178,14 +1141,9 @@ def test_a_resume_restores_the_counters_schedules_and_optimizer(tmp_path: Path) 
     assert progress.episodes == parent.progress.episodes
     assert progress.optimisation_steps == parent.progress.optimisation_steps
     assert not arm.training.finished, "the budget was raised, so there is more to spend"
-    # Exploration is derived from the counter rather than restored, so it is
-    # where a run that never stopped would have it - and not at the start of
-    # its schedule.
-    assert (
-        progress.epsilon
-        == config.exploration.epsilon_for(0, spent)
-        != config.exploration.epsilon_for(0, 0)
-    )
+    # Exploration is derived from the counter rather than restored; R2D2's is
+    # the fixed ladder, so it is where the run began it.
+    assert progress.epsilon == config.exploration.epsilon_for(0, spent) == ape_x_floors(1)[0]
     # The optimizer's moments come back with the weights: one state dict, and a
     # resume that took only the weights would restart Adam silently mid-run.
     moments = parent.backbone_state["optimizer"]["state"]
@@ -1456,18 +1414,15 @@ def test_an_untracked_resume_does_not_announce_a_tracked_run(
             str(checkpoint),
             "--budget-decisions",
             "100000",
-            # The parent's, so the replay it saved is reloaded rather than refused
-            # and the resume is not refused for a changed loop setting.
-            "--replay-capacity",
-            "64",
-            "--gradient-steps-per-decision",
-            "0.2",
+            *R2D2_FLAGS,
             "--run-dir",
             str(tmp_path / "second"),
         ],
     )
 
-    assert train.main() == 0
+    # At the parent's sizes, so the replay it saved is reloaded rather than refused.
+    with reduced_r2d2():
+        assert train.main() == 0
     assert "resuming tracked run" not in capsys.readouterr().out
 
 
@@ -1559,8 +1514,9 @@ def test_a_run_saves_its_replay_beside_the_latest_checkpoint_it_ends_with(
     checkpoint = load(latest_checkpoint(first))
     assert metadata["run"]["decisions"] == checkpoint.progress.environment_decisions
     assert metadata["run"]["identity"] == asdict(checkpoint.identity)
-    assert metadata["sequences"] == first["arm"]["replay"]["sequences"] > 0
-    assert (metadata["capacity"], metadata["alpha"]) == (64, R2D2_PRIORITY_EXPONENT)
+    assert metadata["inserted"] == first["arm"]["replay"]["sequences"] > 0
+    assert metadata["capacity"] == R2D2_SMOKE_CAPACITY
+    assert metadata["alpha"] == R2D2_PRIORITY_EXPONENT
 
 
 def test_every_latest_checkpoint_a_run_writes_is_written_with_its_replay(
@@ -1570,7 +1526,7 @@ def test_every_latest_checkpoint_a_run_writes_is_written_with_its_replay(
     pairs: list[tuple[int, int]] = []
     write = train.TrainingReport._write_resume_point
 
-    def recorded(self: Any, report: Any, image: ReplayImage) -> None:
+    def recorded(self: Any, report: Any, image: R2D2ReplayImage) -> None:
         write(self, report, image)
         pairs.append(paired_decisions(saved_replay(self.run_dir.parent)))
 
@@ -1586,16 +1542,17 @@ def test_every_latest_checkpoint_a_run_writes_is_written_with_its_replay(
 def test_a_resume_from_that_checkpoint_reloads_the_replay_and_says_so(tmp_path: Path) -> None:
     first = numbered(tmp_path / "first", 200)
     dump = saved_replay(tmp_path / "first")
-    expected = PrioritizedSequenceReplay(capacity=64)
+    expected = R2D2Replay(capacity=R2D2_SMOKE_CAPACITY)
     expected.load_from(dump)
 
     arm, resume = resumed_arm(tmp_path / "second", latest_checkpoint(first), budget=400)
 
     assert resume.replay_dump == dump
-    assert list(arm.replay._items) == list(expected._items)
-    assert list(arm.replay._priorities) == list(expected._priorities)
+    assert len(arm.replay) == len(expected) > 0
+    for column in ("_episode", "_offset", "_length", "_priority"):
+        assert numpy.array_equal(getattr(arm.replay, column), getattr(expected, column)), column
     # The sampler goes on from where it stood, not from the seed.
-    assert arm.replay._random.getstate() == expected._random.getstate()
+    assert arm.replay._random.bit_generator.state == expected._random.bit_generator.state
     assert arm.resolved["replay_restored_from"] == str(dump)
     manifest = json.loads((arm.run_dir / "manifest.json").read_text())
     assert manifest["replay_restored_from"] == str(dump)
@@ -1684,19 +1641,15 @@ def test_a_resume_from_an_earlier_checkpoint_is_refused_while_the_replay_is_ther
 
 def test_a_saved_replay_of_another_capacity_is_refused_before_bring_up(tmp_path: Path) -> None:
     first = numbered(tmp_path / "first", 200)
-    with pytest.raises(SystemExit, match="capacity 64"):
-        train.resume_point(
-            arguments(
-                tmp_path / "second",
-                **{
-                    "--budget-decisions": "400",
-                    "--resume": str(latest_checkpoint(first)),
-                    "--replay-capacity": "128",
-                },
-            ),
-            profile_id=PROFILE,
-            revision="test",
-        )
+    # R2D2 fixes its buffer size, so a changed one is a changed constant, read
+    # into the parsed arguments as the parser reads it.
+    asking = arguments(
+        tmp_path / "second",
+        **{"--budget-decisions": "400", "--resume": str(latest_checkpoint(first))},
+    )
+    asking.replay_capacity = 2 * R2D2_SMOKE_CAPACITY
+    with pytest.raises(SystemExit, match=f"capacity {R2D2_SMOKE_CAPACITY}"):
+        train.resume_point(asking, profile_id=PROFILE, revision="test")
 
 
 def test_a_resumed_run_learns_from_the_reloaded_replay_without_re_warming(
@@ -1706,14 +1659,15 @@ def test_a_resumed_run_learns_from_the_reloaded_replay_without_re_warming(
     first = numbered(tmp_path / "first", 200)
     parent_steps = first["arm"]["optimisation_steps"]
     budget = first["arm"]["decisions"] + 60
-    # More sequences than 60 decisions can collect, but fewer than were saved.
-    settings = {"--warmup-sequences": "50"}
+    # More items than 60 decisions can collect, but no more than were saved.
+    warmup = {"warmup_items": 5}
+    assert first["arm"]["replay"]["sequences"] >= 5
 
     second = session(
         tmp_path / "second",
         budget=str(budget),
-        settings=settings,
         resume=resume_from(tmp_path / "second", latest_checkpoint(first), budget),
+        **warmup,
     )
     assert second["arm"]["optimisation_steps"] > parent_steps
 
@@ -1721,8 +1675,8 @@ def test_a_resumed_run_learns_from_the_reloaded_replay_without_re_warming(
     third = session(
         tmp_path / "third",
         budget=str(budget),
-        settings=settings,
         resume=resume_from(tmp_path / "third", latest_checkpoint(first), budget),
+        **warmup,
     )
     assert third["arm"]["optimisation_steps"] == parent_steps, "re-warming, it could not learn"
 
@@ -1840,25 +1794,37 @@ def test_a_run_stopped_mid_collection_resumes_from_the_steps_its_weights_took(
     assert second["arm"]["optimisation_steps"] > steps
 
 
+#: Steps a stopped parent still owes. R2D2's credits are whole items of
+#: `gradient_steps_per_item` steps each, so a run that spends its budget drains
+#: to no debt; a part of one is what an interrupted parent leaves, written here.
+OWED_STEPS = 3.0
+
+
+def owing_checkpoint(tmp_path: Path) -> Path:
+    """A parent's `latest.pt` as a stopped run writes it: steps still owed on its buffer."""
+    checkpoint = latest_checkpoint(numbered(tmp_path / "first", 100))
+    parent = load(checkpoint)
+    assert parent.progress.learner_debt_steps == 0, "a run that spends its budget drains"
+    owing = replace(
+        parent, progress=replace(parent.progress, learner_debt_steps=OWED_STEPS)
+    )
+    save(owing, checkpoint)
+    return checkpoint
+
+
 def test_a_resume_pays_the_debt_its_parent_still_owed(tmp_path: Path) -> None:
     """The steps a resumed run takes are the ones an uninterrupted run's rule gives it.
 
-    A parent that ended owing a part of a step (the ratio times its decisions,
-    less the whole steps taken) writes that debt into its checkpoint (ADR 0017).
-    The resume carries it, so over the two segments the steps stay the ratio of
-    the decisions and the fraction is not dropped at the seam.
+    The debt a parent ended owing is written into its checkpoint (ADR 0017).
+    The resume carries it, so over the two segments the steps stay the credits'
+    worth and what was owed is not dropped at the seam.
     """
-    ratio = 0.2
-    # Ends at 103 decisions, 73 of them counted warm: 14.6 steps, 0.6 of one owed.
-    first = numbered(tmp_path / "first", 100)
-    checkpoint = latest_checkpoint(first)
+    checkpoint = owing_checkpoint(tmp_path)
     parent = load(checkpoint)
-    owed = parent.progress.learner_debt_steps
-    assert 0 < owed < 1, "the parent ended part-way through a step"
 
     arm, resume = resumed_arm(tmp_path / "second", checkpoint, budget=400)
-    assert resume.learner_debt_steps == owed
-    assert arm.training.learner_thread.counted_debt_steps() == pytest.approx(owed)
+    assert resume.learner_debt_steps == OWED_STEPS
+    assert arm.training.learner_thread.counted_debt_steps() == pytest.approx(OWED_STEPS)
 
     second = session(
         tmp_path / "third",
@@ -1866,18 +1832,17 @@ def test_a_resume_pays_the_debt_its_parent_still_owed(tmp_path: Path) -> None:
         resume=resume_from(tmp_path / "third", checkpoint, 400),
     )
 
-    spent = second["arm"]["decisions"] - parent.progress.environment_decisions
     taken = second["arm"]["optimisation_steps"] - parent.progress.optimisation_steps
-    earned = owed + ratio * spent
-    assert taken <= earned + 1e-9 < taken + 1, "the segment ended owing under one step"
-    assert taken != int(ratio * spent), "without the parent's fraction it would take one fewer"
+    per_item = int(second["arm"]["resolved_config"]["gradient_steps_per_item"])
+    # What is owed plus whole items' worth, all paid: without the carried debt
+    # the segment would take a multiple of the items' steps alone.
+    assert taken > OWED_STEPS
+    assert taken % per_item == OWED_STEPS % per_item != 0
 
 
 def test_a_resume_that_rewarms_its_buffer_owes_nothing(tmp_path: Path) -> None:
     """A debt owed on the parent's buffer is not carried onto an empty one (ADR 0017)."""
-    first = numbered(tmp_path / "first", 100)
-    checkpoint = latest_checkpoint(first)
-    assert load(checkpoint).progress.learner_debt_steps > 0
+    checkpoint = owing_checkpoint(tmp_path)
     shutil.rmtree(checkpoint.parent.parent / "replay")
 
     arm, _ = resumed_arm(tmp_path / "second", checkpoint, budget=400)
@@ -1907,7 +1872,7 @@ def test_a_run_that_fails_with_non_finite_weights_leaves_the_periodic_resume_poi
     assert dump_decisions == decisions
 
 
-def refuse_to_write(self: ReplayImage, directory: Path, **kwargs: Any) -> int:
+def refuse_to_write(self: R2D2ReplayImage, directory: Path, **kwargs: Any) -> int:
     raise OSError("disk full")
 
 
@@ -1915,33 +1880,20 @@ def test_a_failed_replay_save_neither_masks_the_error_nor_moves_the_resume_point
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `latest.pt` without its replay would be a resume point that loses the buffer."""
-    monkeypatch.setattr(ReplayImage, "write", refuse_to_write)
+    monkeypatch.setattr(R2D2ReplayImage, "write", refuse_to_write)
     with pytest.raises(RuntimeError, match="the run failed"):
         interrupted_session(tmp_path / "failed", monkeypatch)
     assert not list((tmp_path / "failed").glob("*/checkpoints/latest.pt"))
 
     # A run that spends its budget is not failed by it either.
     monkeypatch.undo()
-    monkeypatch.setattr(ReplayImage, "write", refuse_to_write)
+    monkeypatch.setattr(R2D2ReplayImage, "write", refuse_to_write)
     report = session(tmp_path / "finished", budget="200")
     assert report["arm"]["decisions"] >= 200
     assert not list((tmp_path / "finished").glob(f"*/{REPLAY_DIRECTORY}/*"))
 
 
 # -- discounting by game time (board #81) ------------------------------------
-
-
-def test_the_game_time_discount_is_off_by_default(trained: dict[str, Any]) -> None:
-    """Off, the run discounts per decision exactly as every run before it."""
-    resolved = trained["arm"]["resolved_config"]
-    assert resolved["discount_per_game_second"] is None
-    assert resolved["discount"] == 0.99
-
-
-def test_the_two_discounts_are_refused_together(tmp_path: Path) -> None:
-    """T8: each defines the discount, so one of them would go silently unused."""
-    with pytest.raises(SystemExit, match="one or the other"):
-        arguments(tmp_path, **{"--discount": "0.99", "--discount-per-game-second": "0.997"})
 
 
 def test_dreamerv3_takes_the_game_time_discount_and_refuses_to_run_without_it(
@@ -1960,7 +1912,6 @@ def test_a_game_time_run_records_its_discount_and_its_checkpoint_plays(tmp_path:
     report = session(tmp_path, settings={"--discount-per-game-second": "0.997"})
     resolved = report["arm"]["resolved_config"]
     assert resolved["discount_per_game_second"] == 0.997
-    assert resolved["discount"] is None, "the per-decision discount played no part"
 
     policy, _ = checkpoint_policy(
         latest_checkpoint(report),
@@ -1968,7 +1919,7 @@ def test_a_game_time_run_records_its_discount_and_its_checkpoint_plays(tmp_path:
         upgrade_availability=resolved["upgrade_availability"],
         workshop_level=0,
     )
-    assert isinstance(policy, StackedDqnBackbone)
+    assert isinstance(policy, R2D2Backbone)
     assert policy.config.discount_per_game_second == 0.997
 
     # It resumes under the same discount, and only under it.
@@ -1989,38 +1940,7 @@ def test_a_game_time_run_records_its_discount_and_its_checkpoint_plays(tmp_path:
         resume_from(tmp_path / "third", latest_checkpoint(report), 400)
 
 
-def test_a_checkpoint_from_before_the_game_time_discount_still_plays(tmp_path: Path) -> None:
-    """T8: a resolved config without the key rebuilds, discounting per decision."""
-    parent_path = latest_checkpoint(numbered(tmp_path / "first", 50))
-    parent = load(parent_path)
-    older = tmp_path / "older.pt"
-    settings = dict(parent.resolved_config)
-    del settings["discount_per_game_second"]
-    save(replace(parent, resolved_config=settings), older)
-
-    policy, _ = checkpoint_policy(
-        older,
-        decision_cadence=parent.identity.decision_cadence.value,
-        upgrade_availability=parent.identity.upgrade_availability.value,
-        workshop_level=0,
-    )
-    assert isinstance(policy, StackedDqnBackbone)
-    assert policy.config.discount_per_game_second is None
-    assert policy.config.discount == settings["discount"]
-    # And it resumes under the per-decision default it was trained with.
-    assert resume_from(tmp_path / "second", older, 400).decisions > 0
-
-
-@pytest.mark.parametrize(
-    "flags",
-    [
-        {"--discount-per-game-second": "0.997"},
-        {"--discount": "0.9"},
-    ],
-)
-def test_a_resume_under_another_discount_is_refused(
-    tmp_path: Path, flags: dict[str, str]
-) -> None:
+def test_a_resume_under_another_discount_is_refused(tmp_path: Path) -> None:
     """A different discount is a different target: one set of weights, two scales."""
     checkpoint = latest_checkpoint(numbered(tmp_path / "first", 50))
 
@@ -2028,7 +1948,11 @@ def test_a_resume_under_another_discount_is_refused(
         train.resume_point(
             arguments(
                 tmp_path / "second",
-                **{"--budget-decisions": "400", "--resume": str(checkpoint), **flags},
+                **{
+                    "--budget-decisions": "400",
+                    "--resume": str(checkpoint),
+                    "--discount-per-game-second": "0.997",
+                },
             ),
             profile_id=PROFILE,
             revision="test",
@@ -2043,20 +1967,20 @@ SURVIVAL: dict[str, str | None] = {
 }
 
 
-def test_the_survival_time_reward_is_off_by_default(trained: dict[str, Any]) -> None:
-    """Off, the run learns from the wave reward exactly as every run before it."""
-    assert trained["arm"]["resolved_config"]["survival_time_reward"] is False
-
-
 def test_the_survival_time_reward_is_refused_without_the_game_time_discount(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(SystemExit, match="needs --discount-per-game-second"):
-        arguments(tmp_path, **{"--survival-time-reward": None})
+        train.parse_arguments(
+            [
+                "--budget-decisions", "1000", "--run-dir", str(tmp_path),
+                "--backbone", "dreamerv3", "--survival-time-reward",
+            ]
+        )
 
 
 def test_dreamerv3_takes_the_survival_time_reward(tmp_path: Path) -> None:
-    """The reward is the task's (ADR 0013): the flag means what it means for stacked-dqn."""
+    """The reward is the task's (ADR 0013): the flag means what it means for R2D2."""
     assert dreamer_arguments(tmp_path, "--survival-time-reward").survival_time_reward
 
 
@@ -2187,7 +2111,7 @@ def survival_resume(run_dir: Path, checkpoint: Path, **flags: str | None) -> Any
 def test_a_survival_time_run_records_its_reward_and_resumes_only_under_it(
     tmp_path: Path,
 ) -> None:
-    """The key is in the run's identity, and a resume must ask for the same reward."""
+    """The key is in the run's identity, and a resume must ask for the same target."""
     report = session(tmp_path, settings=SURVIVAL)
     assert report["arm"]["resolved_config"]["survival_time_reward"] is True
     assert report["arm"]["resolved_config"]["survival_reward_bound"] == V_REF
@@ -2197,33 +2121,42 @@ def test_a_survival_time_run_records_its_reward_and_resumes_only_under_it(
     assert resumed is not None and resumed.decisions > 0
     with pytest.raises(SystemExit, match="a different target"):
         survival_resume(
-            tmp_path / "third", checkpoint, **{"--discount-per-game-second": "0.997"}
+            tmp_path / "third", checkpoint, **{"--discount-per-game-second": "0.999"}
         )
 
 
+def wave_reward_checkpoint(tmp_path: Path, *, forget_the_key: bool) -> Path:
+    """An R2D2 checkpoint rewritten as a wave-reward run left it (DreamerV3's option).
+
+    R2D2 learns the survival reward only, so the file is rewritten: either
+    saying the reward was off, or, as a file from before the survival-time
+    reward, saying nothing about it.
+    """
+    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
+    settings = {
+        **parent.resolved_config,
+        "survival_time_reward": False,
+        "survival_reward_bound": None,
+    }
+    if forget_the_key:
+        del settings["survival_time_reward"]
+    older = tmp_path / "wave.pt"
+    save(replace(parent, resolved_config=settings), older)
+    return older
+
+
+@pytest.mark.parametrize("forget_the_key", [False, True], ids=["off", "unrecorded"])
 def test_a_wave_reward_checkpoint_is_not_resumed_under_the_survival_time_reward(
-    tmp_path: Path,
+    tmp_path: Path, forget_the_key: bool
 ) -> None:
-    """The reward defines the target as the discount does: one set of weights, two scales."""
-    checkpoint = latest_checkpoint(
-        numbered(tmp_path / "first", 50, **{"--discount-per-game-second": "0.997"})
-    )
+    """The reward defines the target as the discount does: one set of weights, two scales.
+
+    A file with no key reads as the wave reward it learned from.
+    """
+    checkpoint = wave_reward_checkpoint(tmp_path, forget_the_key=forget_the_key)
 
     with pytest.raises(SystemExit, match="a different target"):
-        survival_resume(tmp_path / "second", checkpoint, **SURVIVAL)
-
-
-def test_a_checkpoint_from_before_the_survival_time_reward_resumes_with_it_off(
-    tmp_path: Path,
-) -> None:
-    """A resolved config without the key reads as the wave reward it learned from."""
-    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
-    older = tmp_path / "older.pt"
-    settings = dict(parent.resolved_config)
-    del settings["survival_time_reward"]
-    save(replace(parent, resolved_config=settings), older)
-
-    assert resume_from(tmp_path / "second", older, 400).decisions > 0
+        survival_resume(tmp_path / "second", checkpoint)
 
 
 def test_a_scaled_survival_run_at_0_999_resumes_under_the_same_flags(tmp_path: Path) -> None:
@@ -2269,199 +2202,46 @@ def test_an_unscaled_survival_checkpoint_at_0_999_is_not_resumed_under_the_scale
         survival_resume(tmp_path / "second", older, **flags)
 
 
-# -- ez-greedy (board #83) ---------------------------------------------------
-
-
-def test_ez_greedy_is_off_by_default(trained: dict[str, Any]) -> None:
-    """Off, the run explores one decision at a time as every run before it."""
-    assert trained["arm"]["resolved_config"]["ez_greedy"] is False
-
-
-def test_ez_greedy_is_refused_under_dreamerv3(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="stacked-dqn setting"):
-        dreamer_arguments(tmp_path, "--ez-greedy")
-
-
-def test_an_ez_greedy_run_records_its_options_and_resumes_only_under_it(
-    tmp_path: Path,
-) -> None:
-    """The flag is in the run's identity, its episodes count their options, and a
-    resume must ask for the same exploration."""
-    report = numbered(tmp_path / "first", 50, **{"--ez-greedy": None})
-    arm = report["arm"]
-    assert arm["resolved_config"]["ez_greedy"] is True
-    records = arm["collected_episodes"]
-    # The anneal starts at epsilon 1, so every early decision is exploratory.
-    assert sum(record["options_started"] for record in records) > 0
-    assert all(
-        record["longest_option"] >= (1 if record["options_started"] else 0)
-        for record in records
-    )
-    checkpoint = latest_checkpoint(report)
-
-    resumed = survival_resume(tmp_path / "second", checkpoint, **{"--ez-greedy": None})
-    assert resumed is not None and resumed.decisions > 0
-    with pytest.raises(SystemExit, match="a different exploration"):
-        survival_resume(tmp_path / "third", checkpoint)
-
-
-def test_a_one_step_checkpoint_is_not_resumed_under_ez_greedy(tmp_path: Path) -> None:
-    checkpoint = latest_checkpoint(numbered(tmp_path / "first", 50))
-
-    with pytest.raises(SystemExit, match="a different exploration"):
-        survival_resume(tmp_path / "second", checkpoint, **{"--ez-greedy": None})
-
-
-def test_a_checkpoint_from_before_ez_greedy_resumes_with_it_off(tmp_path: Path) -> None:
-    """A resolved config without the key reads as the exploration it collected under."""
-    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
-    older = tmp_path / "older.pt"
-    settings = dict(parent.resolved_config)
-    del settings["ez_greedy"]
-    save(replace(parent, resolved_config=settings), older)
-
-    assert resume_from(tmp_path / "second", older, 400).decisions > 0
-
-
 # -- prioritized replay (board #85) ------------------------------------------
 
 
-def test_stacked_dqn_samples_by_r2d2_priorities_and_records_them(
-    trained: dict[str, Any],
-) -> None:
+def test_r2d2_samples_by_priority_and_records_the_exponents(trained: dict[str, Any]) -> None:
     resolved = trained["arm"]["resolved_config"]
     assert (resolved["priority_alpha"], resolved["importance_beta"]) == (0.9, 0.6)
 
 
-@pytest.mark.parametrize("backbone", ["stacked-dqn", "dreamerv3"])
-def test_no_flag_can_change_how_replay_is_sampled(
-    tmp_path: Path, backbone: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Prioritization cannot silently be off again: there is no option for it."""
-    with pytest.raises(SystemExit):
-        train.parse_arguments(
-            [
-                "--budget-decisions", "1000", "--run-dir", str(tmp_path),
-                "--backbone", backbone, "--priority-alpha", "0",
-            ]
-        )
-    assert "unrecognized arguments: --priority-alpha" in capsys.readouterr().err
-
-
-def test_a_checkpoint_sampled_uniformly_is_not_resumed_under_prioritized_replay(
-    tmp_path: Path,
-) -> None:
-    """Every stacked-dqn file before #85 recorded alpha 0 and a beta anneal."""
-    parent = load(latest_checkpoint(numbered(tmp_path / "first", 50)))
-    older = tmp_path / "uniform.pt"
-    settings = dict(parent.resolved_config)
-    del settings["importance_beta"]
-    settings.update(priority_alpha=0.0, beta_start=0.4, beta_end=1.0)
-    save(replace(parent, resolved_config=settings), older)
-
-    with pytest.raises(SystemExit, match="a different replay"):
-        resume_from(tmp_path / "second", older, 400)
-
-
-# -- The replay ratio, the buffer and what a resume keeps (boards #92, #93, #85)
-
-
-def test_the_default_replay_ratio_replays_about_560_transitions_per_decision(
-    tmp_path: Path,
-) -> None:
-    """Gradient steps per decision x sequences per step x learnable steps each.
-
-    The learnable steps are counted by the target itself: a window of 80 with
-    burn-in 7 leaves 73 steps, and the last n of them have no bootstrap state
-    inside the window. The default reverted to M3-P009's 1.0 gradient steps
-    per decision (board #85); at that ratio a batch of 8 replays about 560
-    transitions per decision at the final n of 3.
-    """
-    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
-    unroll = defaults.sequence_length - defaults.stacked_burn_in
-    rewards = torch.zeros(1, unroll)
-    q = torch.zeros(1, unroll, len(RUN_ACTIONS))
-    mask = torch.ones(1, unroll, len(RUN_ACTIONS), dtype=torch.bool)
-
-    def replayed_per_decision(n_step: int) -> float:
-        _, learnable = n_step_targets(
-            rewards,
-            rewards.bool(),
-            q,
-            q,
-            mask,
-            discounts=torch.full((1, unroll), 0.9, dtype=torch.float64),
-            n_step=n_step,
-        )
-        return float(
-            defaults.gradient_steps_per_decision * defaults.batch_size * learnable.sum().item()
-        )
-
-    # At the final n of the anneal the recipe runs, and while n is at its start.
-    assert replayed_per_decision(3) == pytest.approx(560.0, abs=1.0)
-    assert replayed_per_decision(defaults.n_step) == pytest.approx(504.0, abs=1.0)
-
-
-def test_the_default_buffer_holds_about_170k_decisions(tmp_path: Path) -> None:
-    """M3-P009's known-good capacity, deliberately short of the whole budget.
-
-    25,000 windows would have held the whole ~1M-decision budget, but kept the
-    early heavily-explored data forever and cost ~19 GiB with swap already
-    full, with no evidence for it beyond covering the budget (M3-P010,
-    docs/experiments.md, board #85). 4096 windows at baseline v2's
-    550-decision episodes evict long before the budget is spent.
-    """
-    defaults = train.parse_arguments(["--budget-decisions", "1000", "--run-dir", str(tmp_path)])
-    actor = Actor(
-        environment=cast(InstrumentedRunEnvironment, None),
-        policy=cast(Policy, None),
-        config=ActorConfig(
-            sequence_length=defaults.sequence_length,
-            burn_in=defaults.stacked_burn_in,
-            # What `build_arm` strides by.
-            stride=max(1, defaults.sequence_length // 2),
-        ),
-    )
-    step = ReplayStep(
-        features=StateFeatures(
-            scalars=(0.0,) * SCALAR_COUNT,
-            rows=(0.0,) * (ROW_COUNT * ROW_WIDTH),
-            mask=(True,) * len(RUN_ACTIONS),
-        ),
-        action_index=0,
-        reward=0.0,
-        done=False,
-        admissible=True,
-        game_ms=0.0,
-    )
-    decisions = 550
-    windows = len(actor._windows([step] * decisions))
-
-    assert windows == 13
-    covered_decisions = defaults.replay_capacity * decisions / windows
-    assert covered_decisions == pytest.approx(173_292, abs=1000)
-    assert covered_decisions < 200_000, "capacity is deliberately short of the ~1M budget"
-
-
 def test_a_resume_under_another_loop_setting_is_refused(tmp_path: Path) -> None:
     """None of them is in the identity, and a changed default would move them silently."""
-    checkpoint = latest_checkpoint(session(tmp_path / "first"))
+    parent = load(latest_checkpoint(session(tmp_path / "first")))
+    longer = tmp_path / "longer-refresh.pt"
+    save(
+        replace(
+            parent,
+            resolved_config={
+                **parent.resolved_config,
+                "parameter_sync_decisions": 2 * R2D2_SMOKE_REFRESH,
+            },
+        ),
+        longer,
+    )
 
     with pytest.raises(
-        SystemExit, match=r"--gradient-steps-per-decision 0\.2 \(this run asks for 0\.3\)"
+        SystemExit,
+        match=rf"--parameter-sync-decisions {2 * R2D2_SMOKE_REFRESH} "
+        rf"\(this run asks for {R2D2_SMOKE_REFRESH}\)",
     ):
-        train.resume_point(
-            arguments(
-                tmp_path / "second",
-                **{
-                    "--budget-decisions": "1000",
-                    "--resume": str(checkpoint),
-                    "--gradient-steps-per-decision": "0.3",
-                },
-            ),
-            profile_id=PROFILE,
-            revision="test",
-        )
+        resume_from(tmp_path / "second", longer, 1000)
+
+    # From before the cadence was in decisions: a refresh at every episode start.
+    episodes = {
+        key: value
+        for key, value in parent.resolved_config.items()
+        if key != "parameter_sync_decisions"
+    }
+    older = tmp_path / "per-episode-refresh.pt"
+    save(replace(parent, resolved_config={**episodes, "parameter_sync_episodes": 1}), older)
+    with pytest.raises(SystemExit, match="--parameter-sync-decisions 0"):
+        resume_from(tmp_path / "third", older, 1000)
 
 
 def test_a_parameter_sync_of_one_episode_reads_as_a_cadence_of_zero() -> None:
@@ -2477,89 +2257,6 @@ def test_a_parameter_sync_of_several_episodes_is_refused_as_having_no_equivalent
         train.recorded_loop_settings({"parameter_sync_episodes": 3})
 
 
-def test_resets_stop_one_interval_before_the_steps_the_budget_buys(tmp_path: Path) -> None:
-    """BBF's `no_resets_after`: 1M decisions at 1.0 and 100k gives 9 resets."""
-    resetting = arguments(
-        tmp_path,
-        **{
-            "--budget-decisions": "1000000",
-            "--gradient-steps-per-decision": "1.0",
-            "--reset-every-steps": "100000",
-        },
-    )
-    _, learner, _ = train.build_backbone(resetting, torch.device("cpu"))
-
-    assert (learner.reset_every_steps, learner.last_reset_step) == (100_000, 900_000)
-    assert train.last_reset_step(arguments(tmp_path)) == 0
-
-
-def test_the_learner_resets_are_logged_as_they_happen(tmp_path: Path) -> None:
-    """A dip in the curve can be put against the reset that caused it."""
-    tracker = RecordingTracker()
-    summary = session(
-        tmp_path,
-        budget="200",
-        tracker=tracker,
-        settings={"--reset-every-steps": "5"},
-    )
-
-    logged = [
-        point.metrics["learner_resets"]
-        for point in tracker.runs[0].points
-        if "learner_resets" in point.metrics
-    ]
-    assert logged, "the run was long enough to reset"
-    # Once per change: an episode can span more than one reset.
-    assert logged == sorted(set(logged)) and logged[0] >= 1.0
-    resolved = summary["arm"]["resolved_config"]
-    # 200 decisions at 0.2 buy 40 steps, and the last interval is left alone.
-    assert (resolved["reset_every_steps"], resolved["last_reset_step"]) == (5, 35)
-    # The learner steps on its own thread (ADR 0017), so the last reset may be
-    # taken in the block's closing drain, after the last episode's hook: it is
-    # logged when the block ends.
-    assert logged[-1] == 7.0
-
-
-def test_a_resume_is_held_to_its_reset_interval() -> None:
-    assert train.recorded_loop_settings({"reset_every_steps": 100_000}) == {
-        "reset_every_steps": 100_000
-    }
-    # A DreamerV3 run records it as None, and has nothing to compare.
-    assert train.recorded_loop_settings({"reset_every_steps": None}) == {}
-
-
-def test_a_checkpoint_from_before_the_adam_epsilon_resumes_at_its_own(tmp_path: Path) -> None:
-    """Its optimizer state carries 1e-8, torch restores it, and the record says so.
-
-    Rewritten as a pre-change checkpoint is: the optimizer at torch's epsilon,
-    no `adam_epsilon` in its settings, and a parameter lag of one episode.
-    """
-    checkpoint = latest_checkpoint(session(tmp_path / "first"))
-    old = load(checkpoint)
-    state = dict(old.backbone_state)
-    optimizer = dict(state["optimizer"])
-    optimizer["param_groups"] = [{**group, "eps": 1e-8} for group in optimizer["param_groups"]]
-    state["optimizer"] = optimizer
-    settings = {
-        key: value
-        for key, value in old.resolved_config.items()
-        if key not in ("adam_epsilon", "parameter_sync_decisions")
-    }
-    settings["parameter_sync_episodes"] = 1
-    save(replace(old, backbone_state=state, resolved_config=settings), checkpoint)
-
-    with pytest.raises(SystemExit, match="--parameter-sync-decisions 0"):
-        resumed_arm(tmp_path / "refused", checkpoint, 1000)
-
-    arm, _ = resumed_arm(
-        tmp_path / "second", checkpoint, 1000, **{"--parameter-sync-decisions": "0"}
-    )
-
-    assert arm.backbone.optimizer.param_groups[0]["eps"] == 1e-8
-    assert arm.resolved["adam_epsilon"] == 1e-8
-    assert arm.training.config.parameter_sync_decisions == 0
-
-
 def test_dreamerv3_acts_on_the_last_finished_step_at_every_decision(tmp_path: Path) -> None:
     """The official agent swaps parameters at the next policy call after each step."""
     assert dreamer_arguments(tmp_path).parameter_sync_decisions == 1
@@ -2569,27 +2266,26 @@ def test_dreamerv3_acts_on_the_last_finished_step_at_every_decision(tmp_path: Pa
 
 # -- R2D2 --------------------------------------------------------------------
 
-#: The task's discount and reward, which an R2D2 run must give (ADR 0013).
-R2D2_TASK = ("--discount-per-game-second", "0.999", "--survival-time-reward")
-
-
 def r2d2_arguments(run_dir: Path, *flags: str) -> argparse.Namespace:
+    """The parser at R2D2's published sizes, which `arguments` reduces."""
     return train.parse_arguments(
         [
             "--budget-decisions", "1000", "--run-dir", str(run_dir), "--backbone", "r2d2",
-            *R2D2_TASK, *flags,
+            "--discount-per-game-second", "0.999", "--survival-time-reward", *flags,
         ]
     )
 
 
 def test_r2d2_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     parsed = r2d2_arguments(tmp_path)
-    assert (parsed.sequence_length, parsed.stacked_burn_in) == (80, 40)
+    assert (parsed.sequence_length, parsed.burn_in) == (80, 40)
     assert (parsed.batch_size, parsed.warmup_sequences) == (64, 1_250)
     assert parsed.replay_capacity == 100_000
-    assert (parsed.n_step, parsed.learning_rate) == (5, 1e-4)
     assert parsed.exploration == "ladder" and parsed.epsilon_anneal_decisions == 0
     assert parsed.parameter_sync_decisions == 400
+    # Not flags any more: the backbone's own published values.
+    config = R2D2Config(discount_per_game_second=0.999)
+    assert (config.n_step, config.learning_rate) == (5, 1e-4)
 
 
 @pytest.mark.parametrize(
@@ -2597,8 +2293,6 @@ def test_r2d2_fixes_its_published_loop_settings(tmp_path: Path) -> None:
     [
         ("--batch-size", "32"),
         ("--sequence-length", "64"),
-        ("--n-step", "3"),
-        ("--learning-rate", "1e-3"),
         ("--exploration", "uniform"),
         ("--epsilon-anneal-decisions", "8000"),
         ("--parameter-sync-decisions", "100"),
@@ -2612,46 +2306,34 @@ def test_a_flag_that_contradicts_an_r2d2_value_is_refused(
         r2d2_arguments(tmp_path, flag, value)
 
 
+@pytest.mark.parametrize("flag", ["--epsilon-end", "--gradient-steps-per-decision"])
+def test_a_flag_r2d2_does_not_read_is_refused(tmp_path: Path, flag: str) -> None:
+    """Its ladder has no floor to anneal to, and its replay ratio is per item."""
+    with pytest.raises(SystemExit, match=f"{flag} is not read by --backbone r2d2"):
+        r2d2_arguments(tmp_path, flag, "0.5")
+
+
 @pytest.mark.parametrize(
-    "flags",
+    ("task", "needs"),
     [
-        ("--history-length", "8"),
-        ("--discount", "0.99"),
-        ("--target-ema-decay", "0.995"),
-        ("--reset-every-steps", "1000"),
-        ("--gradient-steps-per-decision", "1.0"),
-        ("--epsilon-end", "0.01"),
+        (("--discount-per-game-second", "0.999"), "--backbone r2d2 learns the survival reward"),
+        (("--survival-time-reward",), "--backbone r2d2 discounts by game time"),
     ],
 )
-def test_a_flag_r2d2_does_not_read_is_refused(tmp_path: Path, flags: tuple[str, ...]) -> None:
-    with pytest.raises(SystemExit, match="stacked-dqn setting"):
-        r2d2_arguments(tmp_path, *flags)
-
-
-@pytest.mark.parametrize(
-    "task", [("--discount-per-game-second", "0.999"), ("--survival-time-reward",)]
-)
 def test_r2d2_needs_the_game_time_discount_and_the_survival_reward(
-    tmp_path: Path, task: tuple[str, ...]
+    tmp_path: Path, task: tuple[str, ...], needs: str
 ) -> None:
-    with pytest.raises(SystemExit, match="--backbone r2d2 learns the survival reward"):
+    with pytest.raises(SystemExit, match=needs):
         train.parse_arguments(
             ["--budget-decisions", "1000", "--run-dir", str(tmp_path), "--backbone", "r2d2", *task]
         )
 
 
-#: R2D2 reduced for the CPU: a target copy every 3 steps, a refresh every 10
-#: decisions, two items to warm, a batch of two. Test-only, patched in.
-R2D2_SMOKE_TARGET_PERIOD = 3
-R2D2_SMOKE_REFRESH = 10
-
-
 def r2d2_session(
     run_dir: Path, budget: str, resume: Any = None, loads: list[int] | None = None
 ) -> dict[str, Any]:
-    """One R2D2 session through the entry point, reduced for the CPU, on the fake fleet."""
+    """One R2D2 session through the entry point, counting the acting copies' refreshes."""
     from tower_rl.learning.learner import Learner
-    from tower_rl.learning.r2d2 import R2D2Config
 
     publish_to = Learner.publish_to
 
@@ -2661,50 +2343,30 @@ def r2d2_session(
         return publish_to(learner, acting)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
-        patch.setattr(
-            train,
-            "R2D2Config",
-            lambda **given: R2D2Config(target_update_period=R2D2_SMOKE_TARGET_PERIOD, **given),
-        )
-        patch.setattr(train, "R2D2_MIN_REPLAY_ITEMS", 2)
-        patch.setattr(train, "R2D2_BATCH_SIZE", 2)
-        patch.setattr(train, "R2D2_REPLAY_CAPACITY", 64)
-        patch.setattr(train, "ACTOR_REFRESH_DECISIONS", R2D2_SMOKE_REFRESH)
         patch.setattr(Learner, "publish_to", counted)
-        parsed = r2d2_arguments(
+        return session(
             run_dir,
-            "--budget-decisions", budget,
-            "--evaluation-episodes", "1",
-            "--collection-window-episodes", "2",
-            "--checkpoint-every-episodes", "2",
-            "--serial", "fake-0",
-            "--max-quiet-game-ms", "4000",
-            *(() if resume is None else ("--resume", str(resume))),
+            budget=budget,
+            settings={"--evaluation-episodes": "1", "--evaluate-every-episodes": "0"},
+            resume=(
+                None
+                if resume is None
+                else train.resume_point(
+                    arguments(
+                        run_dir,
+                        **{"--budget-decisions": budget, "--resume": str(resume)},
+                    ),
+                    profile_id=PROFILE,
+                    revision="test",
+                )
+            ),
         )
-        state = (
-            None
-            if resume is None
-            else train.resume_point(parsed, profile_id=PROFILE, revision="test")
-        )
-        report: dict[str, Any] = train.train_session(
-            parsed,
-            fleet(1),
-            profile_id=PROFILE,
-            revision="test",
-            device=torch.device("cpu"),
-            resume=state,
-        )
-    return report
 
 
 def test_an_r2d2_session_learns_copies_its_target_refreshes_checkpoints_and_resumes(
     tmp_path: Path,
 ) -> None:
     """The CPU smoke run of `--backbone r2d2`, at test-only reduced settings (ADR 0018)."""
-    from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
-    from tower_rl.learning.r2d2_replay import R2D2Replay
-
     loads: list[int] = []
     first = r2d2_session(tmp_path / "first", "200", loads=loads)
     arm = first["arm"]

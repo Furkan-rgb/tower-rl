@@ -10,7 +10,7 @@ produces says which checkpoint it was.
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ from tower_rl.learning.checkpoint import (
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import CheapestFirstPolicy, TurtlePolicy, checkpoint_policy
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
 from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel
 
 PROFILE = "fake-profile-v1"
@@ -48,9 +48,9 @@ PROFILE = "fake-profile-v1"
 #: Narrow enough to build and load in milliseconds, and deliberately not the
 #: default width: a rebuild that silently used the defaults would load the wrong
 #: shape and fail here rather than in an hour of device time.
-NETWORK = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
+NETWORK = NetworkConfig(hidden=16, identity_dim=4)
 
-LEARNER = StackedDqnConfig(history_length=4, n_step=3, seed=7)
+LEARNER = R2D2Config(discount_per_game_second=0.999, seed=7)
 
 #: The protocol these fixtures' checkpoint was collected under, which is what a
 #: session has to be playing for it to be playable at all. `identity()` leaves
@@ -64,8 +64,8 @@ PLAYED: dict[str, str | int] = {
 
 def identity() -> CheckpointIdentity:
     return CheckpointIdentity(
-        run_id="stacked-dqn-20260101-000000-abcdef",
-        backbone="stacked-dqn",
+        run_id="r2d2-20260101-000000-abcdef",
+        backbone="r2d2",
         profile_id=PROFILE,
         observation_schema="observation-v1",
         action_schema="action-v1",
@@ -77,22 +77,17 @@ def identity() -> CheckpointIdentity:
 def resolved() -> dict[str, object]:
     """The snapshot `experiment/run_identity.resolved_config` writes."""
     return {
-        "backbone": "stacked-dqn",
-        "history_length": LEARNER.history_length,
-        "n_step": LEARNER.n_step,
-        "discount": LEARNER.discount,
-        "learning_rate": LEARNER.learning_rate,
-        "target_ema_decay": LEARNER.target_ema_decay,
+        "backbone": "r2d2",
         "network_identity_capacity": NETWORK.identity_capacity,
         "network_identity_dim": NETWORK.identity_dim,
         "network_hidden": NETWORK.hidden,
-        "network_core_hidden": NETWORK.core_hidden,
+        **{f"r2d2_{field.name}": getattr(LEARNER, field.name) for field in fields(R2D2Config)},
     }
 
 
-def trained_checkpoint(directory: Path, decisions: int = 300) -> tuple[Path, StackedDqnBackbone]:
+def trained_checkpoint(directory: Path, decisions: int = 300) -> tuple[Path, R2D2Backbone]:
     """One checkpoint, and the backbone whose weights are in it."""
-    backbone = StackedDqnBackbone(
+    backbone = R2D2Backbone(
         config=LEARNER, network_config=NETWORK, device=torch.device("cpu")
     )
     path = directory / f"checkpoint-{decisions:07d}.pt"
@@ -143,37 +138,6 @@ def test_a_rebuilt_checkpoint_chooses_what_the_backbone_that_wrote_it_chooses(
         assert actual == expected
 
 
-def test_a_checkpoint_of_an_annealed_run_rebuilds_its_schedule(tmp_path: Path) -> None:
-    """A checkpoint written since the n-step anneal records it; one before does not."""
-    path = tmp_path / "annealed.pt"
-    annealed = StackedDqnConfig(
-        history_length=4, n_step=10, n_step_final=3, n_step_anneal_steps=10_000, seed=7
-    )
-    backbone = StackedDqnBackbone(config=annealed, network_config=NETWORK)
-    write_checkpoint(
-        path,
-        identity=identity(),
-        progress=TrainingProgress(environment_decisions=1),
-        backbone_state=backbone.state_dict(),
-        resolved_config={
-            **resolved(),
-            "n_step": 10,
-            "n_step_final": 3,
-            "n_step_anneal_steps": 10_000,
-        },
-        replay_provenance={},
-    )
-
-    rebuilt, _ = checkpoint_policy(path, **PLAYED)
-    old, _ = checkpoint_policy(trained_checkpoint(tmp_path)[0], **PLAYED)
-
-    assert rebuilt.config.n_step_final == 3
-    assert rebuilt.config.n_step_anneal_steps == 10_000
-    # `resolved()` is the snapshot as it was before the anneal existed.
-    assert old.config.n_step_final is None
-    assert old.config.n_step_at(10**6) == LEARNER.n_step
-
-
 def test_a_rebuilt_checkpoint_acts_greedily(tmp_path: Path) -> None:
     """Greedy is the argmax of its own values, taken the same way every time."""
     path, _ = trained_checkpoint(tmp_path)
@@ -186,8 +150,16 @@ def test_a_rebuilt_checkpoint_acts_greedily(tmp_path: Path) -> None:
             1, 1, NETWORK.row_count, NETWORK.row_width
         )
         mask = torch.tensor([[list(state.mask)]], dtype=torch.bool)
+        start = rebuilt.initial_state()
         with torch.no_grad():
-            values, _ = rebuilt.online(scalars, rows, mask, rebuilt.initial_state())
+            values, _ = rebuilt.online(
+                scalars,
+                rows,
+                mask,
+                torch.zeros(1, 1, dtype=torch.long),
+                torch.zeros(1, 1),
+                (start.h, start.c),
+            )
         argmax = int(values[0, 0].argmax().item())
 
         chosen = {rebuilt.act(state, rebuilt.initial_state(), epsilon=0.0)[0] for _ in range(5)}

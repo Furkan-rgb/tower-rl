@@ -38,7 +38,12 @@ from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
 from tower_rl.learning.dreamer_replay import DreamerReplay, episode_steps
 from tower_rl.learning.policies import Policy
 from tower_rl.learning.r2d2 import R2D2Backbone
-from tower_rl.learning.r2d2_replay import R2D2_SEQUENCE_PERIOD, R2D2Replay, item_layout
+from tower_rl.learning.r2d2_replay import (
+    R2D2_SEQUENCE_PERIOD,
+    R2D2Replay,
+    item_layout,
+    state_count,
+)
 from tower_rl.learning.replay import ReplayRejected, SequenceMetadata
 from tower_rl.learning.step_arrays import StepArrays
 
@@ -263,16 +268,18 @@ class Actor:
 
         The steps are `_emit_stream`'s, in its layout and cut at the same
         place, and each item keeps the (h, c) the policy held before its first
-        decision. Returns the items offered and inserted: the replay's unit,
-        and what the learner is credited for (`TrainingRun`).
+        decision. A stream of one step is one item of that step, as Acme's
+        TRUNCATE writes an episode of one step (structured.py 345-358). Returns
+        the items offered and inserted: the replay's unit, and what the learner
+        is credited for (`TrainingRun`).
         """
         if not steps:
             # The run was already over when the episode opened.
             return 0, 0
         observations = _kept_observations(replay, steps, final)
         count = len(observations)
-        if count < 2:
-            # No transition survived the cut, so there is no decision to learn.
+        if not count:
+            # The first transition was inadmissible: nothing survived the cut.
             return 1, 0
         into: list[Decision | None] = [None, *steps[: count - 1]]
         episode = StepArrays(
@@ -286,7 +293,7 @@ class Actor:
             terminal=numpy.asarray([s is not None and s.done for s in into], numpy.bool_),
             game_ms=numpy.asarray([0.0 if s is None else s.game_ms for s in into], numpy.float32),
         )
-        grid = numpy.stack(states[: math.ceil((count - 1) / R2D2_SEQUENCE_PERIOD)])
+        grid = numpy.stack(states[: state_count(count)])
         items = len(item_layout(count)[0])
         with self.profile.acquiring(replay.lock):
             accepted = replay.add(self._metadata(summary), episode, grid)

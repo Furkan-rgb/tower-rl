@@ -146,6 +146,16 @@ def item_layout(step_count: int) -> tuple[numpy.ndarray, numpy.ndarray]:
     return starts, numpy.minimum(R2D2_ITEM_LENGTH, step_count - starts)
 
 
+def state_count(step_count: int) -> int:
+    """The (h, c) an episode of `step_count` steps is added with: one per 40 decisions.
+
+    The last step is a final observation with no decision, so an episode of
+    `step_count` steps has `step_count - 1` of them; a single step still
+    carries the state its one item starts from.
+    """
+    return max(1, math.ceil((step_count - 1) / R2D2_SEQUENCE_PERIOD))
+
+
 @dataclass
 class _Episode:
     number: int
@@ -208,8 +218,8 @@ def _moved(array: numpy.ndarray, device: torch.device | None) -> torch.Tensor:
 class R2D2Replay:
     """Prioritized replay of fixed-length items with stored states (module docstring).
 
-    `lock` is shared by the actors and the learner exactly as
-    `PrioritizedSequenceReplay.lock` is, and no method takes it itself.
+    `lock` is shared by the actors and the learner, and no method takes it
+    itself.
 
     Items live in a ring of `capacity` slots, oldest first; an item's key is
     its serial number, the count of items inserted before it, and its slot is
@@ -267,7 +277,7 @@ class R2D2Replay:
     def add(self, metadata: SequenceMetadata, steps: StepArrays, states: numpy.ndarray) -> bool:
         """Insert one ended episode's items; each enters at priority 1.0.
 
-        `states` [decisions / 40 rounded up, 2, state] is the actor's (h, c)
+        `states` [`state_count(len(steps))`, 2, state] is the actor's (h, c)
         before each decision at 0, 40, 80, ...: the zero state first. Each
         item keeps the one at its start.
         """
@@ -277,9 +287,7 @@ class R2D2Replay:
         elif key != self._compatibility:
             self.stats.reject("incompatible_profile_or_schema")
             return False
-        if len(steps) < 2:
-            raise ReplayRejected("an episode needs at least one decision")
-        grid = math.ceil((len(steps) - 1) / R2D2_SEQUENCE_PERIOD)
+        grid = state_count(len(steps))
         if states.shape != (grid, 2, self.state_size):
             raise ReplayRejected(
                 f"an episode of {len(steps)} steps needs states of shape "

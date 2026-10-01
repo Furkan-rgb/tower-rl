@@ -1,22 +1,22 @@
 """How much of the fleet's collection is spent off the greedy policy, per actor.
 
-One run has one anneal: every actor's rate falls linearly from `epsilon_start`
-over `anneal_decisions` and is held afterwards.  What it falls *to* is the
-actor's own floor.  Under the uniform schedule that floor is `epsilon_end` for
-every actor, which is the one rate every run so far collected under; under a
-ladder each actor has a floor of its own and `epsilon_end` is not used at all.
+Each backbone fixes its schedule and `train.py` refuses a flag that contradicts
+it. R2D2 acts on Ape-X's ladder from its first decision, with no anneal;
+DreamerV3 adds no exploration noise, a uniform schedule at 0. A schedule can
+still anneal every actor's rate linearly from `epsilon_start` over
+`anneal_decisions` to the actor's own floor, `epsilon_end` for a uniform
+schedule and its rung for a ladder; neither backbone sets a horizon.
 
-The floors are Ape-X's (Horgan et al. 2018, arXiv:1803.00933): actor `i` of `N`
+The rungs are Ape-X's (Horgan et al. 2018, arXiv:1803.00933): actor `i` of `N`
 acts at `epsilon_i = 0.4 ** (1 + 7 * i / (N - 1))`, spanning 0.4 down to 0.00066
 for seven actors.  One fleet then both searches and reports: the high actors play
 build orders the greedy policy would never reach, while the near-greedy ones -
 at or under `NEAR_GREEDY_EPSILON` - keep producing a collection curve that can
 still be read as the policy's own performance.
 
-A uniform schedule has no per-actor floors at all: every actor draws the one
-annealed rate, which is what every run before this one collected under, and the
-whole fleet is therefore near-greedy in the only sense the curve cares about -
-the episodes are all of one policy at one exploration rate.
+A uniform schedule has no rungs: every actor draws the one rate, so the whole
+fleet is near-greedy in the only sense the curve cares about - the episodes are
+all of one policy at one exploration rate.
 """
 
 from __future__ import annotations

@@ -135,8 +135,8 @@ class DreamerSample:
 class DreamerReplay:
     """Uniform step replay with an online queue and latents written back (module docstring).
 
-    `lock` is shared by the actors and the learner exactly as
-    `PrioritizedSequenceReplay.lock` is, and no method takes it itself.
+    `lock` is shared by the actors and the learner, and no method takes it
+    itself.
     """
 
     capacity: int = DREAMER_REPLAY_CAPACITY

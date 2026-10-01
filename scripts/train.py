@@ -15,6 +15,7 @@ by at most one episode per actor. Game time and wall time are reported beside
 it as statistics.
 
     uv run --extra tracking python scripts/train.py \\
+        --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \\
         --budget-decisions 60000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
@@ -29,6 +30,7 @@ four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
     uv run --extra tracking python scripts/train.py \\
+        --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \\
         --actors 4 --budget-decisions 60000
 
 The decision axis is cut into selection periods (`--selection-period-decisions`,
@@ -60,7 +62,8 @@ into it before launch; by default it is `<backbone>-<UTC start>`.
 
     name=r2d2-$(date -u +%Y%m%dT%H%M%SZ)
     uv run --extra tracking python scripts/train.py \\
-        --run-name "$name" --budget-decisions 60000
+        --run-name "$name" --backbone r2d2 --discount-per-game-second 0.999 \\
+        --survival-time-reward --budget-decisions 60000
 
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
 budget. The weights, the optimizer moments, the decision and game-time counters,
@@ -86,6 +89,7 @@ anything else - a numbered checkpoint, or a run from before run folders
 parent, and leaves the folder it came from as it was.
 
     uv run --extra tracking python scripts/train.py \\
+        --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \\
         --resume state/runs/<run name>/checkpoints/latest.pt \\
         --budget-decisions 120000
 
@@ -267,11 +271,6 @@ from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter 
 
 #: What `--backbone` chooses from. There is no default: the backbone is the arm.
 BACKBONES = (DREAMERV3, R2D2)
-
-#: What a uniform schedule anneals to when `--epsilon-end` is not given. Held
-#: here rather than as the flag's default so that a value the ladder would
-#: ignore can be told from one that was never given at all.
-DEFAULT_EPSILON_END = 0.05
 
 
 @dataclass(frozen=True)
@@ -762,9 +761,8 @@ def dreamer_loop_settings() -> dict[str, object]:
     }
 
 
-#: Flags R2D2 does not read: its replay ratio is per item (`build_arm`) and its
-#: ladder has no floor to anneal to.
-R2D2_UNREAD_FLAGS = ("epsilon_end", "gradient_steps_per_decision")
+#: Flags R2D2 does not read: its replay ratio is per item (`build_arm`).
+R2D2_UNREAD_FLAGS = ("gradient_steps_per_decision",)
 
 
 def r2d2_loop_settings() -> dict[str, object]:
@@ -781,6 +779,8 @@ def r2d2_loop_settings() -> dict[str, object]:
         # (P section 3): 0.4 is its base rate, and nothing anneals.
         "exploration": LADDER,
         "epsilon_start": 0.4,
+        # A ladder has no uniform floor: nothing reads this.
+        "epsilon_end": 0.0,
         "epsilon_anneal_decisions": 0,
         "parameter_sync_decisions": ACTOR_REFRESH_DECISIONS,
     }
@@ -899,26 +899,19 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--epsilon-end",
         type=float,
-        # Unset rather than 0.05, so a value the ladder would ignore can be told
-        # from the default it resolves to below.
+        # Unset, so a value given can be told from one left alone
+        # (`settle_fixed_settings`).
         default=None,
-        help=(
-            "the rate every actor of a uniform schedule anneals to (default "
-            "0.05); under --exploration ladder each actor anneals to its own "
-            "rung instead and this may not be given"
-        ),
+        help="the rate a uniform schedule ends at; each backbone fixes it",
     )
     parser.add_argument(
         "--exploration",
         choices=EXPLORATION_OPTIONS,
         default="uniform",
         help=(
-            "uniform anneals every actor to --epsilon-end, which is what every "
-            "run so far collected under; ladder anneals actor i of N to the "
-            "Ape-X rate 0.4 ** (1 + 7 i / (N - 1)) instead, so one fleet "
-            "searches and reports at once. --epsilon-end is the uniform "
-            "schedule's floor only and is ignored under ladder, where each "
-            "actor has a floor of its own"
+            "uniform gives every actor one rate; ladder gives actor i of N the "
+            "Ape-X rate 0.4 ** (1 + 7 i / (N - 1)), so one fleet searches and "
+            "reports at once. Each backbone fixes it"
         ),
     )
     parser.add_argument(
@@ -1085,16 +1078,6 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     arguments = parser.parse_args(argv)
 
-    if arguments.epsilon_end is None:
-        arguments.epsilon_end = DEFAULT_EPSILON_END
-    elif arguments.exploration == LADDER:
-        # The ladder replaces the end of the anneal per actor, so a value given
-        # here would be silently unused - and the one thing an exploration
-        # setting may not be is silently unused.
-        raise SystemExit(
-            "--epsilon-end is the uniform schedule's floor and is ignored under "
-            "--exploration ladder, where every actor anneals to its own rung"
-        )
     if arguments.serial == "emulator-5554":
         raise SystemExit("refusing to train against the canonical evaluation AVD")
     if arguments.actors < 1:
@@ -1419,14 +1402,11 @@ def with_parent_replay(
 def saved_replays(replays: Path) -> list[Path]:
     """The complete replay dumps in a run's `replay/`, by name.
 
-    Each save's own directory, and `replay/` itself for a run from before
-    format 5, which saved one dump there as it ended. A save a kill cut short
-    is still `<name>.partial`, which is not one even with its metadata written.
+    Each save's own directory. A save a kill cut short is still
+    `<name>.partial`, which is not one even with its metadata written.
     """
     if not replays.is_dir():
         return []
-    if (replays / REPLAY_DUMP_METADATA).exists():
-        return [replays]
     return sorted(
         entry
         for entry in replays.iterdir()

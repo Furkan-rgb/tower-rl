@@ -1064,9 +1064,9 @@ If real-game learning time is prohibitive for debugging, unit-test the learner w
 
 ### 9.2b Budget, checkpoints and arm selection
 
-The multi-backbone goal is retired (`#7`): the project commits to one backbone,
-the `BACKBONE` constant in `scripts/train.py`, and `train.py` trains a single
-arm per invocation. Arms — "the thing being compared", such as the 60 Hz
+The multi-backbone goal is retired (`#7`): `train.py` trains a single arm per
+invocation, with the backbone `--backbone` names (`r2d2` or `dreamerv3`, the
+`BACKBONES` constant in `scripts/train.py`; there is no default). Arms — "the thing being compared", such as the 60 Hz
 against 120 Hz equivalence fleet of `M1B-E053`/`M1B-E054`, or run 4 against
 run 5 — are compared at an equal budget, each arm with its own backbone and its
 own in-memory replay; arms never share transitions.
@@ -1080,8 +1080,8 @@ and its addendum: run 5 spent 6.98 game-seconds per decision against run 4's
 budget buys a stronger policy fewer updates. The budget is accounted at episode
 granularity — an episode in progress is played to its classified end — so a run
 stops past its budget by at most one episode per actor. Every schedule counted
-in decisions reads the same counter: epsilon, the replay ratio, the
-kill bars and the selection periods. The n-step anneal alone counts gradient steps.
+in decisions reads the same counter: the kill bars, the selection periods and
+the checkpoint cadence.
 Game time and wall time are still measured and reported, as
 statistics. `TrainingRun.advance(decisions)` can spend the budget in blocks
 and carries every schedule across them, so a run advanced in ten blocks is the
@@ -1561,21 +1561,23 @@ manifest records every `R2D2Config` value as `r2d2_<field>`.
 | Torso | Acme `DeepAtariTorso`: ResNet, then `MLP([512], activate_final)` (atari.py) | Shared row encoder over the 60 upgrade rows and the scalars, flattened, then Linear 512 and ReLU | Forced: the observation is a vector and 60 rows, not an image. The LayerNorm belongs to the ResNet, so it is not kept |
 | Action mask | None: every action is always valid | Advantages centred over valid actions, invalid actions -inf in Q, greedy, double-Q argmax and exploration over valid actions, value 0 with none valid | Forced: the game offers only some upgrades at a choice point (environment-contract.md) |
 | Discount | 0.997 per step (P Table 2) | 0.999 ** game-seconds per transition, times (1 - done) | Forced: decisions span unequal game time, and a purchase spans none (ADR 0013) |
-| Reward | Clipped game score, `tanh` fed to the LSTM | Survival reward (1 - gamma**t) * V_REF, learned and fed to the LSTM | Forced: the task rewards survival, not score (ADR 0013) |
+| Reward | The game score, unclipped (Acme `clip_rewards=False`, config.py 37); the paper rescales the value target with h(x) = sign(x)(sqrt(|x| + 1) - 1) + eps x (section 2.3), it does not clip; `tanh` of the reward is fed to the LSTM | Survival reward (1 - gamma**t) * V_REF, learned through h(x) and fed to the LSTM as `tanh` of it | Forced: the task rewards survival, not score (ADR 0013). The rescaling and the LSTM input are the reference's |
 | A step | An Atari frame-stack step | A choice-point decision | Forced: the agent decides only at choice points (ADR 0009); n, burn-in, trace and target period count decisions |
 | Actors | 256 (P Table 2) | 7 or 8 | Forced: one emulator each on one host. Exploration follows the Ape-X ladder over the actors that exist (0.4 ** (1 + 7 i / (N - 1))) |
 | Insertion | Items stream in as the episode runs (structured.py) | An episode's items are inserted when it ends | Forced: a counted episode must be in replay whole or not at all, for ADR 0014's resume pair and ADR 0017's debt |
-| Rate limiter | `SampleToInsertRatio(samples_per_insert 4, error_buffer 1250 * 320 * 0.1)` (Acme config) | ADR 0017's learner thread, credited per item: 5 steps per item, bound 125 items (625 steps) | Same mechanism; values forced below |
+| Rate limiter | `SampleToInsertRatio(samples_per_insert 4, error_buffer 50,000 * 4 * 0.1 = 20,000 samples)` (Acme builder.py 173-181, config.py 41-43) | ADR 0017's learner thread, credited per item: 5 steps per item, bound 125 items. The same formula at the forced values: 1,250 * 320 * 0.1 = 40,000 samples = 625 steps | Same mechanism; values forced below |
 | Samples per insert | 4 (Acme config), about 1,563 steps in 1,000,000 decisions | 320 = 5 steps per item of 64 | Forced: the budget is 1,000,000 decisions, and 1,563 steps would be under one target period. 320 gives about 125,000 steps and 50 target copies. The error buffer is Acme's formula at 320: 40,000 samples = 625 steps = 125 items |
 | Minimum replay | `min_replay_size` 50,000 items (Acme config) | 1,250 items | Forced: 50,000 items is about 2,000,000 decisions, twice the budget. 1,250 is 50,000 decisions, Acme's number read in transitions |
 | Bootstrap at an item's end | rlax cuts the return at a sequence's last step (`multistep.py`) | Same, at the episode's last real step | Same. Forced addition: a pad step has an empty mask, so a pad is never a target and the bootstrap value is the last real step's |
 | Burn-in gradient | P section 3: burn-in only produces the start state. Acme differentiates the online unroll through it (learning.py 86-116) | No gradient through the burn-in | Same as the paper; a choice between the two references, recorded in `r2d2.py` |
 | Optimiser | P Table 2: Adam 1e-4, epsilon 1e-3. Acme: 1e-3 and optax 1e-8 | Adam 1e-4, epsilon 1e-3, no weight decay | Same (paper) |
 | Gradient clip | Not in Table 2, which sends missing parameters to Ape-X: clip 40. Acme: none | Clip the norm at 40 | Same (Ape-X via Table 2) |
-| Epsilon ladder | Ape-X `0.4 ** (1 + 7 i / (N - 1))` | Same, fixed from decision 0, no anneal | Same, over N actors |
+| Epsilon ladder | Acme draws one epsilon per episode, at random, from `logspace(1, 3, 256, base 0.1)` = 0.1 down to 0.001 (actor.py 83-85, config.py 28). The paper's actor i holds the Ape-X rate for good: Table 2 sends the rate to Ape-X, `0.4 ** (1 + 7 i / (N - 1))` | The Ape-X ladder over the actors that exist, one rung each, fixed from decision 0, no anneal | Deviation from Acme to the paper (paper, then Table 2, then Ape-X). Forced: the collection curve is read from the near-greedy actors alone, which needs an actor to keep its rate (`ExplorationSchedule.is_near_greedy`); a per-episode draw would leave no episode attributable to a rung |
 | Refresh | P Table 2: actors refresh their network every 400 steps | Every 400 decisions, counted across episodes, not reset at an episode start | Same. Publication carries the network only, no optimiser state (section 6.10) |
-| Short episodes | TRUNCATE: one item of all its steps, zero-padded (structured.py 303-358, builder.py `_zero_pad`) | Same | Same. An item of 41 steps or fewer has no valid trace target and takes priority 0 at its first update (the mask forces this) |
-| Priorities | Not importance-weighted; only the loss is (learning.py 147-157) | Same | Same |
+| Refresh count across a resume | Acme's `VariableClient` counts steps from the process start and has no resume | The count restarts at 0 for every actor when a run segment starts (`TrainingRun.__post_init__`), and each actor first loads the learner's parameters at its first episode start | Forced: a resume is a new process, and the checkpoint carries no per-actor count. At most 400 decisions per actor are acted on a copy one refresh older than uninterrupted |
+| Stream | Items cut from every step of an episode | The stream is cut at the first inadmissible transition, keeping the observation it left from; nothing after it is stored | Forced: the environment's admissibility contract (environment-contract.md): what an inadmissible transition led to may not be a valid observation |
+| Short episodes | TRUNCATE: one item of all its steps, zero-padded, down to an episode of one step (structured.py 345-358, builder.py `_zero_pad`) | Same, down to one step (`item_layout`, `state_count`) | Same. An item of 41 steps or fewer has no valid trace target and takes priority 0 at its first update (the mask forces this) |
+| Priorities | Not importance-weighted; only the loss is (importance weights, learning.py 147-151; priorities, 153-157) | Same | Same |
 | Network initialisation | haiku: truncated normal fan-in, LSTM as one Linear over [x, h] with forget bias 1, `Embed` truncated normal stddev 1.0 | Same, including the row-identity embedding, `_haiku_initialise` | Same. Torch's `N(0, 1)` default differs only in the tails and nothing forced it, so it was changed to haiku's (`test_the_row_identity_embedding_takes_haikus_embed_default`) |
 
 Known deviations with no forcing reason: none. Two things to read with care.

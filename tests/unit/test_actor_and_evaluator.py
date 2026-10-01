@@ -11,14 +11,15 @@ from tower_rl.environment.episode import (
     TerminationOutcome,
     WaveRecord,
 )
-from tower_rl.environment.features import StateFeatures
+from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.comparison import bootstrap_difference, cohens_d
-from tower_rl.learning.actor import Actor, ActorConfig
+from tower_rl.learning.actor import Actor, ActorConfig, Decision
 from tower_rl.learning.evaluator import (
     WaveDistribution,
     episode_record,
@@ -32,6 +33,7 @@ from tower_rl.learning.policies import (
 )
 from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config, R2D2State
 from tower_rl.learning.r2d2_replay import R2D2Replay, item_layout
+from tower_rl.learning.replay import ReplayRejected
 
 PROFILE = "fake-profile-v1"
 
@@ -593,3 +595,59 @@ def test_an_r2d2_actor_stores_the_state_it_held_every_40_decisions_and_the_game_
     assert result.sequences_accepted == len(replay) == len(starts)
     assert numpy.array_equal(episode.states, numpy.stack(policy.held)[starts])
     assert policy.told == episode.steps.game_ms[1:].tolist()
+
+
+def _features() -> StateFeatures:
+    return StateFeatures(
+        scalars=(0.0,) * SCALAR_COUNT,
+        rows=(0.0,) * (ROW_COUNT * ROW_WIDTH),
+        mask=(True,) * len(RUN_ACTIONS),
+    )
+
+
+def _decision(**overrides: object) -> Decision:
+    settings: dict[str, object] = {
+        "features": _features(),
+        "action_index": 0,
+        "reward": 0.0,
+        "done": False,
+        "admissible": True,
+        "game_ms": 0.0,
+        **overrides,
+    }
+    return Decision(**settings)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("game_ms", [-1.0, float("nan"), float("inf")])
+def test_a_decision_whose_game_time_is_negative_or_not_finite_is_refused(game_ms: float) -> None:
+    """A learner that discounts by game time would read it as a discount."""
+    with pytest.raises(ReplayRejected, match="game time"):
+        _decision(game_ms=game_ms)
+
+
+def test_a_decision_must_say_how_much_game_time_it_spanned() -> None:
+    """No default: a forgotten call site must fail, not silently discount nothing."""
+    with pytest.raises(TypeError, match="game_ms"):
+        Decision(_features(), 0, 0.0, False, admissible=True)  # type: ignore[call-arg]
+
+
+def test_a_decision_outside_the_action_schema_is_refused() -> None:
+    with pytest.raises(ReplayRejected, match="outside the schema"):
+        _decision(action_index=len(RUN_ACTIONS))
+
+
+def test_a_stream_of_one_step_is_inserted_as_one_item() -> None:
+    """Acme's TRUNCATE writes the episode of one step as an item of that step."""
+    policy = R2D2Backbone(R2D2Config(discount_per_game_second=0.99, seed=0))
+    replay = R2D2Replay(capacity=8, seed=0)
+    actor = Actor(environment=_environment(damage_per_second=0.2), policy=policy, replay=replay)
+    summary = Actor(environment=_environment(), policy=WaitOnlyPolicy()).run_episode().summary
+    offered, accepted = actor._emit_items(
+        replay,
+        [_decision()],
+        [policy.replay_entry(policy.initial_state())],
+        None,
+        summary,
+    )
+    assert (offered, accepted) == (1, 1)
+    assert len(replay) == 1 and replay.steps_held == 1

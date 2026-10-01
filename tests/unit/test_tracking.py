@@ -610,7 +610,9 @@ def test_every_selection_period_reaches_the_store_on_the_run_s_own_axis(
     assert periods == sorted(periods) and periods[0] == 1
     for point in points:
         metrics = point.metrics
-        assert point.decisions // 100 == metrics["selection_period"]
+        # One period closes per crossing, so an episode that spans two period
+        # boundaries closes one period, and a period closes no earlier than its end.
+        assert point.decisions // 100 >= metrics["selection_period"]
         assert metrics["selection_period_near_greedy_episodes"] > 0
         assert (
             metrics["selection_period_best_near_greedy_mean_final_wave"]

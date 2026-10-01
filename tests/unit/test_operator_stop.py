@@ -122,7 +122,7 @@ report = session(
     settings=settings,
     warmup_items=60 if moment == "warm-up" else 2,
     # Episodes of about a hundred decisions: R2D2 learns only from steps after
-    # its burn-in, so a buffer of 30-decision episodes could not be sampled.
+    # its burn-in, so a buffer of 30-decision episodes would learn nothing.
     damage_per_second=0.5,
 )
 print("finished", report["arm"]["decisions"], flush=True)

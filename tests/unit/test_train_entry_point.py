@@ -2307,9 +2307,9 @@ def test_a_flag_that_contradicts_an_r2d2_value_is_refused(
         r2d2_arguments(tmp_path, flag, value)
 
 
-@pytest.mark.parametrize("flag", ["--epsilon-end", "--gradient-steps-per-decision"])
-def test_a_flag_r2d2_does_not_read_is_refused(tmp_path: Path, flag: str) -> None:
-    """Its ladder has no floor to anneal to, and its replay ratio is per item."""
+def test_a_flag_r2d2_does_not_read_is_refused(tmp_path: Path) -> None:
+    """Its replay ratio is per item."""
+    flag = "--gradient-steps-per-decision"
     with pytest.raises(SystemExit, match=f"{flag} is not read by --backbone r2d2"):
         r2d2_arguments(tmp_path, flag, "0.5")
 

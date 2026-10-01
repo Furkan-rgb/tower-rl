@@ -1,7 +1,9 @@
 # ADR 0018 — A port follows its reference code unless the environment forces otherwise
 
-**Status:** adopted in code for DreamerV3, 2026-09-30. Board `#108`. Verified
-by unit tests and a GPU smoke run on fake ports; no device run yet.
+**Status:** adopted in code for DreamerV3, 2026-09-30 (board `#108`), and for
+R2D2, 2026-10-01 (board `#111`). Verified by unit tests and a GPU smoke run on
+fake ports. DreamerV3 has run on devices under it (`M3-P017`,
+`docs/experiments.md`); R2D2 has not yet.
 
 ## Context
 

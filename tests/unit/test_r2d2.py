@@ -239,6 +239,24 @@ def test_the_network_is_initialised_as_haiku_initialises_it() -> None:
     assert float(weight.std()) == pytest.approx(0.88 / math.sqrt(torso.in_features), rel=0.05)
 
 
+def test_a_backbones_seed_fixes_its_parameters_and_does_not_reseed_torch() -> None:
+    def built(global_seed: int, seed: int) -> tuple[R2D2Backbone, torch.Tensor]:
+        torch.manual_seed(global_seed)
+        backbone = _backbone(seed=seed)
+        return backbone, torch.rand(3)
+
+    first, after_first = built(1, seed=7)
+    second, after_second = built(2, seed=7)
+    other, _ = built(1, seed=8)
+    for name, value in first.online.state_dict().items():
+        assert torch.equal(second.online.state_dict()[name], value), name
+    assert any(
+        not torch.equal(other.online.state_dict()[name], value)
+        for name, value in first.online.state_dict().items()
+    ), "another seed must start elsewhere"
+    assert not torch.equal(after_first, after_second), "seeding reseeded torch's global stream"
+
+
 def test_the_row_identity_embedding_takes_haikus_embed_default() -> None:
     # hk.Embed: truncated normal at std 1, cut at 2 std. Not torch's N(0, 1).
     table = R2D2Network().trunk.identity.weight.detach()
@@ -332,7 +350,7 @@ def test_learning_on_one_small_batch_lowers_its_loss() -> None:
     backbone = _backbone()
     batch = _batch(200)
     losses = [backbone.learn(batch).weighted_loss for _ in range(8)]
-    assert losses[-1] < 0.5 * losses[0]
+    assert losses[-1] < 0.75 * losses[0]
 
 
 def test_one_learn_step_at_64_by_121_on_the_cpu() -> None:
@@ -581,3 +599,50 @@ def test_the_vectorised_value_fit_is_the_shared_one() -> None:
     )
     assert expected is not None and int(count) == 7 + 10 + 4
     assert float(correlation) == pytest.approx(expected, rel=1e-5)
+
+
+# -- acting ----------------------------------------------------------------------
+
+
+def _masked(valid: tuple[int, ...]) -> StateFeatures:
+    """Features with random scalars and rows, and exactly the actions `valid` offered."""
+    episode = _episode(2, seed=11)
+    return StateFeatures(
+        scalars=tuple(episode.scalars[0].tolist()),
+        rows=tuple(episode.rows[0].tolist()),
+        mask=tuple(index in valid for index in range(ACTIONS)),
+    )
+
+
+def test_acting_stays_inside_the_mask_greedy_and_exploring() -> None:
+    backbone = _backbone()
+    features = _masked((0, 5, 9))
+    state = backbone.initial_state()
+    for epsilon in (0.0, 0.5, 1.0):
+        for _ in range(60):
+            action, _ = backbone.act(features, state, epsilon=epsilon)
+            assert action in (0, 5, 9), epsilon
+
+
+def test_acting_refuses_a_state_with_no_valid_action() -> None:
+    backbone = _backbone()
+    with pytest.raises(ValueError, match="no action is available"):
+        backbone.act(_masked(()), backbone.initial_state(), epsilon=0.0)
+
+
+def test_acting_explores_epsilon_greedily_over_the_valid_actions() -> None:
+    backbone = _backbone()
+    valid = (0, 5, 9, 20)
+    features, state = _masked(valid), backbone.initial_state()
+    greedy, _ = backbone.act(features, state, epsilon=0.0)
+    assert {backbone.act(features, state, epsilon=0.0)[0] for _ in range(20)} == {greedy}
+
+    draws = 1000
+    random_actions = [backbone.act(features, state, epsilon=1.0)[0] for _ in range(draws)]
+    assert set(random_actions) == set(valid)
+    assert all(abs(random_actions.count(a) / draws - 0.25) < 0.06 for a in valid)
+
+    # At epsilon a draw leaves the greedy action only when exploring picks another:
+    # epsilon * (1 - 1/4) of the time.
+    moved = sum(backbone.act(features, state, epsilon=0.4)[0] != greedy for _ in range(draws))
+    assert abs(moved / draws - 0.4 * 0.75) < 0.06

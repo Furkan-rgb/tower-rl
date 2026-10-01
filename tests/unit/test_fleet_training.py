@@ -119,7 +119,7 @@ class PacedEnvironment(InstrumentedRunEnvironment):
 def environment(overlap: Overlap | None = None, **port: Any) -> InstrumentedRunEnvironment:
     # Episodes of about a hundred decisions: R2D2 learns only from steps after
     # its 40-step burn-in, so a 30-decision episode is an item nothing can be
-    # learned from, and a buffer of only those cannot be sampled.
+    # learned from, and a buffer of only those would learn nothing.
     settings: dict[str, Any] = {"damage_per_second": 0.5}
     settings.update(port)
     if overlap is None:

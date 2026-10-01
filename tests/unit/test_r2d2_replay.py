@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
-import math
 import time
 from pathlib import Path
 
@@ -21,12 +21,14 @@ from tower_rl.learning.r2d2_replay import (
     R2D2_SEQUENCE_PERIOD,
     R2D2Replay,
     item_layout,
+    state_count,
 )
 from tower_rl.learning.replay import (
     REPLAY_DUMP_METADATA,
     ReplayDumpError,
     ReplayRejected,
     SequenceMetadata,
+    read_replay_metadata,
 )
 from tower_rl.learning.step_arrays import StepArrays
 
@@ -60,7 +62,7 @@ def _steps(count: int, first: int = 0) -> StepArrays:
 
 def _states(count: int, size: int = STATE) -> numpy.ndarray:
     """The actor's (h, c) before decisions 0, 40, ...: h = k, c = -k at the k-th."""
-    grid = math.ceil((count - 1) / R2D2_SEQUENCE_PERIOD)
+    grid = state_count(count)
     marks = numpy.arange(grid, dtype=numpy.float32)[:, None, None]
     return numpy.broadcast_to(marks * numpy.array([1.0, -1.0])[:, None], (grid, 2, size)).astype(
         numpy.float32
@@ -137,10 +139,13 @@ def test_a_short_episode_is_one_item_padded_on_the_right() -> None:
     assert arrays["last"][0].sum() == 1
 
 
-def test_an_episode_without_a_decision_is_refused() -> None:
-    replay = R2D2Replay(capacity=10, state_size=STATE)
-    with pytest.raises(ReplayRejected):
-        replay.add(METADATA, _steps(1), numpy.zeros((0, 2, STATE), numpy.float32))
+def test_an_episode_of_one_step_is_one_item_of_that_step() -> None:
+    """Acme's TRUNCATE writes the one-step episode too (structured.py 350-358)."""
+    replay = _replay(1)
+    assert len(replay) == 1
+    arrays = replay.sample(1).arrays
+    assert arrays["padding"][0].tolist() == [False] + [True] * (R2D2_ITEM_LENGTH - 1)
+    assert arrays["last"][0, 0] and arrays["first"][0, 0]
 
 
 def test_states_must_cover_every_40th_decision() -> None:
@@ -367,3 +372,68 @@ def test_sampling_a_64_by_121_batch_at_100k_items_is_quick() -> None:
     median = sorted(times)[10]
     print(f"sample 64x121 at 100k items: {median * 1000:.2f} ms")
     assert median < 0.025
+
+
+def test_incompatible_profile_or_schema_is_rejected_and_counted() -> None:
+    replay = _replay(121)
+    for field_name, value in (
+        ("profile_id", "profile-v2"),
+        ("observation_schema", "observation-v2"),
+        ("action_schema", "run-action-v2"),
+        ("reward_schema", "reward-v2"),
+    ):
+        other = dataclasses.replace(METADATA, **{field_name: value})
+        assert not replay.add(other, _steps(121), _states(121)), field_name
+    assert len(replay) == 1, "the first episode's one item, and none since"
+    assert replay.stats.rejected == 4
+    assert replay.stats.rejections_by_reason["incompatible_profile_or_schema"] == 4
+    # A different model version or epsilon is ordinary off-policy data, not a
+    # compatibility break.
+    other = dataclasses.replace(METADATA, model_version=99, epsilon=0.9)
+    assert replay.add(other, _steps(121), _states(121))
+    assert len(replay) == 2
+
+
+def test_an_empty_buffer_saves_and_reloads_empty(tmp_path: Path) -> None:
+    R2D2Replay(capacity=5, state_size=STATE).save_to(tmp_path / "replay", run={})
+    loaded = R2D2Replay(capacity=5, state_size=STATE)
+    loaded.load_from(tmp_path / "replay")
+    assert len(loaded) == 0 and loaded.compatibility is None and loaded.steps_held == 0
+
+
+def test_a_save_never_overwrites_an_existing_dump(tmp_path: Path) -> None:
+    replay = _replay(121)
+    replay.save_to(tmp_path / "replay", run={"decisions": 1})
+    replay.add(METADATA, _steps(50), _states(50))
+    with pytest.raises(ReplayDumpError, match="already exists"):
+        replay.save_to(tmp_path / "replay", run={"decisions": 2})
+    assert read_replay_metadata(tmp_path / "replay")["run"] == {"decisions": 1}
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["replay"]
+
+
+def test_a_dump_is_only_loaded_into_an_empty_buffer(tmp_path: Path) -> None:
+    _replay(121).save_to(tmp_path / "replay", run={})
+    with pytest.raises(ReplayDumpError, match="empty buffer"):
+        _replay(50).load_from(tmp_path / "replay")
+
+
+@pytest.mark.parametrize("array", ["rows", "action", "states", "item_priority"])
+def test_a_dump_whose_array_lost_rows_is_refused(tmp_path: Path, array: str) -> None:
+    _replay(121, 50).save_to(tmp_path / "replay", run={})
+    path = tmp_path / "replay" / f"{array}.npy"
+    numpy.save(path, numpy.load(path)[:-1])
+    with pytest.raises(ReplayDumpError, match="rows|states|item table|index episodes"):
+        R2D2Replay(capacity=1000, state_size=STATE).load_from(tmp_path / "replay")
+
+
+def test_a_failed_save_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    replay = _replay(121, 50)
+    monkeypatch.setattr(numpy, "save", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        replay.save_to(tmp_path / "replay", run={})
+    assert list(tmp_path.iterdir()) == []

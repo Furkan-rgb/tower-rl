@@ -260,7 +260,10 @@ def _value_fit(
 class R2D2Network(nn.Module):
     """Torso, LSTM over (torso, previous action, previous reward), masked dueling head."""
 
-    def __init__(self, config: NetworkConfig | None = None) -> None:
+    def __init__(
+        self, config: NetworkConfig | None = None, generator: torch.Generator | None = None
+    ) -> None:
+        """`generator` draws every initial parameter; None draws from torch's global stream."""
         super().__init__()
         self.config = config or NetworkConfig()
         cfg = self.config
@@ -277,7 +280,7 @@ class R2D2Network(nn.Module):
             nn.ReLU(),
             nn.Linear(HEAD_HIDDEN, cfg.action_count),
         )
-        _haiku_initialise(self)
+        _haiku_initialise(self, generator)
 
     def forward(
         self,
@@ -308,7 +311,7 @@ class R2D2Network(nn.Module):
         return dueling_masked_q(self.value(core), self.advantage(core), mask), (h, c)
 
 
-def _haiku_initialise(network: R2D2Network) -> None:
+def _haiku_initialise(network: R2D2Network, generator: torch.Generator | None) -> None:
     """haiku's defaults: every Linear truncated normal (2 std) at 1 / sqrt(fan_in), zero bias.
 
     The row-identity embedding has no counterpart in the reference torso, so it
@@ -323,14 +326,16 @@ def _haiku_initialise(network: R2D2Network) -> None:
     """
     for module in network.modules():
         if isinstance(module, nn.Linear):
-            _truncated_normal(module.weight, module.in_features)
+            _truncated_normal(module.weight, module.in_features, generator)
             nn.init.zeros_(module.bias)
-    nn.init.trunc_normal_(network.trunk.identity.weight, std=1.0, a=-2.0, b=2.0)
+    nn.init.trunc_normal_(
+        network.trunk.identity.weight, std=1.0, a=-2.0, b=2.0, generator=generator
+    )
     core = network.core
     lstm = dict(core.named_parameters())
     fan_in = core.input_size + core.hidden_size
-    _truncated_normal(lstm["weight_ih_l0"], fan_in)
-    _truncated_normal(lstm["weight_hh_l0"], fan_in)
+    _truncated_normal(lstm["weight_ih_l0"], fan_in, generator)
+    _truncated_normal(lstm["weight_hh_l0"], fan_in, generator)
     with torch.no_grad():
         lstm["bias_ih_l0"].zero_()
         # torch's gate order is input, forget, cell, output.
@@ -339,9 +344,9 @@ def _haiku_initialise(network: R2D2Network) -> None:
     lstm["bias_hh_l0"].requires_grad_(False)
 
 
-def _truncated_normal(weight: Tensor, fan_in: int) -> None:
+def _truncated_normal(weight: Tensor, fan_in: int, generator: torch.Generator | None) -> None:
     std = 1.0 / math.sqrt(fan_in)
-    nn.init.trunc_normal_(weight, std=std, a=-2.0 * std, b=2.0 * std)
+    nn.init.trunc_normal_(weight, std=std, a=-2.0 * std, b=2.0 * std, generator=generator)
 
 
 # -- acting state ----------------------------------------------------------------
@@ -385,10 +390,12 @@ class R2D2Backbone:
     _random: random.Random = field(init=False)
 
     def __post_init__(self) -> None:
+        # A local stream, so seeding a backbone leaves torch's global one alone.
+        generator = None
         if self.config.seed is not None:
-            torch.manual_seed(self.config.seed)
-        self.online = R2D2Network(self.network_config).to(self.device)
-        self.target = R2D2Network(self.network_config).to(self.device)
+            generator = torch.Generator().manual_seed(self.config.seed)
+        self.online = R2D2Network(self.network_config, generator).to(self.device)
+        self.target = R2D2Network(self.network_config, generator).to(self.device)
         self.target.load_state_dict(self.online.state_dict())
         self.target.requires_grad_(False)
         self._trained = [p for p in self.online.parameters() if p.requires_grad]

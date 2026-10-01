@@ -755,7 +755,7 @@ class TrainingProgressReport:
     #: beside a numbered checkpoint is not counted again.
     checkpoints_written: int = 0
     #: Where the exploration schedule had reached, and the importance-sampling
-    #: exponent replay samples at (fixed; `PrioritizedSequenceReplay.beta`).
+    #: exponent replay samples at (fixed; `R2D2Replay.beta`).
     #: Published here by the run, so a checkpoint or a report carries the value
     #: the run actually used rather than re-evaluating a schedule of its own.
     #: Under a ladder the actors are at rates of their own and this is
@@ -901,7 +901,7 @@ class TrainingRun:
     #: pair at one decision count. Called with `_lock` held and the learner held
     #: still - so no count moves and no gradient step is taken while it writes
     #: - and never with the buffer's lock, which it takes itself only for as
-    #: long as it needs to capture the buffer (`PrioritizedSequenceReplay.image`).
+    #: long as it needs to capture the buffer (`R2D2Replay.image`).
     checkpoint: Callable[[TrainingProgressReport], None] | None = None
     #: Called when a selection period closes or the fleet crosses a multiple of
     #: `checkpoint_every_decisions`, to write a checkpoint under its own name.

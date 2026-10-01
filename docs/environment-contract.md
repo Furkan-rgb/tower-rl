@@ -477,6 +477,14 @@ time its advances budgeted and fails the episode by name rather than counting it
 - `MIN_ROUND_CLOCK_RATIO = 0.99` and `GAME_TIME_DEFLATED` — the world simulated
   more than 1% less than it was asked to. Healthy episodes read 1.0006–1.0010, and
   1.0 would be the natural floor but leaves no room for float noise.
+- `PAUSE_RACE_FRAME_ALLOWANCE = 1` — the lower bound fails an episode only when
+  its round clock is more than one frame's round time (107 ms at 100 ms a
+  frame) below the floor. `Pause` sometimes lands inside the last frame the
+  bridge counted, so that frame is never simulated. This happened in 0.33% of
+  advances, at every point in an episode. Against the first seconds of
+  evidence that one frame alone read up to 5% short (`#112` in
+  `experiments.md`). A world 3% short still fails once about 5.4 s of round
+  time is expected.
 - `MIN_RATIO_EVIDENCE_GAME_MS = 2000.0` — the ratio is taken over the episode so
   far and only once that much game time has been spent; one advance is too short
   a window to judge a clock by. The advance that ends a run is exempt from the

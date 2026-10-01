@@ -99,6 +99,105 @@ name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
 
+## Early-episode `game_time_deflated`: one frame lost to the `Pause` race, judged on the first seconds (`#112`, 2026-10-01)
+
+**Question.** `M3-P017` segment 3 had 16 `game_time_deflated` invalid
+episodes in 717, all at wave 1, each ended after 4–9 decisions at
+0.947–0.989x under the corrected check. That made them its largest invalid
+source, about 2.2% of episodes. Each read exactly one 107 ms frame short of
+`expected_round_ms`. For example, episode 170 had 1 advance and 1,926 round ms
+against 2,033 expected, and episode 42 had 3 advances, 5,992 round ms and 6,099
+expected. Three questions: do the frames lost at episode start come back later
+in the episode, do such losses cluster at episode start, and what makes the
+advances that lose them slow.
+
+**Setup.** The clockprobe source with diagnostics-only timing fields added to
+the `clockprobe` line. Inside `#ifdef TOWER_BRIDGE_DIAGNOSTICS` it gains the
+round clock at the loop's second-last reading, the gap from `Unpause` to the
+first frame, the largest frame gap and its frame, the gap ending at the last
+loop frame, the most frames seen in one poll, `Pause`'s lag after the last
+detection, frames counted between that detection and `Pause`, and the first
+settle frame's gap. The probe build's digest is `a0bac6d0…c644`, in
+`state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe2/`. The
+same source built without diagnostics is still `33d7ada0…`, byte for byte.
+One stage under `run_stage.sh`: `run_actors.py --actors 3 --episodes 12
+--policy turtle --renderer host --frame-rate-hz 120 --cores 4
+--upgrade-availability all --workshop-level 5 --frame-game-ms 100`, clone AVD
+`-read-only` on 5556–5560, offline. That gave 36 episode starts and 29,427
+advances. The host was shared, and its load average reached 68 during the
+stage. The fleet's own result: 35 valid episodes and 1 `game_time_deflated` at
+0.982x, at advance 3 of its episode. Fingerprint: final wave 39.26 [38.97,
+39.54], 21.21 decisions per wave, round-clock ratio 0.9956.
+
+**Result.**
+
+- **The loss is the last counted frame, and it is never recovered.** Of the
+  98 advances that counted two frames more than the round clock credited
+  (0.33%), 96 read the usual two uncredited frames at the loop's last reading
+  (`t1`). In those 96, the last frame's credit, which arrives in the settle
+  window in an ordinary advance (`t2 − t1` = 107 ms), never arrived:
+  `t2 − t1` = 0.000. In the remaining 2, a frame earlier in the advance went
+  uncredited. The next advance starts where this one settled
+  (`t0(n) − t2(n−1)` = 0 in every chained advance) and reads the ordinary
+  one-frame difference. Every credited frame read 107.0 ms. The round clock
+  never catches up. The bridge counted one frame that the world did not run;
+  the world's rate per simulated frame was exact.
+- **The mechanism is a race between `Pause` and the frame it stops on.**
+  `Pause` goes out 0.1 ms after the loop sees the count move. It lands at the
+  main thread's next message dispatch: usually the following frame, but
+  inside the counted frame when that frame is slow to reach its dispatch.
+  Loss rate by the counted frame's duration (detection to first settle frame):
+  0.08% under 6 ms (n=16,248), 0.38% at 6–12 ms, 1.61% at 12–25 ms and 1.85%
+  above 25 ms. By the advance's wall time it is 0.13% under 150 ms, 1.62% at
+  150–300 ms and 2.47% above. The reverse race, where `Unpause` lands early
+  and the first counted frame is simulated, happens in 457 advances (1.55%).
+  That is why pooled ratios sit just above 1.000.
+- **Losses do not cluster at episode start.** The loss rate was 0 of 36 first
+  advances, 1 of 324 advances 2–10 (0.31%), 8 of 1,440 advances 11–50
+  (0.56%) and 89 of 27,599 later (0.32%). Slow advances (over 200 ms) were no
+  more common early: 2.8% at the first advance, 4.9% at advances 2–10 and
+  6.5–11% later. Only 20 ART GC lines were logged in the whole stage, and none
+  fell near a slow advance. The slowness tracks host contention, not
+  first-run loading or `speed_max`.
+- **The evidence window is what fails the episode, not the world.** A loss
+  is a whole 107 ms. Under the 0.99 floor it fails an episode only while
+  less than 10.7 s of round time is expected, which is the first few
+  advances of wave 1. Later, the same loss is under 1% and the more frequent
+  early `Unpause` offsets it. Five 2,000 ms advances at 0.33% each give about
+  1.7% of healthy episodes failed. The stage measured 1 of 36 (2.8%) and
+  `M3-P017` 16 of 717 (2.2%) with a buying policy on a busier host.
+
+**Correction to the `#58` entry.** That entry put the second uncredited
+frame of a two-frame advance at the start. The new fields show it is the
+last frame in 96 of 98 cases. The entry's other findings stand: its "late,
+not lost" holds for ordinary advances, where the last frame is credited in
+the settle window.
+
+**Consequence: a one-frame allowance on the lower bound (host).** A fix in
+the bridge would need to know which frame `Pause` landed in. It sends
+`Pause` from its own thread and can only observe that frame through the round
+clock under test, so the fix is not small. The bridge was not changed. In
+`environment/run_environment.py` the lower bound now fails an episode only
+when its round clock falls more than one frame's round time
+(`PAUSE_RACE_FRAME_ALLOWANCE` = 1, 107 ms at 100 ms a frame) below 0.99 of
+`expected_round_ms`. The 0.99 floor, the 1.25 ceiling, the 2,000 ms evidence
+minimum, the budget and the bridge are unchanged. A world 3% short still
+fails once about 5.4 s of round time is expected, inside wave 1, including
+when a race has already used the episode's one allowed frame. Two lost frames
+in the first seconds still fail. A world at 0.989 still fails, but only once
+about 107 s of round time is expected. Tests: `test_run_environment.py`
+`test_one_frame_lost_to_the_pause_race_does_not_fail_a_healthy_episode_start`,
+`test_a_world_three_percent_short_fails_at_episode_start`,
+`test_a_second_frame_lost_in_the_first_seconds_still_fails` and
+`test_the_deflation_floor_sits_one_percent_under_the_simulated_game_time`.
+The last now plays its episode long enough for 0.989 to cross the floor.
+
+**Cleanup.** Stage exit 0, cleanup ok. On all three instances: libunity
+SHA-256 `ffc1f3ef…0040`, versionCode 1199, installer `com.android.vending`,
+0 libunity mounts, bridge artifacts removed, cleanup checks all passed. No
+qemu process and no adb device were left. `state/bridge/current` was not
+touched. The analysis script is in the session scratchpad.
+
 ## Round-clock probe: one frame per advance is never simulated, and the fidelity check now expects it (`#58`, 2026-10-01)
 
 **Question.** `M3-P017` stopped on its invalid-rate rule with four late
@@ -189,7 +288,8 @@ budget, and so the game-side protocol, are unchanged.
   1) are exactly `1.07 × 18/20`: one 20-frame advance that lost two frames,
   judged on the first 2,000 ms of evidence. The corrected check reads such an
   advance as 18/19 = 0.947 and still fails it. The episode may be the same
-  dispatch lag rather than a deflated world.
+  dispatch lag rather than a deflated world. (Settled by `#112`, the entry
+  above: the frame is lost at `Pause`, not at `Unpause`.)
 - The rejection of `frame_game_ms` 150 and 200 in `M1B-E038` (pooled 0.989
   and 0.983) was measured under the old accounting. The law predicts
   `1.07 · (lf − 1)/lf` for a healthy world, which is about 0.99 or below at

@@ -1404,7 +1404,14 @@ that. `MIN_ROUND_CLOCK_RATIO` (0.99) fails any world that simulates more than
 1% less than it was asked to. It leaves room for ordinary float noise around
 exact agreement: the probe's healthy episodes read 1.0006–1.0010. It names the failure
 `GAME_TIME_DEFLATED`, distinctly from inflation, so a report says which way the
-clock disagreed. `M1B-E038`'s 150 ms and 200 ms arms measured 0.989 and 0.983
+clock disagreed. The floor allows an episode one frame of round time below it
+(`PAUSE_RACE_FRAME_ALLOWANCE`). The bridge sends `Pause` from its own thread.
+When the frame it has just counted is slow to reach the main thread's message
+dispatch, `Pause` lands inside that frame, and the frame is never simulated.
+This happened in 0.33% of advances, at the same rate throughout an episode.
+Against the first seconds of evidence that one frame read up to 5% short, and
+it failed about 2% of healthy episodes at wave 1 (`#112` in `experiments.md`).
+A world 3% short still fails within wave 1's first few seconds. `M1B-E038`'s 150 ms and 200 ms arms measured 0.989 and 0.983
 under the older, whole-budget accounting. That accounting reads about 0.99 or
 below at those frame sizes even for a healthy world, so the arms' rejection is
 not evidence of deflation on its own. The floor does not fire on the one advance that

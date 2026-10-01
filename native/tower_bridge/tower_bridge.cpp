@@ -2167,6 +2167,15 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // than inferred. No extra reads: these reuse snapshots taken anyway.
   const float probe_t0 = before.round_time;
   float probe_t1 = before.round_time;
+  // Where the advance's wall time went: the gap between successive frame
+  // detections (the first is measured from `Unpause`), the largest of them and
+  // the loop frame it ended at, the gap ending at the loop's last frame, the
+  // most frames one poll saw at once, and how long after the last detection
+  // `Pause` was sent.
+  uint64_t probe_detected = MonotonicMicros();
+  uint64_t probe_first_gap = 0, probe_max_gap = 0, probe_last_gap = 0;
+  int32_t probe_max_gap_at = 0, probe_max_jump = 0;
+  float probe_t_prev = before.round_time;
 #endif
   while (true) {
     usleep(kFramePollMicros);
@@ -2180,6 +2189,20 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
       game_millis += rendered * static_cast<double>(command.frame_game_millis);
       // These mid-frame readings decide only when to stop. What the advance
       // reports is decided further down, from the settled state.
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+      {
+        const uint64_t gap = now - probe_detected;
+        probe_detected = now;
+        if (detail->frames == rendered) probe_first_gap = gap;
+        if (gap > probe_max_gap) {
+          probe_max_gap = gap;
+          probe_max_gap_at = detail->frames;
+        }
+        probe_last_gap = gap;
+        if (rendered > probe_max_jump) probe_max_jump = rendered;
+      }
+      probe_t_prev = probe_t1;
+#endif
       const bool read = ReadDecisionSnapshot(api, fields, &after);
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
       if (read) probe_t1 = after.round_time;
@@ -2223,6 +2246,8 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
 
 #ifdef TOWER_BRIDGE_DIAGNOSTICS
   const int32_t probe_loop_frames = detail->frames;
+  uint64_t probe_pause_lag = 0, probe_settle_first_gap = 0;
+  int32_t probe_count_at_pause = 0;
 #endif
   // Pausing a run that has already ended would press a control the game no
   // longer owns a receiver for; RunIsActive is false then anyway. This is the
@@ -2240,11 +2265,18 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
     clock.set_capture_delta(0.0F);
     send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
     const uint64_t settle_started = MonotonicMicros();
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+    probe_pause_lag = settle_started - probe_detected;
+    probe_count_at_pause = clock.get_frame_count() - last_count;
+#endif
     const int32_t settle_from = last_count;
     while (last_count - settle_from < kPauseSettleFrames) {
       usleep(kFramePollMicros);
       const int32_t count = clock.get_frame_count();
       if (count > last_count) {
+#ifdef TOWER_BRIDGE_DIAGNOSTICS
+        if (last_count == settle_from) probe_settle_first_gap = MonotonicMicros() - probe_detected;
+#endif
         const int32_t rendered = count - last_count;
         last_count = count;
         detail->frames += rendered;
@@ -2313,12 +2345,20 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
   // reading, and after the settle window.
   __android_log_print(ANDROID_LOG_INFO, kLogTag,
                       "clockprobe t0=%.3f t1=%.3f t2=%.3f loop_frames=%d settle_frames=%d "
-                      "frame_game_ms=%.1f wall_us=%llu stopped_on=%s",
+                      "frame_game_ms=%.1f wall_us=%llu stopped_on=%s t1prev=%.3f first_gap_us=%llu "
+                      "max_gap_us=%llu max_gap_at=%d last_gap_us=%llu max_jump=%d pause_lag_us=%llu "
+                      "count_at_pause=%d settle_first_gap_us=%llu",
                       static_cast<double>(probe_t0), static_cast<double>(probe_t1),
                       static_cast<double>(readable ? settled.round_time : probe_t1),
                       probe_loop_frames, detail->frames - probe_loop_frames,
                       static_cast<double>(command.frame_game_millis),
-                      static_cast<unsigned long long>(detail->wall_micros), stopped_on);
+                      static_cast<unsigned long long>(detail->wall_micros), stopped_on,
+                      static_cast<double>(probe_t_prev),
+                      static_cast<unsigned long long>(probe_first_gap),
+                      static_cast<unsigned long long>(probe_max_gap), probe_max_gap_at,
+                      static_cast<unsigned long long>(probe_last_gap), probe_max_jump,
+                      static_cast<unsigned long long>(probe_pause_lag), probe_count_at_pause,
+                      static_cast<unsigned long long>(probe_settle_first_gap));
 #endif
 #ifdef TOWER_BRIDGE_RENDER_FRAME_INTERVAL
   // One line per advance: player-loop frames against rendered frames over the

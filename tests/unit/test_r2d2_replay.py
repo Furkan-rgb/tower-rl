@@ -237,6 +237,17 @@ def test_an_item_with_priority_zero_is_not_drawn_again() -> None:
     assert set(replay.sample(100).keys.tolist()) == {1}
 
 
+def test_when_every_priority_is_zero_the_draw_is_uniform_over_the_live_items() -> None:
+    """Reverb's PrioritizedSelector::Sample does the same when its total weight is 0."""
+    replay = _replay(30, 30, 30, capacity=2, seed=1)  # keys 1 and 2 are live
+    replay.update_priorities(numpy.array([1, 2]), numpy.array([0.0, 0.0]))
+    sample = replay.sample(200)
+    assert set(sample.keys.tolist()) == {1, 2}
+    assert sample.probabilities.tolist() == [0.5] * 200
+    assert sample.weights.tolist() == [1.0] * 200
+    assert sample.arrays["padding"].shape[0] == 200
+
+
 def test_a_priority_update_skips_an_item_evicted_since_its_sample() -> None:
     replay = _replay(121, capacity=1)
     sample = replay.sample(1)

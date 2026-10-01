@@ -328,16 +328,24 @@ class R2D2Replay:
         # slot has zero width and is never landed on.
         cumulative = numpy.cumsum(self._scaled)
         total = cumulative[-1]
-        # Below `total` even where the product rounds up to it.
-        draws = numpy.minimum(
-            self._random.random(batch_size) * total, numpy.nextafter(total, 0.0)
-        )
-        slots = numpy.searchsorted(cumulative, draws, side="right")
-        probabilities = self._scaled[slots] / total
+        oldest = self._inserted - self._live
+        if total <= 0.0:
+            # Every live item has priority 0 (an episode shorter than its burn-in
+            # has no step to learn from): as Reverb's PrioritizedSelector::Sample
+            # does when its total weight is 0, draw uniformly over the live items.
+            keys = oldest + self._random.integers(self._live, size=batch_size)
+            slots = keys % self.capacity
+            probabilities = numpy.full(batch_size, 1.0 / self._live)
+        else:
+            # Below `total` even where the product rounds up to it.
+            draws = numpy.minimum(
+                self._random.random(batch_size) * total, numpy.nextafter(total, 0.0)
+            )
+            slots = numpy.searchsorted(cumulative, draws, side="right")
+            probabilities = self._scaled[slots] / total
+            keys = oldest + (slots - oldest) % self.capacity
         weights = (1.0 / (probabilities + 1e-6)) ** self.beta
         weights /= weights.max()
-        oldest = self._inserted - self._live
-        keys = oldest + (slots - oldest) % self.capacity
         self.stats.sampled += batch_size
         return R2D2Sample(
             keys=keys,

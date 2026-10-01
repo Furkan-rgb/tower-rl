@@ -820,7 +820,9 @@ def settle_fixed_settings(
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     """Everything the run is configured by, validated before a device is touched."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    # No abbreviations: `--discount 0.99` would otherwise be read as
+    # `--discount-per-game-second 0.99`, a retired flag taken for its successor.
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "--budget-decisions",
         type=int,

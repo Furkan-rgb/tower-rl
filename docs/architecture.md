@@ -93,7 +93,8 @@ Owns the decision problem, and nothing about how a device is reached.
 - `run_environment.py` — `InstrumentedRunEnvironment`, `CadenceConfig`,
   `DecisionCadence` and `UpgradeAvailability`. It decides when a decision is
   due, charges the game clock, checks fidelity
-  (`MIN_ROUND_CLOCK_RATIO`/`MAX_ROUND_CLOCK_RATIO`, `GAME_TIME_INFLATED`,
+  (`MIN_ROUND_CLOCK_RATIO`/`MAX_ROUND_CLOCK_RATIO`,
+  `PAUSE_RACE_FRAME_ALLOWANCE`, `GAME_TIME_INFLATED`,
   `GAME_TIME_DEFLATED`, `ADVANCE_TRUNCATED_BY_WALL`, `BRIDGE_EVENT_DIVERGENCE`)
   and recovers the death-boundary transient. It also owns upgrade availability
   (ADR 0011): under `UpgradeAvailability.ALL` it reopens every real upgrade row

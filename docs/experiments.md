@@ -78,7 +78,7 @@ recipe on the new baseline.
 | `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | PROVISIONAL: arm-n10 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83] (n=105 pending) | STOPPED by SIGINT at 1,005,709/1,000,000 decisions, during the built-in final evaluation; arm read at period 16 (near-greedy mean 55.28, n=29) | Well above `M3-P009`'s ~35-38-wave level on the provisional n=10 read; offline diagnosis finds a learner-limited, reactive Defense-Absolute/cash-hoarding strategy (spend share 58%/73% from wave 30 in Defense Absolute vs 3.1%/1.1% in Thorns, damage frozen at 57.3 from wave 30, no upgrade near max, post-100k final-wave SD 12.9 range 11-72), not an account ceiling | this commit (results) |
 | `M3-P015` | With `M3-P014`'s exact recipe and the discount horizon at the protocol's 0.999 per game-second (ADR 0013), survival reward scaled to hold the maximum return at V_REF, does the policy pair Defense Absolute with Thorns rather than turtling on Defense Absolute alone? | `--discount-per-game-second 0.999` (was 0.997); survival-time reward scaled to (1 − d) · V_REF (identical to `M3-P014`'s at 0.997, a third of the unscaled one at 0.999) | `M3-P014` (mlflow `156c54ce`), matched decisions; n=1 | pending | pending | pending | this commit (pre-registration) |
 | `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
-| `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | pending | pending | pending | this commit (pre-registration) |
+| `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | not evaluated; near-greedy period means 24.59, 28.00, 28.72, 29.26, 28.41, 27.78, 25.37, 29.22, 30.33, 38.05 over 10 periods (best 38.05, period 10, 62 episodes), n=1 | STOPPED by SIGINT at 500,768/1,000,000 decisions under the 500k rule (best 38.05 < 39.4 at period 10); no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at 25-30 for periods 1-9, the same value and credit failure as `M3-P016` under official conventions: train ratio 511.6 against the official 512, replay balance, latents and return normaliser as official; a purchase changes the survival return by 0.003-0.02 against a critic bias of about +4.5; Defense Absolute 15.5% of spend from wave 30 against the DQN's 70.4%. A protocol property, not a deviation. Period 10's jump to 38.05 came at the stop and one period cannot say whether a plateau break was starting; resumable from its pair. Health-potential shaping (C1) would give purchases essentially no credit (|F| 3e-5 per purchase against 0.019 survival reward per timed decision); dropped. 84,939 decisions/hour; 42 of 945 episodes invalid | `c78e469` (pre-registration), this commit (results, diagnosis) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -98,6 +98,105 @@ The move renames each entry as it stood, so a past run's directory keeps its
 name under `state/`. Where a *new* run writes has changed as well: spectate
 recordings and their records now default to `state/recordings/`, and evaluation
 records to `state/records/` instead of `/tmp`.
+
+## Early-episode `game_time_deflated`: one frame lost to the `Pause` race, judged on the first seconds (`#112`, 2026-10-01)
+
+**Question.** `M3-P017` segment 3 had 16 `game_time_deflated` invalid
+episodes in 717, all at wave 1, each ended after 4–9 decisions at
+0.947–0.989x under the corrected check. That made them its largest invalid
+source, about 2.2% of episodes. Each read exactly one 107 ms frame short of
+`expected_round_ms`. For example, episode 170 had 1 advance and 1,926 round ms
+against 2,033 expected, and episode 42 had 3 advances, 5,992 round ms and 6,099
+expected. Three questions: do the frames lost at episode start come back later
+in the episode, do such losses cluster at episode start, and what makes the
+advances that lose them slow.
+
+**Setup.** The clockprobe source with diagnostics-only timing fields added to
+the `clockprobe` line. Inside `#ifdef TOWER_BRIDGE_DIAGNOSTICS` it gains the
+round clock at the loop's second-last reading, the gap from `Unpause` to the
+first frame, the largest frame gap and its frame, the gap ending at the last
+loop frame, the most frames seen in one poll, `Pause`'s lag after the last
+detection, frames counted between that detection and `Pause`, and the first
+settle frame's gap. The probe build's digest is `a0bac6d0…c644`, in
+`state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe2/`. The
+same source built without diagnostics is still `33d7ada0…`, byte for byte.
+One stage under `run_stage.sh`: `run_actors.py --actors 3 --episodes 12
+--policy turtle --renderer host --frame-rate-hz 120 --cores 4
+--upgrade-availability all --workshop-level 5 --frame-game-ms 100`, clone AVD
+`-read-only` on 5556–5560, offline. That gave 36 episode starts and 29,427
+advances. The host was shared, and its load average reached 68 during the
+stage. The fleet's own result: 35 valid episodes and 1 `game_time_deflated` at
+0.982x, at advance 3 of its episode. Fingerprint: final wave 39.26 [38.97,
+39.54], 21.21 decisions per wave, round-clock ratio 0.9956.
+
+**Result.**
+
+- **The loss is the last counted frame, and it is never recovered.** Of the
+  98 advances that counted two frames more than the round clock credited
+  (0.33%), 96 read the usual two uncredited frames at the loop's last reading
+  (`t1`). In those 96, the last frame's credit, which arrives in the settle
+  window in an ordinary advance (`t2 − t1` = 107 ms), never arrived:
+  `t2 − t1` = 0.000. In the remaining 2, a frame earlier in the advance went
+  uncredited. The next advance starts where this one settled
+  (`t0(n) − t2(n−1)` = 0 in every chained advance) and reads the ordinary
+  one-frame difference. Every credited frame read 107.0 ms. The round clock
+  never catches up. The bridge counted one frame that the world did not run;
+  the world's rate per simulated frame was exact.
+- **The mechanism is a race between `Pause` and the frame it stops on.**
+  `Pause` goes out 0.1 ms after the loop sees the count move. It lands at the
+  main thread's next message dispatch: usually the following frame, but
+  inside the counted frame when that frame is slow to reach its dispatch.
+  Loss rate by the counted frame's duration (detection to first settle frame):
+  0.08% under 6 ms (n=16,248), 0.38% at 6–12 ms, 1.61% at 12–25 ms and 1.85%
+  above 25 ms. By the advance's wall time it is 0.13% under 150 ms, 1.62% at
+  150–300 ms and 2.47% above. The reverse race, where `Unpause` lands early
+  and the first counted frame is simulated, happens in 457 advances (1.55%).
+  That is why pooled ratios sit just above 1.000.
+- **Losses do not cluster at episode start.** The loss rate was 0 of 36 first
+  advances, 1 of 324 advances 2–10 (0.31%), 8 of 1,440 advances 11–50
+  (0.56%) and 89 of 27,599 later (0.32%). Slow advances (over 200 ms) were no
+  more common early: 2.8% at the first advance, 4.9% at advances 2–10 and
+  6.5–11% later. Only 20 ART GC lines were logged in the whole stage, and none
+  fell near a slow advance. The slowness tracks host contention, not
+  first-run loading or `speed_max`.
+- **The evidence window is what fails the episode, not the world.** A loss
+  is a whole 107 ms. Under the 0.99 floor it fails an episode only while
+  less than 10.7 s of round time is expected, which is the first few
+  advances of wave 1. Later, the same loss is under 1% and the more frequent
+  early `Unpause` offsets it. Five 2,000 ms advances at 0.33% each give about
+  1.7% of healthy episodes failed. The stage measured 1 of 36 (2.8%) and
+  `M3-P017` 16 of 717 (2.2%) with a buying policy on a busier host.
+
+**Correction to the `#58` entry.** That entry put the second uncredited
+frame of a two-frame advance at the start. The new fields show it is the
+last frame in 96 of 98 cases. The entry's other findings stand: its "late,
+not lost" holds for ordinary advances, where the last frame is credited in
+the settle window.
+
+**Consequence: a one-frame allowance on the lower bound (host).** A fix in
+the bridge would need to know which frame `Pause` landed in. It sends
+`Pause` from its own thread and can only observe that frame through the round
+clock under test, so the fix is not small. The bridge was not changed. In
+`environment/run_environment.py` the lower bound now fails an episode only
+when its round clock falls more than one frame's round time
+(`PAUSE_RACE_FRAME_ALLOWANCE` = 1, 107 ms at 100 ms a frame) below 0.99 of
+`expected_round_ms`. The 0.99 floor, the 1.25 ceiling, the 2,000 ms evidence
+minimum, the budget and the bridge are unchanged. A world 3% short still
+fails once about 5.4 s of round time is expected, inside wave 1, including
+when a race has already used the episode's one allowed frame. Two lost frames
+in the first seconds still fail. A world at 0.989 still fails, but only once
+about 107 s of round time is expected. Tests: `test_run_environment.py`
+`test_one_frame_lost_to_the_pause_race_does_not_fail_a_healthy_episode_start`,
+`test_a_world_three_percent_short_fails_at_episode_start`,
+`test_a_second_frame_lost_in_the_first_seconds_still_fails` and
+`test_the_deflation_floor_sits_one_percent_under_the_simulated_game_time`.
+The last now plays its episode long enough for 0.989 to cross the floor.
+
+**Cleanup.** Stage exit 0, cleanup ok. On all three instances: libunity
+SHA-256 `ffc1f3ef…0040`, versionCode 1199, installer `com.android.vending`,
+0 libunity mounts, bridge artifacts removed, cleanup checks all passed. No
+qemu process and no adb device were left. `state/bridge/current` was not
+touched. The analysis script is in the session scratchpad.
 
 ## Round-clock probe: one frame per advance is never simulated, and the fidelity check now expects it (`#58`, 2026-10-01)
 
@@ -189,7 +288,8 @@ budget, and so the game-side protocol, are unchanged.
   1) are exactly `1.07 × 18/20`: one 20-frame advance that lost two frames,
   judged on the first 2,000 ms of evidence. The corrected check reads such an
   advance as 18/19 = 0.947 and still fails it. The episode may be the same
-  dispatch lag rather than a deflated world.
+  dispatch lag rather than a deflated world. (Settled by `#112`, the entry
+  above: the frame is lost at `Pause`, not at `Unpause`.)
 - The rejection of `frame_game_ms` 150 and 200 in `M1B-E038` (pooled 0.989
   and 0.983) was measured under the old accounting. The law predicts
   `1.07 · (lf − 1)/lf` for a healthy world, which is about 0.99 or below at
@@ -1325,6 +1425,144 @@ episodes are counted) is computed with the corrected check, over the episodes
 from the resume onward. Every other rule is unchanged, including the chain
 rule, `stale_or_duplicate`/`WORLD_NOT_HELD`, memory, the kill bars and the
 500k rule. Learner debt pauses remain not a stop condition.
+
+**Amendment after resume attempt 1 (2026-10-01, Lead decision, written
+before resume attempt 2).**
+
+*Resume attempt 1.* The resume started from 79,869 decisions with **6 of 7
+actors**: `emulator-5568` failed to deploy (`adb: error: cannot bind
+listener: Address already in use`, on its forward to host port 47658) and
+`train.py` went on without it. It was stopped by SIGINT at **87,865
+decisions** (`latest.pt` and 87,633 replay items saved, cleanup ok), with
+**7,996 decisions collected on 6 actors** (episodes 216-228, none invalid).
+Those decisions **stay in the run**: every transition was produced by the
+same learner, bridge build and task on healthy instances, and nothing is
+removed from replay. A run below 7 actors is not acceptable under the
+protocol, so resume attempt 2 does not proceed with fewer than 7 and the
+watcher stops on it.
+
+*The `stale_or_duplicate` stop, clarified.* The stop rule "any
+`stale_or_duplicate`" is meant to catch a stale or duplicate observation
+**inside an episode**, which could corrupt a transition. Resume attempt 1
+logged one `failed episode start ... the game did not honour speed_max:
+stale_or_duplicate` on `emulator-5558`. A failed episode start records no
+transition, and its start is retried; `M3-P016` attempt 3 saw it twice
+without effect. So:
+
+- a `failed episode start` with `stale_or_duplicate` is logged and counted and
+  is **not a stop**; it becomes a stop only if 3 such failures chain on one
+  actor, read as the chain rule reads invalid episodes (failures of one actor
+  whose episode indexes are within 6 of each other; a proxy, checked by
+  hand);
+- any `stale_or_duplicate` or `WORLD_NOT_HELD` **inside an episode** (an
+  invalid episode) remains an immediate stop.
+
+### Stopped, as run (2026-10-01, `#58`)
+
+**Verdict: STOPPED under the 500k rule; not evaluated.** Run
+`state/runs/m3-p017-dreamerv3-20260930T214001Z`, three segments (the
+invalid-rate stop at 79,869 decisions, resume attempt 1 to 87,865, resume
+attempt 2 to the end). Resume attempt 2 (7 actors, corrected round-clock check)
+was stopped with one SIGINT at **500,768** of the planned 1,000,000 decisions,
+after 4 h 58 min. This time the watcher enforced the rule: it reported "period
+10 at 500768 decisions, best 38.05 < 39.40" and the stop followed. The process
+exited through its graceful path: the log says "stopped by SIGINT at 500768
+decisions: every actor abandoned the episode it was in" and "final evaluation
+skipped: stopped by SIGINT"; the stage exited 0 with "cleanup ok". On all
+seven actors the cleanup checks passed (`libunity.so` SHA-256 `ffc1f3ef…0040`,
+versionCode 1199, installer `com.android.vending`, 0 mounts), and the stage
+verified no qemu process and no adb device. The resume pair is written:
+`checkpoints/latest.pt` (and `checkpoint-d0500768.pt`) with 501,220 replay
+items (5.34 GB), no failed resume save. No arm-n10 evaluation was run, so
+there is no beat/no-beat verdict against stacked-dqn's 55.70.
+
+**Near-greedy selection-period means** (`stage.out` period lines, 10 periods
+closed, the last at 500,768):
+
+| period | decisions | mean final wave | n episodes | best so far |
+| --- | --- | --- | --- | --- |
+| 1 | 50,240 | 24.59 | 161 | 24.59 |
+| 2 | 100,269 | 28.00 | 22 | 28.00 |
+| 3 | 150,444 | 28.72 | 89 | 28.72 |
+| 4 | 200,492 | 29.26 | 86 | 29.26 |
+| 5 | 250,515 | 28.41 | 85 | 29.26 |
+| 6 | 300,073 | 27.78 | 95 | 29.26 |
+| 7 | 350,406 | 25.37 | 90 | 29.26 |
+| 8 | 400,141 | 29.22 | 77 | 29.26 |
+| 9 | 451,095 | 30.33 | 78 | 30.33 |
+| 10 | 500,768 | 38.05 | 62 | 38.05 |
+
+Period 2's 22 episodes are the ones counted after the last resume (the
+period spans it); that is read from the counts, not checked in the code.
+
+**The jump at period 10.** Periods 1-9 sat between 24.59 and 30.33. Period 10
+reads 38.05 over 62 episodes, and it closed at the stop. One period of 62
+episodes in one run cannot tell whether a plateau break was starting or a
+period-to-period swing (`M3-P016` swung 36.34 to 25.73 between periods 9 and
+10). The rule fired because 38.05 is below 39.4; the run is resumable from
+its pair if that question is wanted answered.
+
+**Invalid episodes, whole run: 42 of 945** (4.4%): segment 1 11 of 215,
+segment 2 0 of 13, segment 3 31 of 717 (4.3%, the rate since resume attempt
+2). Replay rejected 42 inadmissible transitions, one per invalid episode. By
+code, all segments:
+
+| code | segment 1 | segment 3 | total |
+| --- | --- | --- | --- |
+| `game_time_deflated` (round clock short) | 6 | 16 | 22 |
+| `mask_legal_purchase_rejected` (`precondition_failed`) | 4 | 8 | 12 |
+| `bridge_event_divergence` | 1 | 7 | 8 |
+| `stale_or_duplicate`, `WORLD_NOT_HELD`, stall | 0 | 0 | 0 |
+
+Segment 3 ran under the corrected round-clock check. It has no late-wave
+`game_time_deflated`, which is what the correction was for. Its 16 round-clock
+failures are all wave 1: 4 to 9 decisions, 1.9 to 10 s of game time, the clock
+at 0.947x to 0.989x of the simulated game time. They are not explained and
+not diagnosed here. No chain of 3 on one actor occurred. Three
+`failed episode start ... stale_or_duplicate` (one in segment 2, two in
+segment 3) were logged and, under the amendment, are not stops.
+
+**Throughput.** Segment 3 collected 412,903 decisions in 17,500 s: 84,939
+decisions/hour for the fleet. The learner took 250,726 gradient steps over
+500,768 decisions, 0.5007 per decision; the run was learner-bound
+(`M3-P016` attempt 3: 103,849 decisions/hour).
+
+### Diagnosis (2026-10-01, `#58`)
+
+Offline, read-only, on the replay dump at 304,837 steps (624 episodes, 0
+evicted), its paired `latest.pt`, and checkpoints 50,240 to 325,696; n=1
+throughout. `M3-P016`'s zero-start window probes cannot be repeated here (this
+model's KL stays 27-57 over 64 steps from a mid-episode zero state), so the
+probes use the acting-view latent or the stored one, and the comparison with
+`M3-P016` is approximate where it depends on that.
+
+- Same value and credit failure as `M3-P016`, now under official
+  conventions: the critic overestimates survival value by about +4.5
+  (+4.89, +5.69, +4.47 at 100k, 200k, 300k), imagination misses death
+  (open-loop survival 0.998 one step before death at 300k), and the actor's
+  best action agrees with the model's one-step best in 31-33% of states.
+- A purchase changes the survival return by 0.003-0.02, against 0.05-0.13 of
+  per-sample imagined-return noise and a critic bias of about +4.5.
+- Train ratio 511.6 replayed steps per decision, against the official 512
+  (506-516 per 50k window), held by pausing actors. Replay balance (uniform
+  over all items, no eviction, the last 50k decisions' share of waves 25+
+  20.8% against 20.0%), stored latents, return normaliser and actor entropy
+  all behave as the official code does.
+- Defense Absolute is 15.5% of spend from wave 30 onward (0.158 over the last
+  100k), against 13.7% in `M3-P016` and 70.4% for stacked-dqn.
+- Not undertraining: the world model's KL on data it has seen is 2.6-3.4.
+- The cause is a protocol property, not a deviation from the official
+  conventions. The survival reward carries no per-decision action information
+  (credit arrives at death, hundreds of decisions later) while imagination
+  covers 15 decisions, about 28 game-seconds. No learner change within ADR
+  0018 addresses it; any would be a deviation.
+
+**Health-potential shaping (C1) would not help, and was dropped.** Measured
+on the same dump (`scratchpad/reward-study/o1_real.out`, 14,281 purchases and
+289,932 timed decisions): the shaping term's |F| per purchase averages 3e-5
+(nonzero share 0.000), against a survival reward of 0.019 per timed decision
+(mean 0.01886). C1 would give purchases essentially no credit. The developer
+dropped shaping and cancelled the C1 work.
 
 ## M3-P016: DreamerV3 at its published configuration under `M3-P015`'s task protocol (pre-registered, written before the run)
 

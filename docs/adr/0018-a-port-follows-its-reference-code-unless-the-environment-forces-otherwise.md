@@ -1,7 +1,9 @@
 # ADR 0018 — A port follows its reference code unless the environment forces otherwise
 
-**Status:** adopted in code for DreamerV3, 2026-09-30. Board `#108`. Verified
-by unit tests and a GPU smoke run on fake ports; no device run yet.
+**Status:** adopted in code for DreamerV3, 2026-09-30 (board `#108`), and for
+R2D2, 2026-10-01 (board `#111`). Verified by unit tests and a GPU smoke run on
+fake ports. DreamerV3 has run on devices under it (`M3-P017`,
+`docs/experiments.md`); R2D2 has not yet.
 
 ## Context
 
@@ -49,9 +51,14 @@ discount (ADR 0013), and the unused `td_errors` (the `Backbone` contract).
 - Every completed learner step now publishes a snapshot of the parameters,
   and an actor loads it without waiting for the step in flight. That replaces
   ADR 0017's publication, which copied the live network under a lock a step
-  held and so could wait for one step; stacked-dqn keeps its refresh cadence
-  and gains the same no-wait load. The debt is unchanged.
+  held and so could wait for one step; R2D2 gets the same no-wait load, network only,
+  at its 400-decision cadence. The debt is unchanged in kind and counted in
+  credits (ADR 0017).
 - Replay costs ~10.6 KB per step at the official float32 entry precision,
   ~10.6 GB per 1M decisions (§9.4c).
-- The same rule applies to any later port, including stacked-dqn's rebuild
-  against its reference recipes.
+- The same rule applies to any later port. It was applied to R2D2 on board
+  #111, which replaced stacked-dqn (removed; commit `cb2f324` is the last
+  that can resume or evaluate it). R2D2's deviation list is the conventions
+  table in `docs/solution.md` section 9.4, one row per convention, each "same"
+  or naming what forces it. Its checkpoints are format 8 and its replay dumps
+  format 4; the old window buffer's dump formats 1 and 2 are refused.

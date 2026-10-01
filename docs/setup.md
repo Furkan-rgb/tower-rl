@@ -79,7 +79,7 @@ state/runs/<run name>/
 ```
 
 `train.py --run-name` names the folder (default `<backbone>-<UTC start>`, for
-example `stacked-dqn-20260927T134501Z`). A `--resume` from the folder's own
+example `r2d2-20260927T134501Z`). A `--resume` from the folder's own
 `checkpoints/latest.pt` continues in it as the next segment; a resume from a
 numbered checkpoint or from a run written before this layout starts a new
 folder naming its parent. `run_episodes.py` and `run_actors.py` with
@@ -590,22 +590,24 @@ A stage — a training seed, an evaluation batch, a recording session — is hou
 of device time, so it is launched once and left alone rather than watched:
 
 ```text
-run=stacked-dqn-$(date -u +%Y%m%dT%H%M%SZ)
+run=r2d2-$(date -u +%Y%m%dT%H%M%SZ)
 nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 \
     --log-directory "state/runs/$run/logs" -- \
   uv run --extra tracking python scripts/train.py --run-name "$run" \
+      --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
       --budget-decisions 120000 --checkpoint-every-decisions 5000 \
       --selection-period-decisions 15000 \
-      --epsilon-anneal-decisions 2500 \
       --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
       --seed 1 > /dev/null 2>&1 &
 ```
 
 That is `M2-P002`'s option-B training line for seed 1 with `run_stage.sh` in
 front of it, its budget restated in decisions (`#68`; the game-time flags it
-was run with are gone): `--budget-decisions` is the fleet's cumulative
+was run with are gone, and so is `--epsilon-anneal-decisions`, which R2D2 fixes at 0
+with the Ape-X ladder; `--backbone`, the task's discount and its reward are
+required): `--budget-decisions` is the fleet's cumulative
 decisions, `--selection-period-decisions` cuts the axis into the periods the
 arm is chosen on, and `--checkpoint-every-decisions` adds numbered checkpoints
 between period closes. `nohup`'s own stdout goes nowhere because the script

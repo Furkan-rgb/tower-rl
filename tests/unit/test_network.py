@@ -1,84 +1,43 @@
+"""`TowerTrunk`, the encoder R2D2's network is built on (`learning/network.py`)."""
+
 from __future__ import annotations
 
 import pytest
 import torch
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
-from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.network import NetworkConfig, StackedPolicyNetwork
-from tower_rl.learning.value_learning import evaluated_next_values
-
-ACTIONS = len(RUN_ACTIONS)
+from tower_rl.learning.network import NetworkConfig, TowerTrunk
 
 
-def _batch(batch: int = 2, time: int = 3, *, valid: list[int] | None = None):
-    torch.manual_seed(0)
-    scalars = torch.randn(batch, time, SCALAR_COUNT)
-    rows = torch.randn(batch, time, ROW_COUNT, ROW_WIDTH)
-    mask = torch.zeros(batch, time, ACTIONS, dtype=torch.bool)
-    for index in valid if valid is not None else [0, 1, 2]:
-        mask[..., index] = True
-    return scalars, rows, mask
+def _inputs(batch: int = 2, time: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
+    generator = torch.Generator().manual_seed(0)
+    return (
+        torch.randn(batch, time, SCALAR_COUNT, generator=generator),
+        torch.randn(batch, time, ROW_COUNT, ROW_WIDTH, generator=generator),
+    )
 
 
-def test_forward_shapes_and_window_state_threading() -> None:
-    network = StackedPolicyNetwork()
-    scalars, rows, mask = _batch()
+def test_every_row_is_encoded_through_shared_weights() -> None:
+    trunk = TowerTrunk(NetworkConfig())
+    scalars, rows = _inputs()
 
-    q, state = network(scalars, rows, mask)
+    encoded_rows, encoded_scalars = trunk.encode(scalars, rows)
 
-    assert q.shape == (2, 3, ACTIONS)
-    assert state.shape == (2, network.history_length - 1, SCALAR_COUNT)
-
-    # The carried window must change the output; otherwise history is inert.
-    continued, _ = network(scalars, rows, mask, state)
-    assert not torch.allclose(q, continued)
-
-
-def test_invalid_actions_are_unselectable_and_never_bootstrap() -> None:
-    network = StackedPolicyNetwork()
-    scalars, rows, mask = _batch(valid=[0, 5, 9])
-
-    q, _ = network(scalars, rows, mask)
-
-    assert torch.isinf(q[~mask]).all() and (q[~mask] < 0).all()
-    assert torch.isfinite(q[mask]).all()
-    chosen = q.argmax(dim=-1)
-    assert torch.tensor([value in (0, 5, 9) for value in chosen.flatten()]).all()
-
-
-def test_a_terminal_state_bootstraps_zero_rather_than_negative_infinity() -> None:
-    network = StackedPolicyNetwork()
-    scalars, rows, mask = _batch()
-    mask[:] = False  # no action is available on a terminal state
-
-    q, _ = network(scalars, rows, mask)
-
-    assert torch.isinf(q).all()
-    # The bootstrap the learner actually takes is the double-Q one, and it must
-    # contribute nothing rather than the negative infinity the mask carries.
-    assert torch.equal(evaluated_next_values(q, q, mask), torch.zeros(2, 3))
-
-
-def test_dueling_centre_uses_valid_actions_only() -> None:
-    """Adding an always-invalid slot must not move the valid actions' Q-values."""
-    network = StackedPolicyNetwork()
-    scalars, rows, mask = _batch(valid=[0, 1])
-
-    narrow, _ = network(scalars, rows, mask)
-
-    wider = mask.clone()
-    wider[..., 40] = False  # still invalid, but exercised through the same path
-    same, _ = network(scalars, rows, wider)
-
-    assert torch.allclose(narrow[mask], same[mask])
+    hidden = trunk.config.hidden
+    assert encoded_rows.shape == (2, 3, ROW_COUNT, hidden)
+    assert encoded_scalars.shape == (2, 3, hidden)
+    # Two rows with the same features differ only by their learned identity.
+    same = rows.clone()
+    same[..., 1, :] = same[..., 0, :]
+    first, second = trunk.encode(scalars, same)[0][..., :2, :].unbind(dim=-2)
+    assert not torch.allclose(first, second)
 
 
 def test_parameter_count_is_independent_of_the_roster_size() -> None:
-    small = StackedPolicyNetwork(NetworkConfig(row_count=10, action_count=11))
-    large = StackedPolicyNetwork(NetworkConfig(row_count=40, action_count=41))
+    small = TowerTrunk(NetworkConfig(row_count=10, action_count=11))
+    large = TowerTrunk(NetworkConfig(row_count=40, action_count=41))
 
-    def weights(model: StackedPolicyNetwork) -> int:
+    def weights(model: TowerTrunk) -> int:
         return sum(p.numel() for name, p in model.named_parameters() if "identity" not in name)
 
     assert weights(small) == weights(large), "shared encoders must not scale with the roster"
@@ -95,13 +54,17 @@ def test_identity_table_is_over_provisioned_for_future_slots() -> None:
         NetworkConfig(row_count=60, action_count=60)
 
 
-def test_gradients_reach_the_shared_row_encoder() -> None:
-    network = StackedPolicyNetwork()
-    scalars, rows, mask = _batch()
+def test_gradients_reach_the_shared_row_encoder_and_the_identity_table() -> None:
+    trunk = TowerTrunk(NetworkConfig())
+    scalars, rows = _inputs()
 
-    q, _ = network(scalars, rows, mask)
-    q[mask].sum().backward()
+    encoded_rows, encoded_scalars = trunk.encode(scalars, rows)
+    (encoded_rows.sum() + encoded_scalars.sum()).backward()
 
-    encoder_grad = network.trunk.row_encoder[0].weight.grad
+    encoder_grad = trunk.row_encoder[0].weight.grad
     assert encoder_grad is not None and encoder_grad.abs().sum() > 0
-    assert network.trunk.identity.weight.grad is not None
+    identity_grad = trunk.identity.weight.grad
+    assert identity_grad is not None and identity_grad[: ROW_COUNT].abs().sum() > 0
+    assert identity_grad[ROW_COUNT:].abs().sum() == 0, "only the slots in use are trained"
+    scalar_grad = trunk.scalar_encoder[0].weight.grad
+    assert scalar_grad is not None and scalar_grad.abs().sum() > 0

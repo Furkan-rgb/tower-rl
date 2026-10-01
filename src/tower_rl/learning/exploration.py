@@ -1,34 +1,26 @@
 """How much of the fleet's collection is spent off the greedy policy, per actor.
 
-One run has one anneal: every actor's rate falls linearly from `epsilon_start`
-over `anneal_decisions` and is held afterwards.  What it falls *to* is the
-actor's own floor.  Under the uniform schedule that floor is `epsilon_end` for
-every actor, which is the one rate every run so far collected under; under a
-ladder each actor has a floor of its own and `epsilon_end` is not used at all.
+Each backbone fixes its schedule and `train.py` refuses a flag that contradicts
+it. R2D2 acts on Ape-X's ladder from its first decision, with no anneal;
+DreamerV3 adds no exploration noise, a uniform schedule at 0. A schedule can
+still anneal every actor's rate linearly from `epsilon_start` over
+`anneal_decisions` to the actor's own floor, `epsilon_end` for a uniform
+schedule and its rung for a ladder; neither backbone sets a horizon.
 
-The floors are Ape-X's (Horgan et al. 2018, arXiv:1803.00933): actor `i` of `N`
+The rungs are Ape-X's (Horgan et al. 2018, arXiv:1803.00933): actor `i` of `N`
 acts at `epsilon_i = 0.4 ** (1 + 7 * i / (N - 1))`, spanning 0.4 down to 0.00066
 for seven actors.  One fleet then both searches and reports: the high actors play
 build orders the greedy policy would never reach, while the near-greedy ones -
 at or under `NEAR_GREEDY_EPSILON` - keep producing a collection curve that can
 still be read as the policy's own performance.
 
-A uniform schedule has no per-actor floors at all: every actor draws the one
-annealed rate, which is what every run before this one collected under, and the
-whole fleet is therefore near-greedy in the only sense the curve cares about -
-the episodes are all of one policy at one exploration rate.
-
-How long an exploratory action lasts is a separate question from how often one
-starts. Under `--ez-greedy` (Dabney, Ostrovski & Barreto 2021, arXiv:2006.01782)
-the rate above still decides when to explore, and `zeta_duration` decides for
-how many decisions the one uniformly drawn action is then repeated.
+A uniform schedule has no rungs: every actor draws the one rate, so the whole
+fleet is near-greedy in the only sense the curve cares about - the episodes are
+all of one policy at one exploration rate.
 """
 
 from __future__ import annotations
 
-import bisect
-import itertools
-import random
 from dataclasses import dataclass
 
 #: The rate at or under which an actor's episodes are read as the policy's own
@@ -43,31 +35,6 @@ APE_X_ALPHA = 7.0
 UNIFORM = "uniform"
 LADDER = "ladder"
 EXPLORATION_OPTIONS = (UNIFORM, LADDER)
-
-#: The ez-greedy duration distribution, verbatim from the paper: z(n) is
-#: proportional to n ** -mu with mu = 2 (section 4.2, used for every Atari
-#: result), capped at n <= 10000 (Appendix B; the R2D2-based agents' cap, which
-#: this recurrent-replay, Ape-X-laddered stack is shaped like).
-EZ_GREEDY_MU = 2.0
-EZ_GREEDY_MAX_DURATION = 10_000
-
-_ZETA_RUNNING_TOTALS = tuple(
-    itertools.accumulate(n**-EZ_GREEDY_MU for n in range(1, EZ_GREEDY_MAX_DURATION + 1))
-)
-#: z's cumulative distribution over 1..EZ_GREEDY_MAX_DURATION. Computed once: a
-#: draw is then one uniform and one bisection. The last entry is exactly 1.0
-#: (a total divided by itself), so every uniform in [0, 1) falls under it.
-_ZETA_CUMULATIVE = tuple(weight / _ZETA_RUNNING_TOTALS[-1] for weight in _ZETA_RUNNING_TOTALS)
-
-
-def zeta_duration(stream: random.Random) -> int:
-    """How many decisions one exploratory action lasts, drawn from truncated zeta.
-
-    An exact inverse-CDF draw over 1..EZ_GREEDY_MAX_DURATION from one uniform of
-    `stream`: P(n = 1) = 0.608, P(n >= 10) = 0.064. The decision that draws it
-    is the first of the n, so n = 1 is plain epsilon-greedy.
-    """
-    return bisect.bisect_right(_ZETA_CUMULATIVE, stream.random()) + 1
 
 
 def ape_x_floors(actors: int) -> tuple[float, ...]:
@@ -100,12 +67,14 @@ class ExplorationSchedule:
     #: parser and half this file's.
     epsilon_start: float
     epsilon_end: float
+    #: Zero is no anneal: every actor is at its floor from the first decision,
+    #: and `epsilon_start` is not read - Ape-X's and R2D2's fixed ladder.
     anneal_decisions: int
     floors: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.anneal_decisions < 1:
-            raise ValueError("the epsilon anneal horizon must be positive")
+        if self.anneal_decisions < 0:
+            raise ValueError("the epsilon anneal horizon cannot be negative")
 
     @classmethod
     def for_option(
@@ -167,8 +136,10 @@ class ExplorationSchedule:
         most of what it collected was near-random and its collection curve could
         not be read as a policy's performance at all.
         """
-        fraction = min(1.0, decisions / self.anneal_decisions)
         floor = self.floor_for(actor_index)
+        if not self.anneal_decisions:
+            return floor
+        fraction = min(1.0, decisions / self.anneal_decisions)
         return self.epsilon_start + (floor - self.epsilon_start) * fraction
 
     def is_near_greedy(self, actor_index: int) -> bool:

@@ -192,19 +192,27 @@ environment and nothing that observes or drives it.
 
 - `policies.py` — the `Policy` protocol and the scripted baselines
   (`RandomPolicy`, `CheapestFirstPolicy`, `WaitOnlyPolicy`).
-- `network.py` — `TowerTrunk`, `DuelingHeads`, `StackedPolicyNetwork`.
-- `backbone.py` — the `Backbone` protocol, `SequenceBatch`, `LearnMetrics`,
-  `collate`, `acting_copy`.
-- `stacked_dqn.py` — `StackedDqnBackbone`, the default backbone.
+- `network.py` — `NetworkConfig`, `TowerTrunk` (the shared row encoder) and
+  `dueling_masked_q`.
+- `backbone.py` — the `Backbone` protocol (with `network_state_dict` and
+  `load_network_state_dict`, what is published to an acting copy),
+  `SequenceBatch`, `LearnMetrics`, `acting_copy`.
+- `r2d2.py` — `R2D2Backbone`, `R2D2Config`: R2D2 (LSTM, stored state, burn-in
+  without gradient, value rescaling, double Q) behind the `Backbone` protocol,
+  chosen with `scripts/train.py --backbone r2d2` (`docs/solution.md` §9.4).
 - `dreamer.py` — `DreamerBackbone` and `DreamerConfig`: DreamerV3 (world model,
   imagination actor-critic) behind the same `Backbone` protocol, chosen with
   `scripts/train.py --backbone dreamerv3` (`docs/solution.md` §9.4c).
 - `dreamer_math.py` — DreamerV3's network-free parts: symlog, twohot, the
   masked categorical, λ-returns, the percentile return normaliser, LaProp.
-- `value_learning.py` — n-step targets, the weighted sequence loss, TD errors.
-- `replay.py` — `PrioritizedSequenceReplay` over `ReplaySequence`, and
-  `ReplayImage`, the buffer captured at one moment and written as a dump.
-  stacked-dqn's replay.
+- `value_learning.py` — the game-time discount, the survival reward, the
+  double-Q next values and the value-fit correlation both backbones share.
+- `replay.py` — what every replay shares: `SequenceMetadata`, `ReplayStats`,
+  `ReplayRejected`, `ReplayDumpError` and `read_replay_metadata`.
+- `r2d2_replay.py` — `R2D2Replay`, R2D2's replay: items of 121 decisions with
+  the actor's stored LSTM state, sampled by priority, inserted a whole episode
+  at a time, with the credit constants ADR 0017's limiter reads
+  (`docs/solution.md` §9.4).
 - `dreamer_replay.py` — `DreamerReplay`, DreamerV3's own replay, ported from
   the official `embodied/core/replay.py`: one step stream per actor holding
   `EpisodeSteps` arrays (observation, action, the transition into each step,
@@ -212,7 +220,7 @@ environment and nothing that observes or drives it.
   and `write_back` of the learner's latents; `DreamerSample` is a sampled
   batch and where its steps live; `DreamerReplayImage` is its dump
   (`docs/solution.md` §9.4c, ADR 0018). The actor writes it through
-  `Actor._emit_stream`, stacked-dqn's through `Actor._emit`.
+  `Actor._emit_stream`, R2D2's through its own stream (`_emit_items`).
 - `actor.py` — `Actor`, which plays one episode against one
   `InstrumentedRunEnvironment` and emits sequences plus an `EpisodeSummary`.
 - `learner.py` — `Learner`, the one training copy of the network and how its
@@ -224,23 +232,22 @@ environment and nothing that observes or drives it.
   `SelectionPeriod`, `NearGreedyPlateau`, and
   `KillBar`/`KillBarCheck`.
 - `exploration.py` — `ExplorationSchedule` and `ape_x_floors`: what each actor
-  explores at, at each point of the budget; `zeta_duration`, how long an
-  `--ez-greedy` exploratory action lasts.
+  explores at, at each point of the budget.
 - `evaluator.py` — `evaluate`, exploration-free and replay-free, producing an
   `EvaluationReport`.
 - `checkpoint.py` — `Checkpoint`, `CheckpointIdentity`, `save`/`load`, the
   checksum sidecar, `write_manifest`, and `capture_rng_state` /
   `restore_rng_state` for the process-wide random streams.
 
-**Exploration.** Every actor's rate falls linearly from `epsilon_start` over
-`--epsilon-anneal-decisions` and is held afterwards; what it falls *to* is the
-actor's own floor. `ExplorationSchedule` owns those numbers - nothing else in
-`learning` holds an exploration rate - and `TrainingRun` asks it per actor, once
-per episode. The default, `uniform`, has no per-actor floors at all and anneals
-every actor to `--epsilon-end`, which is what every run so far collected under.
-`--exploration ladder` replaces that destination per actor, so `--epsilon-end`
-is the uniform schedule's floor only and passing it with a ladder is refused.
-The ladder is Ape-X's (Horgan et al. 2018): actor `i` of `N` anneals to
+**Exploration.** Each backbone fixes its schedule (`r2d2_loop_settings`,
+`dreamer_loop_settings`) and `train.py` refuses a flag that contradicts it.
+`ExplorationSchedule` owns the numbers - nothing else in `learning` holds an
+exploration rate - and `TrainingRun` asks it per actor, once per episode. A
+schedule can anneal every actor's rate linearly from `epsilon_start` over
+`--epsilon-anneal-decisions` to the actor's own floor; neither backbone sets a
+horizon. R2D2 acts on the ladder from decision 0, and DreamerV3 adds no
+exploration noise (a uniform schedule at 0).
+The ladder is Ape-X's (Horgan et al. 2018): actor `i` of `N` acts at
 `0.4 ** (1 + 7 i / (N - 1))`,
 so one fleet both searches - the top actors play build orders the greedy policy
 would never reach - and reports, because the near-greedy actors at the bottom
@@ -252,10 +259,6 @@ tracking store those are `collection_window_near_greedy_mean_final_wave` for the
 episode-cut window, and `selection_period_near_greedy_mean_final_wave` with
 `selection_period_best_near_greedy_mean_final_wave` for the decision-cut
 selection periods the arm is chosen on and early stopping is judged on.
-`--ez-greedy` leaves the rates alone and repeats each exploratory action for a
-drawn number of decisions (solution.md 9.5); the running option is acting
-state of `StackedDqnBackbone`, and `Actor` reads its per-episode counts off the
-policy into the episode records.
 
 **Selection periods and the arm.** The decision axis is cut into selection
 periods of `--selection-period-decisions` (default 15,000), independent of the
@@ -420,8 +423,8 @@ neither is part of a run:
 
 ## 7. Flow: a training run
 
-`scripts/train.py` trains one arm on the fleet. `BACKBONE` is the constant
-`"stacked-dqn"`: one backbone, not a selectable arm.
+`scripts/train.py` trains one arm on the fleet. `--backbone` (`r2d2` or
+`dreamerv3`, required) names the arm's learner.
 
 1. `main` builds the tracker and reads the bridge's expected compatibility, then
    takes one of two paths:
@@ -441,7 +444,7 @@ neither is part of a run:
    `InstrumentedRunAdapter` → `InstrumentedRunEnvironment`, appending each to the
    list `tear_down_fleet` will release.
 3. `build_arm` constructs the replay (`build_replay`: `DreamerReplay` for
-   DreamerV3), the backbone, one `Actor` per instance and the `TrainingRun`, with
+   DreamerV3, `R2D2Replay` for R2D2), the backbone, one `Actor` per instance and the `TrainingRun`, with
    the `RunIdentity` resolved and stamped.
 4. `train_session` runs the arm until `--budget-decisions` is spent. The
    budget is **cumulative decisions across the fleet**, the one unit of
@@ -450,17 +453,18 @@ neither is part of a run:
    (c): 6.98 against 4.42 game-seconds per decision over matched decisions).
    It is accounted at episode granularity, so the run stops after the episode
    each actor crossed the budget in — past it by at most one episode per
-   actor. Every decision-counted schedule reads the same counter: the replay
-   ratio (`--gradient-steps-per-decision`), the exploration anneal
-   (`--epsilon-anneal-decisions`), the kill bars and the selection periods.
-   The importance exponent is not scheduled: replay holds it fixed (β 0.6
-   under stacked-dqn, board #85). The n-step anneal and the resets
-   (`--reset-every-steps`) alone count gradient steps. Game time is still measured and reported, as a
-   statistic. Actors collect concurrently into the one buffer;
-   the `LearnerThread` takes gradient steps beside them against the configured
-   replay ratio, as each decision credits it, and an actor pauses only while
-   more than `learner_debt_bound_decisions` decisions' worth are owed; the
-   block ends by paying what is still owed;
+   actor. Every decision-counted schedule reads the same counter: the kill
+   bars, the selection periods and the checkpoint cadence. The importance
+   exponent is not scheduled: R2D2's replay holds it fixed at 0.6. Game time is
+   measured and reported as a statistic. Actors collect concurrently into the
+   one buffer; the `LearnerThread` takes gradient steps beside them against
+   the credits it is given, and an actor pauses only while more than the debt
+   bound's worth are owed; the block ends by paying what is still owed. A
+   credit is one decision for DreamerV3 (`gradient_steps_per_decision`, bound
+   `learner_debt_bound_decisions`, credited as each decision is taken) and one
+   inserted replay item for R2D2 (`gradient_steps_per_item`, bound
+   `learner_debt_bound_items`, credited as the episode ends and its items are
+   inserted; `TrainingConfig.credits_items` says which);
    each actor refreshes its acting copy at every episode start and then every
    `parameter_sync_decisions` of its own decisions, before a decision's
    forward pass and so inside an episode, loading the learner's last completed
@@ -489,7 +493,7 @@ new folder, so no earlier evidence is overwritten, and a folder that already
 holds a manifest is refused for anything but its own continuation. The
 segment's first resume point replaces the dump it reloaded. `resume_point` reads the file into a `learning.checkpoint.ResumeState` before a
 device is touched — refusing one whose `CheckpointIdentity` names another arm,
-profile or schema, a stacked-dqn one whose recorded discount differs from the
+profile or schema, one whose recorded discount differs from the
 command's (`docs/solution.md` §9.4d), and one that has already spent
 `--budget-decisions`, which stays the whole run's total — and `build_arm`
 restores the weights and optimizer into the backbone, starts the

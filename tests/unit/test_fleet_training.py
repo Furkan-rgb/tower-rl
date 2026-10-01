@@ -43,12 +43,8 @@ from tower_rl.learning.checkpoint import (
     write_checkpoint,
 )
 from tower_rl.learning.exploration import ExplorationSchedule, ape_x_floors
-from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import (
-    StackedDqnBackbone,
-    StackedDqnConfig,
-)
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.training import (
     KillBar,
     NearGreedyPlateau,
@@ -61,8 +57,6 @@ from tower_rl.simulation.instrumented_bridge import BridgeTimeoutError
 from tower_rl.simulation.instrumented_run_adapter import (
     InstrumentedRunAdapter,
 )
-
-SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 #: Any schedule at all: nothing in this file is about exploration, and the rates
 #: a real run uses are resolved from `train.py`'s parser rather than defaulted.
@@ -123,7 +117,10 @@ class PacedEnvironment(InstrumentedRunEnvironment):
 
 
 def environment(overlap: Overlap | None = None, **port: Any) -> InstrumentedRunEnvironment:
-    settings: dict[str, Any] = {"damage_per_second": 2.0}
+    # Episodes of about a hundred decisions: R2D2 learns only from steps after
+    # its 40-step burn-in, so a 30-decision episode is an item nothing can be
+    # learned from, and a buffer of only those would learn nothing.
+    settings: dict[str, Any] = {"damage_per_second": 0.5}
     settings.update(port)
     if overlap is None:
         return InstrumentedRunEnvironment(
@@ -153,20 +150,13 @@ def fleet(
     left, handed to the run at construction because the run reads its
     checkpoint cadence off them.
     """
-    learner = backbone or StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
-    replay = PrioritizedSequenceReplay(capacity=256, seed=0)
+    learner = backbone or R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
+    replay = R2D2Replay(capacity=256, seed=0)
     actors = [
         Actor(
             environment=item,
             policy=learner,
-            config=ActorConfig(
-                actor_id=f"fake-{index}:stacked-dqn",
-                sequence_length=6,
-                burn_in=1,
-                stride=3,
-            ),
+            config=ActorConfig(actor_id=f"fake-{index}:r2d2"),
             replay=replay,
         )
         for index, item in enumerate(environments)
@@ -229,11 +219,11 @@ def test_a_bridge_that_stops_answering_withdraws_its_actor_and_not_the_run() -> 
 
     report = training.run()
 
-    dead = report.actors["fake-1:stacked-dqn"]
+    dead = report.actors["fake-1:r2d2"]
     assert dead.withdrawn is not None and "liveness expired" in dead.withdrawn
     assert dead.failed_episodes == 3 and dead.decisions == 0
     # Named as it happened, with the instance it names and why it left.
-    assert withdrawn == [("fake-1:stacked-dqn", dead.withdrawn)]
+    assert withdrawn == [("fake-1:r2d2", dead.withdrawn)]
     alive = [progress for progress in report.actors.values() if progress.withdrawn is None]
     assert len(alive) == 2 and all(progress.valid_episodes > 0 for progress in alive)
     assert report.decisions >= 250
@@ -272,7 +262,7 @@ def test_every_actor_writes_into_the_one_replay_buffer() -> None:
 
     report = training.run()
 
-    stored = {sequence.metadata.actor_id for sequence in training.replay._items}
+    stored = {episode.metadata.actor_id for episode in training.replay._episodes.values()}
     assert stored == {progress.actor_id for progress in report.actors.values()}
     assert report.sequences_accepted == training.replay.stats.added
 
@@ -335,7 +325,7 @@ def test_one_dead_instance_costs_an_actor_and_not_the_run() -> None:
 
     report = training.run()
 
-    dead = report.actors["fake-1:stacked-dqn"]
+    dead = report.actors["fake-1:r2d2"]
     assert dead.withdrawn is not None and dead.failed_episodes == 3
     assert dead.decisions == 0 and dead.valid_episodes == 0
     assert report.failed_episodes == 3 and len(report.episode_failures) == 3
@@ -354,7 +344,7 @@ def test_a_withdrawn_actor_is_not_asked_again_in_a_later_block() -> None:
     )
 
     training.advance(100)
-    dead = training.report.actors["fake-1:stacked-dqn"]
+    dead = training.report.actors["fake-1:r2d2"]
     failures_after_first_block = dead.failed_episodes
 
     training.advance(100)
@@ -388,7 +378,7 @@ def test_two_actors_may_not_share_one_identity() -> None:
     """Per-actor reporting is keyed by identity; a shared name hides a dead one."""
     training = fleet([environment(), environment()])
     for actor in training.actors:
-        actor.config = ActorConfig(actor_id="same", sequence_length=6, burn_in=1, stride=3)
+        actor.config = ActorConfig(actor_id="same")
 
     with pytest.raises(ValueError, match="id of its own"):
         TrainingRun(
@@ -439,15 +429,15 @@ def test_a_fleet_of_one_may_evaluate_between_its_own_episodes() -> None:
 
 
 @dataclass
-class WatchedBackbone:
+class WatchedBackbone(R2D2Backbone):
     """A backbone that records who touched it and when, so the sharing is visible.
 
     One of these stands in for the learner's own network. The copies the actors
     act from are deepcopies of it and keep records of their own, so what this
-    instance records is exactly what reached the learner itself.
+    instance records is exactly what reached the learner itself. It is an
+    `R2D2Backbone`, as the actor reads an R2D2 policy's recurrent state off one.
     """
 
-    inner: StackedDqnBackbone
     #: Breaches of the one rule the learner's lock is still there for.
     torn: list[str] = field(default_factory=list)
     #: Model versions observed by `act`, in order.
@@ -464,22 +454,11 @@ class WatchedBackbone:
     def acts(self) -> int:
         return len(self.versions)
 
-    @property
-    def model_version(self) -> int:
-        return self.inner.model_version
-
-    @property
-    def device(self) -> torch.device:
-        return self.inner.device
-
     def act(self, features: Any, state: Any, *, epsilon: float) -> tuple[int, Any]:
         if self.updating:
             self.torn.append("an actor read the network mid-update")
-        self.versions.append(self.inner.model_version)
-        return self.inner.act(features, state, epsilon=epsilon)
-
-    def initial_state(self) -> Any:
-        return self.inner.initial_state()
+        self.versions.append(self.model_version)
+        return super().act(features, state, epsilon=epsilon)
 
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
         if self.publishing:
@@ -488,32 +467,32 @@ class WatchedBackbone:
         try:
             # Wide enough that an unguarded publication would land inside it.
             time.sleep(DECISION_SECONDS)
-            return self.inner.learn(batch)
+            return super().learn(batch)
         finally:
             self.updating = False
 
-    def state_dict(self) -> dict[str, Any]:
+    def network_state_dict(self) -> dict[str, Any]:
         if self.updating:
             self.torn.append("a publication read the network mid-update")
         self.publishing = True
         try:
             time.sleep(DECISION_SECONDS)
-            return self.inner.state_dict()
+            return super().network_state_dict()
         finally:
             self.publishing = False
 
-    def load_state_dict(self, state: dict[str, Any]) -> None:
+    def load_network_state_dict(self, state: dict[str, Any]) -> None:
         self.publications += 1
         self.publish_positions.append(self.acts)
-        self.inner.load_state_dict(state)
+        super().load_network_state_dict(state)
 
 
 def watched_fleet(instances: int, **overrides: Any) -> tuple[TrainingRun, WatchedBackbone]:
     """A fleet whose learner and acting copies both keep a record of themselves."""
+    # A target copy every 3 steps, so that the learner's target has moved by the
+    # end of a run this short (the published period is 2,500).
     watched = WatchedBackbone(
-        StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+        R2D2Config(discount_per_game_second=0.999, seed=0, target_update_period=3)
     )
     training = fleet([environment() for _ in range(instances)], backbone=watched, **overrides)
     return training, watched
@@ -594,11 +573,7 @@ def test_an_actor_does_not_wait_for_the_learner_to_finish_a_step() -> None:
     the lock held both - and this is the assertion that says so.
     """
     overlap = Overlap()
-    watched = WatchedBackbone(
-        StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
-    )
+    watched = WatchedBackbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     updates: list[tuple[float, float]] = []
     inner_learn = watched.learn
 
@@ -634,13 +609,15 @@ def test_a_publication_gives_an_actor_the_learner_s_current_parameters() -> None
 
     assert report.optimisation_steps > 0
     # The run ends with learning after the last episode, so the copy is behind.
-    assert not parameters_are_equal(acting.inner.online, training.backbone.inner.online)
+    assert not parameters_are_equal(acting.online, training.backbone.online)
 
     training.learner.publish_to(acting)
 
-    assert parameters_are_equal(acting.inner.online, training.backbone.inner.online)
-    assert parameters_are_equal(acting.inner.target, training.backbone.inner.target)
+    assert parameters_are_equal(acting.online, training.backbone.online)
     assert acting.model_version == training.backbone.model_version
+    # Acting reads the online network alone; the target and the optimizer are
+    # never published (`Backbone.network_state_dict`).
+    assert not parameters_are_equal(acting.target, training.backbone.target)
 
 
 def test_no_actor_is_ever_given_half_of_an_optimisation_step() -> None:
@@ -664,14 +641,12 @@ def test_a_fleet_of_one_starts_every_episode_from_the_learner_s_latest_parameter
     learner may be inside a step meanwhile, so the live network is not the
     reference; its last published snapshot is (`Learner.publish_to`).
     """
-    watched = WatchedBackbone(
-        StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
-    )
+    watched = WatchedBackbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     opened_on: list[tuple[int, int]] = []
     instance = environment()
-    training = fleet([instance], backbone=watched, budget_decisions=250)
+    # Nine episodes: R2D2 learns once an episode has ended, on its own thread, so
+    # how many publications the early episodes see depends on the host's load.
+    training = fleet([instance], backbone=watched, budget_decisions=600)
     actor_id = training.actors[0].config.actor_id
     opened = instance.reset
 
@@ -759,6 +734,24 @@ def test_the_synchronisation_cadence_is_counted_in_an_actor_s_own_decisions() ->
     assert inside, "no refresh landed inside an episode"
 
 
+def test_without_a_refresh_every_episode_the_cadence_runs_on_across_episodes() -> None:
+    """R2D2's lag: Acme's actor refreshes every so many of its steps, episodes aside."""
+    training, _ = watched_fleet(
+        1, budget_decisions=400, parameter_sync_decisions=7, refresh_every_episode=False
+    )
+    acting = copies(training)[0]
+
+    report = training.run()
+
+    assert report.episodes >= 4
+    boundaries = episode_boundaries(training, training.actors[0].config.actor_id)
+    # The first load at the first decision; after it, only every seventh of the
+    # actor's own decisions, however its episodes fall.
+    assert acting.publish_positions[0] == 0
+    assert all(position % 7 == 0 for position in acting.publish_positions)
+    assert set(acting.publish_positions) - boundaries, "no refresh landed inside an episode"
+
+
 def test_an_episode_is_stamped_with_the_version_its_first_decision_was_taken_with() -> None:
     training, _ = watched_fleet(1, budget_decisions=250, parameter_sync_decisions=5)
     actor = training.actors[0]
@@ -803,11 +796,12 @@ class LedgeredBackbone(WatchedBackbone):
     mismatches: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         self._record()
 
     def _record(self) -> None:
-        self.ledger[self.inner.model_version] = {
-            key: value.clone() for key, value in self.inner.online.state_dict().items()
+        self.ledger[self.model_version] = {
+            key: value.clone() for key, value in self.online.state_dict().items()
         }
 
     def learn(self, batch: SequenceBatch) -> LearnMetrics:
@@ -816,12 +810,12 @@ class LedgeredBackbone(WatchedBackbone):
         return metrics
 
     def act(self, features: Any, state: Any, *, epsilon: float) -> tuple[int, Any]:
-        expected = self.ledger.get(self.inner.model_version)
-        actual = self.inner.online.state_dict()
+        expected = self.ledger.get(self.model_version)
+        actual = self.online.state_dict()
         if expected is None or not all(
             torch.equal(actual[key], value) for key, value in expected.items()
         ):
-            self.mismatches.append(self.inner.model_version)
+            self.mismatches.append(self.model_version)
         return super().act(features, state, epsilon=epsilon)
 
 
@@ -833,11 +827,7 @@ def test_a_refresh_inside_an_episode_never_gives_an_actor_a_torn_copy() -> None:
     learner's step and a publication are both slow enough here that an
     unguarded copy would land inside a step.
     """
-    watched = LedgeredBackbone(
-        StackedDqnBackbone(
-            config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-        )
-    )
+    watched = LedgeredBackbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     training = fleet(
         [environment() for _ in range(3)],
         backbone=watched,
@@ -864,7 +854,7 @@ def test_a_refresh_inside_an_episode_never_gives_an_actor_a_torn_copy() -> None:
 
 
 def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alone() -> None:
-    """The carried history window is the actor's, not the network's, and outlives a refresh."""
+    """The carried recurrent state is the actor's, not the network's, and outlives a refresh."""
     training, _ = watched_fleet(1, budget_decisions=250)
     acting = copies(training)[0]
     instance = training.actors[0].environment
@@ -873,26 +863,25 @@ def test_a_publication_leaves_the_state_an_actor_carries_through_an_episode_alon
 
     features = encode_state(instance.reset())
     _, carried = acting.act(features, acting.initial_state(), epsilon=0.0)
-    before = carried.clone()
+    carried = acting.after_transition(carried, 1000.0)
+    before = (carried.h.clone(), carried.c.clone())
 
     training.learner.publish_to(acting)
 
-    assert torch.equal(carried, before), (
+    assert torch.equal(carried.h, before[0]) and torch.equal(carried.c, before[1]), (
         "a refresh of the parameters disturbed the state the episode was carrying"
     )
     action, resumed = acting.act(features, carried, epsilon=0.0)
     assert features.mask[action]
-    assert resumed.shape == before.shape
+    assert resumed.h.shape == before[0].shape and resumed.c.shape == before[1].shape
 
 
 def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
     """Copies of one backbone would otherwise share the stream they were copied from."""
-    learner = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+    learner = R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
     first = acting_copy(learner)
-    second = acting_copy(learner, exploration_seed="fake-1:stacked-dqn")
-    third = acting_copy(learner, exploration_seed="fake-2:stacked-dqn")
+    second = acting_copy(learner, exploration_seed="fake-1:r2d2")
+    third = acting_copy(learner, exploration_seed="fake-2:r2d2")
 
     draws = [
         [copy._random.random() for _ in range(8)]  # type: ignore[attr-defined]
@@ -906,9 +895,7 @@ def test_the_actors_of_a_fleet_do_not_explore_in_lockstep() -> None:
 
 
 def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> None:
-    learner = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
+    learner = R2D2Backbone(R2D2Config(discount_per_game_second=0.999, seed=0))
 
     acting = acting_copy(learner)
 
@@ -918,7 +905,7 @@ def test_an_acting_copy_is_not_trained_and_shares_nothing_with_the_learner() -> 
     assert not any(parameter.requires_grad for parameter in acting.online.parameters())
     assert not acting.online.training
     with torch.no_grad():
-        learner.online.state_dict()["core.0.weight"].add_(1.0)
+        learner.online.state_dict()["torso.0.weight"].add_(1.0)
     assert not parameters_are_equal(acting.online, learner.online), (
         "the copy moved with the learner, so it shares its storage"
     )
@@ -1103,7 +1090,7 @@ def test_a_period_is_measured_over_the_near_greedy_actors_alone() -> None:
     )
     # The bottom two rungs of a ladder of three are near-greedy; actor 0, at
     # 0.4, is searching.
-    assert training.near_greedy_actor_ids == {"fake-1:stacked-dqn", "fake-2:stacked-dqn"}
+    assert training.near_greedy_actor_ids == {"fake-1:r2d2", "fake-2:r2d2"}
     play(training, [40], actor=0)
     play(training, [7], actor=1)
     play(training, [7], actor=2)

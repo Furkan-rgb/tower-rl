@@ -17,11 +17,12 @@ from typing import Any
 import pytest
 import torch
 import train
-from test_train_entry_point import PROFILE, SMALL_NETWORK, arguments, environment, session
+from test_train_entry_point import PROFILE, arguments, environment, reduced_r2d2, session
 
 from tower_rl.experiment.metrics import health_counters
 from tower_rl.experiment.run_identity import SCRIPTED_REFERENCE
 from tower_rl.learning.checkpoint import fingerprint, load
+from tower_rl.learning.exploration import ape_x_floors
 
 #: Long enough that the run plays more than one episode, which is what closes a
 #: window of the collection curve.
@@ -184,10 +185,7 @@ def test_collected_episodes_are_persisted_with_the_evaluator_shape(
     records = arm["collected_episodes"]
 
     assert len(records) == arm["episodes"] - arm["failed_episodes"]
-    collected_keys = {"actor_id", "options_started", "longest_option"}
-    assert all(EPISODE_RECORD_KEYS | collected_keys == set(record) for record in records)
-    # Without --ez-greedy no option ever starts, and the counts say so.
-    assert all(record["options_started"] == record["longest_option"] == 0 for record in records)
+    assert all(EPISODE_RECORD_KEYS | {"actor_id"} == set(record) for record in records)
     assert [record["episode_index"] for record in records] == list(range(len(records)))
     assert any(record["valid"] for record in records)
     actor_id = arm["resolved_config"]["actor_ids"][0]
@@ -344,10 +342,9 @@ def test_the_record_names_the_pre_registered_point_rather_than_its_caller(
     report records results; it does not run evaluations and does not depend on
     whoever asked for one to finish the record off.
     """
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
+    with reduced_r2d2():
         arm, run_evaluation = train.build_arm(
-            train.BACKBONE,
+            "r2d2",
             arguments(tmp_path, **{"--budget-decisions": "20"}),
             instances=[train.ActorInstance(serial="fake-0", environment=environment())],
             device=torch.device("cpu"),
@@ -386,8 +383,8 @@ def test_a_checkpoint_carries_the_schedules_the_run_actually_used(
     resolved = arm["resolved_config"]
 
     assert resolved["epsilon_end"] <= stored.progress.epsilon <= resolved["epsilon_start"]
-    # Annealed away from where it started: the run drew it per episode.
-    assert stored.progress.epsilon < resolved["epsilon_start"]
+    # R2D2 anneals nothing: the published rate is the lone actor's fixed rung.
+    assert stored.progress.epsilon == ape_x_floors(1)[0]
     assert stored.progress.importance_beta == resolved["importance_beta"]
 
 
@@ -523,20 +520,23 @@ def test_the_summary_carries_the_periods_the_run_judged_itself_on(
     """One record per selection-period crossing, on the decision axis."""
     report = session(
         tmp_path,
-        budget="300",
-        settings={"--selection-period-decisions": "100"},
+        budget="900",
+        actors=2,
+        settings={"--selection-period-decisions": "300"},
     )
     arm = report["arm"]
     periods = arm["selection_periods"]
 
-    assert periods, "a 300-decision budget crosses a 100-decision period"
+    assert periods, "a 900-decision budget crosses a 300-decision period"
     assert [period["index"] for period in periods] == list(range(1, len(periods) + 1))
     # Each closes on the episode that crossed its multiple, so a little past it.
-    assert [period["decisions_at_end"] // 100 for period in periods] == [
+    assert [period["decisions_at_end"] // 300 for period in periods] == [
         index + 1 for index in range(len(periods))
     ]
-    # Every period of this fixture is collected by the one near-greedy actor of
-    # a uniform schedule, so each carries a mean and it is a real wave.
+    # Every period of this fixture is collected by two actors, one of them on the
+    # ladder's near-greedy rung, and a period is long enough (about 300 decisions,
+    # against episodes of about 130) for that one to finish an episode in it: so
+    # each carries a mean and it is a real wave.
     assert all(period["near_greedy_episodes"] > 0 for period in periods)
     assert all(period["mean_final_wave"] >= 1 for period in periods)
     assert arm["early_stopping"]["periods_closed"] == len(periods)

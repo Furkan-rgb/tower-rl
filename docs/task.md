@@ -20,7 +20,8 @@ engineering that made the game trainable.
 
 **Outcome A, model comparison.** At least three learners are trained and
 evaluated under one identical, pre-registered, budgeted protocol on the same
-fixed account state: the current stacked-dqn, DreamerV3, and EfficientZero V2.
+fixed account state: R2D2 (the former stacked-dqn,
+rebuilt to follow R2D2 as published; board `#111`), DreamerV3, and EfficientZero V2.
 Before any game run, each learner must pass two separate
 checks: an implementation check, where the same code path reproduces a
 published result on a standard benchmark; and a configuration check, where
@@ -310,7 +311,7 @@ The authoritative V1 objective is:
 
 Reward design must stay aligned with this objective and avoid rewarding proxy behaviors merely because they are easy to measure. Any shaping beyond survival/wave progress must be justified in `solution.md`, separately reported in experiment metadata, and shown not to change the intended objective.
 
-One recorded exception: on 2026-09-25 the developer accepted that stacked-dqn's `--survival-time-reward` (`solution.md` §9.4e) changes the optimised objective by less than one wave, grading deaths within the final wave. The accepted change is bounded, keeps the pathwise ranking of different final waves, and applies to that flag only. That ranking holds while waves are clock-driven, as measured at this baseline on 2026-09-25, and must be re-justified if progression alters wave timing.
+One recorded exception: on 2026-09-25 the developer accepted that the `--survival-time-reward` flag (`solution.md` §9.4e), taken by the R2D2 learner (the former stacked-dqn, rebuilt as R2D2 as published, board `#111`), changes the optimised objective by less than one wave, grading deaths within the final wave. The accepted change is bounded, keeps the pathwise ranking of different final waves, and applies to that flag only. That ranking holds while waves are clock-driven, as measured at this baseline on 2026-09-25, and must be re-justified if progression alters wave timing.
 
 ### 7.6 Model-selection contract
 

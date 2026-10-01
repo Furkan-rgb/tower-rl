@@ -6,8 +6,11 @@ import pytest
 import torch
 
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.stacked_dqn import StackedDqnConfig
-from tower_rl.learning.value_learning import n_step_targets, survival_rewards, value_fit_correlation
+from tower_rl.learning.value_learning import (
+    game_time_discounts,
+    survival_rewards,
+    value_fit_correlation,
+)
 
 ACTIONS = len(RUN_ACTIONS)
 DISCOUNT = 0.997
@@ -16,41 +19,6 @@ DISCOUNT = 0.997
 def constant(rewards: torch.Tensor, discount: float) -> torch.Tensor:
     """The same d for every transition: the per-decision discount."""
     return torch.full_like(rewards, discount, dtype=torch.float64)
-
-
-def test_a_positive_reward_stream_produces_positive_targets() -> None:
-    rewards = torch.ones(1, 4)
-    dones = torch.zeros(1, 4, dtype=torch.bool)
-    q = torch.zeros(1, 4, ACTIONS)
-    mask = torch.ones(1, 4, ACTIONS, dtype=torch.bool)
-
-    targets, learnable = n_step_targets(
-        rewards, dones, q, q, mask, discounts=constant(rewards, DISCOUNT), n_step=2
-    )
-
-    # Two steps of reward 1 at discount 0.997 for the steps that can bootstrap.
-    assert targets[0, 0] == pytest.approx(1.0 + 0.997)
-    assert learnable[0, 0] == 1.0
-    # The final steps have no bootstrap state and did not terminate, so they are
-    # excluded rather than trained on a truncated return.
-    assert learnable[0, 3] == 0.0
-
-
-def test_termination_stops_the_return_per_sequence_not_per_batch() -> None:
-    rewards = torch.ones(2, 4)
-    dones = torch.tensor([[False, True, False, False], [False, False, False, False]])
-    q = torch.full((2, 4, ACTIONS), 5.0)
-    mask = torch.ones(2, 4, ACTIONS, dtype=torch.bool)
-
-    targets, learnable = n_step_targets(
-        rewards, dones, q, q, mask, discounts=constant(rewards, DISCOUNT), n_step=3
-    )
-
-    # The first sequence ends at index 1, so its return is two rewards and no
-    # bootstrap; the second keeps accumulating and bootstraps.
-    assert targets[0, 0] == pytest.approx(1.0 + 0.997)
-    assert targets[1, 0] > targets[0, 0]
-    assert learnable[0, 0] == 1.0
 
 
 def _completed_episode(
@@ -165,236 +133,35 @@ def _expected(start: int, n: int, dones_at: tuple[int, ...]) -> float:
     return total + DISCOUNT**n * 100.0
 
 
-@pytest.mark.parametrize("n", [3, 10])
-@pytest.mark.parametrize("dones_at", [(), (5,)])
-def test_n_step_targets_for_the_two_ends_of_the_anneal(
-    n: int, dones_at: tuple[int, ...]
-) -> None:
-    """The anneal's n = 10 and n = 3, with and without an episode end inside."""
-    rewards, dones, q, mask = _handcrafted(dones_at)
-
-    targets, learnable = n_step_targets(
-        rewards, dones, q, q, mask, discounts=constant(rewards, DISCOUNT), n_step=n
-    )
-
-    for step in range(12):
-        bootstraps = step + n < 12
-        ends_inside = any(step <= end < step + n for end in dones_at)
-        assert learnable[0, step] == float(bootstraps or ends_inside), step
-        if bootstraps or ends_inside:
-            assert targets[0, step] == pytest.approx(_expected(step, n, dones_at)), step
-
-
-def test_the_same_sequence_can_be_targeted_at_a_different_n_on_each_call() -> None:
-    """Replay stores raw steps, so an annealed n is just a different argument."""
-    rewards, dones, q, mask = _handcrafted((5,))
-
-    discounts = constant(rewards, DISCOUNT)
-    long, _ = n_step_targets(rewards, dones, q, q, mask, discounts=discounts, n_step=10)
-    short, _ = n_step_targets(rewards, dones, q, q, mask, discounts=discounts, n_step=3)
-    again, _ = n_step_targets(rewards, dones, q, q, mask, discounts=discounts, n_step=10)
-
-    assert torch.equal(long, again)
-    assert short[0, 0] == pytest.approx(_expected(0, 3, (5,)))
-    assert long[0, 0] == pytest.approx(_expected(0, 10, (5,)))
-
-
-# -- discounting by game time (board #81) -----------------------------------
-#
-# Under --discount-per-game-second a transition's d is gamma_s ** seconds, the
-# reward it carries is valued at its start as d * r (booked at the end of its
-# span), and the target composes both. These are worked by hand.
+# -- discounting by game time and the survival reward (ADR 0013) -------------
 
 GAMMA_S = 0.997
-PER_SECOND = StackedDqnConfig(discount_per_game_second=GAMMA_S)
-BOOTSTRAP = 10.0
-
-
-def _timed(
-    seconds: list[float], rewards: list[float], dones_at: tuple[int, ...] = ()
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """One sequence under the game-time discount, as `learn` hands it over."""
-    time = len(seconds)
-    discounts = PER_SECOND.transition_discounts(torch.tensor([seconds]) * 1000.0)
-    assert PER_SECOND.books_reward_at_span_end
-    step_rewards = torch.tensor([rewards]) * discounts.float()
-    dones = torch.zeros(1, time, dtype=torch.bool)
-    for index in dones_at:
-        dones[0, index] = True
-    q = torch.full((1, time, ACTIONS), BOOTSTRAP)
-    mask = torch.ones(1, time, ACTIONS, dtype=torch.bool)
-    return step_rewards, dones, q, mask, discounts
-
-
-def test_a_reward_is_booked_at_the_end_of_its_span_and_the_bootstrap_at_the_window_end() -> None:
-    """T2: spans of 2, 0 and 5 s; the reward rides the second one."""
-    step_rewards, dones, q, mask, discounts = _timed([2.0, 0.0, 5.0, 1.0], [0.0, 1.0, 0.0, 0.0])
-
-    targets, learnable = n_step_targets(
-        step_rewards, dones, q, q, mask, discounts=discounts, n_step=3
-    )
-
-    # gamma^2 to reach the reward's span, gamma^0 for where inside it the
-    # reward is booked; the bootstrap is discounted by all 7 s of the window.
-    expected = GAMMA_S**2 * GAMMA_S**0 * 1.0 + GAMMA_S**7 * BOOTSTRAP
-    assert learnable[0, 0] == 1.0
-    assert targets[0, 0].item() == pytest.approx(expected, rel=1e-6)
-
-
-def test_a_purchase_takes_no_game_time_and_costs_no_discount() -> None:
-    """T3: d = 1 at 0 ms, so the bootstrap is discounted by the timed steps only."""
-    assert torch.equal(
-        PER_SECOND.transition_discounts(torch.zeros(1, 3)), torch.ones(1, 3, dtype=torch.float64)
-    )
-    seconds = [0.0, 3.0, 0.0, 0.0, 4.0, 0.0, 1.0]
-    step_rewards, dones, q, mask, discounts = _timed(seconds, [0.0] * 7)
-
-    targets, _ = n_step_targets(step_rewards, dones, q, q, mask, discounts=discounts, n_step=6)
-
-    assert targets[0, 0].item() == pytest.approx(GAMMA_S**7 * BOOTSTRAP, rel=1e-6)
-
-
-def test_a_terminal_inside_the_window_ends_the_timed_return() -> None:
-    """T4: no bootstrap, and nothing after the terminal counts."""
-    step_rewards, dones, q, mask, discounts = _timed(
-        [2.0, 3.0, 1.0, 1.0, 1.0], [1.0, 1.0, 5.0, 5.0, 5.0], dones_at=(1,)
-    )
-
-    targets, learnable = n_step_targets(
-        step_rewards, dones, q, q, mask, discounts=discounts, n_step=3
-    )
-
-    expected = GAMMA_S**2 * 1.0 + GAMMA_S**2 * (GAMMA_S**3 * 1.0)
-    assert learnable[0, 0] == 1.0
-    assert targets[0, 0].item() == pytest.approx(expected, rel=1e-6)
-
-
-def test_a_window_past_the_end_is_learnable_only_if_it_terminated() -> None:
-    """T5, and padding at 0 ms changes no real step's target."""
-    open_rewards, open_dones, q, mask, discounts = _timed([1.0, 2.0, 3.0], [1.0, 1.0, 1.0])
-    _, open_learnable = n_step_targets(
-        open_rewards, open_dones, q, q, mask, discounts=discounts, n_step=3
-    )
-    assert open_learnable.tolist() == [[0.0, 0.0, 0.0]]
-
-    ended_rewards, ended_dones, q, mask, discounts = _timed(
-        [1.0, 2.0, 3.0], [1.0, 1.0, 1.0], dones_at=(2,)
-    )
-    ended, ended_learnable = n_step_targets(
-        ended_rewards, ended_dones, q, q, mask, discounts=discounts, n_step=3
-    )
-    assert ended_learnable.tolist() == [[1.0, 1.0, 1.0]]
-    assert ended[0, 1].item() == pytest.approx(GAMMA_S**2 + GAMMA_S**2 * GAMMA_S**3, rel=1e-6)
-
-    # The same episode behind two steps of front padding, as the actor pads a
-    # short one: zero reward, never done, and no game time.
-    padded_rewards, padded_dones, q, mask, discounts = _timed(
-        [0.0, 0.0, 1.0, 2.0, 3.0], [0.0, 0.0, 1.0, 1.0, 1.0], dones_at=(4,)
-    )
-    padded, padded_learnable = n_step_targets(
-        padded_rewards, padded_dones, q, q, mask, discounts=discounts, n_step=3
-    )
-    assert torch.equal(padded[:, 2:], ended)
-    assert torch.equal(padded_learnable[:, 2:], ended_learnable)
-
-
-# -- the survival-time reward (board #82) -----------------------------------
-#
-# Under --survival-time-reward a transition carries (1 - d) * V_REF, which at
-# the 0.997 used here is (1 - d) / (beta * 35), the game time it survived in
-# waves, valued at its start (ADR 0013); n_step_targets is the
-# same function. With no bootstrap value, a target is exactly the reward.
-
-SURVIVAL = StackedDqnConfig(discount_per_game_second=GAMMA_S, survival_time_reward=True)
 BETA = -math.log(GAMMA_S)
 
 
-def _survived(
-    seconds: list[float], dones_at: tuple[int, ...] = (), bootstrap: float = 0.0
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The n-step target over the whole sequence, and whether it is learnable."""
-    time = len(seconds)
-    discounts = SURVIVAL.transition_discounts(torch.tensor([seconds]) * 1000.0)
-    step_rewards = survival_rewards(discounts).float()
-    dones = torch.zeros(1, time, dtype=torch.bool)
-    for index in dones_at:
-        dones[0, index] = True
-    q = torch.full((1, time + 1, ACTIONS), bootstrap)
-    mask = torch.ones(1, time + 1, ACTIONS, dtype=torch.bool)
-    # One more step, of no reward, so the whole window has a bootstrap state.
-    step_rewards = torch.cat((step_rewards, torch.zeros(1, 1)), dim=1)
-    dones = torch.cat((dones, torch.zeros(1, 1, dtype=torch.bool)), dim=1)
-    discounts = torch.cat((discounts, torch.ones(1, 1, dtype=torch.float64)), dim=1)
-    targets, learnable = n_step_targets(
-        step_rewards, dones, q, q, mask, discounts=discounts, n_step=time
-    )
-    return targets[0, 0], learnable[0, 0]
+def test_a_purchase_takes_no_game_time_and_costs_no_discount() -> None:
+    discounts = game_time_discounts(GAMMA_S, torch.zeros(1, 3))
+
+    assert torch.equal(discounts, torch.ones(1, 3, dtype=torch.float64))
+    assert torch.equal(survival_rewards(discounts), torch.zeros(1, 3, dtype=torch.float64))
+
+
+def test_a_span_is_discounted_by_the_game_seconds_it_took() -> None:
+    discounts = game_time_discounts(GAMMA_S, torch.tensor([[2000.0, 0.0, 5000.0]]))
+
+    assert discounts[0].tolist() == pytest.approx([GAMMA_S**2, 1.0, GAMMA_S**5])
 
 
 @pytest.mark.parametrize("cut", [[35.0], [10.0, 0.0, 0.0, 25.0], [5.0, 5.0, 5.0, 20.0]])
 def test_survival_reward_depends_on_the_time_survived_not_how_it_was_cut(
     cut: list[float],
 ) -> None:
-    """A 35 s window earns (1 - g^35)/(beta*35) and bootstraps with g^35, however split."""
-    reward, _ = _survived(cut)
-    with_bootstrap, learnable = _survived(cut, bootstrap=BOOTSTRAP)
+    """A 35 s window earns (1 - g^35)/(beta*35) however split, each span valued at its start."""
+    discounts = game_time_discounts(GAMMA_S, torch.tensor([cut]) * 1000.0)
+    rewards = survival_rewards(discounts)[0].to(torch.float64)
+    # The spans' rewards, each valued at its own start: the return from the window's first step.
+    starts = torch.cumprod(torch.cat((torch.ones(1, dtype=torch.float64), discounts[0, :-1])), 0)
 
-    assert learnable == 1.0
-    assert reward.item() == pytest.approx((1 - GAMMA_S**35) / (BETA * 35), rel=1e-6)
-    bootstrap_weight = (with_bootstrap - reward).item() / BOOTSTRAP
-    assert bootstrap_weight == pytest.approx(GAMMA_S**35, rel=1e-6)
-
-
-def test_dying_later_in_the_wave_scores_higher_by_the_time_survived() -> None:
-    """Death 30 s in beats death 5 s in by (g^5 - g^30)/(beta*35); nothing after counts."""
-    early, early_learnable = _survived([5.0, 40.0, 40.0], dones_at=(0,), bootstrap=BOOTSTRAP)
-    late, late_learnable = _survived([30.0, 40.0, 40.0], dones_at=(0,), bootstrap=BOOTSTRAP)
-
-    assert early_learnable == late_learnable == 1.0
-    assert early.item() == pytest.approx((1 - GAMMA_S**5) / (BETA * 35), rel=1e-6)
-    assert late.item() == pytest.approx((1 - GAMMA_S**30) / (BETA * 35), rel=1e-6)
-    assert (late - early).item() == pytest.approx(
-        (GAMMA_S**5 - GAMMA_S**30) / (BETA * 35), rel=1e-5
+    assert (rewards * starts).sum().item() == pytest.approx(
+        (1 - GAMMA_S**35) / (BETA * 35), rel=1e-6
     )
-
-
-def test_a_truncated_end_still_bootstraps_under_the_survival_reward() -> None:
-    """Not done is not dead: the window's end is valued, and the open tail is not learned."""
-    seconds = [3.0, 0.0, 4.0]
-    discounts = SURVIVAL.transition_discounts(torch.tensor([seconds]) * 1000.0)
-    step_rewards = survival_rewards(discounts).float()
-    dones = torch.zeros(1, 3, dtype=torch.bool)
-    q = torch.full((1, 3, ACTIONS), BOOTSTRAP)
-    mask = torch.ones(1, 3, ACTIONS, dtype=torch.bool)
-
-    targets, learnable = n_step_targets(
-        step_rewards, dones, q, q, mask, discounts=discounts, n_step=2
-    )
-
-    assert learnable.tolist() == [[1.0, 0.0, 0.0]]
-    expected = (1 - GAMMA_S**3) / (BETA * 35) + GAMMA_S**3 * BOOTSTRAP
-    assert targets[0, 0].item() == pytest.approx(expected, rel=1e-6)
-
-
-def test_padding_adds_exactly_nothing_to_the_survival_reward() -> None:
-    """Front padding spans no game time, so it earns 0.0 and moves no real target."""
-    ended_discounts = SURVIVAL.transition_discounts(torch.tensor([[1.0, 2.0, 3.0]]) * 1000.0)
-    padded_discounts = SURVIVAL.transition_discounts(
-        torch.tensor([[0.0, 0.0, 1.0, 2.0, 3.0]]) * 1000.0
-    )
-    padded_rewards = survival_rewards(padded_discounts)
-    assert torch.equal(padded_rewards[:, :2], torch.zeros(1, 2, dtype=torch.float64))
-
-    def targets(discounts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        time = discounts.shape[1]
-        dones = torch.zeros(1, time, dtype=torch.bool)
-        dones[0, -1] = True
-        q = torch.full((1, time, ACTIONS), BOOTSTRAP)
-        mask = torch.ones(1, time, ACTIONS, dtype=torch.bool)
-        rewards = survival_rewards(discounts).float()
-        return n_step_targets(rewards, dones, q, q, mask, discounts=discounts, n_step=3)
-
-    ended, ended_learnable = targets(ended_discounts)
-    padded, padded_learnable = targets(padded_discounts)
-    assert torch.equal(padded[:, 2:], ended)
-    assert torch.equal(padded_learnable[:, 2:], ended_learnable)

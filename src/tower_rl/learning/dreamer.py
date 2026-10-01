@@ -518,8 +518,8 @@ class DreamerBackbone:
             # outputs are no longer read.
             torch.compiler.cudagraph_mark_step_begin()  # type: ignore[no-untyped-call]
         # Each transition's own d and the reward it carries, valued at its
-        # start: exactly stacked-dqn's (`StackedDqnBackbone.learn`), for the
-        # transition into each step. The survival-time reward replaces the
+        # start, for the transition into each step (the same functions R2D2
+        # calls). The survival-time reward replaces the
         # wave change; the wave change, booked where its span ends, is d * r.
         discounts = game_time_discounts(c.discount_per_game_second, batch.game_ms)
         if c.survival_time_reward:
@@ -894,6 +894,20 @@ class DreamerBackbone:
             "return_normaliser": self.return_normaliser.state_dict(),
             "steps": self._steps,
         }
+
+    def network_state_dict(self) -> dict[str, Any]:
+        """Every network and the return scale, as `state_dict` holds them, without the optimizer."""
+        state = self.state_dict()
+        del state["optimizer"]
+        return state
+
+    def load_network_state_dict(self, state: dict[str, Any]) -> None:
+        self.world_model.load_state_dict(state["world_model"])
+        self.actor.load_state_dict(state["actor"])
+        self.critic.load_state_dict(state["critic"])
+        self.slow_critic.load_state_dict(state["slow_critic"])
+        self.return_normaliser.load_state_dict(state["return_normaliser"])
+        self._steps = int(state["steps"])
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         self.world_model.load_state_dict(state["world_model"])

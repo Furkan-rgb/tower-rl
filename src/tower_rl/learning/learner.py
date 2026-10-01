@@ -8,14 +8,16 @@ for them and every other actor finishing an episode queued behind them
 a 157-230 ms bridge round trip).
 
 **The debt.** The replay ratio is held by a debt counted in gradient steps.
-Each decision an actor takes credits the learner `steps_per_decision` steps as
-it is taken; the learner takes a step whenever one whole step is owed; and an
-actor that finds more than `bound_decisions` decisions' worth owed pauses before
-its next decision until the learner has brought the debt back under the bound.
-So over any span the steps taken are the configured ratio of the decisions
-collected, short by at most the bound (plus one decision per actor, each of
+Each unit of data collected - a credit - earns the learner `steps_per_credit`
+steps; the learner takes a step whenever one whole step is owed; and an actor
+that finds more than `bound_credits` credits' worth owed pauses before its
+next decision until the learner has brought the debt back under the bound.
+So over any span the steps taken are the configured ratio of the data
+collected, short by at most the bound (plus one credit per actor, each of
 which credits before it checks), and the parameters an actor acts from are at
-most that far behind the data it is collecting.
+most that far behind the data it is collecting. Under DreamerV3 a
+credit is a decision, credited as it is taken; under R2D2 it is a
+replay item, credited as its episode ends (`TrainingRun`).
 
 **Holding the learner still.** `held` lets no step begin and waits out the one
 in flight, so whatever reads the training network meanwhile - a checkpoint, a
@@ -39,7 +41,7 @@ cannot overtake it either.
 (`embodied/jax/agent.py` 243-247, 279-282): every completed step publishes a
 snapshot of the network with a number, and an actor whose copy is older loads
 the latest before a decision: before every one under DreamerV3, on the refresh
-cadence under stacked-dqn (`TrainingConfig.parameter_sync_decisions`). The
+cadence under R2D2 (`TrainingConfig.parameter_sync_decisions`). The
 actor's carried state is its own and survives the load. A snapshot is never
 written once published - each step makes a new one - so `Learner.lock` guards
 only the moment a snapshot is handed over or loaded, never a step: an actor
@@ -137,9 +139,11 @@ class Learner:
         as a collection block starts, with the learner not running - which is
         what picks up a checkpoint loaded after the run was built. The clone is
         finished before it is handed over, so a copy taken from it on another
-        stream reads a whole step.
+        stream reads a whole step. It is the network state alone
+        (`Backbone.network_state_dict`): an acting copy never reads the
+        optimizer's moments, so none are cloned or held for it.
         """
-        snapshot = _cloned(self.backbone.state_dict())
+        snapshot = _cloned(self.backbone.network_state_dict())
         if self.stream is not None:
             torch.cuda.current_stream(self.backbone.device).synchronize()
         with self.lock:
@@ -159,7 +163,7 @@ class Learner:
         with self.lock:
             if self._snapshot is None:
                 raise RuntimeError("nothing has been published yet")
-            acting.load_state_dict(self._snapshot)
+            acting.load_network_state_dict(self._snapshot)
             if self.stream is not None:
                 # The load ran on this thread's stream; finish it before the
                 # snapshot may be let go and its memory reused.
@@ -242,7 +246,7 @@ class _Ending(Enum):
 
 
 class LearnerThread:
-    """The thread that takes the gradient steps the fleet's decisions earn.
+    """The thread that takes the gradient steps the fleet's collection earns.
 
     One per run, started for each collection block and ended with it; its
     counters and its debt outlive the block. `step` takes one gradient step and
@@ -254,25 +258,25 @@ class LearnerThread:
         learner: Learner,
         step: Callable[[], LearnMetrics],
         *,
-        steps_per_decision: float,
-        bound_decisions: int,
+        steps_per_credit: float,
+        bound_credits: int,
         carried_debt_steps: float = 0.0,
     ) -> None:
         self._learner = learner
         self._step = step
-        self._steps_per_decision = steps_per_decision
+        self._steps_per_credit = steps_per_credit
         # Never under one step: the learner steps only on a whole one owed, so
         # a bound below it would pause actors on a debt nothing can pay.
-        self.bound_steps = max(bound_decisions * steps_per_decision, 1.0)
+        self.bound_steps = max(bound_credits * steps_per_credit, 1.0)
         #: Guards everything below. A leaf: nothing else is taken under it.
         self._condition = threading.Condition()
-        #: Decisions credited, net of any taken back, and steps taken. The debt
-        #: is derived from the two rather than kept as a running float, so the
-        #: steps over any span are the ratio of its decisions exactly, with no
-        #: rounding carried from one credit to the next.
-        self._decisions = 0
-        #: Of those, the decisions of episodes still being played: credited as
-        #: they were taken, not yet counted by the run (`settle`).
+        #: Credits, net of any taken back, and steps taken. The debt is derived
+        #: from the two rather than kept as a running float, so the steps over
+        #: any span are the ratio of its credits exactly, with no rounding
+        #: carried from one credit to the next.
+        self._credits = 0
+        #: Of those, the credits of episodes still being played: credited as
+        #: their decisions were taken, not yet counted by the run (`settle`).
         self._unsettled = 0
         #: Steps already owed when the thread was made: a resumed run's parent's
         #: debt (`counted_debt_steps`), which the counters above start without.
@@ -325,11 +329,11 @@ class LearnerThread:
         thread.join()
         self._thread = None
 
-    def credit(self, decisions: int) -> None:
-        """Owe the learner what `decisions` earn, as an episode's are taken."""
+    def credit(self, credits: int) -> None:
+        """Owe the learner what `credits` earn, as an episode's decisions are taken."""
         with self._condition:
-            self._decisions += decisions
-            self._unsettled += decisions
+            self._credits += credits
+            self._unsettled += credits
             if self._owed() >= 1.0:
                 self._condition.notify_all()
 
@@ -337,13 +341,13 @@ class LearnerThread:
         """Square an episode's credit with what the run counted of it.
 
         `credited` is what its decisions credited as they were taken; `counted`
-        is what the run now owes the learner for it - its decisions, or none
-        for an episode that never counted (abandoned, failed) or was counted
-        before the buffer was warm.
+        is what the run now owes the learner for it - its decisions, or its
+        replay items under R2D2, or none for an episode that never counted
+        (abandoned, failed) or was counted before the buffer was warm.
         """
         with self._condition:
             self._unsettled -= credited
-            self._decisions += counted - credited
+            self._credits += counted - credited
             if self._owed() >= 1.0:
                 self._condition.notify_all()
 
@@ -356,8 +360,8 @@ class LearnerThread:
         with the learner held still, or the steps taken move under it.
         """
         with self._condition:
-            settled = self._decisions - self._unsettled
-            return self._carried_debt_steps + settled * self._steps_per_decision - self._steps
+            settled = self._credits - self._unsettled
+            return self._carried_debt_steps + settled * self._steps_per_credit - self._steps
 
     def make_room(self, profile: DecisionTimeProfile, abandoned: Callable[[], bool]) -> None:
         """Pause the calling actor while more than the bound is owed.
@@ -421,7 +425,7 @@ class LearnerThread:
     def _owed(self) -> float:
         """Gradient steps owed now; the caller holds the condition."""
         return (
-            self._carried_debt_steps + self._decisions * self._steps_per_decision - self._steps
+            self._carried_debt_steps + self._credits * self._steps_per_credit - self._steps
         )
 
     def _serve(self) -> None:

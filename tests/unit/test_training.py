@@ -28,9 +28,8 @@ from tower_rl.experiment.metrics import failed_start_line, health_metrics, windo
 from tower_rl.learning.actor import Actor, ActorConfig, EpisodeResult
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
-from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.replay import R2D2_IMPORTANCE_SAMPLING_EXPONENT, PrioritizedSequenceReplay
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay
 from tower_rl.learning.training import (
     INVALID_REASONS,
     STALE_OR_DUPLICATE,
@@ -41,8 +40,6 @@ from tower_rl.learning.training import (
     collection_windows,
     episode_health,
 )
-
-SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 #: Any schedule at all: nothing in this file is about exploration, and the rates
 #: a real run uses are resolved from `train.py`'s parser rather than defaulted.
@@ -57,23 +54,23 @@ def _run(*, device: torch.device | None = None, **overrides: object) -> Training
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
     )
-    backbone = StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2),
-        network_config=SMALL,
+    backbone = R2D2Backbone(
+        R2D2Config(discount_per_game_second=0.999, seed=0),
         device=device or torch.device("cpu"),
     )
-    replay = PrioritizedSequenceReplay(capacity=64, seed=0)
+    replay = R2D2Replay(capacity=64, seed=0)
     actor = Actor(
         environment=environment,
         policy=backbone,
-        config=ActorConfig(sequence_length=6, burn_in=1, stride=3),
+        config=ActorConfig(),
         replay=replay,
     )
     settings: dict[str, object] = {
         "budget_decisions": 190,
         "warmup_sequences": 2,
         "batch_size": 2,
-        "gradient_steps_per_decision": 0.2,
+        "gradient_steps_per_item": 1.0,
+        "learner_debt_bound_items": 4,
         "exploration": SCHEDULE,
     }
     settings.update(overrides)
@@ -153,14 +150,30 @@ def test_the_anneal_horizon_does_not_move_with_the_budget() -> None:
     )
 
 
-def test_a_horizon_of_no_decisions_is_refused() -> None:
+def test_a_negative_horizon_is_refused() -> None:
     with pytest.raises(ValueError, match="anneal horizon"):
         TrainingConfig(
             budget_decisions=100,
             exploration=ExplorationSchedule(
-                epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=0
+                epsilon_start=1.0, epsilon_end=0.05, anneal_decisions=-1
             ),
         )
+
+
+def test_no_anneal_puts_every_actor_on_its_ape_x_rung_from_the_first_decision() -> None:
+    """R2D2's exploration: the Ape-X ladder, fixed, with nothing annealed (P via Table 2)."""
+    schedule = ExplorationSchedule.for_option(
+        "ladder", actors=7, epsilon_start=0.4, epsilon_end=0.0, anneal_decisions=0
+    )
+    rungs = [0.4, 0.137, 0.047, 0.016, 0.0056, 0.0019, 0.00066]
+    for decisions in (0, 1, 500_000):
+        rates = [schedule.epsilon_for(index, decisions) for index in range(7)]
+        assert rates == pytest.approx(rungs, rel=0.02)
+    eight = ExplorationSchedule.for_option(
+        "ladder", actors=8, epsilon_start=0.4, epsilon_end=0.0, anneal_decisions=0
+    )
+    assert eight.epsilon_for(7, 0) == pytest.approx(0.4**8)
+    assert eight.epsilon_for(0, 0) == 0.4
 
 
 def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> None:
@@ -193,7 +206,7 @@ def test_the_run_publishes_the_exploration_and_importance_values_it_used() -> No
         annealed(report.decisions - report.collected[-1].summary.decisions)
     )
     # Fixed rather than scheduled: R2D2's exponent from the first step to the last.
-    assert report.importance_beta == R2D2_IMPORTANCE_SAMPLING_EXPONENT
+    assert report.importance_beta == training.replay.beta
 
 
 def test_no_optimisation_happens_before_the_buffer_is_warm() -> None:
@@ -274,7 +287,8 @@ def test_evaluation_and_checkpointing_run_on_their_periods() -> None:
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
-        gradient_steps_per_decision=0.2,
+        gradient_steps_per_item=1.0,
+        learner_debt_bound_items=4,
         evaluate_every_episodes=2,
         checkpoint_every_episodes=3,
     )
@@ -297,7 +311,8 @@ def test_the_resume_point_beside_a_numbered_checkpoint_is_not_counted_again() ->
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
-        gradient_steps_per_decision=0.2,
+        gradient_steps_per_item=1.0,
+        learner_debt_bound_items=4,
         checkpoint_every_episodes=3,
         checkpoint_every_decisions=40,
     )
@@ -339,7 +354,8 @@ def test_evaluation_does_not_consume_the_budget() -> None:
         exploration=SCHEDULE,
         warmup_sequences=2,
         batch_size=2,
-        gradient_steps_per_decision=0.2,
+        gradient_steps_per_item=1.0,
+        learner_debt_bound_items=4,
         evaluate_every_episodes=1,
     )
     training.evaluate = lambda: EvaluationReport(

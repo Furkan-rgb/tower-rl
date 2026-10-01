@@ -9,6 +9,14 @@ fixed-policy benchmark (`#101`) is still to run.
 loads the last completed step before every decision and carries its latent
 across the swap. The learner thread, the bounded debt and the rest stand.
 
+**Partly superseded by board #111 (R2D2):** the debt is counted in credits, not
+decisions. A credit is one decision for DreamerV3 (0.5 steps, bound 512) and
+one inserted item for R2D2 (5 steps per item, bound 125 items = 625 steps,
+Acme's `error_buffer`; `R2D2_LEARNER_DEBT_BOUND_ITEMS`). The 512-step bound and
+the 519-step lag below are the removed stacked-dqn's figures (commit
+`cb2f324`). R2D2's worst hold is every actor ending an episode inside a 11.5 s
+save, 8 x 60 = 480 steps, under 625.
+
 ## Context
 
 Until now the actor whose episode ended took every gradient step that episode

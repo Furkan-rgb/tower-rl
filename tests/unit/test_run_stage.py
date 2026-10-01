@@ -818,7 +818,7 @@ def test_a_log_directory_moves_the_stage_log_but_not_the_emulator_logs(
     bring_up(shims, "emulator-5556")
     shims.logs.mkdir(parents=True, exist_ok=True)
     (shims.logs / "tower-rl-emulator-emulator-5556.log").write_text("ColorBuffer::create failed\n")
-    run_logs = tmp_path / "runs" / "stacked-dqn-20260927T000000Z" / "logs"
+    run_logs = tmp_path / "runs" / "r2d2-20260927T000000Z" / "logs"
     stage = shims.stage("exit 3")
 
     result = subprocess.run(

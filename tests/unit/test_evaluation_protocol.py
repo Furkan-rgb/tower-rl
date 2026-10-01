@@ -23,9 +23,9 @@ import report_arms
 import run_episodes
 import select_checkpoint
 import torch
-import train
 from fakes.fake_run_port import FakeRunPort
 from fakes.recording_tracker import RecordedRun
+from test_train_entry_point import session as trained_session
 
 from tower_rl.environment.run_environment import (
     CadenceConfig,
@@ -43,12 +43,9 @@ from tower_rl.learning.checkpoint import (
     save,
 )
 from tower_rl.learning.evaluator import evaluate
-from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import CheapestFirstPolicy, RandomPolicy
 
 PROFILE = "fake-profile-v1"
-
-SMALL_NETWORK = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +87,7 @@ def episode(final_wave: int, decisions: int) -> dict[str, Any]:
 
 def actor_record(waves: list[int], identity: dict[str, Any]) -> dict[str, Any]:
     return {
-        "policy": "StackedDqnBackbone",
+        "policy": "R2D2Backbone",
         "policy_identity": identity,
         "valid_episodes": len(waves),
         "invalid_episodes": 0,
@@ -113,7 +110,7 @@ def evaluation_directory(
 
 #: The run every synthetic checkpoint below belongs to. A run directory is named
 #: for its run id, which is what ties a record to the run that produced it.
-RUN_ID = "stacked-dqn-20260101-000000-abcdef"
+RUN_ID = "r2d2-20260101-000000-abcdef"
 
 
 def checkpoint_identity(
@@ -139,7 +136,7 @@ def write_checkpoint_file(path: Path, decisions: int) -> None:
         Checkpoint(
             identity=CheckpointIdentity(
                 run_id=RUN_ID,
-                backbone="stacked-dqn",
+                backbone="r2d2",
                 profile_id=PROFILE,
                 observation_schema="observation-v1",
                 action_schema="run-action-v1",
@@ -302,7 +299,7 @@ def test_two_runs_at_the_same_period_do_not_borrow_each_others_evaluations(
     """
     mine, my_checkpoints = run_with_checkpoints(tmp_path / "a", [100, 200])
     theirs, their_checkpoints = run_with_checkpoints(
-        tmp_path / "b", [100, 200], run_id="stacked-dqn-20260202-000000-fedcba"
+        tmp_path / "b", [100, 200], run_id="r2d2-20260202-000000-fedcba"
     )
     # The same names, in two runs.
     assert [path.name for path in my_checkpoints] == [path.name for path in their_checkpoints]
@@ -476,9 +473,9 @@ def arm_directories(tmp_path: Path) -> dict[str, Path]:
             {"emulator-5556": [5, 6, 5, 6, 6], "emulator-5558": [6, 5, 6, 5, 6]},
             {"name": "scripted"},
         ),
-        "stacked-dqn": evaluation_directory(
+        "r2d2": evaluation_directory(
             tmp_path / "arms",
-            "stacked-dqn",
+            "r2d2",
             {"emulator-5556": [10, 11, 10, 12, 11], "emulator-5558": [11, 10, 12, 11, 10]},
             # The full identity a checkpoint arm's records carry, which is what
             # `--selection` is checked against.
@@ -516,13 +513,13 @@ def test_the_report_prints_every_section_for_every_arm(
         assert name in printed
 
     report = json.loads(output.read_text())
-    assert sorted(report["arms"]) == ["random", "scripted", "stacked-dqn"]
+    assert sorted(report["arms"]) == ["r2d2", "random", "scripted"]
     for entry in report["arms"].values():
         assert entry["valid_episodes"] == 10
         assert entry["final_wave"]["low"] <= entry["final_wave"]["iqm"]
         assert entry["final_wave"]["iqm"] <= entry["final_wave"]["high"]
     # The learned arm is the highest of the three, and is separated from both.
-    assert report["arms"]["stacked-dqn"]["final_wave"]["low"] > (
+    assert report["arms"]["r2d2"]["final_wave"]["low"] > (
         report["arms"]["scripted"]["final_wave"]["high"]
     )
     assert len(report["differences"]) == 3
@@ -536,9 +533,9 @@ def test_the_report_prints_every_section_for_every_arm(
     assert len(report["per_wave"]) == 3
     # The pooled files the per-wave comparison was run over are kept beside it.
     assert sorted(p.name for p in (tmp_path / "pooled").glob("*.json")) == [
+        "r2d2.json",
         "random.json",
         "scripted.json",
-        "stacked-dqn.json",
     ]
 
 
@@ -549,7 +546,7 @@ def test_an_arm_name_that_is_not_a_name_is_refused_before_anything_is_written(
     arms = arm_directories(tmp_path)
     pooled = tmp_path / "pooled"
 
-    for bad in ("../escape", "two words", "stacked/dqn", "arm:one"):
+    for bad in ("../escape", "two words", "r2d2/arm", "arm:one"):
         with pytest.raises(SystemExit, match="may hold only letters"):
             invoke(
                 report_arms,
@@ -560,7 +557,7 @@ def test_an_arm_name_that_is_not_a_name_is_refused_before_anything_is_written(
     assert not pooled.exists(), "refused before a directory was made for it"
 
     # The names the protocol actually uses are all accepted.
-    for good in ("random", "scripted", "stacked-dqn", "stacked_dqn", "arm2"):
+    for good in ("random", "scripted", "r2d2", "r2d2_arm", "arm2"):
         assert report_arms.ARM_NAME.fullmatch(good)
 
 
@@ -641,7 +638,7 @@ def test_a_set_b_that_played_another_model_is_refused(
 
     # Another run entirely: the identity hash does not match.
     other_run = selection_file(
-        tmp_path / "a", run_id="stacked-dqn-20260202-000000-fedcba",
+        tmp_path / "a", run_id="r2d2-20260202-000000-fedcba",
         checkpoint_identity="ffffffffffff",
     )
     with pytest.raises(SystemExit, match="played a checkpoint of another run"):
@@ -746,33 +743,15 @@ def test_train_then_select_then_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Train, evaluate each numbered checkpoint, select one, report it on a fresh set."""
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train, "NetworkConfig", lambda: SMALL_NETWORK)
-        session = train.train_session(
-            train.parse_arguments(
-                [
-                    "--budget-decisions", "300",
-                    "--checkpoint-every-decisions", "100",
-                    "--batch-size", "2",
-                    "--gradient-steps-per-decision", "0.2",
-                    "--warmup-sequences", "2",
-                    "--sequence-length", "6",
-                    "--stacked-burn-in", "3",
-                    "--history-length", "4",
-                    "--replay-capacity", "64",
-                    "--evaluate-every-episodes", "0",
-                    "--evaluation-episodes", "1",
-                    "--collection-window-episodes", "2",
-                    "--serial", "fake-0",
-                    "--max-quiet-game-ms", "4000",
-                    "--run-dir", str(tmp_path / "runs"),
-                ]
-            ),
-            [train.ActorInstance(serial="fake-0", environment=environment())],
-            profile_id=PROFILE,
-            revision="test",
-            device=torch.device("cpu"),
-        )
+    session = trained_session(
+        tmp_path / "runs",
+        budget="300",
+        settings={
+            "--checkpoint-every-decisions": "100",
+            "--evaluate-every-episodes": "0",
+            "--evaluation-episodes": "1",
+        },
+    )
 
     run = Path(session["run_folder"])
     checkpoints = sorted((run / "checkpoints").glob("checkpoint-d*.pt"))
@@ -804,7 +783,7 @@ def test_train_then_select_then_report(
     arms = {
         "random": play("random", tmp_path / "set-b" / "random"),
         "scripted": play("scripted", tmp_path / "set-b" / "scripted"),
-        "stacked-dqn": play(f"checkpoint:{chosen}", tmp_path / "set-b" / "stacked-dqn"),
+        "r2d2": play(f"checkpoint:{chosen}", tmp_path / "set-b" / "r2d2"),
     }
     report = tmp_path / "arms.json"
     assert (
@@ -824,9 +803,9 @@ def test_train_then_select_then_report(
     printed = capsys.readouterr().out
     assert "selected" in printed and "per wave index" in printed
     scored = json.loads(report.read_text())
-    assert sorted(scored["arms"]) == ["random", "scripted", "stacked-dqn"]
+    assert sorted(scored["arms"]) == ["r2d2", "random", "scripted"]
     # The learned arm carries the checkpoint it was; the floors carry their name.
-    assert scored["arms"]["stacked-dqn"]["policy_identity"]["name"] == chosen.stem
+    assert scored["arms"]["r2d2"]["policy_identity"]["name"] == chosen.stem
     assert scored["arms"]["scripted"]["policy_identity"] == {"name": "scripted"}
     assert len(scored["differences"]) == 3
 
@@ -843,7 +822,7 @@ def attached(monkeypatch: pytest.MonkeyPatch) -> RecordedRun:
     `open_tracked_run` in its own module regardless of which script invoked
     it, so the patch target is `tracking` itself rather than either script.
     """
-    recorded = RecordedRun(name="stacked-dqn-under-test", params={}, tags={})
+    recorded = RecordedRun(name="r2d2-under-test", params={}, tags={})
     monkeypatch.setattr(
         tracking,
         "open_tracked_run",
@@ -929,18 +908,17 @@ def test_the_set_b_results_are_logged_onto_the_training_run(
         assert low <= iqm <= high
     # The pre-registered statistic, per pair, beside the per-arm ones: this is
     # what the decision rule is read off.
-    for pair in ("random_minus_scripted", "random_minus_stacked-dqn",
-                 "scripted_minus_stacked-dqn"):
+    for pair in ("r2d2_minus_random", "r2d2_minus_scripted", "random_minus_scripted"):
         low = logged[f"report_{pair}_final_wave_iqm_ci_low"]
         difference = logged[f"report_{pair}_final_wave_iqm_diff"]
         high = logged[f"report_{pair}_final_wave_iqm_ci_high"]
         assert low <= difference <= high
-    # The model is the stronger arm, so both of its differences are negative.
-    assert logged["report_scripted_minus_stacked-dqn_final_wave_iqm_diff"] < 0.0
-    assert logged["report_random_minus_stacked-dqn_final_wave_iqm_diff"] < 0.0
+    # The model is the stronger arm, so both of its differences are positive.
+    assert logged["report_r2d2_minus_scripted_final_wave_iqm_diff"] > 0.0
+    assert logged["report_r2d2_minus_random_final_wave_iqm_diff"] > 0.0
     # One measurement about a finished run, not a point on its budget.
     assert {point.decisions for point in recorded.points} == {0}
-    assert logged["report_stacked-dqn_final_wave_iqm"] > logged["report_scripted_final_wave_iqm"]
+    assert logged["report_r2d2_final_wave_iqm"] > logged["report_scripted_final_wave_iqm"]
 
 
 def test_nothing_is_tracked_unless_a_run_is_named(

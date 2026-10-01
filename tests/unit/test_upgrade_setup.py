@@ -185,7 +185,7 @@ def test_evaluating_under_the_checkpoints_setup_proceeds() -> None:
 
 def test_the_identity_checks_the_digest_only_when_both_sides_have_one() -> None:
     base = CheckpointIdentity(
-        run_id="a", backbone="stacked-dqn", profile_id="p", observation_schema="o",
+        run_id="a", backbone="r2d2", profile_id="p", observation_schema="o",
         action_schema="a", reward_schema="r", source_revision="s",
     )
     one = replace(base, upgrade_setup_digest="1" * 64)

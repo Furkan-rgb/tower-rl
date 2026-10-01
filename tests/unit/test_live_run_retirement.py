@@ -28,8 +28,9 @@ from tower_rl.environment.run_environment import (
 from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import Actor, ActorConfig
-from tower_rl.learning.policies import CheapestFirstPolicy
-from tower_rl.learning.replay import PrioritizedSequenceReplay
+from tower_rl.learning.network import NetworkConfig
+from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+from tower_rl.learning.r2d2_replay import R2D2Replay
 
 WORKSHOP_LEVEL = 5
 
@@ -131,11 +132,16 @@ def test_nothing_of_the_retired_run_reaches_replay_or_the_next_episode_record() 
     environment, port = _environment()
     _cut_mid_game(environment, port)
     advances_before = port.advances
-    replay = PrioritizedSequenceReplay(capacity=256, seed=0)
+    replay = R2D2Replay(capacity=256, seed=0)
     actor = Actor(
         environment=environment,
-        policy=CheapestFirstPolicy(),
-        config=ActorConfig(sequence_length=8, burn_in=2, stride=4),
+        # R2D2's items carry the policy's recurrent state, so the actor stores
+        # an episode only for the policy that has one.
+        policy=R2D2Backbone(
+            R2D2Config(discount_per_game_second=0.999, seed=0),
+            NetworkConfig(hidden=16, identity_dim=4),
+        ),
+        config=ActorConfig(),
         replay=replay,
     )
 
@@ -147,7 +153,8 @@ def test_nothing_of_the_retired_run_reaches_replay_or_the_next_episode_record() 
     retirement_advances = port.advances - advances_before - summary.advances
     assert retirement_advances > 0, "the cut run was played out by the reset"
     assert len(replay) == result.sequences_accepted > 0
-    assert {item.metadata.episode_id for item in replay._items} == {summary.episode_id}
+    stored = {episode.metadata.episode_id for episode in replay._episodes.values()}
+    assert stored == {summary.episode_id}
 
 
 def test_an_episode_ended_by_the_game_retires_nothing() -> None:

@@ -9,8 +9,6 @@ import pytest
 import torch
 from fakes.backbone_equality import parameters_are_equal
 
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
-from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     Checkpoint,
@@ -26,16 +24,32 @@ from tower_rl.learning.checkpoint import (
     save,
     write_manifest,
 )
-from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.stacked_dqn import StackedDqnBackbone, StackedDqnConfig
 
-SMALL = NetworkConfig(hidden=16, core_hidden=16, identity_dim=4)
+
+class _Backbone:
+    """Two small networks: what a checkpoint must carry, without a learner's cost."""
+
+    def __init__(self, seed: int = 0) -> None:
+        torch.manual_seed(seed)
+        self.online = torch.nn.Linear(4, 3)
+        self.target = torch.nn.Linear(4, 3)
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "online": self.online.state_dict(),
+            "target": self.target.state_dict(),
+            "optimizer": {},
+        }
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self.online.load_state_dict(state["online"])  # type: ignore[arg-type]
+        self.target.load_state_dict(state["target"])  # type: ignore[arg-type]
 
 
 def _identity(**overrides: str) -> CheckpointIdentity:
     base = {
         "run_id": "run-1",
-        "backbone": "stacked-dqn",
+        "backbone": "r2d2",
         "profile_id": "profile-v1",
         "observation_schema": "observation-v1",
         "action_schema": "run-action-v1",
@@ -46,18 +60,8 @@ def _identity(**overrides: str) -> CheckpointIdentity:
     return CheckpointIdentity(**base)  # type: ignore[arg-type]
 
 
-def _backbone() -> StackedDqnBackbone:
-    return StackedDqnBackbone(
-        config=StackedDqnConfig(seed=0, history_length=2), network_config=SMALL
-    )
-
-
-def _features() -> StateFeatures:
-    return StateFeatures(
-        scalars=tuple([0.3] * SCALAR_COUNT),
-        rows=tuple([0.2] * (ROW_COUNT * ROW_WIDTH)),
-        mask=tuple(index in (0, 4, 11) for index in range(len(RUN_ACTIONS))),
-    )
+def _backbone(seed: int = 0) -> _Backbone:
+    return _Backbone(seed)
 
 
 def test_resume_reproduces_identical_behaviour(tmp_path: Path) -> None:
@@ -72,7 +76,7 @@ def test_resume_reproduces_identical_behaviour(tmp_path: Path) -> None:
         path,
     )
 
-    restored_backbone = _backbone()
+    restored_backbone = _backbone(seed=1)
     checkpoint = load(path)
     restored_backbone.load_state_dict(dict(checkpoint.backbone_state))
 
@@ -81,11 +85,9 @@ def test_resume_reproduces_identical_behaviour(tmp_path: Path) -> None:
     assert parameters_are_equal(restored_backbone.online, original.online)
     assert parameters_are_equal(restored_backbone.target, original.target)
 
-    # The real test of a resume is that it decides the same way.
-    features = _features()
-    first, _ = original.act(features, original.initial_state(), epsilon=0.0)
-    second, _ = restored_backbone.act(features, restored_backbone.initial_state(), epsilon=0.0)
-    assert first == second
+    # The real test of a resume is that it computes the same way.
+    probe = torch.ones(2, 4)
+    assert torch.equal(restored_backbone.online(probe), original.online(probe))
 
 
 def test_a_failed_write_leaves_the_previous_checkpoint_intact(tmp_path: Path) -> None:
@@ -249,7 +251,7 @@ def test_a_resume_state_names_its_parent_and_the_position_it_continues_from(
     assert state.decisions == 900 and state.episodes == 12
     # Game time travels beside it as a statistic.
     assert state.game_ms == 1_800_000.0
-    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 7
+    assert load(path).format_version == state.format_version == CHECKPOINT_FORMAT_VERSION == 8
     assert state.optimisation_steps == 31
     assert state.tracking_run_id == "mlflow-run-1"
     assert "optimizer" in state.backbone_state, "the moments travel with the weights"
@@ -291,8 +293,8 @@ def test_the_earlier_checkpoint_format_is_still_read(tmp_path: Path) -> None:
 
     # A version this code does not know is still refused rather than guessed at.
     future = tmp_path / "future.pt"
-    torch.save({"format_version": 8, "identity": {}}, future)
-    with pytest.raises(CheckpointError, match="format 8 is not supported"):
+    torch.save({"format_version": 9, "identity": {}}, future)
+    with pytest.raises(CheckpointError, match="format 9 is not supported"):
         load(future)
 
 
@@ -372,3 +374,13 @@ def test_run_1_still_hashes_to_the_token_its_selection_record_cites() -> None:
     assert identity_hash(run_one) == "8344a482eede"
     assert identity_hash(replace(run_one, decision_cadence="choice-points")) == "8344a482eede"
     assert identity_hash(replace(run_one, profile_id="other")) != "8344a482eede"
+
+
+def test_a_stacked_dqn_checkpoint_is_refused_with_the_commit_that_can_still_read_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "latest.pt"
+    save(Checkpoint(_identity(backbone="stacked-dqn"), TrainingProgress(), {}), path)
+
+    with pytest.raises(CheckpointError, match="stacked-dqn checkpoint.*cb2f324"):
+        load(path, expected=_identity(backbone="r2d2"))

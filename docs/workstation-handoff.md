@@ -93,11 +93,11 @@ rather than watched by whoever started it:
 ```text
 nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
   uv run --extra tracking python scripts/train.py \
+      --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
       --budget-decisions 120000 --checkpoint-every-decisions 5000 \
       --selection-period-decisions 15000 \
-      --epsilon-anneal-decisions 2500 \
       --early-stop-patience-periods 2 --early-stop-min-improvement 0.2 \
       --seed 1 > /dev/null 2>&1 &
 ```
@@ -165,10 +165,13 @@ measured, not what to do next.
   interleaved on one device, 54 episodes, 614 optimisation steps, no replay
   rejections, checkpoints round-tripping with identity and checksums
   (`M1B-E011`). This proves plumbing, not learning.
-- **One backbone behind the contract suite**: `stacked-dqn`, the rank-1
-  candidate from `docs/rl-candidates.md`. `recurrent-q` was the second arm the
-  `M1B-E011` run above used; it was removed with the multi-backbone goal (`#7`),
-  so `learning/` holds `stacked_dqn.py` alone and `BACKBONE` names it.
+- **Two backbones behind the contract suite**: R2D2 (`learning/r2d2.py`, with
+  `r2d2_replay.py`) and DreamerV3 (`learning/dreamer.py`, with
+  `dreamer_replay.py`). R2D2 is the former `stacked-dqn`, the rank-1 candidate
+  from `docs/rl-candidates.md`, rebuilt to follow R2D2 as published (`#111`,
+  ADR 0018). `recurrent-q`, the second arm the `M1B-E011` run above used, and
+  `stacked_dqn.py` are gone. `--backbone` is required, and `BACKBONES` in
+  `scripts/train.py` lists the two.
 - **The comparison machinery**: bootstrap intervals and Cohen's d.
 - **Frame-exact stepping** (`M1B-E016`) and **the advance loop inside the
   bridge** (`M1B-E017`), described below.

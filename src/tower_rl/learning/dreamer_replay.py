@@ -2,7 +2,7 @@
 
 A port of the official `embodied/core/replay.py` (danijar/dreamerv3 at
 e3f02248) as `dreamerv3/main.py` `make_replay` configures it, in place of the
-window buffer stacked-dqn samples (`replay.py`). What it follows, by line:
+window buffer this project first used. What it follows, by line:
 
 - Each actor writes one stream of steps, episode after episode. Every stream
   position becomes an item - the start of one window of `length` steps - as
@@ -65,47 +65,29 @@ from tower_rl.learning.replay import (
     SequenceMetadata,
     read_replay_metadata,
 )
+from tower_rl.learning.step_arrays import StepArrays, read_rows, write_rows
 
 #: `configs.yaml` `replay.size`: items, which is steps.
 DREAMER_REPLAY_CAPACITY = 5_000_000
 #: `configs.yaml` `replay_context`.
 DREAMER_REPLAY_CONTEXT = 1
-#: The layout of a saved step replay. 1 and 2 are the window buffer's
-#: (`replay.REPLAY_DUMP_FORMAT_VERSION`), which this buffer refuses: a DreamerV3
-#: run saved before stored latents cannot continue under them.
+#: The layout of a saved step replay. 1 and 2 were the window buffer's,
+#: which this buffer refuses: a DreamerV3 run saved before stored latents
+#: cannot continue under them.
 DREAMER_REPLAY_DUMP_FORMAT_VERSION = 3
 
 
 @dataclass(frozen=True)
-class EpisodeSteps:
-    """One episode's steps in Dreamer's layout, one row per step.
+class EpisodeSteps(StepArrays):
+    """One episode's steps in Dreamer's layout (`StepArrays`), with each step's latent.
 
     The latent is the acting policy's posterior at that step, `deter` and the
     stochastic state as class indices: its sample is one-hot, so the indices
     hold it exactly in 1/64 of the official float32 one-hot's bytes.
     """
 
-    scalars: numpy.ndarray  # float32 [n, SCALAR_COUNT]
-    rows: numpy.ndarray  # float32 [n, ROW_COUNT * ROW_WIDTH]
-    mask: numpy.ndarray  # bool [n, actions]
-    #: The action taken at the step; 0 at the last step, where none is.
-    action: numpy.ndarray  # int64 [n]
-    #: The transition into the step: 0, False and 0 at the first.
-    reward: numpy.ndarray  # float32 [n]
-    terminal: numpy.ndarray  # bool [n]
-    game_ms: numpy.ndarray  # float32 [n]
     deter: numpy.ndarray  # float32 [n, deter]
     stoch: numpy.ndarray  # int8 [n, stoch]
-
-    def __post_init__(self) -> None:
-        count = len(self.action)
-        if count < 1:
-            raise ReplayRejected("an episode needs at least one step")
-        if any(len(getattr(self, name.name)) != count for name in fields(self)):
-            raise ReplayRejected("every field of an episode needs one row per step")
-
-    def __len__(self) -> int:
-        return len(self.action)
 
 
 @dataclass
@@ -153,8 +135,8 @@ class DreamerSample:
 class DreamerReplay:
     """Uniform step replay with an online queue and latents written back (module docstring).
 
-    `lock` is shared by the actors and the learner exactly as
-    `PrioritizedSequenceReplay.lock` is, and no method takes it itself.
+    `lock` is shared by the actors and the learner, and no method takes it
+    itself.
     """
 
     capacity: int = DREAMER_REPLAY_CAPACITY
@@ -397,7 +379,7 @@ class DreamerReplay:
             raise ReplayDumpError("replay dump's episode lengths do not add up to its steps")
         arrays = {}
         for name in fields(EpisodeSteps):
-            array = _read(directory, name.name)
+            array = read_rows(directory, name.name)
             if len(array) != total:
                 raise ReplayDumpError(f"replay dump array {name.name} has {len(array)} rows")
             arrays[name.name] = array
@@ -510,35 +492,11 @@ class DreamerReplayImage:
 
 def _write(path: Path, total: int, episodes: Sequence[_Episode], name: str) -> None:
     """One step field of every episode as one `.npy`, written an episode at a time."""
-    if not episodes:
-        numpy.save(path, numpy.zeros((0,), numpy.float32))
-        return
-    reference = getattr(episodes[0].steps, name)
-    with path.open("wb") as stream:
-        numpy.lib.format.write_array_header_1_0(
-            stream,
-            {
-                "descr": reference.dtype.str,
-                "fortran_order": False,
-                "shape": (total, *reference.shape[1:]),
-            },
-        )
-        for episode in episodes:
-            stream.write(numpy.ascontiguousarray(getattr(episode.steps, name)).tobytes())
-        stream.flush()
-        os.fsync(stream.fileno())
-        os.posix_fadvise(stream.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    write_rows(path, total, [getattr(episode.steps, name) for episode in episodes])
 
 
 def _pairs(values: Sequence[Sequence[int]]) -> deque[tuple[int, int]]:
     return deque((int(first), int(second)) for first, second in values)
-
-
-def _read(directory: Path, name: str) -> Any:
-    try:
-        return numpy.load(directory / f"{name}.npy", mmap_mode="r", allow_pickle=False)
-    except (OSError, ValueError) as error:
-        raise ReplayDumpError(f"replay dump array {name} is unreadable: {error}") from error
 
 
 def episode_steps(

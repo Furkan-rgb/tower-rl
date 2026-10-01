@@ -19,6 +19,7 @@ from fakes.recording_tracker import RecordedRun, RecordingTracker
 from test_import_contracts import imported_modules
 from test_train_entry_point import (
     PROFILE,
+    R2D2_FLAGS,
     SMALL_NETWORK,
     arguments,
     fleet,
@@ -137,7 +138,10 @@ def test_an_absent_mlflow_is_refused_rather_than_silently_untracked(
 
         assert "--no-track" in str(refusal.value)
         untracked = train.parse_arguments(
-            ["--budget-decisions", "1000", "--no-track", "--run-dir", str(tmp_path)]
+            [
+                "--budget-decisions", "1000", *R2D2_FLAGS, "--no-track",
+                "--run-dir", str(tmp_path),
+            ]
         )
         assert isinstance(train.build_tracker(untracked), NoExperimentTracker)
 
@@ -215,7 +219,7 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
 ) -> None:
     params = recorded.params
 
-    assert params["backbone"] == "stacked-dqn"
+    assert params["backbone"] == "r2d2"
     for key in (
         "seed",
         "budget_decisions",
@@ -224,9 +228,8 @@ def test_the_run_carries_its_configuration_and_the_measured_floors(
         "gradient_steps_per_decision",
         "sequence_length",
         "burn_in",
-        "stride",
         "n_step",
-        "discount",
+        "discount_per_game_second",
         "learning_rate",
         "epsilon_start",
         "epsilon_end",
@@ -255,9 +258,9 @@ def test_provenance_travels_with_the_run(recorded: RecordedRun) -> None:
     assert tags["source_revision"] == "test-revision"
     assert tags["bridge_version"] == "bridge-test"
     assert tags["profile_id"] == PROFILE
-    assert tags["backbone"] == "stacked-dqn"
+    assert tags["backbone"] == "r2d2"
     assert tags["actors"] == "1"
-    assert tags["run_folder"].startswith("stacked-dqn-")
+    assert tags["run_folder"].startswith("r2d2-")
     assert tags["run_id"] == recorded.name
 
 
@@ -295,7 +298,7 @@ def test_tracking_writes_only_into_the_git_ignored_state_directory(
     for path, _ in recorded.artifacts:
         assert REPOSITORY not in path.resolve().parents
 
-    defaults = train.parse_arguments(["--budget-decisions", "1000"])
+    defaults = train.parse_arguments(["--budget-decisions", "1000", *R2D2_FLAGS])
     store = tracking_uri(defaults.run_dir)
     artifacts = Path(artifact_root(defaults.run_dir))
 
@@ -324,7 +327,7 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     )
 
     run = tracker.start_run(
-        name="stacked-dqn-test", params={"seed": 0}, tags={"backbone": "stacked-dqn"}
+        name="r2d2-test", params={"seed": 0}, tags={"backbone": "r2d2"}
     )
     run.log_metrics({"eval_mean_final_wave": 6.5}, decisions=120)
     run.log_artifact(artifact, directory="checkpoints/abc")
@@ -333,7 +336,7 @@ def test_the_mlflow_adapter_records_what_it_is_given(tmp_path: Path) -> None:
     client = MlflowClient(tracking_uri=uri)
     stored = client.get_run(run.run_id)
     assert stored.data.params["seed"] == "0"
-    assert stored.data.tags["backbone"] == "stacked-dqn"
+    assert stored.data.tags["backbone"] == "r2d2"
     assert stored.info.status == "FINISHED"
     history = client.get_metric_history(run.run_id, "eval_mean_final_wave")
     assert [(item.step, item.value) for item in history] == [(120, 6.5)]
@@ -367,7 +370,7 @@ def test_the_mlflow_adapter_reopens_a_run_that_already_exists(tmp_path: Path) ->
         experiment="reopen-experiment",
         artifact_root=str(tmp_path / "mlartifacts"),
     )
-    training = tracker.start_run(name="stacked-dqn-test", params={"seed": 0}, tags={})
+    training = tracker.start_run(name="r2d2-test", params={"seed": 0}, tags={})
     training.log_metrics({"episode_final_wave": 6.0}, decisions=1000)
     training.finish()
 
@@ -427,7 +430,7 @@ LEARNER_KEYS = {
 }
 
 #: Long enough for the arm to play about ten episodes against the fake port.
-EPISODE_BUDGET = "300"
+EPISODE_BUDGET = "600"
 
 
 @pytest.fixture(scope="module")
@@ -580,29 +583,6 @@ def test_a_laddered_fleet_reports_its_collection_windows_per_actor(
     assert "collection_window_near_greedy_mean_final_wave" in keys
 
 
-def test_a_uniform_fleet_s_near_greedy_window_is_its_pooled_window(
-    tmp_path: Path,
-) -> None:
-    """Every actor draws the one rate, so the two series are the same episodes."""
-    tracker = RecordingTracker()
-    session(tmp_path, budget="300", actors=2, tracker=tracker)
-
-    points = [
-        point
-        for point in tracker.runs[0].points
-        if "collection_mean_final_wave" in point.metrics
-    ]
-    assert points
-    for point in points:
-        metrics = point.metrics
-        assert metrics["collection_window_near_greedy_episodes"] == pytest.approx(
-            metrics["collection_episodes"]
-        )
-        assert metrics["collection_window_near_greedy_mean_final_wave"] == pytest.approx(
-            metrics["collection_mean_final_wave"]
-        )
-
-
 def test_every_selection_period_reaches_the_store_on_the_run_s_own_axis(
     tmp_path: Path,
 ) -> None:
@@ -615,6 +595,7 @@ def test_every_selection_period_reaches_the_store_on_the_run_s_own_axis(
     session(
         tmp_path,
         budget="300",
+        actors=2,
         settings={"--selection-period-decisions": "100"},
         tracker=tracker,
     )
@@ -629,7 +610,9 @@ def test_every_selection_period_reaches_the_store_on_the_run_s_own_axis(
     assert periods == sorted(periods) and periods[0] == 1
     for point in points:
         metrics = point.metrics
-        assert point.decisions // 100 == metrics["selection_period"]
+        # One period closes per crossing, so an episode that spans two period
+        # boundaries closes one period, and a period closes no earlier than its end.
+        assert point.decisions // 100 >= metrics["selection_period"]
         assert metrics["selection_period_near_greedy_episodes"] > 0
         assert (
             metrics["selection_period_best_near_greedy_mean_final_wave"]
@@ -645,9 +628,9 @@ def test_each_episode_logs_the_rate_the_actor_that_played_it_explored_at(
 ) -> None:
     """Under a ladder the run's own published rate is some other actor's rung.
 
-    The anneal is one decision long here, so every actor is on its rung for the
-    whole run and the two rungs of a fleet of two are 0.4 and 0.4 ** 8 - far
-    enough apart that an episode credited to the wrong actor's rate is obvious.
+    Nothing anneals under R2D2, so every actor is on its rung for the whole run
+    and the two rungs of a fleet of two are 0.4 and 0.4 ** 8 - far enough apart
+    that an episode credited to the wrong actor's rate is obvious.
     """
     rungs = ape_x_floors(2)
     tracker = RecordingTracker()
@@ -655,7 +638,6 @@ def test_each_episode_logs_the_rate_the_actor_that_played_it_explored_at(
         tmp_path,
         budget="300",
         actors=2,
-        settings={"--exploration": "ladder", "--epsilon-anneal-decisions": "1"},
         tracker=tracker,
     )
 

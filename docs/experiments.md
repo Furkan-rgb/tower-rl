@@ -78,7 +78,7 @@ recipe on the new baseline.
 | `M3-P014` | With the stacked-dqn recipe re-derived from SR-SPR/BBF (resets every 100k gradient steps, refresh every 10 decisions), does the near-greedy curve keep rising past `M3-P009`'s ~35-38-wave level, recovering after each reset, without collapsing? | `--parameter-sync-decisions 10` (was `M3-P013`'s 0); `--reset-every-steps 100000` (new); `--batch-size 8` and `--early-stop-patience-periods 0` explicit; kill bars moved to recovered or pre-reset windows | `M3-P009`'s near-greedy period means, read as a screen; collapse-only kill bars | PROVISIONAL: arm-n10 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83] (n=105 pending) | STOPPED by SIGINT at 1,005,709/1,000,000 decisions, during the built-in final evaluation; arm read at period 16 (near-greedy mean 55.28, n=29) | Well above `M3-P009`'s ~35-38-wave level on the provisional n=10 read; offline diagnosis finds a learner-limited, reactive Defense-Absolute/cash-hoarding strategy (spend share 58%/73% from wave 30 in Defense Absolute vs 3.1%/1.1% in Thorns, damage frozen at 57.3 from wave 30, no upgrade near max, post-100k final-wave SD 12.9 range 11-72), not an account ceiling | this commit (results) |
 | `M3-P015` | With `M3-P014`'s exact recipe and the discount horizon at the protocol's 0.999 per game-second (ADR 0013), survival reward scaled to hold the maximum return at V_REF, does the policy pair Defense Absolute with Thorns rather than turtling on Defense Absolute alone? | `--discount-per-game-second 0.999` (was 0.997); survival-time reward scaled to (1 − d) · V_REF (identical to `M3-P014`'s at 0.997, a third of the unscaled one at 0.999) | `M3-P014` (mlflow `156c54ce`), matched decisions; n=1 | pending | pending | pending | this commit (pre-registration) |
 | `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
-| `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | pending | pending | pending | this commit (pre-registration) |
+| `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | not evaluated; near-greedy period means 24.59, 28.00, 28.72, 29.26, 28.41, 27.78, 25.37, 29.22, 30.33, 38.05 over 10 periods (best 38.05, period 10, 62 episodes), n=1 | STOPPED by SIGINT at 500,768/1,000,000 decisions under the 500k rule (best 38.05 < 39.4 at period 10); no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at 25-30 for periods 1-9, the same value and credit failure as `M3-P016` under official conventions: train ratio 511.6 against the official 512, replay balance, latents and return normaliser as official; a purchase changes the survival return by 0.003-0.02 against a critic bias of about +4.5; Defense Absolute 15.5% of spend from wave 30 against the DQN's 70.4%. A protocol property, not a deviation. Period 10's jump to 38.05 came at the stop and one period cannot say whether a plateau break was starting; resumable from its pair. Health-potential shaping (C1) would give purchases essentially no credit (|F| 3e-5 per purchase against 0.019 survival reward per timed decision); dropped. 84,939 decisions/hour; 42 of 945 episodes invalid | `c78e469` (pre-registration), this commit (results, diagnosis) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -1356,6 +1356,113 @@ without effect. So:
   hand);
 - any `stale_or_duplicate` or `WORLD_NOT_HELD` **inside an episode** (an
   invalid episode) remains an immediate stop.
+
+### Stopped, as run (2026-10-01, `#58`)
+
+**Verdict: STOPPED under the 500k rule; not evaluated.** Run
+`state/runs/m3-p017-dreamerv3-20260930T214001Z`, three segments (the
+invalid-rate stop at 79,869 decisions, resume attempt 1 to 87,865, resume
+attempt 2 to the end). Resume attempt 2 (7 actors, corrected round-clock check)
+was stopped with one SIGINT at **500,768** of the planned 1,000,000 decisions,
+after 4 h 58 min. This time the watcher enforced the rule: it reported "period
+10 at 500768 decisions, best 38.05 < 39.40" and the stop followed. The process
+exited through its graceful path: the log says "stopped by SIGINT at 500768
+decisions: every actor abandoned the episode it was in" and "final evaluation
+skipped: stopped by SIGINT"; the stage exited 0 with "cleanup ok". On all
+seven actors the cleanup checks passed (`libunity.so` SHA-256 `ffc1f3ef…0040`,
+versionCode 1199, installer `com.android.vending`, 0 mounts), and the stage
+verified no qemu process and no adb device. The resume pair is written:
+`checkpoints/latest.pt` (and `checkpoint-d0500768.pt`) with 501,220 replay
+items (5.34 GB), no failed resume save. No arm-n10 evaluation was run, so
+there is no beat/no-beat verdict against stacked-dqn's 55.70.
+
+**Near-greedy selection-period means** (`stage.out` period lines, 10 periods
+closed, the last at 500,768):
+
+| period | decisions | mean final wave | n episodes | best so far |
+| --- | --- | --- | --- | --- |
+| 1 | 50,240 | 24.59 | 161 | 24.59 |
+| 2 | 100,269 | 28.00 | 22 | 28.00 |
+| 3 | 150,444 | 28.72 | 89 | 28.72 |
+| 4 | 200,492 | 29.26 | 86 | 29.26 |
+| 5 | 250,515 | 28.41 | 85 | 29.26 |
+| 6 | 300,073 | 27.78 | 95 | 29.26 |
+| 7 | 350,406 | 25.37 | 90 | 29.26 |
+| 8 | 400,141 | 29.22 | 77 | 29.26 |
+| 9 | 451,095 | 30.33 | 78 | 30.33 |
+| 10 | 500,768 | 38.05 | 62 | 38.05 |
+
+Period 2's 22 episodes are the ones counted after the last resume (the
+period spans it); that is read from the counts, not checked in the code.
+
+**The jump at period 10.** Periods 1-9 sat between 24.59 and 30.33. Period 10
+reads 38.05 over 62 episodes, and it closed at the stop. One period of 62
+episodes in one run cannot tell whether a plateau break was starting or a
+period-to-period swing (`M3-P016` swung 36.34 to 25.73 between periods 9 and
+10). The rule fired because 38.05 is below 39.4; the run is resumable from
+its pair if that question is wanted answered.
+
+**Invalid episodes, whole run: 42 of 945** (4.4%): segment 1 11 of 215,
+segment 2 0 of 13, segment 3 31 of 717 (4.3%, the rate since resume attempt
+2). Replay rejected 42 inadmissible transitions, one per invalid episode. By
+code, all segments:
+
+| code | segment 1 | segment 3 | total |
+| --- | --- | --- | --- |
+| `game_time_deflated` (round clock short) | 6 | 16 | 22 |
+| `mask_legal_purchase_rejected` (`precondition_failed`) | 4 | 8 | 12 |
+| `bridge_event_divergence` | 1 | 7 | 8 |
+| `stale_or_duplicate`, `WORLD_NOT_HELD`, stall | 0 | 0 | 0 |
+
+Segment 3 ran under the corrected round-clock check. It has no late-wave
+`game_time_deflated`, which is what the correction was for. Its 16 round-clock
+failures are all wave 1: 4 to 9 decisions, 1.9 to 10 s of game time, the clock
+at 0.947x to 0.989x of the simulated game time. They are not explained and
+not diagnosed here. No chain of 3 on one actor occurred. Three
+`failed episode start ... stale_or_duplicate` (one in segment 2, two in
+segment 3) were logged and, under the amendment, are not stops.
+
+**Throughput.** Segment 3 collected 412,903 decisions in 17,500 s: 84,939
+decisions/hour for the fleet. The learner took 250,726 gradient steps over
+500,768 decisions, 0.5007 per decision; the run was learner-bound
+(`M3-P016` attempt 3: 103,849 decisions/hour).
+
+### Diagnosis (2026-10-01, `#58`)
+
+Offline, read-only, on the replay dump at 304,837 steps (624 episodes, 0
+evicted), its paired `latest.pt`, and checkpoints 50,240 to 325,696; n=1
+throughout. `M3-P016`'s zero-start window probes cannot be repeated here (this
+model's KL stays 27-57 over 64 steps from a mid-episode zero state), so the
+probes use the acting-view latent or the stored one, and the comparison with
+`M3-P016` is approximate where it depends on that.
+
+- Same value and credit failure as `M3-P016`, now under official
+  conventions: the critic overestimates survival value by about +4.5
+  (+4.89, +5.69, +4.47 at 100k, 200k, 300k), imagination misses death
+  (open-loop survival 0.998 one step before death at 300k), and the actor's
+  best action agrees with the model's one-step best in 31-33% of states.
+- A purchase changes the survival return by 0.003-0.02, against 0.05-0.13 of
+  per-sample imagined-return noise and a critic bias of about +4.5.
+- Train ratio 511.6 replayed steps per decision, against the official 512
+  (506-516 per 50k window), held by pausing actors. Replay balance (uniform
+  over all items, no eviction, the last 50k decisions' share of waves 25+
+  20.8% against 20.0%), stored latents, return normaliser and actor entropy
+  all behave as the official code does.
+- Defense Absolute is 15.5% of spend from wave 30 onward (0.158 over the last
+  100k), against 13.7% in `M3-P016` and 70.4% for stacked-dqn.
+- Not undertraining: the world model's KL on data it has seen is 2.6-3.4.
+- The cause is a protocol property, not a deviation from the official
+  conventions. The survival reward carries no per-decision action information
+  (credit arrives at death, hundreds of decisions later) while imagination
+  covers 15 decisions, about 28 game-seconds. No learner change within ADR
+  0018 addresses it; any would be a deviation.
+
+**Health-potential shaping (C1) would not help, and was dropped.** Measured
+on the same dump (`scratchpad/reward-study/o1_real.out`, 14,281 purchases and
+289,932 timed decisions): the shaping term's |F| per purchase averages 3e-5
+(nonzero share 0.000), against a survival reward of 0.019 per timed decision
+(mean 0.01886). C1 would give purchases essentially no credit. The developer
+dropped shaping and cancelled the C1 work.
 
 ## M3-P016: DreamerV3 at its published configuration under `M3-P015`'s task protocol (pre-registered, written before the run)
 

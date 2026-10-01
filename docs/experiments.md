@@ -258,7 +258,8 @@ latents, and the learner's first deterministic state of a window drawn from
 within 1e-5, so the window starts where acting was.
 
 **Retracted.** This entry first also cited a KL(full || window) of 0.0 at
-every window step from `test_the_restored_window_filters_as_the_full_episode_does`.
+every window step from `test_the_restored_window_filters_as_the_full_episode_does`
+(deleted, as the next sentences say; no such test exists now).
 That figure was no evidence: the window restarted from the full pass's own
 latent with the same random draws, so it equalled the full pass by
 construction and the test could not fail. The test was deleted (Tier C
@@ -4570,8 +4571,9 @@ runs on the host's CUDA device.
 A pure speed change to the learner: `n_step_targets` vectorised over batch and
 time, and `collate` packed into one buffer with a single host-to-device
 transfer. Both are bit-for-bit equal to what they replaced;
-`tests/unit/test_vectorised_learner_equivalence.py` keeps the old versions as
-oracles and asserts exact equality on CPU and CUDA.
+`tests/unit/test_vectorised_learner_equivalence.py` kept the old versions as
+oracles and asserted exact equality on CPU and CUDA (deleted with the
+stacked-dqn backbone, `0a3235d`, which owned both functions).
 
 Shapes: batch 8 × 80 steps, burn-in 7, n = 10, 197,379 parameters, RTX 4090.
 One step is `collate` plus `StackedDqnBackbone.learn`, synchronised around every

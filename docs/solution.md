@@ -649,8 +649,8 @@ n = 10, 197,379 parameters) on the RTX 4090, one gradient step — `collate` plu
 4.7 ms, learn 5.0 ms), down from 35 ms (collate 10.3 ms, learn 22 ms, of which
 17.6 ms was the n-step target alone). The step was bound by Python and kernel
 launches, not by the device. Two changes, both bit-for-bit equal to what they
-replaced (`tests/unit/test_vectorised_learner_equivalence.py` holds the old
-implementations as oracles): `n_step_targets` builds every step's window at
+replaced (`tests/unit/test_vectorised_learner_equivalence.py` held the old
+implementations as oracles; deleted with the stacked-dqn backbone, `0a3235d`): `n_step_targets` builds every step's window at
 once and loops over the n offsets only, and `collate` writes the batch into one
 float32 buffer that crosses to the device in a single transfer. What is left in
 `collate` is reading the per-step feature tuples, about 4.7 ms; the largest

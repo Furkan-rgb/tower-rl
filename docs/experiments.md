@@ -79,6 +79,7 @@ recipe on the new baseline.
 | `M3-P015` | With `M3-P014`'s exact recipe and the discount horizon at the protocol's 0.999 per game-second (ADR 0013), survival reward scaled to hold the maximum return at V_REF, does the policy pair Defense Absolute with Thorns rather than turtling on Defense Absolute alone? | `--discount-per-game-second 0.999` (was 0.997); survival-time reward scaled to (1 − d) · V_REF (identical to `M3-P014`'s at 0.997, a third of the unscaled one at 0.999) | `M3-P014` (mlflow `156c54ce`), matched decisions; n=1 | pending | pending | pending | this commit (pre-registration) |
 | `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
 | `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | not evaluated; near-greedy period means 24.59, 28.00, 28.72, 29.26, 28.41, 27.78, 25.37, 29.22, 30.33, 38.05 over 10 periods (best 38.05, period 10, 62 episodes), n=1 | STOPPED by SIGINT at 500,768/1,000,000 decisions under the 500k rule (best 38.05 < 39.4 at period 10); no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at 25-30 for periods 1-9, the same value and credit failure as `M3-P016` under official conventions: train ratio 511.6 against the official 512, replay balance, latents and return normaliser as official; a purchase changes the survival return by 0.003-0.02 against a critic bias of about +4.5; Defense Absolute 15.5% of spend from wave 30 against the DQN's 70.4%. A protocol property, not a deviation. Period 10's jump to 38.05 came at the stop and one period cannot say whether a plateau break was starting; resumable from its pair. Health-potential shaping (C1) would give purchases essentially no credit (|F| 3e-5 per purchase against 0.019 survival reward per timed decision); dropped. 84,939 decisions/hour; 42 of 945 episodes invalid | `c78e469` (pre-registration), this commit (results, diagnosis) |
+| `M3-P018` | Under `M3-P017`'s launch unchanged (DreamerV3 at its official conventions, Workshop L5, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), is the plateau a credit/horizon effect: does γ 0.997 per game-second instead of ADR 0013's 0.999 lift the near-greedy period means? | `--discount-per-game-second 0.997` (was 0.999); the survival-time reward follows ADR 0013's scaling, three times `M3-P017`'s per game-second at the same maximum return | `M3-P016` attempt 1 best 43.09, attempt 3 best 36.34, `M3-P017` best 38.05 (all at γ 0.999), n=1 each; success is two consecutive period means above 43.09, and the 500k rule stops a best below 39.4 at 500,000 decisions | pending | pending | pending | this commit (pre-registration) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -1263,6 +1264,160 @@ this turtle wall is unproven offline and needs a device run.
 Full tables: specialist scratchpad `c85-p014-eval.md` (training/arm/
 evaluation facts) and `p014-plateau.md` (offline diagnostics,
 2026-09-28).
+
+## M3-P018: DreamerV3 at γ 0.997 per game-second, otherwise `M3-P017`'s launch (pre-registered, written before the run)
+
+**Date:** 2026-10-01. Board `#113`. Single seed, single run, from scratch on
+`main` @ `f64fd38` (this pre-registration is a docs-only commit on top of it);
+n=1. The developer approved the run.
+
+**Question.** Is `M3-P017`'s plateau a credit/horizon effect? ADR 0013 chose
+0.999 per game-second, a horizon of about 1,000 s, about 28 waves. Two readings
+point at the horizon: stacked-dqn reached 55.70 at 0.997 (`M3-P014`, arm-n10)
+against about 31 at 0.999 (`M3-P015`, the same recipe, read from the Lead's
+figure; `M3-P015` was stopped at 404,139 decisions with arm period 6 at 34.38,
+per the `M3-P016` entry, and has no results entry in this document, so the 31
+has no pointer here); and `M3-P017`'s diagnosis found a purchase changing the
+survival return by 0.003-0.02 against a critic bias of about +4.5. A shorter
+horizon makes a purchase's effect on the return larger relative to the
+bootstrapped value it is read against. Contrary evidence, recorded so it is
+not lost: ADR 0013 records stacked-dqn at 0.999 beating its 0.997 twin at 100k
+(`M3-P011` 31.86 against `M3-P012` 28.44, n=1), so the DQN evidence is not
+one-directional.
+
+**The single change: `--discount-per-game-second 0.997`** (`M3-P017`: 0.999).
+Everything else is exactly `M3-P017`'s `launch.sh`: the arguments below, 7
+actors, the nodelay bridge build
+`state/bridge/builds/workshop-render-interval-16-nodelay`, seed 0, the
+1,000,000-decision budget, the three kill bars, and no `--replay-capacity`.
+One consequence is part of the change and not a second one: the survival-time
+reward is `(1 - d) * V_REF` with `V_REF` fixed at the 0.997 horizon (ADR 0013,
+`value_learning.py`), so at 0.997 the reward per game-second is three times
+`M3-P017`'s while the maximum return is the same `V_REF`; at 0.997 it is the
+unscaled reward of `M3-P014`. The continue head's target `d = γ ** t` is
+likewise γ's, and the manifest records `discount_per_game_second` and
+`dreamer_discount_per_game_second` as 0.997.
+
+**Code differences since `M3-P017`.** `M3-P017`'s learner code is
+`main@cb2f324` plus the round-clock correction (`cef84b2`, segment 3); this run
+is `main@f64fd38`. Two changes landed between them that could touch a
+DreamerV3 run, and neither changes what it learns.
+
+- `c20f245` (the one-frame Pause-race allowance, `#112`) changes only the
+  lower bound of the round-clock fidelity check in `run_environment.py`: an
+  episode fails when its round clock is more than one frame's round time below
+  0.99 of the expected. It decides whether an episode is valid, and what enters
+  replay is the measured round clock (transition `game_ms`), as before. Its
+  `native/tower_bridge/tower_bridge.cpp` lines are all inside
+  `TOWER_BRIDGE_DIAGNOSTICS`, and the production build this run loads
+  (directory dated 2026-09-30, before the commit) is not rebuilt. The visible
+  effect is that fewer wave-1 episodes are rejected, which `M3-P017` counted at
+  2.2% of segment 3; it is a validity change, not a change to the learner.
+- R2D2's landing (`f64fd38`) touches the DreamerV3 path in three places, none
+  of which changes the update. Parameter publication is now network-only: the
+  learner's snapshot and an acting copy's load (`network_state_dict`,
+  `load_network_state_dict`) carry the world model, actor, critic, slow
+  critic, return normaliser and step count, and no longer Adam's moments,
+  which the acting path never reads; the publication cadence, the weights
+  published and the step layout are unchanged. The learner thread's debt is
+  renamed from decisions to credits, and under DreamerV3 a credit is still one
+  decision (`gradient_steps_per_item` is unset), so 0.5 steps per decision and
+  the bound of 512 are as before. The actor's stream emission and the replay's
+  array and dump handling moved into shared helpers (`_kept_observations`,
+  `StepArrays`, `write_rows`, `read_rows`) with the same bodies; the replay
+  dump format is 3 and the checkpoint format is now 8, which only writes
+  differently. Parsing `M3-P017`'s command on `093940e` and on `f64fd38` gives
+  the same resolved arguments, except γ, the removed stacked-dqn-only values,
+  and `epsilon_anneal_decisions` 10,000 against 0, which changes nothing
+  because DreamerV3's start and end rates are both 0 (the schedule returns 0
+  either way). The manifest no longer carries the stacked-dqn keys.
+
+Neither difference is expected to move learning; if the run's first periods
+read like `M3-P017`'s first periods (24-30), that is also what this argument
+predicts for a horizon that does not matter.
+
+**Controls, all at γ 0.999 under the same protocol.** `M3-P016` attempt 1 best
+near-greedy period mean 43.09; `M3-P016` attempt 3 best 36.34; `M3-P017` best
+38.05 (period 10, at its 500k stop). `M3-P017`'s periods 1-9 were 24.59-30.33.
+
+**Primary outcome.** The best near-greedy period mean, with the period means
+read from the training log. The arm and its evaluation follow `M3-P017`'s
+protocol if the run reaches its budget (`docs/solution.md` §9.2b, arm-n10,
+PROVISIONAL, beat = 95% CI entirely above 55.70).
+
+**Bars.**
+
+- **Success:** two consecutive period means above 43.09 (`M3-P016` attempt 1's
+  best, the highest control). The watcher prints it as `EVENT NOTE SUCCESS`.
+  One seed can show an effect but not prove it: this is n=1 against three
+  controls whose own best means span 36.34-43.09, so a pass is evidence that
+  the horizon matters, not a measurement of by how much, and a fail at n=1 does
+  not rule it out.
+- **500k rule:** a best period mean below 39.4 at 500,000 decisions (read at
+  the first period line at or past 500,000) is a STOP.
+
+**Kill bars (flags, collapse guards only), unchanged:** `--kill-bar
+100000:50000:21 --kill-bar 200000:150000:21 --kill-bar 300000:250000:21`.
+
+**Stop rules, all by SIGINT to train.py** (graceful stop, resume pair, ADR
+0014), as `M3-P017`'s amendments left them. The watcher prints an event for
+each and sends no signal.
+
+- a learner exception or any Traceback;
+- invalid episodes above 5% once 20 or more episodes are counted, or 3 invalid
+  episodes in a chain on one actor (a proxy read from the "invalid episode"
+  lines, checked by hand);
+- fewer than 7 of 7 actors at startup;
+- an in-episode `stale_or_duplicate` or `WORLD_NOT_HELD`. A `failed episode
+  start ... stale_or_duplicate` records no transition and is retried: a NOTE,
+  and a STOP only when 3 chain on one actor (failures of one actor whose
+  episode indexes are within 6 of each other; a proxy, checked by hand);
+- cgroup memory above 90 GB, measured as anon + shmem (the scope's hard limit
+  is 100 GB with no swap);
+- the kill bars, which are flags;
+- the 500k rule above.
+
+**Not a stop condition:** learner-bound debt pauses. At 0.5 gradient steps per
+decision the learner caps the fleet near 33 decisions/s and the debt bound
+paces the actors, as in `M3-P016` attempt 3 and `M3-P017`.
+
+**Command.**
+
+    export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/workshop-render-interval-16-nodelay
+    scripts/run_stage.sh --name m3-p018-dreamerv3-g0997-<UTC stamp>-train --instances 7 \
+      --log-directory state/runs/m3-p018-dreamerv3-g0997-<UTC stamp>/logs -- \
+      uv run --extra tracking python scripts/train.py --backbone dreamerv3 \
+      --actors 7 --renderer host --frame-rate-hz 120 --decision-cadence choice-points \
+      --upgrade-availability all --workshop-level 5 --budget-decisions 1000000 \
+      --checkpoint-every-decisions 25000 --selection-period-decisions 50000 --seed 0 \
+      --frame-game-ms 100 --discount-per-game-second 0.997 --survival-time-reward \
+      --early-stop-patience-periods 0 \
+      --kill-bar 100000:50000:21 --kill-bar 200000:150000:21 --kill-bar 300000:250000:21 \
+      --run-name m3-p018-dreamerv3-g0997-<UTC stamp>
+
+run under `systemd-run --user --scope --collect -p MemoryMax=100G -p
+MemorySwapMax=0`, after a pre-check that the bridge forward ports 47652-47658
+are free (`M3-P017`'s resume attempt 1 lost an actor to a taken port).
+`state/bridge/current` is never repointed.
+
+**Consequence.** If 0.997 wins, ADR 0013 is superseded and R2D2's discount
+follows this result.
+
+**Known confounds, stated in advance.** One seed (0), n=1, against three
+controls. The reward scale moves with γ (above), so the change is the horizon
+and the per-second reward together, as it was for `M3-P014` against `M3-P015`.
+A bad draw on a host with other load is not distinguishable from an effect at
+n=1. Whatever the run shows is a statement about DreamerV3 at this γ under this
+protocol, not about stacked-dqn or R2D2.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even
+console ports from 5556, `-read-only`, offline by interface, no taps, no
+screenshots, no coins or permanent-progression changes (in-run purchases
+fine). The stage runs under `scripts/run_stage.sh` with full cleanup and host
+verification afterwards. Stop after three consecutive unexplained failures, a
+failed device-safety check, or a cleanup that finds `libunity.so` SHA-256 other
+than `ffc1f3ef…0040`, versionCode other than 1199 or an installer other than
+`com.android.vending`. One device stage at a time.
 
 ## M3-P017: DreamerV3 at its official conventions under `M3-P016`'s protocol (pre-registered, written before the run)
 

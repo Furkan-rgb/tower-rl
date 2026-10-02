@@ -680,6 +680,8 @@ nohup ./scripts/run_stage.sh --name "$name" --instances 7 -- \
       --output-directory "$out" --output "$out/fleet.json" > /dev/null 2>&1 &
 ```
 
+The benchmark above stays at `--workshop-level 5` because its reference numbers were measured there; the benchmark level for learning runs is 10 (`docs/experiments.md`, "Workshop 10 verification and floors (`#121`)").
+
 `--actors 1 --episodes 20` is the solo reference. Change one thing per
 report: the build (`TOWER_BRIDGE_BUILD_DIR`), `--actors`, `--frame-rate-hz`
 or `--cores`.

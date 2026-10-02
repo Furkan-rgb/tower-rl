@@ -1687,6 +1687,67 @@ taps, screenshots or input, no coins or permanent-progression changes;
   numbers (`M3-P018`, `#120`) do not read against them.
 - `build-defense-absolute` is a scripted build, not the learner.
 
+**Outcome (2026-10-02, appended after the run; the pre-registration and its
+amendment above are unedited).** Both parts ran to the end: 12 Part 2 stages and 2
+gate stages. Every stage ended `cleanup ok` with all its instances passing
+`cleanup_checks` (libunity SHA-256 `ffc1f3ef…0040`, versionCode 1199, installer
+`com.android.vending`, zero mounts) and `verified: no qemu process, no adb device`.
+No `WORKSHOP_NOT_APPLIED` or `WORKSHOP_REVERTED` anywhere, no literal `Traceback`
+in any stage or emulator log. Each stage's summary reports "1 exited during
+teardown" (the last instance's adb already offline), which `run_stage.sh` counts but
+does not fail on; the `scripted` round-1 stage exited 1 because of the one invalid
+episode below. Records: `state/records/workshop-10/<arm>-r<round>/`, the gate in
+`.../gate-L0` and `.../gate-L10`, pooled per actor slot in `.../pooled/<arm>/`,
+report in `.../report_arms.txt` and `arms.json`.
+
+*Part 1, the gate: passes (item 3 as amended).* Level-10 listing: `wrote` true, 11
+rows 0 to 10 (Damage, Attack Speed, Critical Chance 79 max, Critical Factor, Health,
+Health Regen, Defense %, Defense Absolute, Thorn Damage, Cash Bonus, Cash / Wave),
+every other of the 60 listed rows unchanged. Wave-1 stats, level 0 to level 10,
+identical across the 3 episodes of each level: damage 3 to 38.7, attack speed 1 to
+1.5, critical chance 1 to 11, critical mult 1.2 to 2.2, thorn damage 0 to 10, defense
+absolute 0 to 11.195, defense % 0 to 5, health regen 0.0005 to 1.295, cash per wave 0
+to 40, max health 5 to 83.634. `orbCount` 0 at both; `wallHealth` 1.0 to 16.727 with
+`wallHealth`/max health 0.2 at both (see the amendment). All 6 episodes valid;
+`scripted` final waves 6, 6, 6 at level 0 and 38, 40, 37 at level 10.
+
+*Part 2, floors at Workshop 10, 3 rounds pooled (final wave):*
+
+| arm | n valid | mean | median | IQM [95% CI, stratified by actor] | range |
+|---|---|---|---|---|---|
+| `random` | 21 | 38.57 | 39 | 39.09 [38.36, 39.45] | 35-40 |
+| `scripted` (cheapest-first) | 20 | 39.00 | 40 | 39.40 [38.60, 40.00] | 36-41 |
+| `turtle` | 21 | 97.33 | 97 | 97.36 [96.27, 98.45] | 94-100 |
+| `build-defense-absolute` | 21 | 101.81 | 102 | 102.00 [101.36, 102.55] | 99-104 |
+
+Pairwise IQM differences: `build-defense-absolute` minus `turtle` +4.64 [+3.36,
++6.00]; `turtle` minus `scripted` +57.96 [+56.65, +59.32]; `random` minus `scripted`
+-0.31 [-1.18, +0.59], indistinguishable. The two arms near 39 and the two near 100
+each cluster inside a window of 5 to 6 waves, which reads as two walls (about wave
+40 and about wave 100) rather than as policy differences; that is a reading of the
+ranges, not tested here.
+
+*Invalid episodes.* 1 of 84 (`scripted`, round 1, actor `emulator-5560`): "a
+mask-legal purchase was rejected by the bridge: `precondition_failed`", a reason
+earlier runs also logged. With one episode per actor the evaluator raises "no valid
+episode was produced" for that actor, so it left no record file and its stage exited
+1; the other 6 actors finished. That is 1 of 21 for the arm, 4.8%, within the 5%
+rule, so the run continued. The ValueError's text appears in the fleet's failure
+record as a traceback tail; I read it as the evaluator's designed report of an
+all-invalid actor and not as the "any Traceback" stop (no `Traceback` line exists in
+any log), and recorded it so the reading can be overruled. Round 1's `scripted`
+therefore has 6 episodes and the arm 20, not 21, with that actor slot at 2 episodes.
+
+*Wall times.* Longest arm, `build-defense-absolute`: per episode 202 to 387 s
+(median 299 s, median 2,292 decisions, final waves 99 to 104); its three stages took
+10:48, 10:38 and 12:00 of wall. No episode passed wave 150 or 3 hours. Other arms,
+per episode: `random` 68-109 s, `scripted` 69-99 s, `turtle` 186-301 s; stages 6:36 to
+11:44.
+
+*Limits.* Scripted floors, not the learner. One early-game policy and one Workshop
+level. The pooled stratum is the actor slot (7 strata of 3 episodes, one of 2 for
+`scripted`).
+
 ## Late-game build test at Workshop 5 (#120) (pre-registered, written before any device episode)
 
 **Date:** 2026-10-02. Board `#120`. Scripted policies only, no learning; code is

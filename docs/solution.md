@@ -310,6 +310,14 @@ runway for learning in-run play over a longer round, not a Workshop decision,
 and no policy chooses it. v2 runs are not compared with v1 runs, and the v1
 records stay valid under v1.
 
+The benchmark level for learning runs is 10, replacing 5: the developer's choice
+after the late-game build test showed no tested in-run build passing about wave 61
+at level 5. Level 10 was verified on device against ADR 0012's per-row gate, and
+its scripted floors (random about 39, cheapest-first about 39, turtle about 97,
+build-defense-absolute about 102) are measured; evidence in
+`docs/experiments.md`, "Workshop 10 verification and floors (`#121`)". Results at
+level 5 do not read against level 10, and a checkpoint refuses a level change.
+
 Live 29.0.3 evidence in `M1B-E001` constrains two further details. In-run
 availability is `unlocked`, not `maxed`, and a positive cost within current cash;
 `tier_unlocked` is reported state and is false for every offered upgrade, so it

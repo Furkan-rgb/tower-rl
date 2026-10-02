@@ -1580,6 +1580,99 @@ superseded and R2D2's discount follows. The bar was met, so ADR 0019 sets
 γ 0.997 per game-second for both learners, with the caveats above. R2D2 has not
 run under it.
 
+## Workshop 10 verification and floors (#121) (pre-registered, written before any device episode)
+
+**Date:** 2026-10-02. Board `#121`. No learning and no code change; code is
+`main@4dba160`.
+
+**Decision.** The developer chose Workshop level 10 as the benchmark level,
+replacing 5, after `Late-game build test at Workshop 5 (#120)` showed that no
+tested in-run build passes about wave 61 at level 5. Nothing at level 5 transfers:
+a level-10 tower is a different tower, a level-10 arm needs its own floors
+(ADR 0012), and a checkpoint refuses a level change by design. Nothing above level
+5 has been run on a device.
+
+**Part 1: the per-row gate at level 10.** ADR 0012's per-row gate, as run at level
+5 in `Workshop runway device verification (#80)`, repeated at 10. Two stages, each
+a fresh read-only instance under `scripts/run_stage.sh` (one instance, so level 0
+and level 10 never share a game; an instance that took a write is torn down before
+any level-0 run):
+
+- **G0**: `run_episodes.py --list-workshop-rows` at level 0, then 3 `scripted`
+  episodes at level 0.
+- **G10**: `run_episodes.py --list-workshop-rows --workshop-level 10`, then 3
+  `scripted` episodes at level 10.
+
+Both use `--upgrade-availability all --frame-game-ms 100`, the nodelay build, and
+a scratchpad wrapper (not committed) that calls `run_episodes.main()` with
+`RunStateBuilder.build` hooked to record every raw `Main` live field of the first
+active wave-1 reading of each episode, the method of `#80`.
+
+*The gate passes only if all of these hold, and any miss stops before Part 2:*
+
+1. The level-10 listing reports `wrote` true, no refusal, and exactly the 11
+   runway rows (Damage, Attack Speed, Critical Chance, Critical Factor, Health,
+   Health Regen, Defense %, Defense Absolute, Thorn Damage, Cash Bonus, Cash /
+   Wave) going 0 to 10; every other row (Orbs, Interest, Enemy Level Skips, Death
+   Defy, Recovery and Wall among them) has the same level after as before.
+2. In every level-10 episode, each of `damage`, `attackSpeed`, `criticalChance`,
+   `criticalMult`, `thornDamage`, `defenseAbs`, `defenseRel`, `towerHealthRegen`,
+   `cashPerWave` and the maximum health is strictly above its value in every
+   level-0 episode, at wave 1.
+3. In every level-10 episode `orbCount` and `wallHealth` equal their level-0
+   values (no orbs, no wall).
+4. All 6 episodes are valid, with no `WORKSHOP_NOT_APPLIED` or
+   `WORKSHOP_REVERTED`.
+
+The final waves of the 3 episodes at each level are reported beside the table (the
+comparison ADR 0012 asks for); they are not a pass condition. The Cash Bonus row
+has no live field of its own, so, as at level 5, only `cashPerWave` is observed
+for the cash rows. Death Defy, Recovery and Interest have no live field either:
+only item 1 evidences them held.
+
+**Part 2: floors at level 10.** Arms, in this order within a round: `random`,
+`scripted` (cheapest-first), `turtle`, `build-defense-absolute` (the `#120` arm
+A, Defense Absolute from wave 30).
+
+**Settings**, the same environment as `M3-P018` except `--workshop-level 10`:
+renderer host, `--frame-rate-hz 120`, `--decision-cadence choice-points`,
+`--upgrade-availability all`, `--frame-game-ms 100`, bridge build
+`state/bridge/builds/workshop-render-interval-16-nodelay`, 7 actors, `--cores 4`.
+
+**Design.** 3 rounds; each round runs the four arms in order at 1 episode per
+actor (7 per stage), so 21 episodes per arm and 84 in all. One stage at a time,
+each under `scripts/run_stage.sh` in `towerrl.slice` (`MemoryMax=100G`,
+`MemorySwapMax=0`) with its cleanup verification; records in
+`state/records/workshop-10/<arm>-r<round>/`. As in `#120`, the three rounds of an
+arm are pooled per actor slot for analysis (7 strata of 3 episodes).
+
+**Reported per arm:** n, mean, median, IQM with its 95% CI (stratified by actor,
+`scripts/report_arms.py`), and the range of the final wave. Nothing is concluded
+from these beyond the floors themselves.
+
+**Stop rules.**
+
+- Any `WORKSHOP_NOT_APPLIED` or `WORKSHOP_REVERTED`, or a failed gate: stop before
+  Part 2 and report.
+- More than 5% invalid episodes in any arm.
+- 3 consecutive unexplained failures.
+- Any Traceback.
+- A failed `run_stage.sh` cleanup or device-safety check.
+
+**Long episodes.** A `build-defense-absolute` episode past wave 150 or 3 hours of
+wall time is reported. It is not cut.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even console
+ports from 5556, never `emulator-5554`, `-read-only`, offline by interface, no
+taps, screenshots or input, no coins or permanent-progression changes;
+`state/bridge/current` is not repointed.
+
+**Caveats, in advance.**
+
+- The floors are a property of Workshop 10 under this exact environment; level-5
+  numbers (`M3-P018`, `#120`) do not read against them.
+- `build-defense-absolute` is a scripted build, not the learner.
+
 ## Late-game build test at Workshop 5 (#120) (pre-registered, written before any device episode)
 
 **Date:** 2026-10-02. Board `#120`. Scripted policies only, no learning; code is

@@ -1642,6 +1642,61 @@ ports from 5556, never `emulator-5554`, `-read-only`, offline by interface, no
 taps, screenshots or input, no coins or permanent-progression changes. Each stage
 runs in `towerrl.slice` (`MemoryMax=100G`, `MemorySwapMax=0`).
 
+**Outcome (2026-10-02, appended after the run; the pre-registration above is
+unedited).** All 9 stages ran, 63 episodes, 0 invalid, no Traceback; every stage
+ended `cleanup ok` with all 7 instances passing `cleanup_checks` (libunity
+SHA-256 `ffc1f3ef…0040`, versionCode 1199, installer `com.android.vending`, zero
+mounts) and no qemu process or bridge port left. Each stage's summary line also
+reports "1 exited during teardown", the last instance's adb already offline after
+the fleet's own teardown, which `run_stage.sh` counts but does not fail on.
+Records: `state/records/late-game-builds/<arm>-r<round>/`, pooled per actor slot
+in `.../pooled/<arm>/`, report in `.../report_arms.txt` and `arms.json`.
+
+*Pilot.* Round 1, arm A: n=7, median final wave 60 (mean 60.86, range 58-64),
+above the gate of 40, so the test was informative and continued.
+
+*Per arm, 3 rounds pooled, n=21 valid:*
+
+| arm | mean | median | IQM [95% CI, stratified by actor] | range |
+|---|---|---|---|---|
+| A `build-defense-absolute` | 61.52 | 61 | 61.27 [60.45, 62.45] | 58-66 |
+| B `build-thorns` | 32.38 | 32 | 32.09 [31.91, 32.55] | 31-35 |
+| C `build-split` | 40.67 | 40 | 40.36 [40.00, 40.82] | 40-43 |
+
+*Pairwise final-wave IQM differences, 95% CI:* A - B +29.18 [+28.27, +30.27];
+A - C +20.91 [+20.00, +22.09]; C - B +8.27 [+7.73, +8.73]. The means agree
+(A - B +29.14, A - C +20.86, C - B +8.29).
+
+**Verdict by the pre-registered rule: neither B nor C beats A.** Both are
+separated from A, in the wrong direction: the Thorn Damage late game dies about
+29 waves earlier and the split about 21 earlier, so there is no evidence of a
+better late-game build than Defense Absolute, and evidence that it is a much
+better one than these two. The ordering is A > C > B, and the more of the late
+spend goes to Thorn Damage the earlier the run ends. `detectable_difference`: the
+report gives it per wave index, not for the final wave: at 21 against 21 episodes
+a single wave index could detect d >= 0.865. The final-wave intervals are
+narrower than the effects by an order of magnitude (half-widths 0.3 to 1.2
+waves against differences of 8 to 29), so the verdict does not sit near that
+floor.
+
+*Behaviour.* From wave 30 arm A bought Defense Absolute 22-26 times (median 24),
+ending at Defense Absolute level 40-44 (median 42); B bought Thorn Damage only
+3-6 times (final Thorn level 17-20) and C 6-9 of each (final 20-23 and 24-27).
+
+*Maxed rows.* The records do not carry `max_level` (an episode keeps
+`final_upgrade_levels` and per-wave costs, not the slot's maximum), so it was
+not read. Whether any arm hit a maxed row is inferred: final levels vary across
+episodes (Thorn Damage 14-23, Defense Absolute 18-44) with no shared value that a
+cap would produce, and at no wave from 30 on did end-of-wave cash exceed 1.25
+times the cost of the target row, which a build waiting forever on a maxed row
+would show as cash piling up. No arm is inferred to have hit a maxed row; the
+caveat about maxed-row WAITs did not bite.
+
+*Limits.* Scripted builds, not the learner. One early-game policy, so the result
+is about the late game given that opening. Workshop 5 only. The pooled
+stratum is the actor slot (7 strata of 3 episodes), and the rounds were not
+pre-specified as a random effect.
+
 ## M3-P017: DreamerV3 at its official conventions under `M3-P016`'s protocol (pre-registered, written before the run)
 
 **Date:** 2026-09-30. Board `#58`. Single seed, single run, from scratch on

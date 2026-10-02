@@ -254,8 +254,8 @@ class TurtlePolicy:
 
 
 #: The early game is the same in every build arm, so a late-game difference is
-#: the build's and not the opening's. It buys across these rows, approximating
-#: the learner's spread (5-10 % of purchases each) before it specialises.
+#: the build's and not the opening's. It buys across the damage, speed and
+#: defense rows a run spends on before it specialises.
 EARLY_GAME_ROWS: tuple[str, ...] = (
     "Damage",
     "Attack Speed",
@@ -288,7 +288,9 @@ class LateGameBuildPolicy:
     the switch wave it buys only the build's rows. With several, the next
     purchase is whichever has been bought fewer times since the switch (the
     first listed on a tie). If that row cannot be afforded it WAITs rather than
-    buy another, so a split stays a split.
+    buy another, so a split stays a split. The same goes for a maxed row: a
+    build whose row is maxed WAITs from then on, and `split` WAITs forever if
+    either of its rows maxes.
 
     It addresses rows by name, so it has to be given the game's labels
     (`bind_row_names`) before it can act. Purchase counts are per-episode memory

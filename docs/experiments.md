@@ -1630,6 +1630,20 @@ has no live field of its own, so, as at level 5, only `cashPerWave` is observed
 for the cash rows. Death Defy, Recovery and Interest have no live field either:
 only item 1 evidences them held.
 
+**Amendment to gate item 3 (2026-10-02, made after the gate result and before any
+Part 2 episode; the original item stays as written above).** G0 and G10 ran, and
+item 3 as written failed: `wallHealth` went 1.0 at level 0 to 16.7268 at level
+10. That is exactly the max-health ratio (5 to 83.634, both 16.726843), the Wall
+Health row stayed 0 and `wallRebuild` stayed 1200, so it is a field derived from
+tower max health and not a wall appearing; `M2-E006`'s range table (`wallHealth` 0 to
+4.019 over a v1 session) shows it moving with in-run purchases alone. The wording was wrong, not the game. New item 3:
+"No wall appears: `orbCount` is 0, the Wall Health row is 0, `wallRebuild` is
+unchanged, and `wallHealth`/maxHealth equals its level-0 value." On the data
+already in hand it passes: `orbCount` 0 in all 6 episodes; the Wall Health row
+0 before and after the level-10 write; `wallRebuild` 1200 at both levels;
+`wallHealth`/max health 0.2 at level 0 (0.19999999553) and at level 10
+(0.19999999553) in every episode. Items 1, 2 and 4 passed as originally written.
+
 **Part 2: floors at level 10.** Arms, in this order within a round: `random`,
 `scripted` (cheapest-first), `turtle`, `build-defense-absolute` (the `#120` arm
 A, Defense Absolute from wave 30).

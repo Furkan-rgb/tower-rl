@@ -17,7 +17,7 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 
@@ -45,6 +45,12 @@ class Policy(Protocol):
 
 def valid_actions(features: StateFeatures) -> list[int]:
     return [index for index, allowed in enumerate(features.mask) if allowed]
+
+
+def row_feature(features: StateFeatures, action: int, feature: str) -> float:
+    """One named feature of the row that action index `action` buys."""
+    # Action index 0 is WAIT, so row `i` backs action index `i + 1`.
+    return features.rows[(action - 1) * ROW_WIDTH + ROW_FEATURES.index(feature)]
 
 
 @dataclass
@@ -122,23 +128,35 @@ TURTLE_ROWS: tuple[str, ...] = (
 THORNS_TARGET_PERCENT = 34.0
 
 
-def turtle_row_indices(labels: Sequence[UpgradeSlotLabelLike]) -> dict[str, int]:
-    """Every `TURTLE_ROWS` name resolved to its action index, from the game's labels.
+def row_indices(labels: Sequence[UpgradeSlotLabelLike], names: Sequence[str]) -> dict[str, int]:
+    """Every one of `names` resolved to its action index, from the game's labels.
 
     Fails loudly on a name the game does not report, or reports twice: a
     missing row must never become a silent fallback to some other purchase.
     """
     rows: dict[str, int] = {}
     for label in labels:
-        if label.name not in TURTLE_ROWS:
+        if label.name not in names:
             continue
         if label.name in rows:
             raise ValueError(f"the game names two rows {label.name!r}")
         rows[label.name] = action_index(upgrade_action(label.family, label.index))
-    missing = [name for name in TURTLE_ROWS if name not in rows]
+    missing = [name for name in names if name not in rows]
     if missing:
-        raise ValueError(f"the game reports no upgrade row named {missing}; turtle cannot play")
+        raise ValueError(f"the game reports no upgrade row named {missing}; cannot play")
     return rows
+
+
+def turtle_row_indices(labels: Sequence[UpgradeSlotLabelLike]) -> dict[str, int]:
+    """Every `TURTLE_ROWS` name resolved to its action index, from the game's labels."""
+    return row_indices(labels, TURTLE_ROWS)
+
+
+@runtime_checkable
+class BindsRowNames(Protocol):
+    """A policy that buys rows by the game's names and so needs the game's labels first."""
+
+    def bind_row_names(self, labels: Sequence[UpgradeSlotLabelLike]) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -232,8 +250,91 @@ class TurtlePolicy:
 
     @staticmethod
     def _row(features: StateFeatures, action: int, feature: str) -> float:
-        # Action index 0 is WAIT, so row `i` backs action index `i + 1`.
-        return features.rows[(action - 1) * ROW_WIDTH + ROW_FEATURES.index(feature)]
+        return row_feature(features, action, feature)
+
+
+#: The early game is the same in every build arm, so a late-game difference is
+#: the build's and not the opening's. It buys across these rows, approximating
+#: the learner's spread (5-10 % of purchases each) before it specialises.
+EARLY_GAME_ROWS: tuple[str, ...] = (
+    "Damage",
+    "Attack Speed",
+    "Health",
+    "Health Regen",
+    "Defense %",
+    DEFENSE_ABSOLUTE,
+    THORN_DAMAGE,
+)
+
+#: From this wave a build stops spreading and buys only its own rows: where the
+#: learner's purchases concentrate on Defense Absolute (about 80 %).
+LATE_GAME_WAVE = 30
+
+#: The late-game builds under test, by the name that follows `build-` in
+#: `--policy`: the rows each one buys from `LATE_GAME_WAVE` on.
+LATE_GAME_BUILDS: dict[str, tuple[str, ...]] = {
+    "defense-absolute": (DEFENSE_ABSOLUTE,),
+    "thorns": (THORN_DAMAGE,),
+    "split": (DEFENSE_ABSOLUTE, THORN_DAMAGE),
+}
+
+
+@dataclass
+class LateGameBuildPolicy:
+    """A spread opening, then one of the `LATE_GAME_BUILDS` from `LATE_GAME_WAVE`.
+
+    Before the switch wave it buys the cheapest affordable row of
+    `EARLY_GAME_ROWS`, otherwise WAITs; every build plays that identically. From
+    the switch wave it buys only the build's rows. With several, the next
+    purchase is whichever has been bought fewer times since the switch (the
+    first listed on a tie). If that row cannot be afforded it WAITs rather than
+    buy another, so a split stays a split.
+
+    It addresses rows by name, so it has to be given the game's labels
+    (`bind_row_names`) before it can act. Purchase counts are per-episode memory
+    reset by `initial_state`.
+    """
+
+    build: str
+    rows: dict[str, int] | None = None
+    _bought: dict[str, int] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        if self.build not in LATE_GAME_BUILDS:
+            raise ValueError(f"unknown build {self.build!r}; choose from {list(LATE_GAME_BUILDS)}")
+        self.initial_state()
+
+    def bind_row_names(self, labels: Sequence[UpgradeSlotLabelLike]) -> None:
+        self.rows = row_indices(labels, EARLY_GAME_ROWS)
+
+    def initial_state(self) -> None:
+        self._bought = {name: 0 for name in LATE_GAME_BUILDS[self.build]}
+        return None
+
+    def act(
+        self, features: StateFeatures, state: None, *, epsilon: float = 0.0
+    ) -> tuple[int, None]:
+        if self.rows is None:
+            raise RuntimeError("the build was never given the game's row names (bind_row_names)")
+        if not valid_actions(features):
+            raise ValueError("no action is available in this state")
+        wave = round(math.expm1(features.scalars[SCALAR_FEATURES.index("wave_log")]), 6)
+        if wave < LATE_GAME_WAVE:
+            return self._cheapest_early(features), None
+        name = min(self._bought, key=lambda row: self._bought[row])
+        index = self.rows[name]
+        if not features.mask[index]:
+            return 0, None
+        self._bought[name] += 1
+        return index, None
+
+    def _cheapest_early(self, features: StateFeatures) -> int:
+        """The cheapest affordable `EARLY_GAME_ROWS` row, or WAIT."""
+        assert self.rows is not None
+        buyable = [index for index in self.rows.values() if features.mask[index]]
+        if not buyable:
+            return 0
+        return min(buyable, key=lambda index: row_feature(features, index, "cost_log"))
 
 
 @dataclass

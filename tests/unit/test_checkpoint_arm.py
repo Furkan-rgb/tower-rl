@@ -39,7 +39,12 @@ from tower_rl.learning.checkpoint import (
 )
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
-from tower_rl.learning.policies import CheapestFirstPolicy, TurtlePolicy, checkpoint_policy
+from tower_rl.learning.policies import (
+    CheapestFirstPolicy,
+    LateGameBuildPolicy,
+    TurtlePolicy,
+    checkpoint_policy,
+)
 from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
 from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel
 
@@ -465,3 +470,34 @@ def test_turtle_is_an_arm_bound_to_the_games_row_names() -> None:
         run_episodes.bind_row_names(TurtlePolicy(), labels[:-1])
     # And a policy that addresses slots by index is left as it was.
     run_episodes.bind_row_names(CheapestFirstPolicy(), labels)
+
+
+@pytest.mark.parametrize("build", ["defense-absolute", "thorns", "split"])
+def test_each_late_game_build_is_an_arm_bound_to_the_games_row_names(build: str) -> None:
+    policy, identity = run_episodes.policy_from(
+        f"build-{build}",
+        decision_cadence=DecisionCadence.CHOICE_POINTS,
+        upgrade_availability=UpgradeAvailability.ALL,
+        workshop_level=5,
+    )
+    assert isinstance(policy, LateGameBuildPolicy)
+    assert policy.build == build
+    assert identity == {"name": f"build-{build}"}
+
+    labels = [
+        UpgradeSlotLabel(family, index, name, "")
+        for family, index, name in (
+            ("attack", 0, "Damage"),
+            ("attack", 1, "Attack Speed"),
+            ("defense", 0, "Health"),
+            ("defense", 1, "Health Regen"),
+            ("defense", 2, "Defense %"),
+            ("defense", 3, "Defense Absolute"),
+            ("defense", 4, "Thorn Damage"),
+        )
+    ]
+    run_episodes.bind_row_names(policy, labels)
+    assert policy.rows is not None and policy.rows["Thorn Damage"] == 25
+
+    with pytest.raises(ValueError, match="Thorn Damage"):
+        run_episodes.bind_row_names(policy, labels[:-1])

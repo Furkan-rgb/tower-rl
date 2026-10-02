@@ -26,11 +26,12 @@ otherwise.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +69,10 @@ from tower_rl.learning.actor import ActorConfig  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, identity_hash  # noqa: E402
 from tower_rl.learning.evaluator import EvaluationReport, evaluate, to_record  # noqa: E402
 from tower_rl.learning.policies import (  # noqa: E402
+    LATE_GAME_BUILDS,
+    BindsRowNames,
     CheapestFirstPolicy,
+    LateGameBuildPolicy,
     Policy,
     RandomPolicy,
     TurtlePolicy,
@@ -88,11 +92,15 @@ from tower_rl.simulation.instrumented_run_adapter import (  # noqa: E402
 
 torch.set_num_threads(1)
 
-POLICIES = {
+POLICIES: dict[str, Callable[[], Policy]] = {
     "scripted": CheapestFirstPolicy,
     "random": RandomPolicy,
     "wait": WaitOnlyPolicy,
     "turtle": TurtlePolicy,
+    **{
+        f"build-{build}": functools.partial(LateGameBuildPolicy, build)
+        for build in LATE_GAME_BUILDS
+    },
 }
 
 #: How a checkpoint is named as an arm, beside the names above.
@@ -161,10 +169,11 @@ def policy_from(
 def bind_row_names(policy: Policy, labels: Sequence[UpgradeSlotLabel]) -> None:
     """Give a policy that buys rows by name the game's labels; any other is left alone.
 
-    `turtle` addresses rows by the game's own names, resolved from these labels,
-    and a name the game does not report stops the session here, loudly.
+    `turtle` and the `build-*` policies address rows by the game's own names,
+    resolved from these labels, and a name the game does not report stops the
+    session here, loudly.
     """
-    if isinstance(policy, TurtlePolicy):
+    if isinstance(policy, BindsRowNames):
         policy.bind_row_names(labels)
 
 

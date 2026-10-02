@@ -1580,6 +1580,68 @@ superseded and R2D2's discount follows. The bar was met, so ADR 0019 sets
 γ 0.997 per game-second for both learners, with the caveats above. R2D2 has not
 run under it.
 
+## Late-game build test at Workshop 5 (#120) (pre-registered, written before any device episode)
+
+**Date:** 2026-10-02. Board `#120`. Scripted policies only, no learning; code is
+`main@62f2728` (`LateGameBuildPolicy`, `--policy build-defense-absolute|build-thorns|build-split`).
+
+**Question.** At Workshop 5, does a Thorn Damage late game, or a Defense
+Absolute / Thorn Damage split, survive longer than the Defense Absolute late game
+the learner converged on (`M3-P018`: about 80% of spend on Defense Absolute from
+wave 30, and the learner kept buying it over affordable Thorn Damage)?
+
+**Arms.** All three play the same early game: before wave 30, buy the cheapest
+affordable row among Damage, Attack Speed, Health, Health Regen, Defense %,
+Defense Absolute and Thorn Damage, otherwise WAIT. From wave 30 they differ:
+
+- **A** `build-defense-absolute`: Defense Absolute whenever affordable, else WAIT.
+- **B** `build-thorns`: Thorn Damage whenever affordable, else WAIT.
+- **C** `build-split`: alternate Defense Absolute and Thorn Damage (the one bought
+  fewer times since wave 30, Defense Absolute on a tie); if that row is not
+  affordable, WAIT, never the other row.
+
+**Settings**, the same environment as `M3-P018`: renderer host, `--frame-rate-hz
+120`, `--decision-cadence choice-points`, `--upgrade-availability all`,
+`--workshop-level 5`, `--frame-game-ms 100`, bridge build
+`state/bridge/builds/workshop-render-interval-16-nodelay`, 7 actors, `--cores 4`.
+
+**Design.** 3 rounds; each round runs A, then B, then C, at 1 episode per actor
+(7 per stage), so 21 episodes per arm and 63 in all. Interleaving spreads host
+and time drift across arms. One stage at a time, each under `scripts/run_stage.sh`
+with its cleanup verification; records in
+`state/records/late-game-builds/<arm>-r<round>/`. For analysis the three rounds
+of an arm are merged per actor slot (one file per serial, its episodes
+concatenated), so the stratum is the actor with 3 episodes, 7 strata per arm.
+
+**Pilot gate.** Round 1's arm A is the pilot. If its median final wave is below
+40, stop and report: the shared early game would then decide every arm and the
+test would be uninformative.
+
+**Decision rule.** An arm (B or C) beats A if the IQM final-wave difference
+versus A from `scripts/report_arms.py` (stratified bootstrap, actor as stratum)
+has a 95% CI that excludes 0 **and** a point estimate of at least +5 waves.
+Otherwise there is no evidence of a better late-game build. B against C is
+reported but not part of the rule. `detectable_difference` from the same report
+is reported alongside, so a null is read as "not distinguishable at this n".
+
+**Caveats, in advance.**
+
+- A build whose row is maxed WAITs from then on (no substitution), and `split`
+  WAITs forever if either row maxes; the maxed row's `max_level` and whether any
+  arm hit it are recorded.
+- Scripted builds are not the learner: the learner's 80% figure is not a build
+  the scripts reproduce exactly, and an arm doing better here does not say what
+  the learner would do with that build.
+- The result is a property of Workshop 5 only.
+
+**Stop rules.** Invalid episodes above 5% in any arm; 3 consecutive unexplained
+failures; any Traceback; a failed `run_stage.sh` cleanup or device-safety check.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even console
+ports from 5556, never `emulator-5554`, `-read-only`, offline by interface, no
+taps, screenshots or input, no coins or permanent-progression changes. Each stage
+runs in `towerrl.slice` (`MemoryMax=100G`, `MemorySwapMax=0`).
+
 ## M3-P017: DreamerV3 at its official conventions under `M3-P016`'s protocol (pre-registered, written before the run)
 
 **Date:** 2026-09-30. Board `#58`. Single seed, single run, from scratch on

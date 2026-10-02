@@ -80,6 +80,7 @@ recipe on the new baseline.
 | `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
 | `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | not evaluated; near-greedy period means 24.59, 28.00, 28.72, 29.26, 28.41, 27.78, 25.37, 29.22, 30.33, 38.05 over 10 periods (best 38.05, period 10, 62 episodes), n=1 | STOPPED by SIGINT at 500,768/1,000,000 decisions under the 500k rule (best 38.05 < 39.4 at period 10); no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at 25-30 for periods 1-9, the same value and credit failure as `M3-P016` under official conventions: train ratio 511.6 against the official 512, replay balance, latents and return normaliser as official; a purchase changes the survival return by 0.003-0.02 against a critic bias of about +4.5; Defense Absolute 15.5% of spend from wave 30 against the DQN's 70.4%. A protocol property, not a deviation. Period 10's jump to 38.05 came at the stop and one period cannot say whether a plateau break was starting; resumable from its pair. Health-potential shaping (C1) would give purchases essentially no credit (|F| 3e-5 per purchase against 0.019 survival reward per timed decision); dropped. 84,939 decisions/hour; 42 of 945 episodes invalid | `c78e469` (pre-registration), this commit (results, diagnosis) |
 | `M3-P018` | Under `M3-P017`'s launch unchanged (DreamerV3 at its official conventions, Workshop L5, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), is the plateau a credit/horizon effect: does γ 0.997 per game-second instead of ADR 0013's 0.999 lift the near-greedy period means? | `--discount-per-game-second 0.997` (was 0.999); the survival-time reward follows ADR 0013's scaling, three times `M3-P017`'s per game-second at the same maximum return | `M3-P016` attempt 1 best 43.09, attempt 3 best 36.34, `M3-P017` best 38.05 (all at γ 0.999), n=1 each; success is two consecutive period means above 43.09, and the 500k rule stops a best below 39.4 at 500,000 decisions | protocol run to 1,000,000 decisions: near-greedy period means 25.24 to 59.10 over 20 periods (best 59.10, period 20); pre-registered final evaluation at 1,010,001 decisions 63.28, SD 9.04, n=29 valid of 30. Developer-approved extension (not protocol) to 2,007,970: periods 21-40 average about 57; final evaluation 55.77, SD 19.79, n=30, bimodal (6 of 30 at waves 20-23). No arm-n10. n=1 | success bar met (period 10 44.88, period 11 46.02, both > 43.09; 500k rule passed); weak evidence: n=1 against three controls, horizon confounded with the per-second reward scale, and `M3-P017`'s own last period had already switched to Defense Absolute (correction below); training past 1M did not help (2M minus 1M -7.5, Welch SE about 4.0) | 0.997 reached a Defense Absolute turtle (about 80% of spend from wave 30) sooner and higher than 0.999, with deaths clustering on the wave after a boss; the extension swung with an unchanged purchase mix, and the policy kept buying Defense Absolute over affordable Thorn Damage. Supersedes ADR 0013's value with ADR 0019. Behaviour figures are summaries from a lost scratchpad | `dbcb8e0` (pre-registration), this commit (results, ADR 0019) |
+| `M3-P019` | At Workshop 10 (the benchmark level, `#121`), does DreamerV3 under `M3-P018`'s launch unchanged except `--workshop-level 10` beat the best scripted floor, `build-defense-absolute`? | `--workshop-level 10` (was 5); fresh run, no resume; everything else `M3-P018`'s (DreamerV3 official conventions, γ 0.997 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, seed 0, all upgrades, nodelay bridge build) | `#121` floors, IQM: random 39.09, scripted 39.40, turtle 97.36 [96.27, 98.45], `build-defense-absolute` 102.00 [101.36, 102.55] (21 episodes each); success is the 30-episode final evaluation beating `build-defense-absolute` (IQM-difference CI excludes 0 on the positive side), a CI that includes 0 is "matches the best script"; the 500k rule stops a best near-greedy period mean below 97.36 at 500,000 decisions | pending | pending | pending | this commit (pre-registration) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -1264,6 +1265,162 @@ this turtle wall is unproven offline and needs a device run.
 Full tables: specialist scratchpad `c85-p014-eval.md` (training/arm/
 evaluation facts) and `p014-plateau.md` (offline diagnostics,
 2026-09-28).
+
+## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
+
+**Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on
+`main` @ `240d6c9` (this pre-registration is a docs-only commit on top of it);
+n=1, seed 0.
+
+**Question.** At Workshop 10, does DreamerV3 under `M3-P018`'s launch, unchanged
+except `--workshop-level 10`, beat the best scripted floor, `build-defense-absolute`?
+
+**Why this run.** The developer chose Workshop level 10 as the benchmark level
+(`Workshop 10 verification and floors (#121)`). Its floors, IQM [95% CI,
+stratified by actor, 21 episodes each, from that entry and not re-measured here]:
+`random` 39.09, `scripted` 39.40, `turtle` 97.36 [96.27, 98.45],
+`build-defense-absolute` 102.00 [101.36, 102.55]. At level 5, `M3-P018` matched the
+scripted Defense Absolute build (final evaluation 63.28, n=29 valid; that
+build's level-5 IQM is 61.27 [60.45, 62.45], `Late-game build test at Workshop 5
+(#120)`). A scout of the
+level-10 `build-defense-absolute` records
+(`state/records/workshop-10/pooled/build-defense-absolute`, scratchpad analysis,
+not committed) found that the build does not die exhausted: it dies holding a
+median cash of 1,090 while waiting to afford Defense Absolute (median cost
+1,488); at least 7 other rows cost about 100 each; Cash Bonus and Cash / Wave were
+never bought (cost 10-16); and no row is near a Workshop maximum (Defense
+Absolute is at about 69 of 5,000, though the in-run maxima are unrecorded). So a
+better in-run policy has room at this level, and that room is what this run
+tests. The scout is a reading of one scripted arm's records, not a measured
+ceiling.
+
+**Launch: `M3-P018`'s, unchanged except `--workshop-level 10`.** The arguments
+below are `M3-P018`'s command with `--workshop-level 5` replaced by
+`--workshop-level 10`: DreamerV3 at its official conventions (ADR 0018),
+γ 0.997 per game-second (ADR 0019), the survival-time reward,
+1,000,000 decisions, 7 actors, seed 0, all upgrades, the nodelay bridge build
+`state/bridge/builds/workshop-render-interval-16-nodelay`, the three kill bars,
+no `--replay-capacity`. A fresh run: no `--resume`, no parent checkpoint, a new
+run directory `state/runs/m3-p019-dreamerv3-ws10-20261002T182255Z`. A checkpoint refuses a
+level change by design (ADR 0012), so no level-5 weights could be carried over
+in any case.
+
+**Code since `M3-P018`** (`main@f64fd38`): two commits touched `src/` and
+`scripts/`, `f0a1e86` and `55f2127` (`#120`'s scripted late-game build
+policies in `learning/policies.py`, the row-name binding the turtle and the
+builds share, with `scripts/run_episodes.py` wiring them in). They are scripted
+policies and the evaluation tool; the DreamerV3 learner, the actor, the replay
+and `scripts/train.py` are unchanged. The rest is documents.
+
+**Primary outcome.** The run's own pre-registered final evaluation: 30
+exploration-free episodes after the budget is spent (`pre_registered_final` in
+the last segment's `summary.json`), on the weights at the first checkpoint at or
+past 1,000,000 decisions (in-flight episodes overshoot the budget by at most one
+decision per actor, as in `M3-P018`'s 1,010,001). Invalid episodes are excluded
+and counted. It is the evaluation `train.py` runs on one instance, its 30
+episodes played one after another, so it has no actor strata and
+`scripts/report_arms.py` cannot read it (that reads per-actor record
+directories). The comparison is therefore a stratified bootstrap of the IQM
+difference (`stratified_bootstrap_difference`, `experiment/comparison.py`, its
+default resamples and seed 0, 95% percentile interval): the evaluation's final
+waves as one stratum, against `build-defense-absolute`'s 21 final waves
+stratified by actor slot (7 strata of 3, from
+`state/records/workshop-10/pooled/build-defense-absolute`), the stratification
+`#121` reported.
+
+- **Success:** the interval of (evaluation IQM minus `build-defense-absolute`
+  IQM) excludes 0 on the positive side, that is, the evaluation's final waves
+  beat the script's 21.
+- **Matches the best script:** the interval includes 0. Reported in those words,
+  "matches the best script", and not as success. An interval entirely below 0 is
+  reported as below it.
+
+**500k rule.** A best near-greedy period mean below 97.36 (turtle's IQM, the
+same use of the turtle floor as `M3-P018`'s 39.4 at level 5) at 500,000
+decisions, read at the first period line at or past 500,000, is a STOP.
+
+**Kill bars (flags, collapse guards only), unchanged from `M3-P018`:**
+`--kill-bar 100000:50000:21 --kill-bar 200000:150000:21 --kill-bar 300000:250000:21`.
+At level 10 they sit far below the random and `scripted` floors (about 39), so
+they can trip only on a collapse worse than random play. They are left as
+`M3-P018` had them so the launch is the same launch.
+
+**Behaviour readout (pre-registered, a reading and not a gate).** The purchase
+mix per selection period, from the run's `episodes.jsonl` (each episode's
+`final_upgrade_levels`, `purchases` and `waves`): the share of in-run purchases
+per row, and in particular whether the policy buys the economy rows (Cash Bonus,
+Cash / Wave) and whether it diversifies beyond Defense Absolute, which the
+scripted build does not. Compared with the build's purchase mix from the same
+pooled records. Approximate if reconstructed from wave-start price tables, and
+said to be.
+
+**Stop rules, all by SIGINT to train.py** (graceful stop, resume pair, ADR 0014),
+as `M3-P018`'s. A watcher, if run, prints an event for each and sends no signal.
+
+- a learner exception or any Traceback;
+- invalid episodes above 5% once 20 or more episodes are counted, or 3 invalid
+  episodes in a chain on one actor (a proxy read from the "invalid episode"
+  lines, checked by hand);
+- fewer than 7 of 7 actors at startup;
+- any `WORKSHOP_NOT_APPLIED` or `WORKSHOP_REVERTED` event (the `WORKSHOP_*`
+  family), since level 10 has had a device run only in `#121`;
+- an in-episode `stale_or_duplicate` or `WORLD_NOT_HELD`; a `failed episode
+  start ... stale_or_duplicate` is retried, a NOTE, and a STOP only when 3 chain
+  on one actor;
+- cgroup memory above 90 GB, measured as anon + shmem (the scope's hard limit
+  is 100 GB with no swap, `MemoryHigh` 88 GB);
+- the kill bars, which are flags;
+- the 500k rule above.
+
+Not a stop condition: learner-bound debt pauses. Episodes are longer than at
+level 5 (the scripted build's median is 2,292 decisions at waves 99-104), so
+fewer episodes close per period than `M3-P018`'s 39-140; the period means are
+noisier, and that is a caveat to the 500k read, not a reason to move it.
+
+**Command.**
+
+    export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/workshop-render-interval-16-nodelay
+    scripts/run_stage.sh --name m3-p019-dreamerv3-ws10-20261002T182255Z-train --instances 7 \
+      --log-directory state/runs/m3-p019-dreamerv3-ws10-20261002T182255Z/logs -- \
+      uv run --extra tracking python scripts/train.py --backbone dreamerv3 \
+      --actors 7 --renderer host --frame-rate-hz 120 --decision-cadence choice-points \
+      --upgrade-availability all --workshop-level 10 --budget-decisions 1000000 \
+      --checkpoint-every-decisions 25000 --selection-period-decisions 50000 --seed 0 \
+      --frame-game-ms 100 --discount-per-game-second 0.997 --survival-time-reward \
+      --early-stop-patience-periods 0 \
+      --kill-bar 100000:50000:21 --kill-bar 200000:150000:21 --kill-bar 300000:250000:21 \
+      --run-name m3-p019-dreamerv3-ws10-20261002T182255Z
+
+run detached as `setsid systemd-run --user --scope --collect --slice=towerrl.slice
+--unit=m3-p019-20261002T182255Z -p MemoryMax=100G -p MemorySwapMax=0 -p MemoryHigh=88G`,
+inside `towerrl.slice` (systemd-oomd monitored, `M3-P018`'s extension), after a
+pre-check that the bridge forward ports 47652-47658 and the emulator ports
+5556-5569 are free and no emulator or qemu process runs. `state/bridge/current`
+is never repointed.
+
+**Report.** n=1, seed 0, one run. The floors are `#121`'s (21 episodes each, one
+early-game policy, Workshop 10 under this exact environment), not re-measured
+with this run. The floors are scripted builds, not a ceiling; a run that beats
+them shows the learner finds something the build does not, and a run that only
+matches them shows it found the same turtle.
+
+**Known confounds, stated in advance.** One seed against a floor measured on 21
+episodes. Level 10 has been run on a device only for `#121`'s floors; nothing
+about the learner at this level is known. `M3-P018`'s level-5 result was itself
+n=1 and weak evidence (`M3-P018`'s outcome), so this run does not test whether
+that result generalises; it tests what DreamerV3 does at the benchmark level.
+A bad draw on a host with other load is not distinguishable from an effect at
+n=1.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, even console
+ports from 5556, never `emulator-5554`, `-read-only`, offline by interface
+(`require_offline` before any episode), no taps, screenshots or input, no coins
+or permanent-progression changes (in-run purchases fine). The stage runs under
+`scripts/run_stage.sh` with full cleanup and host verification afterwards. Stop
+after three consecutive unexplained failures, a failed device-safety check, or a
+cleanup that finds `libunity.so` SHA-256 other than `ffc1f3ef…0040`, versionCode
+other than 1199 or an installer other than `com.android.vending`. One device stage
+at a time.
 
 ## M3-P018: DreamerV3 at γ 0.997 per game-second, otherwise `M3-P017`'s launch (pre-registered, written before the run)
 

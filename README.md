@@ -72,7 +72,7 @@ uv run python scripts/run_actors.py \
 
 # a training run on that fleet
 uv run --extra tracking python scripts/train.py \
-  --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \
+  --backbone r2d2 --discount-per-game-second 0.997 --survival-time-reward \
   --actors 4 --renderer host --budget-decisions 60000
 ```
 

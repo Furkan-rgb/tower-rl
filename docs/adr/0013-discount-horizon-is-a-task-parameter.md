@@ -3,6 +3,11 @@
 **Status:** adopted from the next run (`M3-P015` onward), 2026-09-28. Board
 `#85`. Not yet validated by a training run.
 
+**Superseded by ADR 0019** (2026-10-02): the value, 0.999 per game-second, is
+now 0.997, after `M3-P018`. The discount stays a task parameter, per
+game-second, identical across learners; only the value changes. The text
+below is kept as it was decided.
+
 ## Context
 
 `M3-P009` through `M3-P014` (`docs/experiments.md`) tuned the discount `γ_s`

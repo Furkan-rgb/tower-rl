@@ -93,7 +93,7 @@ rather than watched by whoever started it:
 ```text
 nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 -- \
   uv run --extra tracking python scripts/train.py \
-      --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \
+      --backbone r2d2 --discount-per-game-second 0.997 --survival-time-reward \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
       --budget-decisions 120000 --checkpoint-every-decisions 5000 \

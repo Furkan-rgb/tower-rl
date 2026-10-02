@@ -1567,7 +1567,7 @@ manifest records every `R2D2Config` value as `r2d2_<field>`.
 |---|---|---|---|
 | Torso | Acme `DeepAtariTorso`: ResNet, then `MLP([512], activate_final)` (atari.py) | Shared row encoder over the 60 upgrade rows and the scalars, flattened, then Linear 512 and ReLU | Forced: the observation is a vector and 60 rows, not an image. The LayerNorm belongs to the ResNet, so it is not kept |
 | Action mask | None: every action is always valid | Advantages centred over valid actions, invalid actions -inf in Q, greedy, double-Q argmax and exploration over valid actions, value 0 with none valid | Forced: the game offers only some upgrades at a choice point (environment-contract.md) |
-| Discount | 0.997 per step (P Table 2) | 0.999 ** game-seconds per transition, times (1 - done) | Forced: decisions span unequal game time, and a purchase spans none (ADR 0013) |
+| Discount | 0.997 per step (P Table 2) | 0.997 ** game-seconds per transition, times (1 - done) | Forced: decisions span unequal game time, and a purchase spans none (ADR 0013; the value is ADR 0019's) |
 | Reward | The game score, unclipped (Acme `clip_rewards=False`, config.py 37); the paper rescales the value target with h(x) = sign(x)(sqrt(|x| + 1) - 1) + eps x (section 2.3), it does not clip; `tanh` of the reward is fed to the LSTM | Survival reward (1 - gamma**t) * V_REF, learned through h(x) and fed to the LSTM as `tanh` of it | Forced: the task rewards survival, not score (ADR 0013). The rescaling and the LSTM input are the reference's |
 | A step | An Atari frame-stack step | A choice-point decision | Forced: the agent decides only at choice points (ADR 0009); n, burn-in, trace and target period count decisions |
 | Actors | 256 (P Table 2) | 7 or 8 | Forced: one emulator each on one host. Exploration follows the Ape-X ladder over the actors that exist (0.4 ** (1 + 7 i / (N - 1))) |
@@ -1688,7 +1688,7 @@ is accepted. A flag that contradicts one is refused. The manifest records
 every `DreamerConfig` value as `dreamer_<field>` and records the network key
 as None. `checkpoint_policy` rebuilds the policy from the `dreamer_*` keys.
 
-**The discount and the reward are the task's** (ADR 0013), not DreamerV3's.
+**The discount and the reward are the task's** (ADR 0013, the value ADR 0019's), not DreamerV3's.
 `--discount-per-game-second` is required: there is no per-step discount to
 fall back on, and `--discount` is refused. `--survival-time-reward` means what
 it means for R2D2 (§9.4e). Both are `DreamerConfig` fields and are also
@@ -1744,7 +1744,7 @@ one-hot (2 KB) exactly. The capacity of 5e6 items therefore binds only past
 | actor unimix | none: `heads.py` `Head.categorical` builds a plain categorical; the 0.01 in configs.yaml is never applied | same: 0 | — |
 | action mask | none | **the mask is an observation key**, a boolean per action, which the official code treats as discrete with 2 classes (`elements/space.py` 15-16, 42-43): encoded one-hot (`nets.py` 488-493) and decoded by a 2-class categorical head per action (`rssm.py` 299-300), its loss summed over actions. Acting samples under the true mask; imagination under the decoded mask (its argmax, WAIT always valid); the actor's entropy is over the valid actions. | Invalid actions must never be chosen (docs/environment-contract.md); in imagination the true mask is unknown, so the model's belief of it is used. A checkpoint from before the one-hot encoding records no `dreamer_mask_one_hot` and still acts with its 0/1 input and binary head (`DreamerConfig.mask_one_hot`). |
 | acting parameters | the policy call after each train step swaps in the new parameters and keeps the carry (`embodied/jax/agent.py` 243-247, 279-282) | same: parameters as of the last completed step, loaded before each decision; the latent carried across (§6.10) | — |
-| discount | `horizon: 333`, (1 − is_terminal)·(1 − 1/333) by `contdisc`; the replay-value return discounts by that constant | **per transition, d = γ_s^Δt**: continue target (1 − terminal)·d, 1 for a purchase; imagination discounts only by the predicted continue, as the official code does; the replay-value return by each stored d | ADR 0013: the discount is a task parameter per game-second, identical across learners; a purchase spans no game time. The official `contdisc` mechanism with Δt-dependent d. |
+| discount | `horizon: 333`, (1 − is_terminal)·(1 − 1/333) by `contdisc`; the replay-value return discounts by that constant | **per transition, d = γ_s^Δt**: continue target (1 − terminal)·d, 1 for a purchase; imagination discounts only by the predicted continue, as the official code does; the replay-value return by each stored d | ADR 0013 (value ADR 0019): the discount is a task parameter per game-second, identical across learners; a purchase spans no game time. The official `contdisc` mechanism with Δt-dependent d. |
 | optimizer | LaProp, lr 4e-5, β1 0.9, β2 0.999, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from 0 | same | — |
 | precision | bfloat16 compute (configs.yaml `jax.compute_dtype`); float32 parameters, optimiser state (`embodied/jax/opt.py` 129, 149), norms (`nets.py` `Norm`), output distributions and losses (`outs.py`; `opt.py` 37), return normaliser (`utils.py` 45) | same on CUDA (`torch.autocast`); the recurrent state is carried in float32 where the official carry is bfloat16; float32 on the CPU (tests) | The float32 carry is the stored entry's precision, which the official code converts to on the way out (`_take_outs`). |
 | RSSM, KL, heads, twohot, return normaliser, imagination from every replayed state (`imag_last: 0`), horizon 15, λ 0.95, entropy 3e-4, slow critic 0.02 with slowreg 1, loss scales, replay-value loss 0.3 | as configs.yaml, `rssm.py`, `agent.py` | same | — |
@@ -1812,25 +1812,27 @@ semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
 - the value-fit correlation uses the same d·r and d, so it measures the return
   the target is trained towards.
 
-The chosen value is γ_s = 0.999 per game-second: a horizon of 1/(1 − γ_s) ≈
-1000 game-seconds, about 28 waves of 35 s. It is not a code default: the run's
-command line passes `--discount-per-game-second 0.999`. From `M3-P015` this
-is the protocol's discount horizon, held identical across learners as a task
-parameter rather than chosen per algorithm; see
+The chosen value is γ_s = 0.997 per game-second: a horizon of 1/(1 − γ_s) ≈
+333 game-seconds, about 9.5 waves of 35 s. It is not a code default: the run's
+command line passes `--discount-per-game-second 0.997`. It is the protocol's
+discount horizon, held identical across learners as a task parameter rather
+than chosen per algorithm; see
+[ADR 0019](adr/0019-the-discount-horizon-is-0997-per-game-second.md) for the
+evidence and its caveats, and
 [ADR 0013](adr/0013-discount-horizon-is-a-task-parameter.md) for the
-derivation and its adoption status. M3-P003 to M3-P009 used
-0.997, a horizon of 333 s (about 9.5 waves), chosen as the smallest round
-horizon covering the 8–10 waves to the next boss wall, on the ground that a
-planning horizon shorter than the true one plans better with a model estimated
-from limited data (Jiang, Kulesza, Singh & Lewis 2015). That covered one wall
-while episodes were ~121 decisions long. Under baseline v2 an episode runs
-about 550 decisions, and the target is wave 50-110, so a purchase's payoff
-several walls later sits at 0.997^(35·20) ≈ 0.12 of its value and is barely
-visible; at 0.999 it is 0.50. 0.999 is still the shortest round horizon that
-reaches that far, keeping Jiang et al.'s argument for not going longer, and it
-is within the 0.997-0.9997 range R2D2, Agent57 and MuZero use per step
-(Kapturowski et al. 2019; Badia et al. 2020; Schrittwieser et al. 2020).
-Under the survival-time reward the values it bootstraps are bounded by
+task-parameter rule. `M3-P003` to `M3-P009` used 0.997, chosen as the smallest
+round horizon covering the 8–10 waves to the next boss wall, on the ground that
+a planning horizon shorter than the true one plans better with a model
+estimated from limited data (Jiang, Kulesza, Singh & Lewis 2015). `M3-P015` to
+`M3-P017` ran at 0.999 (ADR 0013, now superseded), on the argument that under
+baseline v2 an episode runs about 550 decisions and a purchase's payoff several
+walls later sits at 0.997^(35·20) ≈ 0.12 of its value, against 0.50 at 0.999.
+`M3-P018` returned to 0.997 for DreamerV3 and met its bar, which is n=1 against
+three 0.999 controls and confounded with the per-second reward scale
+(`docs/experiments.md`); it did not need the longer horizon that argument
+asked for. The value is within the 0.997-0.9997 range R2D2, Agent57 and MuZero use
+per step (Kapturowski et al. 2019; Badia et al. 2020; Schrittwieser et al.
+2020). Under the survival-time reward the values it bootstraps are bounded by
 V_REF ≈ 9.51 whatever γ_s, because that reward is scaled linearly to hold it
 there (§9.4e, ADR 0013); the Huber loss stays and no non-linear value
 rescaling (Pohlen et al. 2018) is added, because R2D2 needed that rescaling

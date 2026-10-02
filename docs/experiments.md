@@ -79,7 +79,7 @@ recipe on the new baseline.
 | `M3-P015` | With `M3-P014`'s exact recipe and the discount horizon at the protocol's 0.999 per game-second (ADR 0013), survival reward scaled to hold the maximum return at V_REF, does the policy pair Defense Absolute with Thorns rather than turtling on Defense Absolute alone? | `--discount-per-game-second 0.999` (was 0.997); survival-time reward scaled to (1 − d) · V_REF (identical to `M3-P014`'s at 0.997, a third of the unscaled one at 0.999) | `M3-P014` (mlflow `156c54ce`), matched decisions; n=1 | pending | pending | pending | this commit (pre-registration) |
 | `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
 | `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | not evaluated; near-greedy period means 24.59, 28.00, 28.72, 29.26, 28.41, 27.78, 25.37, 29.22, 30.33, 38.05 over 10 periods (best 38.05, period 10, 62 episodes), n=1 | STOPPED by SIGINT at 500,768/1,000,000 decisions under the 500k rule (best 38.05 < 39.4 at period 10); no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at 25-30 for periods 1-9, the same value and credit failure as `M3-P016` under official conventions: train ratio 511.6 against the official 512, replay balance, latents and return normaliser as official; a purchase changes the survival return by 0.003-0.02 against a critic bias of about +4.5; Defense Absolute 15.5% of spend from wave 30 against the DQN's 70.4%. A protocol property, not a deviation. Period 10's jump to 38.05 came at the stop and one period cannot say whether a plateau break was starting; resumable from its pair. Health-potential shaping (C1) would give purchases essentially no credit (|F| 3e-5 per purchase against 0.019 survival reward per timed decision); dropped. 84,939 decisions/hour; 42 of 945 episodes invalid | `c78e469` (pre-registration), this commit (results, diagnosis) |
-| `M3-P018` | Under `M3-P017`'s launch unchanged (DreamerV3 at its official conventions, Workshop L5, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), is the plateau a credit/horizon effect: does γ 0.997 per game-second instead of ADR 0013's 0.999 lift the near-greedy period means? | `--discount-per-game-second 0.997` (was 0.999); the survival-time reward follows ADR 0013's scaling, three times `M3-P017`'s per game-second at the same maximum return | `M3-P016` attempt 1 best 43.09, attempt 3 best 36.34, `M3-P017` best 38.05 (all at γ 0.999), n=1 each; success is two consecutive period means above 43.09, and the 500k rule stops a best below 39.4 at 500,000 decisions | pending | pending | pending | this commit (pre-registration) |
+| `M3-P018` | Under `M3-P017`'s launch unchanged (DreamerV3 at its official conventions, Workshop L5, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), is the plateau a credit/horizon effect: does γ 0.997 per game-second instead of ADR 0013's 0.999 lift the near-greedy period means? | `--discount-per-game-second 0.997` (was 0.999); the survival-time reward follows ADR 0013's scaling, three times `M3-P017`'s per game-second at the same maximum return | `M3-P016` attempt 1 best 43.09, attempt 3 best 36.34, `M3-P017` best 38.05 (all at γ 0.999), n=1 each; success is two consecutive period means above 43.09, and the 500k rule stops a best below 39.4 at 500,000 decisions | protocol run to 1,000,000 decisions: near-greedy period means 25.24 to 59.10 over 20 periods (best 59.10, period 20); pre-registered final evaluation at 1,010,001 decisions 63.28, SD 9.04, n=29 valid of 30. Developer-approved extension (not protocol) to 2,007,970: periods 21-40 average about 57; final evaluation 55.77, SD 19.79, n=30, bimodal (6 of 30 at waves 20-23). No arm-n10. n=1 | success bar met (period 10 44.88, period 11 46.02, both > 43.09; 500k rule passed); weak evidence: n=1 against three controls, horizon confounded with the per-second reward scale, and `M3-P017`'s own last period had already switched to Defense Absolute (correction below); training past 1M did not help (2M minus 1M -7.5, Welch SE about 4.0) | 0.997 reached a Defense Absolute turtle (about 80% of spend from wave 30) sooner and higher than 0.999, with deaths clustering on the wave after a boss; the extension swung with an unchanged purchase mix, and the policy kept buying Defense Absolute over affordable Thorn Damage. Supersedes ADR 0013's value with ADR 0019. Behaviour figures are summaries from a lost scratchpad | `dbcb8e0` (pre-registration), this commit (results, ADR 0019) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -1418,6 +1418,167 @@ verification afterwards. Stop after three consecutive unexplained failures, a
 failed device-safety check, or a cleanup that finds `libunity.so` SHA-256 other
 than `ffc1f3ef…0040`, versionCode other than 1199 or an installer other than
 `com.android.vending`. One device stage at a time.
+
+### Outcome, as run (2026-10-02, `#113`)
+
+**Verdict: the pre-registered success bar was met, and it is weak evidence.**
+Run `state/runs/m3-p018-dreamerv3-g0997-20261001T070256Z`. The protocol run is
+segment 1, 0 to 1,000,000 decisions. Two further segments are a
+developer-approved extension to 2,000,000, labelled as such below; they are not
+protocol. Success was two consecutive period means above 43.09: period 10 read
+44.88 and period 11 read 46.02. Read honestly:
+
+- It is n=1 against three controls at γ 0.999 (`M3-P016` attempt 1 best 43.09,
+  attempt 3 best 36.34, `M3-P017` best 38.05). One seed shows an effect, not
+  its size.
+- It is confounded, as the pre-registration said. The survival reward per
+  game-second scales with the horizon, so this changed the horizon and the
+  per-second reward together. DreamerV3's return normalisation should absorb
+  much of the scale, but it was not measured.
+- The correction to `M3-P017`'s diagnosis (below) weakens the causal claim that
+  the discount caused the plateau.
+- Training past 1,000,000 decisions did not help (the extension, below).
+
+No arm-n10 evaluation was run (the summaries' `evaluations` are empty), so
+there is no beat/no-beat verdict against stacked-dqn's 55.70 (`M3-P014`'s
+provisional arm-n10, n=10). The only evaluations are the two pre-registered
+final evaluations the run's own `train.py` ran.
+
+#### The protocol run, 0 to 1,000,000 decisions (segment 1)
+
+Near-greedy selection-period means, from `segments/1/summary.json` and
+`train.log`:
+
+| period | decisions | mean final wave | n episodes | best so far |
+| --- | --- | --- | --- | --- |
+| 1 | 50,251 | 25.24 | 140 | 25.24 |
+| 2 | 100,475 | 26.49 | 86 | 26.49 |
+| 3 | 150,011 | 26.29 | 83 | 26.49 |
+| 4 | 200,546 | 26.66 | 82 | 26.49 |
+| 5 | 250,545 | 29.19 | 75 | 29.19 |
+| 6 | 300,080 | 31.88 | 76 | 31.88 |
+| 7 | 350,528 | 32.45 | 67 | 32.45 |
+| 8 | 400,244 | 32.48 | 69 | 32.45 |
+| 9 | 450,498 | 39.88 | 51 | 39.88 |
+| 10 | 500,747 | 44.88 | 48 | 44.88 |
+| 11 | 550,804 | 46.02 | 46 | 46.02 |
+| 12 | 601,202 | 43.03 | 58 | 46.02 |
+| 13 | 650,953 | 51.86 | 44 | 51.86 |
+| 14 | 700,914 | 46.45 | 49 | 51.86 |
+| 15 | 750,002 | 49.43 | 46 | 51.86 |
+| 16 | 801,117 | 51.53 | 45 | 51.86 |
+| 17 | 850,785 | 46.67 | 52 | 51.86 |
+| 18 | 900,866 | 52.78 | 41 | 52.78 |
+| 19 | 950,086 | 57.38 | 40 | 57.38 |
+| 20 | 1,000,900 | 59.10 | 39 | 59.10 |
+
+The 500k rule passed: the first period line at or past 500,000 is period 10, and
+the best then, 44.88, is at or above 39.4. Periods 1 to 4 (25-27) read like
+`M3-P017`'s first periods (24.59-29.26), as the pre-registration predicted for a
+horizon that did not matter; the divergence is periods 5 to 9 (29.19-39.88),
+where `M3-P017` stayed at 25-30, then period 10.
+
+**Invalid episodes in segment 1: 21 of 1,264** recorded training episodes
+(`episodes.jsonl`; the summary counts 1,267 with 3 failed episode starts): 16
+`observation_invalid` (the bridge and the host disagreeing about the decision
+event), 5 `mask_legal_rejected` (1.7%).
+
+**Pre-registered final evaluation** (`segments/1/summary.json`,
+`pre_registered_final`, 30 episodes): 29 valid and 1
+`mask_legal_rejected`; mean final wave **63.28**, SD 9.04, range 40-75. It ran
+on the 1,010,001-decision weights (`decisions-1010001-v504300.pt`), not on the
+1,000,000-decision ones, because in-flight episodes overshoot the budget by at
+most one decision per actor. It is the run's own built-in final evaluation, not
+the arm-n10 protocol of `M3-P014`.
+
+#### The extension, 1,000,000 to 2,007,970 decisions (segments 2 and 3)
+
+The developer approved continuing to 2,000,000 on 2026-10-01 (board `#113`),
+run in place from the resume point. This is an extension, not protocol: the 1M
+result above stands as the protocol result whatever it shows. Period means:
+
+| period | decisions | mean final wave | n episodes | best so far |
+| --- | --- | --- | --- | --- |
+| 21 | 1,051,259 | 61.97 | 33 | 61.97 |
+| 22 | 1,100,642 | 50.65 | 43 | 61.97 |
+| 23 | 1,150,611 | 62.69 | 39 | 62.69 |
+| 24 | 1,201,572 | 59.52 | 40 | 62.69 |
+| 25 | 1,250,242 | 59.26 | 38 | 62.69 |
+| 26 | 1,300,039 | 56.27 | 40 | 62.69 |
+| 27 | 1,351,133 | 55.88 | 42 | 62.69 |
+| 28 | 1,401,057 | 66.13 | 38 | 66.13 |
+| 29 | 1,450,594 | 63.54 | 41 | 66.13 |
+| 30 | 1,500,403 | 54.88 | 40 | 66.13 |
+| 31 | 1,550,898 | 48.81 | 48 | 66.13 |
+| 32 | 1,600,602 | 52.32 | 41 | 66.13 |
+| 33 | 1,650,712 | 60.42 | 40 | 66.13 |
+| 34 | 1,700,048 | 54.74 | 43 | 66.13 |
+| 35 | 1,750,005 | 43.69 | 48 | 66.13 |
+| 36 | 1,801,594 | 66.54 | 35 | 66.54 |
+| 37 | 1,850,222 | 54.42 | 40 | 66.54 |
+| 38 | 1,900,692 | 65.80 | 35 | 66.54 |
+| 39 | 1,950,914 | 48.91 | 43 | 66.54 |
+| 40 | 2,001,249 | 52.69 | 42 | 66.54 |
+
+Invalid in the extension: 15 of 665 recorded episodes in segment 2 and 5 of 171
+in segment 3.
+
+**Segment 2 died at 1,802,065 decisions (2026-10-02 06:31 CEST), from host
+memory pressure, not from the run.** systemd-oomd killed the GNOME Shell. The
+emulators run with `-gpu host` and died with "X connection to :0 broken"; all
+seven bridges reported `BridgeDisconnectedError`, the actors were withdrawn and
+the run raised `RunPortError` (exit 1, cleanup ok). The resume point had been
+saved intact at 1,802,065. Segment 3 resumed from it inside a `towerrl.slice`
+with `ManagedOOMMemoryPressure=kill` at 30% over 10 s, so oomd targets the run
+before it can reach the session. Two follow-ups are on the board: `#117`
+(emulator overlays on tmpfs `/tmp`) and `#118` (the emulators depend on the X
+display).
+
+**2M final evaluation** (`segments/3/summary.json`, `pre_registered_final`,
+checkpoint `decisions-2007970-v1003285.pt`): n=30, 0 invalid, mean **55.77**, SD
+19.79. It is bimodal: 6 of 30 episodes died at waves 20-23 (the `#80` wall) and
+the other 24 averaged 64.4 (range 31-74). The 1M evaluation had a minimum of 40.
+The difference, 2M minus 1M, is -7.5 with a Welch standard error of about 4.0
+(about 1.9 SE). More training did not improve the policy, and early collapses
+returned. The period means agree: periods 21-40 average about 57 and swing 43.69
+to 66.54.
+
+#### Behaviour (summarised findings, approximate)
+
+The offline analysis was done in a session scratchpad that a reboot lost, so
+these are summaries and not re-verifiable from this repository; the spend
+shares are estimated from wave-start price tables, so read them as approximate.
+
+- Defense Absolute rose from about 12% of spend (periods 1-4) to about 80% from
+  wave 30 on (period 18 onward). Thorn Damage stayed at 5-8% with no trend.
+  Attack fell to 1-4%.
+- The median death moved from wave 25 (periods 1-4) to 51 (periods 10-13), then
+  61-64 (periods 18-20).
+- Deaths cluster on the wave after a boss (21, 31, 41, 51, 61).
+- At periods 37-38 Defense Absolute's price rose from 124 (wave 30) to 605
+  (wave 60), while Thorn Damage's rose only from 59 to 116, and the policy held
+  enough cash to buy Thorn Damage at every wave. It nonetheless kept buying
+  Defense Absolute.
+- The swings within the extension came with an unchanged purchase mix (periods
+  28-29 against 30-31), only a fatter lower tail: they are not strategy changes.
+
+#### Correction to `M3-P017`'s diagnosis
+
+`M3-P017`'s entry is left as written. Its diagnosis said DreamerV3 put only 15.5%
+of spend into Defense Absolute from wave 30 on. That figure covered only the
+first roughly 300,000 decisions of `M3-P017`. `M3-P017`'s own last period (period
+10, 38.05) had already switched to about 79%, so `M3-P017` may have been
+breaking its plateau when the 500k rule stopped it. (The figure is from the same
+lost scratchpad as the behaviour above; it is not re-verified here.) That
+weakens "the discount caused the plateau": 0.997 reached the switch sooner and
+went higher, but `M3-P017` was moving the same way. It does not show the
+discount made no difference, and one run each cannot separate "sooner" from a
+seed draw.
+
+**Consequence.** The pre-registration said that if 0.997 wins, ADR 0013 is
+superseded and R2D2's discount follows. The bar was met, so ADR 0019 sets
+γ 0.997 per game-second for both learners, with the caveats above. R2D2 has not
+run under it.
 
 ## M3-P017: DreamerV3 at its official conventions under `M3-P016`'s protocol (pre-registered, written before the run)
 

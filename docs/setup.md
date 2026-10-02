@@ -594,7 +594,7 @@ run=r2d2-$(date -u +%Y%m%dT%H%M%SZ)
 nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 \
     --log-directory "state/runs/$run/logs" -- \
   uv run --extra tracking python scripts/train.py --run-name "$run" \
-      --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \
+      --backbone r2d2 --discount-per-game-second 0.997 --survival-time-reward \
       --actors 7 --renderer host --frame-rate-hz 120 \
       --decision-cadence choice-points --exploration ladder \
       --budget-decisions 120000 --checkpoint-every-decisions 5000 \

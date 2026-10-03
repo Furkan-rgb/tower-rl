@@ -71,6 +71,7 @@ from tower_rl.learning.evaluator import EvaluationReport, evaluate, to_record  #
 from tower_rl.learning.policies import (  # noqa: E402
     LATE_GAME_BUILDS,
     BindsRowNames,
+    BlenderBuildPolicy,
     CheapestFirstPolicy,
     LateGameBuildPolicy,
     Policy,
@@ -101,6 +102,7 @@ POLICIES: dict[str, Callable[[], Policy]] = {
         f"build-{build}": functools.partial(LateGameBuildPolicy, build)
         for build in LATE_GAME_BUILDS
     },
+    "build-blender": BlenderBuildPolicy,
 }
 
 #: How a checkpoint is named as an arm, beside the names above.

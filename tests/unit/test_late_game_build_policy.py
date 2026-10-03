@@ -19,7 +19,9 @@ from tower_rl.learning.policies import (
     EARLY_GAME_ROWS,
     LATE_GAME_BUILDS,
     LATE_GAME_WAVE,
+    ORBS_PRICE_CEILING,
     BindsRowNames,
+    BlenderBuildPolicy,
     CheapestFirstPolicy,
     LateGameBuildPolicy,
     TurtlePolicy,
@@ -48,6 +50,10 @@ LABELS = tuple(
         ("defense", 3, "Defense Absolute"),
         ("defense", 4, "Thorn Damage"),
         ("defense", 5, "Lifesteal"),
+        ("defense", 6, "Knockback Chance"),
+        ("defense", 7, "Knockback Force"),
+        ("defense", 8, "Orb Speed"),
+        ("defense", 9, "Orbs"),
         ("utility", 0, "Cash Bonus"),
     )
 )
@@ -74,7 +80,7 @@ def _features(wave: int, costs: dict[str, float]) -> StateFeatures:
 
 
 def _policy(build: str) -> LateGameBuildPolicy:
-    policy = LateGameBuildPolicy(build)
+    policy = BlenderBuildPolicy() if build == "blender" else LateGameBuildPolicy(build)
     policy.bind_row_names(LABELS)
     policy.initial_state()
     return policy
@@ -88,7 +94,12 @@ def _act(policy: LateGameBuildPolicy, wave: int, *affordable: str) -> int:
 # -- the early game --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("build", LATE_GAME_BUILDS)
+#: Every build, the blender included: all of them share the opening.
+EVERY_BUILD = (*LATE_GAME_BUILDS, "blender")
+BLENDER_ROWS = ("Orbs", "Orb Speed", "Knockback Chance", "Knockback Force")
+
+
+@pytest.mark.parametrize("build", EVERY_BUILD)
 def test_the_early_game_buys_the_cheapest_affordable_row_of_the_set(build: str) -> None:
     state = _features(
         BEFORE,
@@ -97,10 +108,11 @@ def test_the_early_game_buys_the_cheapest_affordable_row_of_the_set(build: str) 
     assert _policy(build).act(state, None)[0] == ROWS["Attack Speed"]
 
 
-@pytest.mark.parametrize("build", LATE_GAME_BUILDS)
+@pytest.mark.parametrize("build", EVERY_BUILD)
 def test_the_early_game_never_buys_a_row_outside_the_set(build: str) -> None:
-    # A row outside the set is cheaper and affordable, and still is not bought.
-    cheap = {name: 1.0 for name in OUTSIDE}
+    # A row outside the set is cheaper and affordable, and still is not bought;
+    # the blender's own rows are outside it too.
+    cheap = {name: 1.0 for name in (*OUTSIDE, *BLENDER_ROWS)}
     assert (
         _policy(build).act(_features(BEFORE, {**cheap, "Health": 500.0}), None)[0]
         == (ROWS["Health"])
@@ -113,7 +125,7 @@ def test_every_row_of_the_set_can_be_bought_in_the_early_game() -> None:
         assert _act(_policy("split"), BEFORE, name) == ROWS[name]
 
 
-@pytest.mark.parametrize("build", LATE_GAME_BUILDS)
+@pytest.mark.parametrize("build", EVERY_BUILD)
 def test_nothing_affordable_waits_in_both_phases(build: str) -> None:
     assert _act(_policy(build), BEFORE) == 0
     assert _act(_policy(build), LATE_GAME_WAVE) == 0
@@ -131,8 +143,7 @@ def test_every_build_plays_the_same_before_the_switch_wave() -> None:
         )
     ]
     played = {
-        build: [_policy(build).act(state, None)[0] for state in states]
-        for build in LATE_GAME_BUILDS
+        build: [_policy(build).act(state, None)[0] for state in states] for build in EVERY_BUILD
     }
     assert len({tuple(actions) for actions in played.values()}) == 1
 
@@ -204,6 +215,106 @@ def test_split_starts_each_episode_even() -> None:
     )
 
 
+# -- the blender -----------------------------------------------------------------
+
+
+def _priced(
+    wave: int, cash: float, prices: dict[str, float], maxed: tuple[str, ...] = ()
+) -> StateFeatures:
+    """A state with those row prices, in which a row is affordable iff it costs at most `cash`."""
+    scalars = [0.0] * len(SCALAR_FEATURES)
+    scalars[SCALAR_FEATURES.index("wave_log")] = math.log1p(wave)
+    flat = [0.0] * (ROW_COUNT * ROW_WIDTH)
+    mask = [True] + [False] * ROW_COUNT
+    for name, action in ROWS.items():
+        price = prices.get(name, 1000.0)
+        row = {"cost_log": math.log1p(price), "unlocked": 1.0, "maxed": float(name in maxed)}
+        mask[action] = name in prices and name not in maxed and price <= cash
+        for feature, value in row.items():
+            flat[(action - 1) * ROW_WIDTH + ROW_FEATURES.index(feature)] = value
+    return StateFeatures(scalars=tuple(scalars), rows=tuple(flat), mask=tuple(mask))
+
+
+def _play(policy: LateGameBuildPolicy, prices: dict[str, list[float]], steps: int) -> list[str]:
+    """What the policy buys over `steps` decisions with cash to spare, each row's
+    price moving to the next of its list once bought (the game prices by level)."""
+    level = dict.fromkeys(prices, 0)
+    bought = []
+    for _ in range(steps):
+        now = {name: costs[level[name]] for name, costs in prices.items()}
+        index = policy.act(_priced(LATE_GAME_WAVE, 1e9, now), None)[0]
+        name = next(name for name, action in ROWS.items() if action == index)
+        level[name] += 1
+        bought.append(name)
+    return bought
+
+
+def test_the_blender_splits_cash_evenly_between_defense_absolute_and_orbs() -> None:
+    # Orbs first on the tie; then Defense Absolute until its spend reaches the
+    # Orbs' (100 + 100 + 100 = 300), then the next Orbs level.
+    bought = _play(
+        _policy("blender"),
+        {"Defense Absolute": [100.0] * 20, "Orbs": [300.0, 1250.0, 4000.0], "Damage": [1.0] * 20},
+        steps=6,
+    )
+    assert bought == ["Orbs", *["Defense Absolute"] * 3, "Orbs", "Defense Absolute"]
+
+
+def test_the_blender_saves_for_orbs_rather_than_buying_defense_absolute() -> None:
+    policy = _policy("blender")
+    # Orbs is owed (nothing spent yet) and costs more than the cash in hand.
+    prices = {"Orbs": 300.0, "Defense Absolute": 100.0, "Orb Speed": 15.0, "Thorn Damage": 10.0}
+    assert policy.act(_priced(LATE_GAME_WAVE, 250.0, prices), None)[0] == 0
+    assert policy.act(_priced(LATE_GAME_WAVE, 300.0, prices), None)[0] == ROWS["Orbs"]
+    # Now Defense Absolute is owed, and it is saved for in turn.
+    assert policy.act(_priced(LATE_GAME_WAVE, 99.0, prices), None)[0] == 0
+
+
+def test_after_the_priced_orbs_the_blender_buys_the_cheapest_support_row() -> None:
+    above = ORBS_PRICE_CEILING + 1.0
+    support = {"Orb Speed": 26.0, "Knockback Chance": 20.0, "Knockback Force": 27.0}
+    # An Orbs level dearer than the ceiling is not saved for.
+    state = _priced(LATE_GAME_WAVE, 1e9, {"Orbs": above, "Defense Absolute": 100.0, **support})
+    assert _policy("blender").act(state, None)[0] == ROWS["Knockback Chance"]
+    # Nor is a maxed Orbs; on a price tie the first listed, Orb Speed, goes first.
+    tie = dict.fromkeys(support, 20.0)
+    state = _priced(LATE_GAME_WAVE, 1e9, {"Orbs": 300.0, **tie}, maxed=("Orbs",))
+    assert _policy("blender").act(state, None)[0] == ROWS["Orb Speed"]
+
+
+def test_an_orbs_level_priced_at_the_ceiling_is_still_saved_for() -> None:
+    state = _priced(LATE_GAME_WAVE, 100.0, {"Orbs": ORBS_PRICE_CEILING, "Orb Speed": 15.0})
+    assert _policy("blender").act(state, None)[0] == 0
+
+
+def test_a_side_with_nothing_left_leaves_every_purchase_to_the_other() -> None:
+    prices = {"Defense Absolute": 100.0, "Orbs": 300.0}
+    blender_done = _priced(LATE_GAME_WAVE, 1e9, prices, maxed=BLENDER_ROWS)
+    policy = _policy("blender")
+    assert [policy.act(blender_done, None)[0] for _ in range(2)] == [ROWS["Defense Absolute"]] * 2
+    defense_done = _priced(LATE_GAME_WAVE, 1e9, prices, maxed=("Defense Absolute",))
+    policy = _policy("blender")
+    assert [policy.act(defense_done, None)[0] for _ in range(2)] == [ROWS["Orbs"]] * 2
+
+
+def test_the_blender_never_buys_thorns_or_the_opening_rows_late() -> None:
+    cheap = {name: 1.0 for name in (*EARLY_GAME_ROWS, *OUTSIDE)}
+    del cheap["Defense Absolute"]
+    prices = {**cheap, "Defense Absolute": 500.0, "Orbs": 300.0}
+    assert _policy("blender").act(_priced(LATE_GAME_WAVE, 250.0, prices), None)[0] == 0
+
+
+def test_the_blender_counts_spend_from_the_switch_and_per_episode() -> None:
+    policy = _policy("blender")
+    # Defense Absolute bought in the opening does not count against the blender.
+    for _ in range(3):
+        assert _act(policy, BEFORE, "Defense Absolute") == ROWS["Defense Absolute"]
+    prices = {"Defense Absolute": 100.0, "Orbs": 300.0}
+    assert policy.act(_priced(LATE_GAME_WAVE, 1e9, prices), None)[0] == ROWS["Orbs"]
+    policy.initial_state()
+    assert policy.act(_priced(LATE_GAME_WAVE, 1e9, prices), None)[0] == ROWS["Orbs"]
+
+
 # -- row names -------------------------------------------------------------------
 
 
@@ -212,6 +323,13 @@ def test_a_row_the_game_does_not_name_fails_loudly(missing: str) -> None:
     labels = [label for label in LABELS if label.name != missing]
     with pytest.raises(ValueError, match=missing):
         LateGameBuildPolicy("split").bind_row_names(labels)
+
+
+@pytest.mark.parametrize("missing", BLENDER_ROWS)
+def test_a_blender_row_the_game_does_not_name_fails_loudly(missing: str) -> None:
+    labels = [label for label in LABELS if label.name != missing]
+    with pytest.raises(ValueError, match=missing):
+        BlenderBuildPolicy().bind_row_names(labels)
 
 
 def test_an_unbound_build_refuses_to_act() -> None:
@@ -227,5 +345,6 @@ def test_an_unknown_build_is_refused() -> None:
 def test_the_name_binding_protocol_covers_the_turtle_and_the_builds() -> None:
     assert isinstance(TurtlePolicy(), BindsRowNames)
     assert isinstance(LateGameBuildPolicy("thorns"), BindsRowNames)
+    assert isinstance(BlenderBuildPolicy(), BindsRowNames)
     assert not isinstance(CheapestFirstPolicy(), BindsRowNames)
     assert not isinstance(WaitOnlyPolicy(), BindsRowNames)

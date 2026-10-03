@@ -17,7 +17,7 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import torch
 
@@ -51,6 +51,22 @@ def row_feature(features: StateFeatures, action: int, feature: str) -> float:
     """One named feature of the row that action index `action` buys."""
     # Action index 0 is WAIT, so row `i` backs action index `i + 1`.
     return features.rows[(action - 1) * ROW_WIDTH + ROW_FEATURES.index(feature)]
+
+
+def row_offered(features: StateFeatures, action: int) -> bool:
+    """Whether the row behind action index `action` can be bought at all this run.
+
+    Unlocked and not maxed; whether it is affordable now is the mask's business.
+    """
+    return bool(row_feature(features, action, "unlocked")) and not row_feature(
+        features, action, "maxed"
+    )
+
+
+def row_price(features: StateFeatures, action: int) -> float:
+    """The cash the next level of that row costs, un-scaled from `cost_log`."""
+    # Rounded so a price of exactly 4,000 does not come back as 4000.0000000001.
+    return round(math.expm1(row_feature(features, action, "cost_log")), 6)
 
 
 @dataclass
@@ -239,10 +255,7 @@ class TurtlePolicy:
 
     def _offered(self, features: StateFeatures, name: str) -> bool:
         """Whether the row can be bought at all this run: unlocked and not maxed."""
-        index = self._index(name)
-        return bool(self._row(features, index, "unlocked")) and not self._row(
-            features, index, "maxed"
-        )
+        return row_offered(features, self._index(name))
 
     def _index(self, name: str) -> int:
         assert self.rows is not None
@@ -300,6 +313,8 @@ class LateGameBuildPolicy:
     build: str
     rows: dict[str, int] | None = None
     _bought: dict[str, int] = field(default_factory=dict, init=False)
+    #: Every row the build buys in either phase, resolved from the game's labels.
+    row_names: ClassVar[tuple[str, ...]] = EARLY_GAME_ROWS
 
     def __post_init__(self) -> None:
         if self.build not in LATE_GAME_BUILDS:
@@ -307,7 +322,7 @@ class LateGameBuildPolicy:
         self.initial_state()
 
     def bind_row_names(self, labels: Sequence[UpgradeSlotLabelLike]) -> None:
-        self.rows = row_indices(labels, EARLY_GAME_ROWS)
+        self.rows = row_indices(labels, self.row_names)
 
     def initial_state(self) -> None:
         self._bought = {name: 0 for name in LATE_GAME_BUILDS[self.build]}
@@ -323,20 +338,114 @@ class LateGameBuildPolicy:
         wave = round(math.expm1(features.scalars[SCALAR_FEATURES.index("wave_log")]), 6)
         if wave < LATE_GAME_WAVE:
             return self._cheapest_early(features), None
+        return self._late_game(features), None
+
+    def _late_game(self, features: StateFeatures) -> int:
+        """The build's row bought fewest times since the switch, or WAIT."""
+        assert self.rows is not None
         name = min(self._bought, key=lambda row: self._bought[row])
         index = self.rows[name]
         if not features.mask[index]:
-            return 0, None
+            return 0
         self._bought[name] += 1
-        return index, None
+        return index
 
     def _cheapest_early(self, features: StateFeatures) -> int:
         """The cheapest affordable `EARLY_GAME_ROWS` row, or WAIT."""
         assert self.rows is not None
-        buyable = [index for index in self.rows.values() if features.mask[index]]
+        early = [self.rows[name] for name in EARLY_GAME_ROWS]
+        buyable = [index for index in early if features.mask[index]]
         if not buyable:
             return 0
         return min(buyable, key=lambda index: row_feature(features, index, "cost_log"))
+
+
+#: The blender's rows (`#122`). Orbs circle the tower and one-shot the normal
+#: enemies they touch (ADR 0012); Orb Speed is how often each orb sweeps its
+#: ring; knockback pushes an enemy back out through the ring.
+ORBS = "Orbs"
+ORB_SPEED = "Orb Speed"
+KNOCKBACK_CHANCE = "Knockback Chance"
+KNOCKBACK_FORCE = "Knockback Force"
+#: What the blender buys once Orbs is done: the cheapest, the first listed on a tie.
+BLENDER_SUPPORT_ROWS: tuple[str, ...] = (ORB_SPEED, KNOCKBACK_CHANCE, KNOCKBACK_FORCE)
+#: The dearest Orbs level whose price has been seen (300, 1,250 and 4,000 in
+#: `M3-P018`'s records; the fourth level's price never has). The blender saves
+#: for an Orbs level only up to this price, so an unseen price cannot hold
+#: every other purchase back for an unbounded stretch.
+ORBS_PRICE_CEILING = 4000.0
+#: The blender side's key in a `BlenderBuildPolicy`'s spend.
+BLENDER = "blender"
+
+
+@dataclass
+class BlenderBuildPolicy(LateGameBuildPolicy):
+    """The shared opening, then Defense Absolute and the blender at equal spend.
+
+    Before `LATE_GAME_WAVE` it plays exactly as every `LateGameBuildPolicy`.
+    From the switch each purchase goes to the side that has had less cash spent
+    on it since the switch, the blender on a tie: one side is Defense Absolute,
+    the other the blender. The blender buys Orbs while the next Orbs level costs
+    at most `ORBS_PRICE_CEILING`, otherwise the cheapest of
+    `BLENDER_SUPPORT_ROWS`. If the owed side's row cannot be afforded it WAITs,
+    saving for it rather than buying from the other side; a side with nothing
+    left to buy (maxed or locked) leaves every purchase to the other. Thorn
+    Damage is not bought after the switch. Why each of these: `docs/experiments.md`,
+    "Blender build at Workshop 10 (#122)".
+
+    Cash spent per side is per-episode memory reset by `initial_state`.
+    """
+
+    build: str = field(default="blender", init=False)
+    #: Cash spent on each side since the switch, keyed by `DEFENSE_ABSOLUTE` and `BLENDER`.
+    _spent: dict[str, float] = field(default_factory=dict, init=False)
+    row_names: ClassVar[tuple[str, ...]] = (
+        *EARLY_GAME_ROWS,
+        ORBS,
+        *BLENDER_SUPPORT_ROWS,
+    )
+
+    def __post_init__(self) -> None:
+        self.initial_state()
+
+    def initial_state(self) -> None:
+        self._spent = {DEFENSE_ABSOLUTE: 0.0, BLENDER: 0.0}
+        return None
+
+    def _late_game(self, features: StateFeatures) -> int:
+        """The owed side's row if it is affordable, otherwise WAIT."""
+        assert self.rows is not None
+        defense = self.rows[DEFENSE_ABSOLUTE]
+        # The blender is listed first because `min` keeps the first on a tie.
+        offered = {
+            BLENDER: self._blender_row(features),
+            DEFENSE_ABSOLUTE: defense if row_offered(features, defense) else None,
+        }
+        sides = [side for side, index in offered.items() if index is not None]
+        if not sides:
+            return 0
+        side = min(sides, key=lambda name: self._spent[name])
+        index = offered[side]
+        assert index is not None
+        if not features.mask[index]:
+            return 0
+        self._spent[side] += row_price(features, index)
+        return index
+
+    def _blender_row(self, features: StateFeatures) -> int | None:
+        """The action index the blender side buys next, or None with nothing left to buy."""
+        assert self.rows is not None
+        orbs = self.rows[ORBS]
+        if row_offered(features, orbs) and row_price(features, orbs) <= ORBS_PRICE_CEILING:
+            return orbs
+        support = [
+            self.rows[name]
+            for name in BLENDER_SUPPORT_ROWS
+            if row_offered(features, self.rows[name])
+        ]
+        if not support:
+            return None
+        return min(support, key=lambda index: row_price(features, index))
 
 
 @dataclass

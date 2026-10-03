@@ -80,7 +80,7 @@ recipe on the new baseline.
 | `M3-P016` | Under baseline v2 (Workshop L5) and `M3-P015`'s task protocol (γ 0.999 per game-second, ADR 0013; survival-time reward bounded at V_REF; 1,000,000 decisions, 7 actors, all upgrades, same bridge build and frame settings), does DreamerV3 — at its published configuration with only the task discount changed — beat stacked-dqn? | `--backbone dreamerv3`; `--workshop-level 5`; `--discount-per-game-second 0.999`; `--survival-time-reward`; no early stop (`--early-stop-patience-periods 0`); `--replay-capacity 40000` (as `M3-P007`); the game-time continue target (`be0dae5`) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P015` stopped at 404,139 decisions, arm period 6 at 34.38, no evaluation run; `M3-P007` (Dreamer, v1/L0) scored 15.70 | not evaluated; near-greedy period means 24.96 to 36.34 over 12 periods (best 36.34, period 9; 29.72 at period 12), attempt 3, n=1 | STOPPED by SIGINT at 637,729/1,000,000 decisions under the 500k rule (best < 39.4 at 500,000), applied 137,395 decisions late by lead oversight; no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at about 32 from 350k, not undertraining (KL flat 5.4-6.6, critic bias +3.2 to +3.7 from 400k). Likely value and credit failure (critic overestimates survival value; imagination misses death, 17-47% survival at the death step; one-step Defense Absolute vs WAIT about 0 against 0.11-0.17 noise; Defense Absolute 13.7% of spend from wave 30 against the DQN's 70.4%) and policy churn (actor agrees with model's best action in 30-42% of states); period-10 drop proven to be churn, not instability. Continue-head check partly an artefact; zero-start windows not ruled out; attempt 1 (best 43.09) vs 3 unresolved at n=1 per attempt. Learner-bound, 103,849 decisions/hour; 34 of 1,106 episodes invalid | this commit (results, diagnosis) |
 | `M3-P017` | Under `M3-P016`'s protocol unchanged (Workshop L5, γ 0.999 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), does DreamerV3 at its official conventions (ADR 0018, `main@cb2f324`) beat stacked-dqn's `M3-P014` arm-n10? | Only the learner: ADR 0018's conventions (own replay with stored latents and online queue, official capacity 5e6 and warm-up 1,024 items, official step layout, no actor unimix, one-hot mask, acting on the last completed step) on ADR 0017's learner thread; `--replay-capacity 40000` dropped so the official 5e6 applies (the flag is now refused for dreamerv3) | `M3-P014`'s provisional arm-n10, 55.70, SD 3.43, n=10, 95% CI [53.57, 57.83]; context: `M3-P016` attempt 3, best near-greedy period 36.34, stopped under the 500k rule | not evaluated; near-greedy period means 24.59, 28.00, 28.72, 29.26, 28.41, 27.78, 25.37, 29.22, 30.33, 38.05 over 10 periods (best 38.05, period 10, 62 episodes), n=1 | STOPPED by SIGINT at 500,768/1,000,000 decisions under the 500k rule (best 38.05 < 39.4 at period 10); no arm evaluation, so no beat/no-beat verdict against 55.70 | Plateau at 25-30 for periods 1-9, the same value and credit failure as `M3-P016` under official conventions: train ratio 511.6 against the official 512, replay balance, latents and return normaliser as official; a purchase changes the survival return by 0.003-0.02 against a critic bias of about +4.5; Defense Absolute 15.5% of spend from wave 30 against the DQN's 70.4%. A protocol property, not a deviation. Period 10's jump to 38.05 came at the stop and one period cannot say whether a plateau break was starting; resumable from its pair. Health-potential shaping (C1) would give purchases essentially no credit (|F| 3e-5 per purchase against 0.019 survival reward per timed decision); dropped. 84,939 decisions/hour; 42 of 945 episodes invalid | `c78e469` (pre-registration), this commit (results, diagnosis) |
 | `M3-P018` | Under `M3-P017`'s launch unchanged (DreamerV3 at its official conventions, Workshop L5, survival-time reward, 1,000,000 decisions, 7 actors, all upgrades, seed 0, same bridge build and frame settings), is the plateau a credit/horizon effect: does γ 0.997 per game-second instead of ADR 0013's 0.999 lift the near-greedy period means? | `--discount-per-game-second 0.997` (was 0.999); the survival-time reward follows ADR 0013's scaling, three times `M3-P017`'s per game-second at the same maximum return | `M3-P016` attempt 1 best 43.09, attempt 3 best 36.34, `M3-P017` best 38.05 (all at γ 0.999), n=1 each; success is two consecutive period means above 43.09, and the 500k rule stops a best below 39.4 at 500,000 decisions | protocol run to 1,000,000 decisions: near-greedy period means 25.24 to 59.10 over 20 periods (best 59.10, period 20); pre-registered final evaluation at 1,010,001 decisions 63.28, SD 9.04, n=29 valid of 30. Developer-approved extension (not protocol) to 2,007,970: periods 21-40 average about 57; final evaluation 55.77, SD 19.79, n=30, bimodal (6 of 30 at waves 20-23). No arm-n10. n=1 | success bar met (period 10 44.88, period 11 46.02, both > 43.09; 500k rule passed); weak evidence: n=1 against three controls, horizon confounded with the per-second reward scale, and `M3-P017`'s own last period had already switched to Defense Absolute (correction below); training past 1M did not help (2M minus 1M -7.5, Welch SE about 4.0) | 0.997 reached a Defense Absolute turtle (about 80% of spend from wave 30) sooner and higher than 0.999, with deaths clustering on the wave after a boss; the extension swung with an unchanged purchase mix, and the policy kept buying Defense Absolute over affordable Thorn Damage. Supersedes ADR 0013's value with ADR 0019. Behaviour figures are summaries from a lost scratchpad | `dbcb8e0` (pre-registration), this commit (results, ADR 0019) |
-| `M3-P019` | At Workshop 10 (the benchmark level, `#121`), does DreamerV3 under `M3-P018`'s launch unchanged except `--workshop-level 10` beat the best scripted floor, `build-defense-absolute`? | `--workshop-level 10` (was 5); fresh run, no resume; everything else `M3-P018`'s (DreamerV3 official conventions, γ 0.997 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, seed 0, all upgrades, nodelay bridge build) | `#121` floors, IQM: random 39.09, scripted 39.40, turtle 97.36 [96.27, 98.45], `build-defense-absolute` 102.00 [101.36, 102.55] (21 episodes each); success is the 30-episode final evaluation beating `build-defense-absolute` (IQM-difference CI excludes 0 on the positive side), a CI that includes 0 is "matches the best script"; the 500k rule stops a best near-greedy period mean below 97.36 at 500,000 decisions | pending | pending | pending | this commit (pre-registration) |
+| `M3-P019` | At Workshop 10 (the benchmark level, `#121`), does DreamerV3 under `M3-P018`'s launch unchanged except `--workshop-level 10` beat the best scripted floor, `build-defense-absolute`? | `--workshop-level 10` (was 5); fresh run, no resume; everything else `M3-P018`'s (DreamerV3 official conventions, γ 0.997 per game-second, survival-time reward, 1,000,000 decisions, 7 actors, seed 0, all upgrades, nodelay bridge build) | `#121` floors, IQM: random 39.09, scripted 39.40, turtle 97.36 [96.27, 98.45], `build-defense-absolute` 102.00 [101.36, 102.55] (21 episodes each); success is the 30-episode final evaluation beating `build-defense-absolute` (IQM-difference CI excludes 0 on the positive side), a CI that includes 0 is "matches the best script"; the 500k rule stops a best near-greedy period mean below 97.36 at 500,000 decisions | stopped by the 500k rule at 501,263 decisions: near-greedy period means 38.65, 42.26, 41.35, 43.33, 41.33, 46.35, 49.27, 44.14, 54.14, 49.05 (periods 1-10; best 54.14, period 9, against the 97.36 bar); no final evaluation (SIGINT before the budget). n=1 | STOPPED by the 500k rule; not a success and not a test of beating the script; the means were still rising at the stop and the run was not tested beyond 500k | medians of `final_upgrade_levels` per period: Defense Absolute 20-32 (baseline 10), the economy rows 17-25 (baseline 10), Orbs bought in 11 of 459 valid episodes and never above level 1; 9 invalid of 468 (1.9%) plus one retried `stale_or_duplicate` start; at Workshop 5 `M3-P018`'s best at 500k was 44.88 against a 39.4 bar, here 54.14 against 97.36 | `afb6c0b` (pre-registration), this commit (outcome) |
 
 **2026-09-19 — project state moved into the repository.** Everything this
 project writes now lives under the git-ignored `state/` directory at the
@@ -1421,6 +1421,99 @@ after three consecutive unexplained failures, a failed device-safety check, or a
 cleanup that finds `libunity.so` SHA-256 other than `ffc1f3ef…0040`, versionCode
 other than 1199 or an installer other than `com.android.vending`. One device stage
 at a time.
+
+### Stopped, as run (2026-10-03, `#58`)
+
+**Verdict: STOPPED by the 500k rule; not evaluated.** This is not a success, and
+it is not a test of beating the script: the run never reached the point where
+that comparison is made. The first period line at or past 500,000 decisions was
+period 10 (500,391 decisions): near-greedy mean 49.05 over 40 episodes, best
+54.14 (period 9), below the 97.36 bar. The watcher printed `EVENT STOP 500k rule:
+period 10 at 500391 decisions, best 54.14 < 97.36 -> SIGINT train.py`, and
+`stage.out` carries the same period line. I sent SIGINT to `train.py` (PID
+1456579) at 02:15:25 CEST; `run_stage.sh` exited 0 at 02:15:46 (wall 05:51:55),
+having written the resume pair (`latest.pt` at 500,391 decisions) and a summary
+with `interrupted` true and `final_evaluation_skipped` `interrupted`. The
+pre-registration says nothing about a final evaluation after a 500k stop, so none
+was run. The run stopped at 501,263 decisions, 468 recorded episodes.
+
+Run `state/runs/m3-p019-dreamerv3-ws10-20261002T182255Z`, segment 1. n=1, seed 0.
+
+| period | decisions | mean final wave | n episodes | best so far |
+| --- | --- | --- | --- | --- |
+| 1 | 51,151 | 38.65 | 84 | 38.65 |
+| 2 | 100,096 | 42.26 | 42 | 42.26 |
+| 3 | 150,364 | 41.35 | 43 | 42.26 |
+| 4 | 201,030 | 43.33 | 42 | 43.33 |
+| 5 | 250,389 | 41.33 | 48 | 43.33 |
+| 6 | 300,316 | 46.35 | 40 | 46.35 |
+| 7 | 350,774 | 49.27 | 40 | 49.27 |
+| 8 | 400,674 | 44.14 | 43 | 49.27 |
+| 9 | 450,059 | 54.14 | 36 | 54.14 |
+| 10 | 500,391 | 49.05 | 40 | 54.14 |
+
+The means were still rising at the stop, from 38.65-43.33 over periods 1-5 to
+44.14-54.14 over periods 7-10, with 36-48 episodes per period. The run was not
+tested beyond 500,000 decisions, so nothing here says where it would have gone.
+
+**Comparison with `M3-P018`.** At Workshop 5, `M3-P018`'s best at 500k was 44.88
+against a turtle floor of 39.4, so it cleared its bar; here the best is 54.14
+against 97.36, and the gap is the level-10 scripted floors (`#121`: turtle 97.36,
+`build-defense-absolute` 102.00, both IQM, against this run's near-greedy period
+means).
+
+**Invalid episodes: 9 of 468** recorded episodes (1.9%), under the 5% stop rule:
+6 `mask_legal_rejected` (a mask-legal purchase rejected by the bridge,
+`precondition_failed`) and 3 `observation_invalid` (the bridge and the host
+disagree about the decision event). The longest chain of invalid episodes on one
+actor was 1. One `failed episode start` is not among the 9: `stale_or_duplicate`
+(the game did not honour `start_round`) on `emulator-5556` at 2026-10-02 23:07,
+retried and not repeated, which the stop rules class as a NOTE. The summary's
+469 episodes are the 468 recorded plus that failed start. No `WORKSHOP_*`
+event, `WORLD_NOT_HELD`, Traceback or withdrawn actor.
+
+**Cleanup.** All seven instances printed `cleanup_checks: all passed` at
+shutdown: `libunity.so` SHA-256 `ffc1f3ef…0040`, versionCode 1199, installer
+`com.android.vending`, zero libunity mounts, bridge artifacts removed. The
+stage's own check found no qemu process and no adb device; its "instances 0/7
+cleaned" is because the emulators were already gone when it ran.
+
+**Behaviour readout** (pre-registered, a reading and not a gate). Median
+`final_upgrade_levels` per period, over the valid episodes of that period (the
+same consecutive valid episodes the period means are computed from, which
+reproduces all ten means exactly; one valid episode closed after period 10 and
+is in no period). Levels are as recorded, not purchases. The runway rows (Health,
+Health Regen, Defense %, Defense Absolute, Thorn Damage, Damage, Attack Speed,
+Cash Bonus, Cash / Wave) start at Workshop 10 at level 10 (final level minus the
+wave logs' purchases is 10 in 436-452 of 459 episodes per row, 11 in the rest);
+Knockback Chance and Force, Orb Speed and Orbs are not runway rows and start at 0.
+So Defense Absolute at 20 is 10 purchases. `final_upgrade_levels` is used and
+not `upgrades_bought`, which under-counts Orbs (board `#123`).
+
+| row | key | P1 | P2 | P3 | P4 | P5 | P6 | P7 | P8 | P9 | P10 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Defense Absolute | defense:3 | 20 | 26.5 | 26 | 25 | 23 | 30.5 | 32 | 26 | 32 | 28.5 |
+| Thorn Damage | defense:4 | 16 | 12 | 11 | 15 | 16 | 15 | 15 | 12 | 16 | 15 |
+| Health | defense:0 | 18.5 | 13 | 19 | 19 | 18 | 19 | 18 | 17 | 20.5 | 15.5 |
+| Health Regen | defense:1 | 20 | 12 | 21 | 20.5 | 17 | 21 | 23.5 | 18 | 21 | 18 |
+| Defense % | defense:2 | 17 | 21 | 17 | 20 | 19 | 21 | 19 | 16 | 22 | 21 |
+| Knockback Chance | defense:6 | 6 | 10 | 11 | 7 | 5 | 8.5 | 10 | 8 | 8 | 8 |
+| Knockback Force | defense:7 | 6 | 8 | 6 | 6 | 8 | 8.5 | 6 | 3 | 8 | 7 |
+| Orb Speed | defense:8 | 4 | 0 | 0 | 0 | 4 | 6 | 3 | 1 | 3 | 6 |
+| Orbs | defense:9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Damage | attack:0 | 19 | 13.5 | 19 | 16 | 18 | 17.5 | 21 | 16 | 18 | 19 |
+| Attack Speed | attack:1 | 18 | 19 | 15 | 19 | 19 | 16 | 16 | 17 | 19 | 16 |
+| Cash Bonus | utility:0 | 17 | 17.5 | 20 | 18 | 17 | 17 | 21 | 18 | 21 | 18 |
+| Cash / Wave | utility:1 | 18 | 17 | 22 | 25.5 | 18 | 22 | 19 | 18 | 21 | 23 |
+
+Orbs were bought in 11 of the 459 valid episodes (all in periods 1, 6, 7, 8 and
+10: 3, 3, 1, 3 and 1), never above level 1 (a 12th, invalid, episode also had one),
+so the median is 0 in every period. The policy bought the economy rows (Cash
+Bonus and Cash / Wave, levels 17-25 against 10 at the start), which the scripted
+build never bought (the scout above); the median levels are raised on every row
+but Orbs, and Defense Absolute's is the highest. Not done: the share of in-run purchases
+per row, and the comparison with the build's purchase mix from the pooled
+records, which the pre-registered readout also named.
 
 ## M3-P018: DreamerV3 at γ 0.997 per game-second, otherwise `M3-P017`'s launch (pre-registered, written before the run)
 

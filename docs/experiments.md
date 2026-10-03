@@ -1618,7 +1618,7 @@ death in every run.
 `main@ac6cf67` (`BlenderBuildPolicy`, `--policy build-blender`).
 
 **Why a second run.** Run 1 tested a degenerate rule. Its blender side saved for
-the 4,000 Orbs level, so from about wave 45 neither side bought anything: no Orb
+the 4,000 Orbs level, so from about wave 44 neither side bought anything: no Orb
 Speed or knockback was ever bought, Defense Absolute froze at 34, and the tower
 died at wave 55 holding a median of 3,473 cash. The flaw was visible in the rule
 as written; the reviewer and the lead both missed it before the run. Run 1
@@ -1654,8 +1654,9 @@ cheap support rows repay the blender's spend debt.
 - The 3,473 that run 1 held at wave 55 is, at 1:1, about 1,700 more Defense
   Absolute (about six levels at 262-330, so about 40 rather than 34 at wave 55)
   and about 1,700 of support rows. If the support ladders keep rising about 30%
-  a level, as their first five levels do (10, 14, 20, 27, 35 for knockback), that
-  is about 8 levels in each of the three rows by wave 55.
+  a level from 10, 10 and 15 (Knockback Chance, Knockback Force, Orb Speed),
+  buying the cheapest each time gives about 9-11 levels per row by wave 55:
+  about 11 for each knockback row and about 9 for Orb Speed.
 - Defense Absolute follows run 1's pre-registered replay of the 1:1 split: 29-30
   at wave 40 and about 56 at wave 100. By run 1's straight line that alone fails
   at about wave 75. Clearing the floor still needs the Orb Speed and knockback
@@ -1684,6 +1685,19 @@ differences:
   they came at, the wave of the first support purchase, final Defense Absolute
   and support levels, cash at death and the largest end-of-wave cash after
   wave 40.
+
+**Read in advance.** If the blender dies before about wave 75 with Defense
+Absolute near the 1:1 replay's schedule and the support rows near the forecast,
+the support rows did not make up for the Defense Absolute they displaced at this
+split. That is a result about this rule, not about the blender in general.
+
+**Caveats, in advance.**
+
+- These are scripted builds, not the learner.
+- There is one opening, one switch wave and one split ratio, at Workshop 10 only.
+- The Defense Absolute need is a two-point line, not a measurement.
+- Orbs are capped at 2 levels. A null or negative result says nothing about
+  three or more orbs.
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

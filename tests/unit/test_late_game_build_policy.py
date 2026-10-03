@@ -235,14 +235,19 @@ def _priced(
     return StateFeatures(scalars=tuple(scalars), rows=tuple(flat), mask=tuple(mask))
 
 
-def _play(policy: LateGameBuildPolicy, prices: dict[str, list[float]], steps: int) -> list[str]:
+def _play(
+    policy: LateGameBuildPolicy,
+    prices: dict[str, list[float]],
+    steps: int,
+    maxed: tuple[str, ...] = (),
+) -> list[str]:
     """What the policy buys over `steps` decisions with cash to spare, each row's
     price moving to the next of its list once bought (the game prices by level)."""
     level = dict.fromkeys(prices, 0)
     bought = []
     for _ in range(steps):
         now = {name: costs[level[name]] for name, costs in prices.items()}
-        index = policy.act(_priced(LATE_GAME_WAVE, 1e9, now), None)[0]
+        index = policy.act(_priced(LATE_GAME_WAVE, 1e9, now, maxed), None)[0]
         name = next(name for name, action in ROWS.items() if action == index)
         level[name] += 1
         bought.append(name)
@@ -258,6 +263,38 @@ def test_the_blender_splits_cash_evenly_between_defense_absolute_and_orbs() -> N
         steps=6,
     )
     assert bought == ["Orbs", *["Defense Absolute"] * 3, "Orbs", "Defense Absolute"]
+
+
+@pytest.mark.parametrize(
+    ("orbs", "maxed"),
+    [([300.0], ("Orbs",)), ([ORBS_PRICE_CEILING + 1.0], ())],
+    ids=["orbs-maxed", "orbs-above-ceiling"],
+)
+def test_support_rows_are_blender_spend_alternating_with_defense_absolute(
+    orbs: list[float], maxed: tuple[str, ...]
+) -> None:
+    # Each support purchase stays below the Defense Absolute spend it follows,
+    # so the order alternates only if support spend counts on the blender side.
+    bought = _play(
+        _policy("blender"),
+        {
+            "Defense Absolute": [100.0] * 20,
+            "Orbs": orbs,
+            "Orb Speed": [100.0, 150.0],
+            "Knockback Chance": [90.0, 200.0],
+            "Knockback Force": [95.0, 210.0],
+        },
+        steps=6,
+        maxed=maxed,
+    )
+    assert bought == [
+        "Knockback Chance",
+        "Defense Absolute",
+        "Knockback Force",
+        "Defense Absolute",
+        "Orb Speed",
+        "Defense Absolute",
+    ]
 
 
 def test_the_blender_saves_for_orbs_rather_than_buying_defense_absolute() -> None:

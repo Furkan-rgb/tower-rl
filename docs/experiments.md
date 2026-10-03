@@ -1282,9 +1282,10 @@ Workshop 10 needs the blender rather than pure Defense Absolute stacking. Three
 readings make the question worth a device test. None of them tests the
 hypothesis.
 
-- **The build falls fast at the end.** In 19 of `#121`'s 21
-  `build-defense-absolute` episodes, every completed wave ended with at least 0.77
-  of the tower's health. The tower then died within the next wave. It dies
+- **The build falls fast at the end.** In 18 of `#121`'s 21
+  `build-defense-absolute` episodes, every completed wave ended with at least 0.80
+  of the tower's health; in the other three the lowest end-of-wave reading was
+  0.43, 0.52 and 0.77 (0.7655). The tower then died within the next wave. It dies
   holding a median of 1,090 cash, saving for a Defense Absolute level that costs
   about 1,488.
 - **Defense Absolute gets dearer as it is stacked.** Its price rises with its
@@ -1316,11 +1317,17 @@ level 1.
    locked) leaves every purchase to the other side.
 4. After wave 30 it buys no Thorn Damage and no other opening row.
 
+**Level convention.** Every level in this entry is the total the game reports,
+including the 10 Workshop levels: Defense Absolute 36 at wave 40 is 26 bought in
+the run plus 10 from the Workshop. Prices are indexed by levels bought in the run
+("in-run level"), as the records price them.
+
 **How each choice was derived.** The numbers come from `#121`'s
 `build-defense-absolute` and `scripted` records, `M3-P018`/`M3-P019`'s episode
 records, and a cash-flow replay of the build's median income. The replay is a
 scratchpad analysis and is not committed. It reproduces the build's own final
-Defense Absolute level (67 against a recorded median of 69).
+Defense Absolute level (67 against a recorded final median of 69, and 68 at
+wave 100: 58 bought plus 10).
 
 - **Prices are set by level, not by wave.** A row's recorded price changes only
   when that row is bought. For example, Knockback Chance costs 10 at wave 1 and
@@ -1355,8 +1362,9 @@ Defense Absolute level (67 against a recorded median of 69).
 
   The replay of the 1:1 split puts Orbs levels 1, 2 and 3 at about waves 32, 40
   and 58. Knockback Chance, Knockback Force and Orb Speed reach about 20, 20 and
-  17 by wave 100. Defense Absolute is 29 at wave 40 (the build has 36) and 56 at
-  wave 100 (the build has 67).
+  17 by wave 100. Defense Absolute is 29 at wave 40 (the build has 36: 26 bought plus
+  10) and 56 at wave 100 (the build has 68: 58 bought plus 10, its recorded
+  median).
 - **What the bet is.** By the line above, this Defense Absolute schedule alone
   would fail at about wave 75. For the blender to clear wave 102, the Orbs,
   Orb Speed and knockback must add about 27 waves on top of it. That is the
@@ -1440,6 +1448,10 @@ build-defense-absolute=<pooled floor>`, stratified by actor slot.
   SD of 1.36 with 21 against 28 episodes, it is about 1.1 waves. That assumes
   the blender's spread is like the build's. The per-wave-index table is reported
   as well.
+- **Effect size is read apart from the success criterion.** With a detectable
+  difference near 1.1 waves, a gain of about one wave would meet the criterion
+  while being small in practice, so the point estimate is reported and read on
+  its own, beside the verdict.
 
 **Readouts (pre-registered, not gates).** For each arm: n, mean, median, IQM with
 its CI, and range. For `build-blender`:

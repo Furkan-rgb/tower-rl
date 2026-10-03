@@ -1609,6 +1609,82 @@ death in every run.
 - The pooled stratum is the actor slot.
 - The `build-blender` arm is 20 episodes, with one slot at 2 episodes.
 
+*Superseded.* This run tested a degenerate rule; the corrected arm is
+"Blender build at Workshop 10, run 2 (#122)", directly below.
+
+## Blender build at Workshop 10, run 2 (#122) (pre-registered, written before any device episode)
+
+**Date:** 2026-10-03. Board `#122`. Scripted policies only, no learning; code is
+`main@ac6cf67` (`BlenderBuildPolicy`, `--policy build-blender`).
+
+**Why a second run.** Run 1 tested a degenerate rule. Its blender side saved for
+the 4,000 Orbs level, so from about wave 45 neither side bought anything: no Orb
+Speed or knockback was ever bought, Defense Absolute froze at 34, and the tower
+died at wave 55 holding a median of 3,473 cash. The flaw was visible in the rule
+as written; the reviewer and the lead both missed it before the run. Run 1
+answered nothing about the blender.
+
+**The one change.** The blender side buys Orbs only while the next level costs
+at most 1,250 (`ORBS_PRICE_CEILING`), so levels 1 and 2. Run 1 shows the 4,000
+level is not reachable at a 1:1 split before about wave 55. After that it buys
+the cheapest of Orb Speed, Knockback Chance and Knockback Force. Everything else
+is run 1's rule unchanged: the shared opening, the switch at wave 30, the 1:1
+split by spend with the blender first on a tie, WAIT while the owed side's row is
+unaffordable, and no late Thorns.
+
+**Why no "never idle" rule.** Buying the other side whenever the owed side is
+unaffordable was considered and rejected. The policy decides about 20 times a
+wave on an income of 190-550 a wave, so cash climbs in steps far smaller than
+the two sides' price gap. The cheaper side would take every purchase, and the
+split would become "buy the cheaper row". Against run 1's Defense Absolute
+prices that puts Orbs 2 at about wave 91, then freezes Defense Absolute while
+cheap support rows repay the blender's spend debt.
+
+**Forecast, from run 1's cash flow.**
+
+- Up to wave 40 the run plays as run 1 did: Orbs 1 at waves 31-32, Orbs 2 at
+  about waves 38-40, Defense Absolute 30 at wave 40.
+- Defense Absolute is then owed until its spend since the switch passes the
+  blender's 1,550. In run 1 that spend reached about 1,480 by wave 44, so the
+  first support rows come at about wave 46.
+- From there the two sides alternate by spend. Waiting holds at most one owed
+  row's price idle, and the dearest row is Defense Absolute (262 at wave 45,
+  about 1,300 at wave 91 in the floor arm). So cash idle at any time stays below
+  one Defense Absolute price, against run 1's 3,473.
+- The 3,473 that run 1 held at wave 55 is, at 1:1, about 1,700 more Defense
+  Absolute (about six levels at 262-330, so about 40 rather than 34 at wave 55)
+  and about 1,700 of support rows. If the support ladders keep rising about 30%
+  a level, as their first five levels do (10, 14, 20, 27, 35 for knockback), that
+  is about 8 levels in each of the three rows by wave 55.
+- Defense Absolute follows run 1's pre-registered replay of the 1:1 split: 29-30
+  at wave 40 and about 56 at wave 100. By run 1's straight line that alone fails
+  at about wave 75. Clearing the floor still needs the Orb Speed and knockback
+  to add about 27 waves on top, which is the bet run 1 stated and never tested.
+
+**Protocol: run 1's, unchanged.** Same settings, stage command, safety rules,
+readouts, success criterion, stop rules, long-episode rule and the
+effect-size sentence: see "Blender build at Workshop 10 (#122)" above. The only
+differences:
+
+- Records go to `state/records/blender-ws10-run2/<arm>-r<round>/`.
+- Four stages in this order: `build-blender` r1, `build-defense-absolute` r1
+  (the drift check), `build-blender` r2, `build-blender` r3. That gives 21
+  `build-blender` episodes and 7 drift-check episodes.
+- **Drift check:** the drift round's median final wave must be within 100 to
+  104, as in run 1. If it agrees, the `build-defense-absolute` arm is the
+  existing 28 episodes (`#121`'s 21 plus run 1's drift round) plus this drift
+  round's 7, pooled per actor slot: 35 episodes, 5 per slot. If it does not
+  agree, the primary comparison is not made and the drift goes to the board.
+- **Primary result and success,** as in run 1: the final-wave IQM difference,
+  `build-blender` minus `build-defense-absolute`, with its 95% CI stratified by
+  actor slot. Success is a lower bound above 0. The detectable difference is
+  near one wave, so the point estimate is reported and read on its own beside
+  the verdict.
+- **Readouts** are set against the forecast above: Orbs levels and the waves
+  they came at, the wave of the first support purchase, final Defense Absolute
+  and support levels, cash at death and the largest end-of-wave cash after
+  wave 40.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

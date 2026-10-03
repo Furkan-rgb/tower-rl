@@ -1500,6 +1500,115 @@ rows are legal under `--upgrade-availability all`.
 - The fourth Orbs level is not saved for unless its price turns out to be at
   most 4,000.
 
+**Outcome (2026-10-03, appended after the run; the pre-registration above is
+unedited apart from `fb87b18`'s review corrections, made before any device
+episode).**
+
+*Run.* All 4 stages ran in the pre-registered order: `build-blender` r1, the
+`build-defense-absolute` drift round, then `build-blender` r2 and r3.
+
+*Cleanup.* Every stage ended `cleanup ok` and `verified: no qemu process, no
+adb device`. Every instance that was still live at teardown passed
+`cleanup_checks`: 27 of 28 across the stages. Each one showed:
+
+- libunity SHA-256 `ffc1f3ef…0040`;
+- versionCode 1199;
+- installer `com.android.vending`;
+- zero mounts.
+
+There was no `WORKSHOP_NOT_APPLIED` or `WORKSHOP_REVERTED`, and no literal
+`Traceback` line in any stage log.
+
+*Records.* `state/records/blender-ws10/<arm>-r<n>/` holds each stage's
+records, and `stage-<arm>-r<n>.log` holds each stage's log. The pooled arms are
+in `.../pooled/<arm>/` and the report is in `.../report_arms.txt`.
+
+*One actor failure.*
+
+- **What happened.** In `build-blender` r3, `emulator-5568`'s emulator exited
+  mid-episode. Its log ends "X connection to :0 broken". The actor stopped
+  with "the bridge could not report the run state: BridgeDisconnectedError".
+  It left no record, the stage exited 1, and teardown found the device gone.
+- **What it cost.** The arm has 20 episodes, not 21, and that actor slot has 2.
+  The failure counts 1 of 21 for the arm (4.8%), within the 5% rule.
+- **Why the run did not stop.** It was not 3 consecutive failures, and it was
+  the last stage. The failure text holds a traceback tail inside the fleet's
+  failure record. As in `#121`, I read that as the runner's designed report and
+  not as the "any Traceback" stop. It is recorded here so that reading can be
+  overruled.
+- **Unexplained.** The cause of the broken X connection was not found.
+
+*Drift check: agrees.* The drift round's final waves were 101, 102, 102, 102,
+102, 102 and 103, a median of 102, inside 100 to 104. So the floor arm is
+`#121`'s 21 episodes plus these 7, pooled per actor slot: 28 episodes, 4 per
+slot.
+
+*Per arm (final wave):*
+
+| arm | n valid | mean | median | IQM [95% CI, stratified by actor] | range |
+|---|---|---|---|---|---|
+| `build-blender` | 20 | 54.95 | 55 | 55.00 [55.00, 55.00] | 54-55 |
+| `build-defense-absolute` (`#121` + drift) | 28 | 101.86 | 102 | 102.00 [101.57, 102.43] | 99-104 |
+
+**Primary result.** The IQM difference, `build-blender` minus
+`build-defense-absolute`, is −47.00 [−47.43, −46.57]. The mean difference agrees:
+−46.91 [−47.34, −46.46].
+
+**Verdict by the pre-registered rule: not a success.** The CI lies wholly below
+0: this blender schedule dies about 47 waves before the Defense Absolute build.
+
+*Detectable difference.* Taken from the pooled final-wave SD with n 20 against
+28, it is 0.77 waves at 80% power. The effect is 60 times that, so the verdict
+does not sit near the instrument's floor.
+
+*What the blender bought.* Every episode played almost the same game.
+
+| row | median final level (total) |
+|---|---|
+| Orbs | 2 (in all 20 episodes) |
+| Orb Speed | 0 |
+| Knockback Chance | 0 |
+| Knockback Force | 0 |
+| Defense Absolute | 34 (in all 20) |
+| Thorn Damage | 20 (opening only) |
+
+- **The Orbs purchases.** Level 1 came at waves 31-32 and level 2 at waves
+  38-40, both read from the Orbs price steps. The price then read 4,000 until
+  death.
+- **Defense Absolute.** It reached 30 at wave 40 and 34 by wave 50, then
+  stopped there. The policy was saving for the 4,000 Orbs level when the tower
+  died.
+- **Death.** Every episode died at wave 55 (one at 54), holding a median cash
+  of 3,473.
+- **Health.** The lowest end-of-wave `health_fraction` per episode ranged from
+  0.39 to 0.99.
+- **Never reached.** The fourth Orbs level's price was never seen, and no
+  support row was bought.
+
+*Against the advance reading.* This is the outcome the entry flagged before the
+run: death before about wave 75 with Defense Absolute behind schedule.
+
+- **The schedule was close.** The replay predicted Orbs at waves 32 and 40 and
+  Defense Absolute 29 at wave 40. The run bought them at waves 31-32 and
+  38-40 and had Defense Absolute 30 at wave 40.
+- **It died before the third orb.** The replay put the third orb at about wave
+  58, and the run died at wave 55 still saving for it.
+- **The straight line fits.** It says the tower needs Defense Absolute of about
+  32.6 at wave 55, and the build held 34 when it died, close to that line.
+
+So, as pre-stated, this is a result about the 1:1 split with Orbs saved for
+first. It is not a result about the blender in general: this run never had
+three orbs, Orb Speed or any knockback. The binding constraint was the 4,000
+Orbs level. It held Defense Absolute at 34 from wave 50 at the latest until
+death in every run.
+
+*Limits.*
+
+- Scripted builds, not the learner.
+- One opening, one switch wave and one split ratio, at Workshop 10 only.
+- The pooled stratum is the actor slot.
+- The `build-blender` arm is 20 episodes, with one slot at 2 episodes.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

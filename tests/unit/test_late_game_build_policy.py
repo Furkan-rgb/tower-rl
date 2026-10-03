@@ -319,9 +319,13 @@ def test_after_the_priced_orbs_the_blender_buys_the_cheapest_support_row() -> No
     assert _policy("blender").act(state, None)[0] == ROWS["Orb Speed"]
 
 
-def test_an_orbs_level_priced_at_the_ceiling_is_still_saved_for() -> None:
-    state = _priced(LATE_GAME_WAVE, 100.0, {"Orbs": ORBS_PRICE_CEILING, "Orb Speed": 15.0})
-    assert _policy("blender").act(state, None)[0] == 0
+def test_the_blender_saves_for_the_second_orbs_level_but_not_the_third() -> None:
+    # The second level costs 1,250 and is saved for; the third costs 4,000 and
+    # is not, which is what starved both sides in run 1 of #122.
+    second = _priced(LATE_GAME_WAVE, 100.0, {"Orbs": 1250.0, "Orb Speed": 15.0})
+    assert _policy("blender").act(second, None)[0] == 0
+    third = _priced(LATE_GAME_WAVE, 100.0, {"Orbs": 4000.0, "Orb Speed": 15.0})
+    assert _policy("blender").act(third, None)[0] == ROWS["Orb Speed"]
 
 
 def test_a_side_with_nothing_left_leaves_every_purchase_to_the_other() -> None:

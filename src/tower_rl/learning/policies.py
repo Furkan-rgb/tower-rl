@@ -369,11 +369,10 @@ KNOCKBACK_CHANCE = "Knockback Chance"
 KNOCKBACK_FORCE = "Knockback Force"
 #: What the blender buys once Orbs is done: the cheapest, the first listed on a tie.
 BLENDER_SUPPORT_ROWS: tuple[str, ...] = (ORB_SPEED, KNOCKBACK_CHANCE, KNOCKBACK_FORCE)
-#: The dearest Orbs level whose price has been seen (300, 1,250 and 4,000 in
-#: `M3-P018`'s records; the fourth level's price never has). The blender saves
-#: for an Orbs level only up to this price, so an unseen price cannot hold
-#: every other purchase back for an unbounded stretch.
-ORBS_PRICE_CEILING = 4000.0
+#: The dearest Orbs level the blender saves for: the second (Orbs costs 300,
+#: 1,250 and then 4,000). Run 1 of `#122` saved for the 4,000 level from about
+#: wave 40, held both sides still while it did, and died at wave 55 short of it.
+ORBS_PRICE_CEILING = 1250.0
 #: The blender side's key in a `BlenderBuildPolicy`'s spend.
 BLENDER = "blender"
 
@@ -391,7 +390,7 @@ class BlenderBuildPolicy(LateGameBuildPolicy):
     saving for it rather than buying from the other side; a side with nothing
     left to buy (maxed or locked) leaves every purchase to the other. Thorn
     Damage is not bought after the switch. Why each of these: `docs/experiments.md`,
-    "Blender build at Workshop 10 (#122)".
+    "Blender build at Workshop 10 (#122)" and its run 2.
 
     Cash spent per side is per-episode memory reset by `initial_state`.
     """

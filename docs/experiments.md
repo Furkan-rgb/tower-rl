@@ -1266,6 +1266,228 @@ Full tables: specialist scratchpad `c85-p014-eval.md` (training/arm/
 evaluation facts) and `p014-plateau.md` (offline diagnostics,
 2026-09-28).
 
+## Blender build at Workshop 10 (#122) (pre-registered, written before any device episode)
+
+**Date:** 2026-10-03. Board `#122`. Scripted policies only, no learning; code is
+`main@375869c` (`BlenderBuildPolicy`, `--policy build-blender`).
+
+**Question.** At Workshop 10, does the late-game "blender" survive longer than
+`build-defense-absolute`, the best scripted floor (IQM 102.00 [101.36, 102.55],
+`Workshop 10 verification and floors (#121)`)? The blender here means Orbs, Orb
+Speed and knockback bought on top of Defense Absolute, with the Thorns the opening
+already bought.
+
+**Why.** The developer's hypothesis is that getting past about wave 102 at
+Workshop 10 needs the blender rather than pure Defense Absolute stacking. Three
+readings make the question worth a device test. None of them tests the
+hypothesis.
+
+- **The build falls fast at the end.** In 19 of `#121`'s 21
+  `build-defense-absolute` episodes, every completed wave ended with at least 0.77
+  of the tower's health. The tower then died within the next wave. It dies
+  holding a median of 1,090 cash, saving for a Defense Absolute level that costs
+  about 1,488.
+- **Defense Absolute gets dearer as it is stacked.** Its price rises with its
+  level: 111 at the wave-30 switch and 1,386 at in-run level 56. Income per wave
+  grows more slowly: a median of about 190 at wave 30 and about 550 at wave 100.
+  This is estimated from cash and purchases in the same records. So each level
+  costs more waves of income, and late in the run one level takes about three
+  waves of income.
+- **Orbs do not weaken as the waves grow.** Orbs one-shot the normal enemies they
+  touch (ADR 0012), so their effect does not shrink as enemy health and damage
+  grow. Knockback pushes an enemy back out through the orbs' ring.
+
+The learners never tested this. `M3-P018` bought Orbs in 57 of 2,100 episodes,
+from about wave 60. `M3-P019` bought them in 11 of 459 episodes and never above
+level 1.
+
+**The arm, `build-blender`.** Before wave 30 it plays the shared opening of
+`LateGameBuildPolicy`: the same code path, so it plays exactly as
+`build-defense-absolute` does. From wave 30 it follows four rules.
+
+1. Each purchase goes to whichever side has had less cash spent on it since wave
+   30. The two sides are Defense Absolute and the blender, and the blender goes
+   first on a tie.
+2. The blender side buys Orbs while the next Orbs level costs at most 4,000.
+   Otherwise it buys the cheapest of Orb Speed, Knockback Chance and Knockback
+   Force, and on a price tie the first in that order.
+3. If the owed side's row cannot be afforded, it WAITs and saves. It never buys
+   from the other side meanwhile. A side with nothing left to buy (maxed or
+   locked) leaves every purchase to the other side.
+4. After wave 30 it buys no Thorn Damage and no other opening row.
+
+**How each choice was derived.** The numbers come from `#121`'s
+`build-defense-absolute` and `scripted` records, `M3-P018`/`M3-P019`'s episode
+records, and a cash-flow replay of the build's median income. The replay is a
+scratchpad analysis and is not committed. It reproduces the build's own final
+Defense Absolute level (67 against a recorded median of 69).
+
+- **Prices are set by level, not by wave.** A row's recorded price changes only
+  when that row is bought. For example, Knockback Chance costs 10 at wave 1 and
+  still 10 at wave 100 when never bought. So deferring a purchase never makes it
+  dearer. The only cost of the blender is the Defense Absolute it displaces, at
+  the waves where that Defense Absolute is missing.
+- **How much Defense Absolute the tower needs, roughly.**
+  - Two points bound it. `scripted` (cheapest-first) dies at wave 40 holding
+    Defense Absolute 21 (median). It has Health, Health Regen and Defense % at
+    20, 20 and 18, against the build's 24, 24 and 21. The build dies at about
+    wave 102 holding 69.
+  - A straight line through the two points needs about 0.77 levels per wave.
+    Against that line the build's margin is about 15 levels at wave 40 and
+    shrinks to about 0 near wave 100.
+  - So the build is over-defended early and spends its margin by the end. The
+    margin is the cash a blender can draw on without dying early, and it is
+    largest early.
+  - This is a two-point interpolation. It is the reason for the split below,
+    not a measurement.
+- **Equal spend, the blender first on a tie.** No per-level effect of any
+  blender row has been measured, so neither side is favoured. Three
+  alternatives were rejected:
+  - **Count alternation (the `split` rule).** Around waves 30-50 an Orbs level
+    costs 300 to 4,000 while Defense Absolute costs about 100 to 500. Alternating
+    by count would freeze Defense Absolute for about 20 waves while saving for
+    Orbs. The line above says that dies around waves 45-50.
+  - **All Orbs first.** Defense Absolute would stay at about 26 from wave 30
+    to wave 52, with the same result.
+  - **A 1:2 split (the blender gets a third).** The replay puts the third Orbs
+    level at about wave 63 and knockback at about level 14 by wave 100. That is
+    too little of the blender, too late, for a fair test.
+
+  The replay of the 1:1 split puts Orbs levels 1, 2 and 3 at about waves 32, 40
+  and 58. Knockback Chance, Knockback Force and Orb Speed reach about 20, 20 and
+  17 by wave 100. Defense Absolute is 29 at wave 40 (the build has 36) and 56 at
+  wave 100 (the build has 67).
+- **What the bet is.** By the line above, this Defense Absolute schedule alone
+  would fail at about wave 75. For the blender to clear wave 102, the Orbs,
+  Orb Speed and knockback must add about 27 waves on top of it. That is the
+  hypothesis's own claim made quantitative, and the test is whether it holds.
+- **Orbs come first within the blender side.**
+  - An orb's kill rate goes with the number of orbs times their speed. The
+    contract measures `orbSpeed` in revolutions per second, and its baseline is
+    0.04 (`M2-E006`).
+  - Knockback re-feeds enemies through the orbs' ring.
+  - Both act through the orbs, so the orbs come first.
+- **The 4,000 ceiling.** Three Orbs prices have been seen: 300, 1,250 and 4,000
+  in `M3-P018`'s records. The fourth level's price never has been. Saving for an
+  unseen price could freeze Defense Absolute for an unbounded stretch, so a
+  fourth level is bought only if its price turns out to be at most 4,000. The
+  per-wave `upgrade_costs` in the records will show that price, and it is
+  reported.
+- **The cheapest of the three support rows.**
+  - Knockback Chance and Force act as a product (how often times how far), and
+    Orb Speed multiplies the orb count.
+  - Their price ladders are almost the same. Both knockback rows go 10, 14, 20,
+    27, 35. Orb Speed goes 15, 20, 26, 34, 43 (`M3-P019` records).
+  - So buying the cheapest keeps the three in step level for level. With no
+    per-level effect measured, that is the neutral choice.
+- **No late Thorns.** `Late-game build test at Workshop 5 (#120)` found that the
+  more late spend went to Thorn Damage, the earlier the run ended. The blender's
+  Thorns are what the shared opening bought: Thorn Damage about 20, as in the
+  floor arm. So the two arms differ only in the blender side.
+- **The wave-30 switch is unchanged.** The opening is then the one `#120` and
+  `#121` played.
+
+**Settings.** These are `#121`'s Part 2 settings unchanged:
+
+- renderer host, `--frame-rate-hz 120`, `--decision-cadence choice-points`;
+- `--upgrade-availability all`, `--workshop-level 10`, `--frame-game-ms 100`;
+- bridge build `state/bridge/builds/workshop-render-interval-16-nodelay`;
+- 7 actors, `--cores 4`, 1 episode per actor per stage.
+
+Each stage is `scripts/run_actors.py --actors 7 --episodes 1 --policy <arm>` with
+those flags, under `scripts/run_stage.sh` in `towerrl.slice` (`MemoryMax=100G`,
+`MemorySwapMax=0`), with its cleanup verification. Records go to
+`state/records/blender-ws10/<arm>-r<round>/`.
+
+**Arms and rounds.** There are 4 stages, one at a time, in this order:
+
+1. `build-blender` r1
+2. `build-defense-absolute` r1 (the drift check)
+3. `build-blender` r2
+4. `build-blender` r3
+
+That gives 21 `build-blender` episodes and 7 drift-check episodes. As in `#120`
+and `#121`, an arm's rounds are pooled per actor slot for analysis, with one file
+per serial and its episodes concatenated. The stratum is the actor slot.
+
+**Drift check, defined before the run.** The drift round agrees with `#121` if
+its median final wave is within 100 to 104, which is `#121`'s median of 102 plus
+or minus 2.
+
+- **Why ±2.** `#121`'s final-wave SD is 1.36. The median of 7 then has a
+  standard error of about 0.64, so ±2 is about 3 standard errors. A false alarm
+  under no drift is rare, and a shift of 3 waves or more is likely to be caught.
+- **If it agrees,** the `build-defense-absolute` arm is `#121`'s 21 episodes
+  plus the drift round's 7, pooled per actor slot: 28 episodes, 4 per slot.
+- **If it does not agree,** the primary comparison is not made. The drift is
+  reported with both arms' numbers, and whether to re-measure the floor goes to
+  the board. With one episode per actor slot, the drift round alone cannot carry
+  the stratified interval.
+
+**Analysis.** `scripts/report_arms.py build-blender=<pooled blender>
+build-defense-absolute=<pooled floor>`, stratified by actor slot.
+
+- **Primary result:** the final-wave IQM difference, `build-blender` minus
+  `build-defense-absolute`, with its 95% CI.
+- **Success:** the CI's lower bound is above 0.
+- **No difference shown:** a CI that includes 0 means "not distinguishable at
+  this n". It is reported with the detectable difference.
+- **Worse:** a CI whose upper bound is below 0 means the blender is worse.
+- **The detectable difference.** `report_arms.py` prints `detectable_difference`
+  per wave index only, so for the final wave it is reported as
+  `experiment.wave_statistics.detectable_difference`. It is taken at 80% power,
+  with the two arms' pooled final-wave SD and their n. Beforehand, at `#121`'s
+  SD of 1.36 with 21 against 28 episodes, it is about 1.1 waves. That assumes
+  the blender's spread is like the build's. The per-wave-index table is reported
+  as well.
+
+**Readouts (pre-registered, not gates).** For each arm: n, mean, median, IQM with
+its CI, and range. For `build-blender`:
+
+- final levels of Orbs, Orb Speed, Knockback Chance, Knockback Force and Defense
+  Absolute. These come from `final_upgrade_levels`, not `upgrades_bought`, which
+  under-counts Orbs (`#123`).
+- the wave at which each Orbs level was bought, read from the Orbs price steps
+  in `upgrade_costs`;
+- the fourth Orbs level's price, if it was reached;
+- cash at death, and the lowest end-of-wave `health_fraction` per episode.
+
+These readouts are set against the predicted schedule above: Orbs at about waves
+32, 40 and 58, and Defense Absolute 29 at wave 40 and 56 at wave 100.
+
+**Read in advance.** If the blender dies before about wave 75 with its
+Defense Absolute behind the schedule above, that is this split's Defense Absolute
+deficit, and it is reported as a result about this schedule, not about the
+blender in general. The split ratio is the one setting the mechanics do not pin
+down. A null or a loss at 1:1 does not rule out another ratio.
+
+**Stop rules,** as in `#121`:
+
+- more than 5% invalid episodes in any arm;
+- 3 consecutive unexplained failures;
+- any Traceback;
+- a failed `run_stage.sh` cleanup or device-safety check;
+- any `WORKSHOP_NOT_APPLIED` or `WORKSHOP_REVERTED`.
+
+**Long episodes.** A `build-blender` episode past wave 150 or 3 hours of wall
+time is reported. It is not cut.
+
+**Safety, unchanged.** Clone AVD `tower_rl_instrumented_api36` only, with even
+console ports from 5556 and never `emulator-5554`. Each instance runs
+`-read-only` and offline by interface. There are no taps, screenshots or input,
+and no coins or permanent-progression changes. `state/bridge/current` is not
+repointed. Orbs are bought in-run only. ADR 0012 holds the Orbs Workshop row at 0
+and forbids only that Workshop write, so in-run purchases of all four blender
+rows are legal under `--upgrade-availability all`.
+
+**Caveats, in advance.**
+
+- These are scripted builds, not the learner.
+- There is one opening and one switch wave, at Workshop 10 only.
+- The Defense Absolute need is a two-point line, not a measurement.
+- The fourth Orbs level is not saved for unless its price turns out to be at
+  most 4,000.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

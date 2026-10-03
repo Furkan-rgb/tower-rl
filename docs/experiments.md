@@ -1511,9 +1511,46 @@ Orbs were bought in 11 of the 459 valid episodes (all in periods 1, 6, 7, 8 and
 so the median is 0 in every period. The policy bought the economy rows (Cash
 Bonus and Cash / Wave, levels 17-25 against 10 at the start), which the scripted
 build never bought (the scout above); the median levels are raised on every row
-but Orbs, and Defense Absolute's is the highest. Not done: the share of in-run purchases
-per row, and the comparison with the build's purchase mix from the pooled
-records, which the pre-registered readout also named.
+but Orbs, and Defense Absolute's is the highest.
+
+**Share of in-run purchases per row** (per cent of all purchases in the period,
+pooled over its episodes), from `final_upgrade_levels` minus the starting level
+(10 for the 11 runway rows, 0 for the rest), for the same period episodes. The
+last column is `build-defense-absolute`'s 21 valid episodes from
+`state/records/workshop-10/pooled/build-defense-absolute`, by the same
+computation. For the build this equals the `purchases` field exactly; for this
+run it exceeds the `purchases` field by 0 to 9 per episode (in 361 of 459 valid
+episodes), the under-count of `#123`. "Other rows" are the 33 rows not listed,
+all at 0 for the build; in the run the largest were Coins / Kill Bonus (utility:2),
+Lifesteal (defense:5), Bounce Shot Chance (attack:10), Damage / Meter (attack:5),
+Free Attack Upgrade (utility:4) and Coins / Wave (utility:3).
+
+| row | key | P1 | P2 | P3 | P4 | P5 | P6 | P7 | P8 | P9 | P10 | build |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Defense Absolute | defense:3 | 5.9 | 9.7 | 8.4 | 8.0 | 7.1 | 8.3 | 8.6 | 9.0 | 9.9 | 9.3 | 44.1 |
+| Thorn Damage | defense:4 | 2.6 | 1.1 | 0.9 | 2.1 | 3.0 | 2.3 | 2.0 | 1.5 | 2.3 | 2.1 | 7.6 |
+| Health | defense:0 | 4.3 | 2.5 | 4.1 | 4.6 | 3.6 | 3.7 | 3.5 | 3.8 | 4.2 | 2.9 | 10.5 |
+| Health Regen | defense:1 | 5.6 | 1.7 | 5.3 | 5.5 | 3.9 | 4.6 | 5.8 | 4.2 | 4.2 | 3.9 | 10.6 |
+| Defense % | defense:2 | 4.2 | 6.3 | 3.8 | 5.1 | 4.9 | 5.5 | 3.6 | 3.5 | 4.7 | 4.8 | 8.3 |
+| Knockback Chance | defense:6 | 3.8 | 5.4 | 5.9 | 3.4 | 2.6 | 4.9 | 4.1 | 4.4 | 3.1 | 2.9 | 0.0 |
+| Knockback Force | defense:7 | 3.4 | 4.4 | 3.3 | 3.1 | 3.8 | 3.8 | 2.4 | 1.5 | 3.2 | 2.7 | 0.0 |
+| Orb Speed | defense:8 | 1.9 | 0.4 | 0.2 | 0.1 | 2.4 | 2.7 | 1.5 | 0.6 | 1.1 | 2.2 | 0.0 |
+| Orbs | defense:9 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| Damage | attack:0 | 4.1 | 3.5 | 4.8 | 2.9 | 3.8 | 3.7 | 4.4 | 3.3 | 3.3 | 3.9 | 10.6 |
+| Attack Speed | attack:1 | 4.3 | 5.2 | 2.7 | 4.6 | 4.5 | 2.7 | 2.9 | 4.2 | 3.6 | 2.9 | 8.3 |
+| Critical Chance | attack:2 | 4.1 | 3.2 | 2.9 | 3.5 | 4.2 | 2.7 | 4.5 | 5.5 | 4.2 | 3.7 | 0.0 |
+| Critical Factor | attack:3 | 3.8 | 2.6 | 3.2 | 3.1 | 4.1 | 2.8 | 3.1 | 4.5 | 3.3 | 4.7 | 0.0 |
+| Cash Bonus | utility:0 | 4.0 | 3.9 | 5.6 | 4.2 | 3.2 | 3.2 | 4.5 | 3.8 | 4.6 | 4.0 | 0.0 |
+| Cash / Wave | utility:1 | 4.2 | 4.2 | 6.8 | 7.0 | 4.3 | 5.1 | 4.0 | 4.2 | 4.5 | 5.4 | 0.0 |
+| Other rows | rest | 44.0 | 45.8 | 42.1 | 42.8 | 44.4 | 43.9 | 45.0 | 45.8 | 43.8 | 44.7 | 0.0 |
+| purchases per episode | | 192 | 170 | 187 | 200 | 204 | 220 | 241 | 197 | 246 | 225 | 132 |
+
+The build puts 44% of its purchases into Defense Absolute and buys only seven
+rows, none of them Critical Chance, Critical Factor, the economy rows or Orbs. The
+run's Defense Absolute share is 5.9-9.9% in every period, about 44% of its
+purchases go to rows outside the 15 named, and it made 170-246
+purchases per episode on average against the build's 132. Orbs are 0.0% in every column (11
+purchases in 459 episodes).
 
 ## M3-P018: DreamerV3 at γ 0.997 per game-second, otherwise `M3-P017`'s launch (pre-registered, written before the run)
 

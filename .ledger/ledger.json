@@ -1284,7 +1284,7 @@
       "id": 58,
       "title": "M3: SOTA arms under the M2 protocol \u2014 DreamerV3, (EfficientZero V2 conditional)",
       "body": "Goal from docs/task.md: multiple RL approaches compared under one identical budgeted protocol. Run 3 (M2-P003, #57) gave the first learned policy clearly above scripted under availability `all` (period-2 near-greedy 12.15 vs scripted-all 6.11), with the training recipe at 2015-DQN settings: replay ratio 0.25, PER \u03b1=0 (built, off), n-step 10 fixed, \u03b3 0.99 fixed, no resets, ~200k-param net.\n\nPrerequisite: stacked-dqn seed 2 under M2-P003 (reproducibility).\n\nArm 1 \u2014 BBF recipe on the existing stacked-dqn backbone (Schwarzer et al. 2023): replay ratio 8 (host is idle; near-free), PER on (\u03b1\u22480.5\u20130.9, \u03b2 anneal), periodic shrink-and-perturb resets, n-step anneal 10\u21923, \u03b3 anneal 0.97\u21920.997, weight decay 0.1, wider net. Config + two small features; one exploratory seed at the M2-P003 budget; every deviation from the paper values cited.\n\nArm 2 \u2014 DreamerV3 (Hafner et al. 2023): model-based world model + actor-critic, vector observations and discrete actions natively; new training loop (PyTorch port). One exploratory seed.\n\nArm 3 (conditional) \u2014 EfficientZero V2: only after measuring the per-decision latency budget on the live game; MCTS per action may not fit.\n\nProtocol: interleaved arms via scripts/compare_arms.py, bootstrap intervals, one seed exploratory, second seed only for arms that beat stacked-dqn. Device time \u2248 6 h per arm-seed at run-3 pace. Nothing starts before #57 lands and the developer approves device time.",
-      "status": "Backlog",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-09-23 21:15",
@@ -1441,6 +1441,10 @@
         {
           "at": "2026-10-25 18:19",
           "text": "Board audit #125: BBF (#70) and DreamerV3 (#79, M3-P016..P019) ran; P019 stopped by the 500k rule at 54.14 (9ed92fa). EfficientZero V2 never started. All results are 29.0.3; game is now 29.1.3 (e9985c5), floors other than DA not re-measured. Parked until the next learner run is chosen."
+        },
+        {
+          "at": "2026-10-25 19:56",
+          "text": "Resumed by developer decision 2026-10-25: M3-P020, DreamerV3 from scratch on 29.1.3 at Workshop 10, 3M-decision budget with a 6-period plateau stop (fresh run chosen over resuming M3-P019 across versions)."
         }
       ]
     },
@@ -3304,6 +3308,10 @@
         {
           "at": "2026-10-25 18:19",
           "text": "Run 2 on 29.1.3 (49439cc): 1:1 blender IQM 69.73 vs DA floor 102.00, diff -32.27 [-32.95,-31.58]; game updated to 29.1.3 (e9985c5), floor unchanged. Research (Notion hub/Fandom): after the switch the blender survives on Health/Def%, not DA; Thorns kills bosses; Attack Speed triggers knockback. Next: turtle-into-blender arm (switch on in-wave damage), after recording in-wave health and orb/range geometry."
+        },
+        {
+          "at": "2026-10-25 19:20",
+          "text": "Turtle-into-blender (3dcf863, outcome ab48f63): IQM 90.73 vs floor 102.00, diff -11.27 [-11.85,-10.67]. Switch at wave 81 (first in-wave damage). Flaw: interleave made Orbs 3 (4000) owed and both sides waited; last purchase ~3 waves before death in 21/21. Confounds the blender's effect."
         }
       ]
     },

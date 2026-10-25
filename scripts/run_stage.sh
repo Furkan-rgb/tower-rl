@@ -270,13 +270,15 @@ log_host_load() {
 #: below only ever reads the host-side emulator log, never the guest's own.
 #: `main,system,crash,events` is what a game death or an ANR shows up in;
 #: `-v threadtime` keeps the timestamps a failure is read against host load by.
+#: `-k 5`: adb has ignored the TERM against a gone emulator and held a teardown
+#: for 53 minutes, so the KILL is what bounds it.
 #: `|| true` throughout, like every other teardown step: this must never
 #: change the stage's exit status or skip cleanup.
 log_stage_failure_logcat() {
   local serial log_file
   for serial in $(attached_serials); do
     log_file="$log_directory/$name-$serial-logcat.txt"
-    timeout 20 "$adb" -s "$serial" logcat -d -b main,system,crash,events -v threadtime \
+    timeout -k 5 20 "$adb" -s "$serial" logcat -d -b main,system,crash,events -v threadtime \
       > "$log_file" 2>/dev/null || true
     echo "logcat: $serial ($log_file)"
   done

@@ -1848,6 +1848,108 @@ not a verdict on either version.
 under `scripts/run_stage.sh` in `towerrl.slice` (`MemoryMax=100G`,
 `MemorySwapMax=0`).
 
+**Outcome (2026-10-25, appended after the run; the pre-registration above is
+unedited).**
+
+*Run.* All 6 stages ran in the pre-registered order on `7fd97b26…`, which
+every deploy line confirmed.
+
+- **Checks.** Every stage ended `cleanup ok`, and all 42 instances passed
+  `cleanup_checks`: libunity `ffc1f3ef…`, versionName 29.1.3, versionCode 1253,
+  installer `com.android.vending`, zero mounts. There was no
+  `WORKSHOP_NOT_APPLIED`, no `WORKSHOP_REVERTED` and no literal `Traceback`
+  line.
+- **Records.** `state/records/blender-ws10-v2913/`: each stage under
+  `<arm>-r<n>/`, the pooled arms under `pooled/`, and the report in
+  `report_arms.txt`.
+- **One invalid episode.** It was in `build-defense-absolute` r1, on
+  emulator-5566: "a mask-legal purchase was rejected by the bridge:
+  `precondition_failed`". `#121` hit the same rare outcome once in 84
+  episodes. It is 1 of 21 for the arm (4.8%), within the 5% rule. The actor
+  left no record, and its stage exited 1, so the run stopped as its runner was
+  written to. It was resumed from `build-blender` r1 after the stop was read.
+  As in `#121`, the evaluator's ValueError tail inside the fleet's failure
+  record is read as its designed report and not as the "any Traceback" stop.
+  The floor arm has 20 episodes, and that slot has 2.
+- **A teardown hang.** The same stage's teardown hung for 53 minutes.
+  - **What.** `run_stage.sh` collects each serial's logcat with
+    `timeout 20 adb … logcat -d`. On a serial whose emulator was already gone,
+    adb ignored the TERM, and `timeout` had no `-k`, so nothing escalated.
+  - **The fix.** Killing that adb by hand let the teardown finish
+    (`cleanup ok`, host verified empty). The call is now `timeout -k 5 20`, the
+    same idiom as the cleanup call beside it. The fix landed between stages 1
+    and 2. It touches only teardown log collection, not what an episode plays.
+  - **A test that was already failing.**
+    `tests/unit/test_run_stage.py::test_a_cleanup_that_never_returns_is_given_up_on_and_the_rest_still_runs`
+    fails on `main` with and without the fix (`#73`'s timing-sensitive
+    tests).
+
+*Per arm (final wave, The Tower 29.1.3, Workshop 10):*
+
+| arm | n valid | mean | median | IQM [95% CI, stratified by actor] | range |
+|---|---|---|---|---|---|
+| `build-blender` | 21 | 69.62 | 70 | 69.73 [69.36, 70.00] | 68-71 |
+| `build-defense-absolute` | 20 | 101.90 | 102 | 102.00 [101.40, 102.60] | 100-103 |
+
+**Primary result.** The IQM difference, `build-blender` minus
+`build-defense-absolute`, is −32.27 [−32.95, −31.58]. The mean difference
+agrees: −32.28 [−32.82, −31.74].
+
+**Verdict by the pre-registered rule: not a success; the blender is worse.**
+The interval lies wholly below 0. The detectable difference at 80% power,
+from the pooled final-wave SD of 0.92 at 21 against 20, is 0.80 waves. The
+effect is about 40 times that.
+
+*The floor did not move with the version.* 29.1.3's `build-defense-absolute`
+IQM of 102.00 [101.40, 102.60] sits on 29.0.3's 102.00 [101.57, 102.43].
+
+*What the blender bought.* It played the forecast schedule up to the
+support rows, and then more support than forecast.
+
+| row | final level (total), median [range] | forecast |
+|---|---|---|
+| Orbs | 2 [2, 2] | 2 |
+| Orb Speed | 14 [13, 15] | about 9 by wave 55 |
+| Knockback Chance | 17 [16, 17] | about 11 by wave 55 |
+| Knockback Force | 16 [15, 17] | about 11 by wave 55 |
+| Defense Absolute | 46 [44, 46] | 56 at wave 100 on the 1:1 replay |
+| Thorn Damage | 20 (opening only) | 20 |
+
+- **Orbs.** Levels 1 and 2 came at wave 32 and waves 39-40, as forecast. The
+  price then read 4,000 to the end, and the cap held it there. Only 300, 1,250
+  and 4,000 were ever seen.
+- **First support purchase.** It came at waves 43-45 (median 44), against the
+  forecast of about 46.
+- **Cash at death.** The median was 194, range 15 to 520, against run 1's
+  3,473. So the WAIT rule did not hoard cash, as forecast.
+- **Health.** The lowest end-of-wave `health_fraction` per episode ranged from
+  0.41 to 0.97.
+- **Not computed.** "The largest end-of-wave cash after wave 40" was
+  pre-registered, but `waves[].cash_log` is not an absolute cash reading, so
+  it is not reported.
+- **Defense Absolute.** The blender held a median of 46 when it died at
+  wave 70. The floor arm held 54 at wave 70 (counted from its purchases plus
+  the 10 Workshop levels) and finished at 68. Run 1's two-point line puts the
+  need at about 44 at wave 70. So the blender died about 2 levels above that
+  rough line, and the line is not a precise threshold.
+
+*Against the advance reading.* This is the outcome the entry flagged before the
+run. The blender died before about wave 75, with Defense Absolute near the 1:1
+schedule and the support rows at or above the forecast. Two orbs, about 14
+levels of Orb Speed and about 16-17 of each knockback row did not make up for
+the 8 levels of Defense Absolute they displaced by wave 70 (46 against the
+floor's 54). That is a result
+about this rule: a 1:1 spend split from wave 30, with Orbs capped at 2. It is
+not a result about the blender in general, and says nothing about three or more
+orbs or about a later switch.
+
+*Limits.*
+
+- Scripted builds, not the learner.
+- One opening, one switch wave and one split ratio, at Workshop 10 only, on
+  29.1.3.
+- The stratum is the actor slot, and the floor arm has one slot at 2 episodes.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

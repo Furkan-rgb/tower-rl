@@ -2112,6 +2112,95 @@ come a few waves earlier.
 - The orb-ring and range geometry is unverified, so a null says as much about
   knockback reaching the ring at this range as about the blender.
 
+**Outcome (2026-10-25, appended after the run; the pre-registration above is
+unedited).**
+
+*Gate: passed.* The episode was valid. It switched at wave 81, and it bought no
+Defense Absolute after the switch. Its final wave (90) is not counted.
+
+*Run.* All 4 counted stages ran in the pre-registered order on `7fd97b26…`,
+which every deploy line confirmed.
+
+- Each stage ended exit 0 and `cleanup ok`, and all 28 instances passed
+  `cleanup_checks`.
+- No episode was invalid. There was no `WORKSHOP_NOT_APPLIED` or
+  `WORKSHOP_REVERTED`, and no `Traceback` line.
+- Records are in `state/records/turtle-blender-ws10/`, and the report is in
+  `report_arms.txt`.
+
+*Drift check: agrees.* The drift round's final waves were 100, 101, 102, 102,
+102, 103 and 103, a median of 102. So the floor arm is run 2's 20 episodes plus
+these 7, pooled per actor slot: 27 episodes.
+
+| arm | n valid | mean | median | IQM [95% CI, stratified by actor] | range |
+|---|---|---|---|---|---|
+| `build-turtle-blender` | 21 | 91.71 | 91 | 90.73 [90.36, 91.00] | 90-101 |
+| `build-defense-absolute` | 27 | 101.89 | 102 | 102.00 [101.53, 102.47] | 100-103 |
+
+**Primary result.** The IQM difference, `build-turtle-blender` minus
+`build-defense-absolute`, is −11.27 [−11.85, −10.67]. `report_arms.py` printed
+it the other way round, as +11.27 [+10.67, +11.85]. The mean difference is
+−10.17 [−11.35, −8.75].
+
+**Verdict by the pre-registered rule: not a success; the arm is worse.** The
+interval lies wholly below 0.
+
+*Readouts,* medians [range]:
+
+- **Switch wave:** 81 [81, 95]. It was wave 81 in 15 of 21 episodes and wave 82
+  in 3. In the other 3 it was waves 91, 93 and 95, and those are the arm's best
+  episodes (96, 99 and 101).
+- **After the switch:**
+  - waves survived after it: 9 [5, 10];
+  - Defense Absolute, frozen at the switch: 60 [59, 66];
+  - Orbs 2 in every episode, bought at about waves 82-86.
+- **Final levels (totals):**
+
+  | row | level |
+  |---|---|
+  | Orb Speed | 9 |
+  | Knockback Chance | 11 |
+  | Knockback Force | 10 |
+  | Attack Speed | 22 (almost all from the opening) |
+  | Health | 27 |
+  | Defense % | 23-24 |
+  | Thorn Damage | 23 |
+
+- **Orbs prices:** only 300, 1,250 and 4,000 were seen. No fourth level was
+  reached.
+- **Cash at death:** 1,851 [177, 2,343].
+
+*Read against the forecast and the advance reading.*
+
+- **The switch came earlier than forecast.** In-wave damage starts at wave 81,
+  not 85-98, about 20 waves before the floor dies. That is 11-19 waves before
+  end-of-wave health first dips (waves 92-100).
+- **A design flaw, found after the run.** The arm then stalled while saving for
+  Orbs 3.
+  - **The evidence.** In all 21 episodes the next Orbs price at death was
+    4,000. The last purchase of any kind came a median of 3 waves (0-4) before
+    death, and the tower died holding a median 1,851.
+  - **Why the rule did it.** The interleave hands Orbs its turn once support
+    spend has matched Orbs spend. That was about 1,550 after Orbs 2, reached
+    within about 4 waves. The 3/4 share keeps the blender owed, so both sides
+    WAIT for 4,000.
+  - **Who missed it.** This is run 1's starvation under a new rule. The
+    pre-registration's own forecast ("Orbs 3 at most") came within one step of
+    it, and the lead and the code review did not catch it.
+- **What it does and does not say.**
+  - The verdict does not separate two explanations. Either the blender as
+    bought here (Orbs 2, about 10 levels each of support) cannot hold waves 81+
+    without Defense Absolute, or the freeze cost the arm the waves.
+  - One thing does hold. The floor's alternative is to keep buying Defense
+    Absolute from wave 81, and that keeps the tower alive about 11 waves longer
+    than any blender spending tested so far.
+  - The three late-switch episodes, switching at waves 91-95, reached 96-101. They suggest a later switch
+    is closer to the floor. That reading is post hoc, from 3 episodes.
+
+*Limits.* As pre-registered: scripted builds, one signal, one ratio and one
+survival set, at Workshop 10 on 29.1.3. The orb-ring and range geometry is
+unverified. The freeze above confounds the blender's own effect.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

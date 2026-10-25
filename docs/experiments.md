@@ -2327,6 +2327,14 @@ is about 35 hours. Longer episodes as the policy improves may change the rate.
 
 **Safety,** `M3-P019`'s unchanged.
 
+**A start that was withdrawn (2026-10-25).** A launch at 19:56 CET was stopped
+after 45 s at the developer's request, during fleet bring-up and before any
+episode or learner step. The run will start later from its unused quota. The
+stop ended with `cleanup ok` and a host verified empty. The folder it created
+is kept as `state/runs/m3-p020-dreamerv3-ws10-v2913-20261025T185541Z-aborted-prelaunch`,
+so the real run uses the pre-registered name. The launcher is
+`state/launch/m3-p020.sh`: the command above, machine-local.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

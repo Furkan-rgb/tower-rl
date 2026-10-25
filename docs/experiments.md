@@ -2201,6 +2201,132 @@ interval lies wholly below 0.
 survival set, at Workshop 10 on 29.1.3. The orb-ring and range geometry is
 unverified. The freeze above confounds the blender's own effect.
 
+## M3-P020: DreamerV3 at Workshop 10 on The Tower 29.1.3, 3M decisions (pre-registered, written before the run)
+
+**Date:** 2026-10-25. Board `#58`. Single seed, single run, from scratch on
+`main` at this entry's commit. n=1, seed 0.
+
+**Question.** At Workshop 10 on 29.1.3, does DreamerV3 under `M3-P019`'s launch
+with a 3,000,000-decision budget beat the best scripted floor,
+`build-defense-absolute`? On 29.1.3 that floor's IQM is 102.00
+[101.53, 102.47] over 27 episodes, pooled in `Turtle into blender at Workshop
+10 (#122)`.
+
+**Why this run.**
+
+- **`M3-P019` stopped at its 500k rule while still rising.** Its near-greedy
+  period means went from 38.65 to a best of 54.14 at 450k decisions.
+- **It cannot be resumed.** Its checkpoints carry the 29.0.3 profile, and resume
+  refuses a profile change by design.
+- **The developer chose a fresh run** on 29.1.3 over resuming across versions,
+  so the learner's row is one run on one game version.
+- **The longer budget.** At `M3-P019`'s pace of about 3 waves per 100k
+  decisions, reaching the floor needs about 2M decisions. 3M allows for a
+  flattening curve. The 500k rule is dropped, because its bar sat about 43 waves
+  above where this learner is at 500k.
+
+**Launch: `M3-P019`'s, with exactly these changes.**
+
+- **The bridge** is the 29.1.3 build of the same source:
+  `TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/ws2913-render-interval-16-nodelay`,
+  `7fd97b26…`. Every deploy must confirm that digest.
+- **The budget** is `--budget-decisions 3000000`.
+- **The 500k rule is dropped.** In its place is a plateau stop,
+  `--early-stop-patience-periods 6 --early-stop-min-improvement 1.0`: the run
+  stops after 6 selection periods in a row (300,000 decisions) in which the
+  near-greedy mean fails to add 1 wave over the bar it last cleared (`#45`).
+  - **Why 6 periods.** `M3-P019`'s means went down in 4 of 9 steps (periods 3,
+    5, 8 and 10). Its longest run without a new best was 1 period. So 6 leaves
+    wide room for that noise, and still stops a run that has gone flat for 300k
+    decisions, about 3.5 hours.
+- **New run name and directory:**
+  `m3-p020-dreamerv3-ws10-v2913-20261025T185541Z`.
+- **Unchanged from `M3-P019`:** DreamerV3 at its official conventions (ADR
+  0018), γ 0.997 per game-second (ADR 0019), the survival-time reward, 7
+  actors, seed 0, `--upgrade-availability all`, `--workshop-level 10`,
+  `--frame-game-ms 100`, choice-point cadence, checkpoints every 25,000
+  decisions, selection periods of 50,000, and the three collapse-guard kill
+  bars.
+
+**Code since `M3-P019`** (`afb6c0b`): four commits touched `src/` or `scripts/`:
+
+- `375869c`, `ac6cf67` and `3dcf863`: the scripted build policies, plus their
+  wiring in `run_episodes.py`;
+- `49439cc`: the `run_stage.sh` teardown bound.
+
+The DreamerV3 learner, the actor, the replay and `scripts/train.py` are
+unchanged.
+
+**Primary outcome.** The run's own pre-registered final evaluation: 30
+exploration-free episodes on the selected checkpoint (`docs/solution.md`
+§9.2b), from `pre_registered_final` in the last segment's `summary.json`. That
+holds whether the budget is spent or the plateau stop ends the run.
+
+- **The comparison** is `M3-P019`'s method: a stratified bootstrap of the IQM
+  difference (`stratified_bootstrap_difference`, its default resamples, seed 0,
+  95% percentile interval). The evaluation's final waves are one stratum. The
+  27 `build-defense-absolute` episodes are stratified by actor slot
+  (`state/records/turtle-blender-ws10/pooled/build-defense-absolute`).
+- **Success:** the interval excludes 0 on the positive side.
+- **"Matches the best script"** is reported in those words when the interval
+  includes 0. An interval wholly below 0 is reported as below it.
+
+**Readouts (not gates).**
+
+- the learning curve: the near-greedy mean per selection period;
+- the decisions and wall time at which the period mean first reaches 60, 80,
+  90 and 100 (Outcome C's samples-to-level);
+- the purchase mix per period, read as `M3-P019` pre-registered it, beside
+  `build-defense-absolute`'s. That includes whether it buys the economy rows,
+  Orbs or the blender rows.
+
+**Stop rules,** `M3-P019`'s except the 500k rule, all by SIGINT to `train.py`:
+
+- a learner exception or any Traceback;
+- invalid episodes above 5% once 20 or more are counted, or 3 in a chain on one
+  actor;
+- fewer than 7 of 7 actors at startup;
+- any `WORKSHOP_*` event, or a deploy that confirms a digest other than
+  `7fd97b26…`;
+- an in-episode `stale_or_duplicate` or `WORLD_NOT_HELD`;
+- cgroup memory above 90 GB;
+- the kill bars (flags);
+- the plateau stop, which `train.py` applies itself.
+
+**Command.**
+
+    export TOWER_BRIDGE_BUILD_DIR=/home/furkan/Documents/tower-rl/state/bridge/builds/ws2913-render-interval-16-nodelay
+    scripts/run_stage.sh --name m3-p020-dreamerv3-ws10-v2913-20261025T185541Z-train --instances 7 \
+      --log-directory state/runs/m3-p020-dreamerv3-ws10-v2913-20261025T185541Z/logs -- \
+      uv run --extra tracking python scripts/train.py --backbone dreamerv3 \
+      --actors 7 --renderer host --frame-rate-hz 120 --decision-cadence choice-points \
+      --upgrade-availability all --workshop-level 10 --budget-decisions 3000000 \
+      --checkpoint-every-decisions 25000 --selection-period-decisions 50000 --seed 0 \
+      --frame-game-ms 100 --discount-per-game-second 0.997 --survival-time-reward \
+      --early-stop-patience-periods 6 --early-stop-min-improvement 1.0 \
+      --kill-bar 100000:50000:21 --kill-bar 200000:150000:21 --kill-bar 300000:250000:21 \
+      --run-name m3-p020-dreamerv3-ws10-v2913-20261025T185541Z
+
+It runs detached, as `M3-P019` ran, under `setsid systemd-run --user --scope
+--collect --slice=towerrl.slice -p MemoryMax=100G -p MemorySwapMax=0 -p
+MemoryHigh=88G`. Before launch, a pre-check confirms that the ports are free
+and no emulator runs.
+
+**Expected wall time.** At `M3-P019`'s 85k decisions an hour, the full budget
+is about 35 hours. Longer episodes as the policy improves may change the rate.
+
+**Known confounds, in advance.**
+
+- n=1, one seed.
+- The floor is a scripted build and not a ceiling.
+- Only `build-defense-absolute`'s floor is re-measured on 29.1.3. `random`,
+  `scripted` and `turtle` are 29.0.3 numbers and are quoted as such, if at all.
+- At this account state no tested build passes about wave 104. The developer's
+  wave-1000 goal is not reachable at Workshop 10 by any in-run policy. This run
+  tests learning against the floor, not that goal.
+
+**Safety,** `M3-P019`'s unchanged.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

@@ -20,10 +20,12 @@ from tower_rl.learning.policies import (
     LATE_GAME_BUILDS,
     LATE_GAME_WAVE,
     ORBS_PRICE_CEILING,
+    THORNS_BOSS_PERCENT,
     BindsRowNames,
     BlenderBuildPolicy,
     CheapestFirstPolicy,
     LateGameBuildPolicy,
+    TurtleBlenderPolicy,
     TurtlePolicy,
     WaitOnlyPolicy,
 )
@@ -356,6 +358,123 @@ def test_the_blender_counts_spend_from_the_switch_and_per_episode() -> None:
     assert policy.act(_priced(LATE_GAME_WAVE, 1e9, prices), None)[0] == ROWS["Orbs"]
 
 
+# -- turtle into blender ---------------------------------------------------------
+
+
+def _turtle_blender() -> TurtleBlenderPolicy:
+    policy = TurtleBlenderPolicy()
+    policy.bind_row_names(LABELS)
+    policy.initial_state()
+    return policy
+
+
+def _at(
+    cash: float,
+    prices: dict[str, float],
+    *,
+    health: float = 1.0,
+    boss: bool = False,
+    mini_boss: bool = False,
+    thorns: float = 0.0,
+    maxed: tuple[str, ...] = (),
+) -> StateFeatures:
+    """A `_priced` state at the switch wave with that health, boss flags and Thorns %."""
+    state = _priced(LATE_GAME_WAVE, cash, prices, maxed)
+    scalars = list(state.scalars)
+    scalars[SCALAR_FEATURES.index("health_fraction")] = health
+    scalars[SCALAR_FEATURES.index("boss_wave")] = float(boss)
+    scalars[SCALAR_FEATURES.index("mini_boss_wave")] = float(mini_boss)
+    scalars[SCALAR_FEATURES.index("thorn_damage_log")] = math.log1p(thorns)
+    return StateFeatures(scalars=tuple(scalars), rows=state.rows, mask=state.mask)
+
+
+#: Every row the turtle-blender might buy, all affordable at 100.
+EVERYTHING = {
+    name: 100.0
+    for name in (*EARLY_GAME_ROWS, *BLENDER_ROWS)
+}
+
+
+def _name(index: int) -> str:
+    return next(name for name, action in ROWS.items() if action == index)
+
+
+def test_at_full_health_it_plays_as_build_defense_absolute() -> None:
+    policy, floor = _turtle_blender(), _policy("defense-absolute")
+    for wave in (BEFORE, LATE_GAME_WAVE, LATE_GAME_WAVE + 40):
+        state = _priced(wave, 1e9, EVERYTHING)
+        scalars = list(state.scalars)
+        scalars[SCALAR_FEATURES.index("health_fraction")] = 1.0
+        full = StateFeatures(scalars=tuple(scalars), rows=state.rows, mask=state.mask)
+        assert policy.act(full, None)[0] == floor.act(full, None)[0]
+
+
+@pytest.mark.parametrize(("boss", "mini_boss"), [(True, False), (False, True)])
+def test_damage_on_a_boss_wave_does_not_switch(boss: bool, mini_boss: bool) -> None:
+    policy = _turtle_blender()
+    hurt = _at(1e9, EVERYTHING, health=0.5, boss=boss, mini_boss=mini_boss)
+    assert policy.act(hurt, None)[0] == ROWS["Defense Absolute"]
+
+
+def test_damage_on_a_normal_wave_switches_for_good_and_ends_defense_absolute() -> None:
+    policy = _turtle_blender()
+    assert _name(policy.act(_at(1e9, EVERYTHING, health=0.99), None)[0]) == "Orbs"
+    # Back at full health it stays switched, and never buys Defense Absolute again.
+    bought = [_name(policy.act(_at(1e9, EVERYTHING), None)[0]) for _ in range(12)]
+    assert "Defense Absolute" not in bought
+
+
+def test_the_switch_is_per_episode() -> None:
+    policy = _turtle_blender()
+    policy.act(_at(1e9, EVERYTHING, health=0.5), None)
+    policy.initial_state()
+    assert policy.act(_at(1e9, EVERYTHING), None)[0] == ROWS["Defense Absolute"]
+
+
+def test_after_the_switch_three_quarters_of_the_cash_goes_to_the_blender() -> None:
+    policy = _turtle_blender()
+    policy.act(_at(1e9, EVERYTHING, health=0.5), None)
+    bought = [_name(policy.act(_at(1e9, EVERYTHING), None)[0]) for _ in range(39)]
+    blender = sum(name in (*BLENDER_ROWS, "Attack Speed") for name in bought)
+    # 40 purchases at 100 each, the first included: 30 blender, 10 survival.
+    assert blender + 1 == 30
+
+
+def test_the_blender_interleaves_orbs_with_support_by_spend_with_no_price_ceiling() -> None:
+    policy = _turtle_blender()
+    support = {"Orb Speed": 100.0, "Knockback Chance": 100.0, "Knockback Force": 100.0}
+    # Survival has nothing left, so every purchase is the blender's.
+    done = ("Health", "Defense %", "Thorn Damage")
+    prices = {"Orbs": 4000.0, **support, "Attack Speed": 100.0}
+    orbs = prices["Orbs"]
+    assert policy.act(_at(1e9, prices, health=0.5, maxed=done), None)[0] == ROWS["Orbs"]
+    calm = _at(1e9, prices, maxed=done)
+    # Support until its spend reaches the 4,000 on Orbs, then the next Orbs level.
+    names = [_name(policy.act(calm, None)[0]) for _ in range(41)]
+    assert "Orbs" not in names[:40] and names[40] == "Orbs"
+    assert orbs > ORBS_PRICE_CEILING
+
+
+def test_survival_buys_thorns_only_below_the_boss_breakpoint() -> None:
+    blender = {name: 1e6 for name in BLENDER_ROWS} | {"Attack Speed": 1e6}
+    prices = {**blender, "Thorn Damage": 10.0, "Health": 50.0, "Defense %": 60.0}
+    below = _turtle_blender()
+    below.act(_at(1e9, prices, health=0.5), None)  # the switch: the blender's 1e6
+    assert below.act(_at(1e9, prices, thorns=THORNS_BOSS_PERCENT - 1), None)[0] == ROWS[
+        "Thorn Damage"
+    ]
+    at = _turtle_blender()
+    at.act(_at(1e9, prices, health=0.5), None)
+    assert at.act(_at(1e9, prices, thorns=THORNS_BOSS_PERCENT), None)[0] == ROWS["Health"]
+
+
+def test_an_owed_row_that_cannot_be_afforded_is_saved_for() -> None:
+    policy = _turtle_blender()
+    prices = {"Orbs": 300.0, **{name: 10.0 for name in ("Health", "Defense %", "Orb Speed")}}
+    # The blender is owed on the tie, and its Orbs (300) is out of reach of 250.
+    assert policy.act(_at(250.0, prices, health=0.5), None)[0] == 0
+
+
 # -- row names -------------------------------------------------------------------
 
 
@@ -387,5 +506,6 @@ def test_the_name_binding_protocol_covers_the_turtle_and_the_builds() -> None:
     assert isinstance(TurtlePolicy(), BindsRowNames)
     assert isinstance(LateGameBuildPolicy("thorns"), BindsRowNames)
     assert isinstance(BlenderBuildPolicy(), BindsRowNames)
+    assert isinstance(TurtleBlenderPolicy(), BindsRowNames)
     assert not isinstance(CheapestFirstPolicy(), BindsRowNames)
     assert not isinstance(WaitOnlyPolicy(), BindsRowNames)

@@ -447,6 +447,116 @@ class BlenderBuildPolicy(LateGameBuildPolicy):
         return min(support, key=lambda index: row_price(features, index))
 
 
+#: After the turtle phase the blender also buys Attack Speed: knockback triggers
+#: only on a projectile hit, so the firing rate is how often it happens.
+TURTLE_BLENDER_SUPPORT_ROWS: tuple[str, ...] = (*BLENDER_SUPPORT_ROWS, "Attack Speed")
+#: What the tower survives on once it stops buying Defense Absolute: health and
+#: Defense % (effective health), and Thorns, the only thing that kills bosses
+#: (they are immune to orbs and knockback).
+SURVIVAL_ROWS: tuple[str, ...] = ("Health", "Defense %", THORN_DAMAGE)
+#: Thorns is bought up to the 2-hit breakpoint, 50 % (4 hits on a boss, which takes half).
+THORNS_BOSS_PERCENT = 50.0
+#: The blender's share of the cash spent after the switch; survival gets the rest.
+BLENDER_SHARE = 0.75
+SURVIVAL = "survival"
+
+
+@dataclass
+class TurtleBlenderPolicy(LateGameBuildPolicy):
+    """`build-defense-absolute` until the tower first takes damage, then mostly blender.
+
+    Up to the switch it plays exactly as `LateGameBuildPolicy("defense-absolute")`:
+    the shared opening, then only Defense Absolute from `LATE_GAME_WAVE`. The
+    switch is the first decision from `LATE_GAME_WAVE` on a wave that is neither
+    a boss nor a mini-boss wave at which the tower is below full health, and it
+    is kept for the rest of the episode.
+
+    From the switch it buys no Defense Absolute. Each purchase goes to the side
+    furthest below its share of the cash spent since the switch, the blender
+    (`BLENDER_SHARE`) first on a tie, survival the rest. The blender alternates by
+    equal spend between the next Orbs level and the cheapest of
+    `TURTLE_BLENDER_SUPPORT_ROWS`, Orbs first on a tie. Survival buys the cheapest
+    of Health, Defense % and, while below `THORNS_BOSS_PERCENT`, Thorn Damage. As
+    in the blender, an owed row that cannot be afforded is saved for (WAIT), and
+    a side with nothing left to buy leaves every purchase to the other. Why each
+    of these: `docs/experiments.md`, "Turtle into blender at Workshop 10 (#122)".
+
+    The switch and the spend are per-episode memory reset by `initial_state`.
+    """
+
+    build: str = field(default="defense-absolute", init=False)
+    _switched: bool = field(default=False, init=False)
+    #: Cash spent since the switch: the blender's Orbs and support, and survival.
+    _spent: dict[str, float] = field(default_factory=dict, init=False)
+    row_names: ClassVar[tuple[str, ...]] = (
+        *EARLY_GAME_ROWS,
+        ORBS,
+        *BLENDER_SUPPORT_ROWS,
+    )
+
+    def initial_state(self) -> None:
+        super().initial_state()
+        self._switched = False
+        self._spent = {ORBS: 0.0, BLENDER: 0.0, SURVIVAL: 0.0}
+        return None
+
+    def _late_game(self, features: StateFeatures) -> int:
+        if not self._switched:
+            self._switched = _took_damage_on_a_normal_wave(features)
+        if not self._switched:
+            return super()._late_game(features)
+        offered = {BLENDER: self._blender_row(features), SURVIVAL: self._survival_row(features)}
+        sides = [side for side, index in offered.items() if index is not None]
+        if not sides:
+            return 0
+        shares = {BLENDER: BLENDER_SHARE, SURVIVAL: 1.0 - BLENDER_SHARE}
+        side = min(sides, key=lambda name: self._spent[name] / shares[name])
+        index = offered[side]
+        assert index is not None
+        if not features.mask[index]:
+            return 0
+        price = row_price(features, index)
+        self._spent[side] += price
+        if index == self._index(ORBS):
+            self._spent[ORBS] += price
+        return index
+
+    def _blender_row(self, features: StateFeatures) -> int | None:
+        """The next Orbs level or the cheapest support row, whichever has had less spend."""
+        orbs = self._index(ORBS)
+        support = self._cheapest(features, TURTLE_BLENDER_SUPPORT_ROWS)
+        if not row_offered(features, orbs):
+            return support
+        if support is None:
+            return orbs
+        support_spent = self._spent[BLENDER] - self._spent[ORBS]
+        return orbs if self._spent[ORBS] <= support_spent else support
+
+    def _survival_row(self, features: StateFeatures) -> int | None:
+        thorns_below = TurtleReading.of(features).thorn_percent < THORNS_BOSS_PERCENT
+        names = [name for name in SURVIVAL_ROWS if name != THORN_DAMAGE or thorns_below]
+        return self._cheapest(features, names)
+
+    def _cheapest(self, features: StateFeatures, names: Sequence[str]) -> int | None:
+        offered = [self._index(name) for name in names if row_offered(features, self._index(name))]
+        if not offered:
+            return None
+        return min(offered, key=lambda index: row_price(features, index))
+
+    def _index(self, name: str) -> int:
+        assert self.rows is not None
+        return self.rows[name]
+
+
+def _took_damage_on_a_normal_wave(features: StateFeatures) -> bool:
+    """Below full health on a wave without a boss or mini-boss."""
+    scalar = features.scalars
+    boss = scalar[SCALAR_FEATURES.index("boss_wave")] or scalar[
+        SCALAR_FEATURES.index("mini_boss_wave")
+    ]
+    return not boss and scalar[SCALAR_FEATURES.index("health_fraction")] < 1.0
+
+
 @dataclass
 class WaitOnlyPolicy:
     """Never buys. The degenerate reference that dies at wave two."""

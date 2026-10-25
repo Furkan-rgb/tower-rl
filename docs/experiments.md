@@ -1953,6 +1953,165 @@ orbs or about a later switch.
   29.1.3.
 - The stratum is the actor slot, and the floor arm has one slot at 2 episodes.
 
+## Turtle into blender at Workshop 10 (#122) (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-10-25. Board `#122`. Scripted policies only, no learning. The
+Tower 29.1.3. The code is `main` at this entry's commit
+(`TurtleBlenderPolicy`, `--policy build-turtle-blender`), with the bridge
+`7fd97b26…` selected by `TOWER_BRIDGE_BUILD_DIR`.
+
+**Question.** At Workshop 10, does "turtle into blender" survive longer than
+`build-defense-absolute`, IQM 102.00 [101.40, 102.60] on 29.1.3? The
+developer names it the proper strategy: defend first, then spend on the blender.
+
+**Why this arm, after runs 1 and 2.**
+
+- Both earlier blenders split cash from wave 30 and kept buying Defense
+  Absolute. Run 2 died at wave 70, 8 Defense Absolute levels behind the floor
+  arm (`Run 2 on The Tower 29.1.3 (#122)`). This arm keeps the floor arm's
+  defense until the defense stops holding, then changes what it buys.
+- A literature check of community sources, read 2026-10-25, set the rows and
+  the signal. It is not a measurement, and none of the sources is stated to be
+  checked against 29.x:
+  - **The order is a recognised path.** The fan-run Notion hub describes Turtle
+    on Defense Absolute, "before gradually relying more on knockback and
+    killing in orbs"
+    ([Turtle](https://the-tower.notion.site/Turtle-1bb91383b93f80978e2af6cffbfdc53e)).
+    It calls the Blender "the second beginner build… after the Turtle"
+    ([Blender, early game](https://the-tower.notion.site/Blender-Strategy-early-game-1bc91383b93f80e4b384c148c67b66f8)).
+  - **What the blender survives on.** Health and Defense % (effective health),
+    not Defense Absolute. Orbs and Orb Speed kill normal enemies, knockback
+    keeps them near the orbs, and Thorns kills bosses (same page).
+  - **Orbs kill normal enemies outright.** The exceptions are bosses, elites
+    and enemies under a Protector
+    ([Fandom, Orbs](https://the-tower-idle-tower-defense.fandom.com/wiki/Orbs)).
+    Elites spawn from about wave 500, and Protectors only from Tier 2. So at
+    Tier 1 near wave 100 only bosses are immune. This agrees with ADR 0012.
+  - **Knockback triggers on projectile hits,** and bosses are immune to it
+    ([Fandom, Knockback](https://the-tower-idle-tower-defense.fandom.com/wiki/Knockback);
+    [Notion, Mass](https://the-tower.notion.site/Mass-1e891383b93f8037a95eec1a505c8c95)).
+  - **When to switch.** The Beginner Guide says to switch "until you are taking
+    damage through def abs", and when Defense Absolute becomes "less effective
+    and costly"
+    ([Fandom, Beginner Guide](https://the-tower-idle-tower-defense.fandom.com/wiki/Beginner_Guide)).
+    No source gives a wave or a spending ratio.
+  - **Why Defense Absolute falls off.** Damage taken is enemy damage times
+    (1 − Defense %), minus Defense Absolute, and each melee hit from the same
+    enemy is 4% stronger than the last
+    ([Fandom, Defense Absolute](https://the-tower-idle-tower-defense.fandom.com/wiki/Defense_Absolute)).
+- **What is still unverified.** The wiki puts the orb ring at least 60 m out,
+  against a base tower range of 30 m. Whether knockback from projectile hits
+  pushes enemies back through that ring at this account's range is not
+  established. Neither are the in-run price and existence of a fourth Orbs
+  level.
+
+**The arm, `build-turtle-blender`.**
+
+1. **Up to the switch it is `build-defense-absolute`, by the same code path.**
+   That is the shared opening, then only Defense Absolute from wave 30.
+2. **The switch** happens at the first decision from wave 30 at which
+   `health_fraction` < 1 on a wave with neither `boss_wave` nor
+   `mini_boss_wave` set. It holds for the rest of the episode.
+   - **Why this signal.** The developer chose "when defense is enough": the
+     turtle has a margin while the tower takes no damage. The literature's
+     signal is "taking damage through def abs". End-of-wave health cannot carry
+     it: it reads full through about wave 92-100 in every 29.1.3 floor episode,
+     then collapses within 2-6 waves. So the arm reads health at each decision,
+     inside the wave. Boss waves are excluded because bosses hit through any
+     defense the literature describes.
+   - **A known blind spot.** Decisions come only at choice points, so damage
+     regenerated between two decisions is not seen.
+3. **From the switch, no Defense Absolute.** Each purchase goes to the side
+   furthest below its share of the cash spent since the switch. The blender
+   gets 3/4 and goes first on a tie. Survival gets 1/4.
+   - **The ratio.** The developer chose "mostly blender". 3:1 is the value
+     taken for that; no source gives a number.
+   - **The blender side.** It alternates, by equal spend, between the next
+     Orbs level (no price ceiling) and the cheapest of Orb Speed, Knockback
+     Chance, Knockback Force and Attack Speed, with Orbs first on a tie. The
+     developer chose "interleave". Attack Speed is there because knockback only
+     triggers on a hit.
+   - **The survival side.** It buys the cheapest of Health, Defense % and, while
+     below 50%, Thorn Damage. 50% is the 2-hit breakpoint, 4 hits on a boss.
+   - **Saving and empty sides,** as in run 2. An owed row that cannot be
+     afforded is saved for (WAIT). A side with nothing left to buy leaves every
+     purchase to the other.
+
+**Gate before any counted episode.** One `build-turtle-blender` episode,
+1 actor, under `run_stage.sh`, recorded in `state/records/turtle-blender-ws10/gate/`.
+
+- **It passes if** the episode is valid, the switch happens (some purchase after
+  wave 30 is not Defense Absolute), and no Defense Absolute is bought after the
+  first non-Defense-Absolute purchase from wave 30.
+- **Its final wave does not count** and is not a basis for any change. A failed
+  gate means a bug fix. That fix is reported here before the counted stages,
+  with the arm's rule unchanged.
+
+**Counted stages,** one at a time, 7 actors, 1 episode per actor:
+
+1. `build-turtle-blender` r1
+2. `build-defense-absolute` r1, the drift check
+3. `build-turtle-blender` r2
+4. `build-turtle-blender` r3
+
+That gives 21 `build-turtle-blender` episodes. Records go to
+`state/records/turtle-blender-ws10/<arm>-r<round>/`. Settings, safety, the
+5%-invalid, 3-consecutive-failures, Traceback, cleanup and Workshop stop rules,
+and the long-episode rule are those of `Run 2 on The Tower 29.1.3 (#122)`. As
+there, every deploy line must confirm `7fd97b26…`.
+
+**Drift check.** The drift round agrees if its median final wave is within 100
+to 104.
+
+- **If it agrees,** the floor arm is the 20 episodes of `Run 2 on The Tower
+  29.1.3` plus these 7, pooled per actor slot: 27 episodes.
+- **If it does not agree,** the primary comparison is not made, and the drift
+  goes to the board.
+
+**Analysis.** `scripts/report_arms.py build-turtle-blender=<pooled>
+build-defense-absolute=<pooled>`, stratified by actor slot. The primary result is
+the final-wave IQM difference with its 95% CI.
+
+- **Success** is a lower bound above 0. An interval that includes 0 is "not
+  distinguishable at this n", reported with the detectable difference.
+- **The point estimate is read on its own.** The detectable difference is near
+  one wave, so a gain of one or two waves would meet the criterion while
+  meaning little against the goal of much higher waves.
+
+**Readouts (pre-registered, not gates).** For `build-turtle-blender`:
+
+- the switch wave, the wave of its first non-Defense-Absolute purchase from
+  wave 30;
+- Defense Absolute at the switch and at death;
+- final levels of Orbs, Orb Speed, Knockback Chance, Knockback Force, Attack
+  Speed, Health and Defense %;
+- final Thorns %;
+- the wave of each Orbs price step, and any Orbs price above 4,000 that is seen;
+- the number of waves survived after the switch;
+- cash at death.
+
+**Forecast, written before the run.** The switch comes late, at about waves
+85-98, where the floor arm's end-of-wave health first dips. In-wave damage may
+come a few waves earlier.
+
+- **What a late switch means.** It leaves the blender about 5-15 waves of income
+  at about 500-550 a wave: roughly 3,000-8,000 cash, so Orbs 3 at most.
+- **The expected result.** By this forecast the arm lands within a few waves of
+  the floor, in either direction. A large gain would need the orbs to stop most
+  normal enemies with Defense Absolute frozen at about 65.
+- **If the switch comes much earlier,** for example from chip damage near wave
+  30, the arm behaves like run 2 without Defense Absolute. It then dies early,
+  and that is reported as a result about this signal.
+
+**Caveats, in advance.**
+
+- These are scripted builds, not the learner.
+- There is one switch signal, one ratio and one survival set, at Workshop 10
+  only, on 29.1.3.
+- The literature is community guidance, not measured on this game version.
+- The orb-ring and range geometry is unverified, so a null says as much about
+  knockback reaching the ring at this range as about the blender.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

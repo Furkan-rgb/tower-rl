@@ -3273,8 +3273,14 @@
       "id": 126,
       "title": "The board lives in .ledger/ledger.json, migrated from GitHub project 3 with issue numbers kept",
       "body": "",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-10-25 13:06",
+          "text": "Landed bf96d98: board migrated from GitHub project 3; progress and item list match the GitHub board."
+        }
+      ],
+      "closed_at": "2026-10-25T12:06:27.912889Z"
     }
   ],
   "milestones": [

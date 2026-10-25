@@ -1699,6 +1699,155 @@ split. That is a result about this rule, not about the blender in general.
 - Orbs are capped at 2 levels. A null or negative result says nothing about
   three or more orbs.
 
+**Attempts that played no episode (appended; the pre-registration above is
+unedited).**
+
+- *2026-10-03.* Xwayland crashed during run 1's last stage and did not come
+  back, so every emulator in run 2's first stage failed to open `:0`
+  (`Failed to initialize FrameBuffer()`). That log is kept as
+  `state/records/blender-ws10-run2/aborted-no-x-display-stage-build-blender-r1.log`.
+- *2026-10-25, with a display back.* In `build-blender` r1, emulator-5556 and
+  emulator-5558 each failed with `CloneError: never became ready: the game is
+  still starting: main_unavailable` after the full readiness wait. That is two
+  consecutive failures for the same reason, so the stage was stopped before the
+  third. A one-instance `build-defense-absolute` bring-up then reproduced it.
+  - **Ruled out.** The X display is up, and the host reaches the network
+    (HTTP 200). The game's `UnityPlayerActivity` is resumed and holds window
+    focus, and its Vulkan device is created on the RTX 4090.
+  - **The game's log stops at its online startup.** Its Unity log ends at
+    Firebase init, `[RC] Remote Config initialized` and `User region: EU,
+    country: NL`, and no `Main` follows.
+  - **Two host and game changes since run 1 worked.** The NVIDIA driver went
+    from 595.91.07 to 595.99.02 on 2026-10-09 (`dpkg.log`). Third-party APK
+    sites list The Tower 29.1.3 from about 2026-10-21; the image is 29.0.3.
+  - **Cause, confirmed: the game now refuses 29.0.3.** With the developer's
+    approval, one guest screenshot was taken after the readiness wait. It was
+    read and deleted, not kept. It showed an "OLD VERSION" modal whose only
+    button is "Play Store". So the server-side minimum version has passed this
+    image. Neither the driver nor the display caused it.
+  - **Run 2 cannot run on the 29.0.3 image.** Moving to 29.1.x means a new
+    image, the bridge re-verified against the new libunity, and the floors
+    re-measured, because a different game version is a different environment.
+    The developer chose to update. See "Run 2 on The Tower 29.1.3", below.
+  - **A protocol deviation, harmless here.** This attempt's stage script did
+    not set `TOWER_BRIDGE_BUILD_DIR`, so it deployed `state/bridge/current`
+    (`f9d5f161…`, which has no Workshop commands). It should have deployed the
+    pre-registered `workshop-render-interval-16-nodelay` build (`33d7ada0…`),
+    which run 1 deployed. No episode started, so no record carries it.
+  - No episode was played. emulator-5556 and emulator-5558 passed
+    `cleanup_checks`. The stop lost `run_stage.sh`'s own teardown: the stage
+    script died with its parent shell and left `run_actors.py` running with
+    emulator-5560 mid-bring-up. An interrupt to `run_actors.py` then tore that
+    fleet down. emulator-5560 has no `cleanup_checks` line, but it ran
+    `-read-only`, and the host was then verified empty: no qemu process and no
+    adb device.
+
+## The Tower 29.1.3: the image update (2026-10-25)
+
+**Why.** The game refuses 29.0.3 at startup with an "OLD VERSION" modal (see
+the 2026-10-25 attempt under "Blender build at Workshop 10, run 2 (#122)",
+above). The developer chose to update.
+
+**What was done.**
+
+- **Backup.** The rooted clone AVD was backed up whole, 29.0.3 image included,
+  to `~/.android/avd-backup/tower_rl_instrumented_api36.avd.29.0.3-20261025`.
+  It is machine-local and outside the repository.
+- **The update.** The clone was booted writable, once, with its radios on. The
+  game was updated through the Play Store on the provisioned account and
+  launched online once, reaching the Battle home with no blocking modal. Then
+  the radios were turned off, airplane mode was restored and the emulator was
+  shut down cleanly.
+  - Result: The Tower **29.1.3, versionCode 1253**, installer
+    `com.android.vending`.
+  - The canonical account AVD (`tower_rl_api36_play_x86_64`) was not touched.
+    It is still 29.0.3.
+- **Identity, read from the installed APK:**
+
+| | 29.0.3 | 29.1.3 |
+|---|---|---|
+| `libunity.so` SHA-256 | `ffc1f3ef…dd0040` | `ffc1f3ef…dd0040` (unchanged) |
+| `libil2cpp.so` SHA-256 | `22fb6a86…d5a303` | `ebd443c2…296919` |
+| signer certificate SHA-256 | `b6c646d3…e2ee52` | `b6c646d3…e2ee52` (unchanged) |
+| Unity / IL2CPP metadata | 6000.3.15f1 / 39 | 6000.3.15f1 / 39 (unchanged) |
+
+- **The overlay is unchanged.** `libunity.so` did not change, so
+  `libunity-bridge.so` is the same file (`0c2e515e…`). Its recipe was confirmed
+  on the 29.0.3 library: LIEF `add_library` of the bridge's absolute
+  on-device path reproduces it byte for byte. `patchelf --add-needed` does not.
+- **The bridge.** Before the rebuild, the same source with the old profile
+  reproduced `f5e9d9a4…` and `33d7ada0…` exactly, so the source has not
+  drifted. With only the version, version code, `libil2cpp` digest and
+  profile id (`tower-play-29.1.3-rooted-readonly-v1`) changed, it builds:
+  - `4ed87c8f1a0a68b7dfadcaa77c7ad29a96975e7c63d9775256f2028085f11cfd`, render
+    interval 1. It is `state/bridge/builds/ws2913-default-nodelay/` and is now
+    `state/bridge/current`: the 29.0.3 builds cannot handshake with 29.1.3.
+  - `7fd97b26e0fb9bb01e4ededdf5a97b9a85c733a7a8624569dd03d30b09fff7f7`, render
+    interval 16. It is `state/bridge/builds/ws2913-render-interval-16-nodelay/`,
+    the training and benchmark build.
+- **Smoke check.** One `build-defense-absolute` episode under `run_stage.sh` at
+  `#121`'s Part 2 settings, on `7fd97b26…`
+  (`state/records/v2913-smoke/`):
+  - deploy confirmed by read-back, and the instance reached home offline at a
+    confirmed 120 Hz;
+  - valid, final wave 103, Defense Absolute 69, Workshop 10 applied;
+  - `cleanup ok`, `cleanup_checks: all passed`, and the host was verified
+    empty.
+
+  One episode is not a floor. It shows only that the bridge, the Workshop
+  commands and the upgrade rows work on 29.1.3.
+
+**Consequence.** Every measured floor and learner result so far is a 29.0.3
+result. None of them pools with 29.1.3 episodes or is read against them as a
+floor until it is re-measured on 29.1.3.
+
+## Run 2 on The Tower 29.1.3 (#122) (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-10-25. Board `#122`. Scripted policies only. The code is `main`
+at this entry's commit, with the 29.1.3 bridge `7fd97b26…` (render interval
+16) selected by `TOWER_BRIDGE_BUILD_DIR`.
+
+**What changes from "Blender build at Workshop 10, run 2 (#122)".** That
+entry's arm (`build-blender`, Orbs capped at 1,250), forecast, readouts,
+success rule, effect-size sentence, stop rules, long-episode rule and safety
+rules all hold unchanged. Three things change, all forced by the version:
+
+1. **The floor is re-measured, not pooled.** The 35-episode 29.0.3 floor
+   (`#121`'s 21 plus run 1's and this run's drift rounds) cannot be read
+   against 29.1.3 episodes. `build-defense-absolute` gets its own 21 episodes
+   on 29.1.3. The drift check is dropped, because both arms are measured in
+   the same session on the same version.
+2. **The rounds alternate.** Six stages, one at a time, 7 actors, 1 episode per
+   actor:
+   - `build-defense-absolute` r1, `build-blender` r1;
+   - `build-defense-absolute` r2, `build-blender` r2;
+   - `build-defense-absolute` r3, `build-blender` r3.
+
+   Alternating means a slow drift within the session falls on both arms alike.
+3. **The records and the bridge.** Records go to
+   `state/records/blender-ws10-v2913/<arm>-r<round>/`. Every stage exports
+   `TOWER_BRIDGE_BUILD_DIR=state/bridge/builds/ws2913-render-interval-16-nodelay`.
+   Every deploy line must confirm `7fd97b26…`; a stage that confirms anything
+   else stops the run.
+
+**Analysis.** Each arm's three rounds are pooled per actor slot (7 strata of 3).
+The primary result is `scripts/report_arms.py build-blender=<pooled>
+build-defense-absolute=<pooled>`: the final-wave IQM difference with its 95% CI,
+stratified by actor. Success is a lower bound above 0, as in run 1. The
+detectable difference is reported from the pooled final-wave SD at 21 against
+21.
+
+**Reported, not a gate.** The 29.1.3 `build-defense-absolute` IQM is set beside
+29.0.3's 102.00 [101.57, 102.43] (28 episodes), as a reading of whether the
+version moved the floor. A difference there is reported. It is not a stop and
+not a verdict on either version.
+
+**Settings,** as `#121` Part 2: renderer host, `--frame-rate-hz 120`,
+`--decision-cadence choice-points`, `--upgrade-availability all`,
+`--workshop-level 10`, `--frame-game-ms 100`, `--cores 4`. Each stage runs
+under `scripts/run_stage.sh` in `towerrl.slice` (`MemoryMax=100G`,
+`MemorySwapMax=0`).
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

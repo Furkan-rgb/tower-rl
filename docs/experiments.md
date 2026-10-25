@@ -1928,7 +1928,7 @@ support rows, and then more support than forecast.
   336-550), reached at waves 63-68. The cash is `expm1(cash_log)`, since
   `cash_log` is `log1p(cash)`. Against the next Defense Absolute price at the
   same wave (455-512), it was below one price in 10 of 21 episodes and at most
-  about 1.15 prices in the rest. So idle cash stayed near one Defense Absolute
+  1.10 prices in the rest. So idle cash stayed near one Defense Absolute
   price, close to the forecast and far from run 1's 3,473.
 - **Defense Absolute.** The blender held a median of 46 when it died at
   wave 70. The floor arm held 54 at wave 70 (counted from its purchases plus

@@ -1,5 +1,5 @@
 {
-  "next_id": 127,
+  "next_id": 130,
   "items": [
     {
       "id": 1,
@@ -24,9 +24,14 @@
         {
           "at": "2026-09-17 20:05",
           "text": "The Vulkan limitation is now handled honestly. The emulator refuses to save a snapshot of the game (Vulkan) under -gpu host, replying `KO: Snapshot save is skipped. Reason: UNSUPPORTED_VK_APP`. clone_session.py's save_snapshot previously printed that reply and reported success anyway, so a later restore loaded stale renderer state from a mismatched renderer, found no running game, and silently fell back to the cold path \u2014 the fallback was right, the false success was not. save_snapshot now requires the emulator's own OK reply plus a positive check that the snapshot directory exists, and raises naming the reason and the renderer otherwise. bring_up no longer attempts a save or restore under any renderer but lavapipe: under -gpu host it goes straight to the cold path and logs one line explaining why. Keyed-snapshot naming, restore-and-verify, and mismatch/failed-verification fallback all remain unchanged and covered by tests. Consequence, recorded in docs/workstation-handoff.md: snapshots stay lavapipe-only, and since training runs on -gpu host (see #8), host bring-up is cold every time (45-60s, not ~10s)."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Superseded by ADR 0016 (5aa5ded): snapshots rejected for starts/recovery under -gpu host; cold -read-only relaunch is the recovery path. Board audit #125."
         }
       ],
-      "milestone": "M1 Foundation"
+      "milestone": "M1 Foundation",
+      "closed_at": "2026-10-25T17:19:21.424573Z"
     },
     {
       "id": 3,
@@ -159,15 +164,26 @@
       "id": 10,
       "title": "Stream-level stale-observation error has no reconnect",
       "body": "Objective (deferred): A stream-level stale-observation error closes the client socket with no reconnect, so it would burn the failure budget on an unattended run.\n\nDone-condition: Reconnect handling added for stale-observation stream errors, or the risk is explicitly accepted and documented.\n\nEvidence: the commit that closes it, or docs/experiments.md note if accepted.\n",
-      "status": "Backlog",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Premise stale: stale streams now raise RunPortError and withdraw the actor; ADR 0016 chooses a cold relaunch (P3 item) over a socket reconnect. Board audit #125."
+        }
+      ],
+      "closed_at": "2026-10-25T17:19:31.966045Z"
     },
     {
       "id": 11,
       "title": "run_actors discards driver stdout",
       "body": "Objective (deferred): run_actors discards the driver's stdout, losing handshake and failure evidence.\n\nDone-condition: run_actors captures/surfaces driver stdout for handshake and failure diagnosis.\n\nEvidence: the commit that closes it.\n",
       "status": "Backlog",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Board audit #125: failure output is captured (run_actors.py:412-419, ActorFailure tail). Remaining scope: keep the success-path handshake log."
+        }
+      ]
     },
     {
       "id": 12,
@@ -214,8 +230,14 @@
       "id": 13,
       "title": "Unexplained but harmless clock effects",
       "body": "Objective (deferred): Two unexplained but harmless clock effects: the ~1.069 per-frame credit, and one uncredited frame per advance.\n\nDone-condition: Root cause explained and documented, or explicitly accepted as harmless with rationale recorded.\n\nEvidence: docs/experiments.md entry.\n",
-      "status": "Backlog",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Explained and accepted: uncredited frame / 1.07 game unit documented (experiments.md, #112) and modelled by expected_round_ms (0ee2909). Board audit #125."
+        }
+      ],
+      "closed_at": "2026-10-25T17:19:21.721749Z"
     },
     {
       "id": 14,
@@ -1262,7 +1284,7 @@
       "id": 58,
       "title": "M3: SOTA arms under the M2 protocol \u2014 DreamerV3, (EfficientZero V2 conditional)",
       "body": "Goal from docs/task.md: multiple RL approaches compared under one identical budgeted protocol. Run 3 (M2-P003, #57) gave the first learned policy clearly above scripted under availability `all` (period-2 near-greedy 12.15 vs scripted-all 6.11), with the training recipe at 2015-DQN settings: replay ratio 0.25, PER \u03b1=0 (built, off), n-step 10 fixed, \u03b3 0.99 fixed, no resets, ~200k-param net.\n\nPrerequisite: stacked-dqn seed 2 under M2-P003 (reproducibility).\n\nArm 1 \u2014 BBF recipe on the existing stacked-dqn backbone (Schwarzer et al. 2023): replay ratio 8 (host is idle; near-free), PER on (\u03b1\u22480.5\u20130.9, \u03b2 anneal), periodic shrink-and-perturb resets, n-step anneal 10\u21923, \u03b3 anneal 0.97\u21920.997, weight decay 0.1, wider net. Config + two small features; one exploratory seed at the M2-P003 budget; every deviation from the paper values cited.\n\nArm 2 \u2014 DreamerV3 (Hafner et al. 2023): model-based world model + actor-critic, vector observations and discrete actions natively; new training loop (PyTorch port). One exploratory seed.\n\nArm 3 (conditional) \u2014 EfficientZero V2: only after measuring the per-decision latency budget on the live game; MCTS per action may not fit.\n\nProtocol: interleaved arms via scripts/compare_arms.py, bootstrap intervals, one seed exploratory, second seed only for arms that beat stacked-dqn. Device time \u2248 6 h per arm-seed at run-3 pace. Nothing starts before #57 lands and the developer approves device time.",
-      "status": "In progress",
+      "status": "Backlog",
       "comments": [
         {
           "at": "2026-09-23 21:15",
@@ -1415,6 +1437,10 @@
         {
           "at": "2026-10-03 02:19",
           "text": "M3-P019 (DreamerV3, Workshop 10, \u03b3 0.997): stopped by the pre-registered 500k rule, best period 54.14 < 97.36 (turtle IQM); still rising (43\u219246\u219249\u219244\u219254\u219249). Purchases stay spread: ~44% of buys go to 33 rows outside the 15 named, Defense Absolute 6-10% vs the script's 44%; Orbs in 11/459 episodes. 9ed92fa, 7f1291b."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Board audit #125: BBF (#70) and DreamerV3 (#79, M3-P016..P019) ran; P019 stopped by the 500k rule at 54.14 (9ed92fa). EfficientZero V2 never started. All results are 29.0.3; game is now 29.1.3 (e9985c5), floors other than DA not re-measured. Parked until the next learner run is chosen."
         }
       ]
     },
@@ -1749,6 +1775,10 @@
         {
           "at": "2026-09-24 17:49",
           "text": "Second flaky test found while landing #74 (4d7fbee): tests/unit/test_fleet_training.py::test_a_kill_bar_reads_the_near_greedy_actors_alone. Root cause (specialist, reproduced standalone 2/10): actor 0's instant scripted episodes can all complete before near-greedy actors 1 and 2 record one, so the (0,60] window has no near-greedy episode and mean is None by design. Production kill-bar accounting is correct (runs under _lock in completion order). Test-only fix: make actor 0's run_episode wait until actors 1 and 2 have each recorded an episode (verified 0/60 failures in a scratch copy)."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Board audit #125: kill-bar test already fixed (after_near_greedy). Remaining: test_a_client_left_idle (test_instrumented_bridge.py:1157) and test_run_stage (test_a_cleanup_that_never_returns... fails on main, seen 2026-10-25)."
         }
       ]
     },
@@ -1901,7 +1931,7 @@
       "id": 80,
       "title": "Wave 20\u201321 wall: can in-run cash alone beat it, or does it need permanent upgrades?",
       "body": "Every run and learner so far: 0 of 255 arrivals at wave 20 passed wave 21, and no episode reached wave 22. We have no game-state data past wave 11 (#75 diagnosis).\n\nHypotheses:\n- **H1, policy or training:** the cash earned by wave 20, spent well, can beat the wave-20 boss. The policy banks cash; median cash at wave-20 entry is about 76.\n- **H2, structural:** even the best spending of all in-run cash cannot beat it at this account's base stats, so only permanent upgrades could.\n\nDone when:\n- per-decision state is recorded through death at wave 20\u201321 for the run-4 arm;\n- a feasibility bound supporting H1 or H2 is recorded in experiments.md.\n\nRefs #58",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-09-25 07:19",
@@ -2042,8 +2072,13 @@
         {
           "at": "2026-09-29 23:09",
           "text": "W100 feasibility at L5 (specialist, offline, 2026-09-29; scratchpad w100/feasibility.md). Measured from the M3-P010..P015 replays: in-run costs are QUADRATIC in in-run buys (DefAbs 0.422k^2, 741 at buy 42), independent of the Workshop level. DefAbs value, enemy damage (exact to w66) and income (1.17x formula) are measured. Death occurs when DefAbs / post-Def% enemy damage reaches ~1.0-1.16. Model validated on turtle 39.4 (pred 37-43) and DQN 55.7 (pred 50-57). L5 best-policy ceiling is ~80-100 (central 90). The DQN never buys Defense %, and 7/10 eval deaths hold 1.2-1.8K unspent cash. Uniform N: 8 gives best 97-129, DQN-like 70-81, turtle 70-89; 9 gives 100-140, 76-90, 81-98. The survival rule is extrapolated above w63, and Orbs are unmodelled."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Obsolete: answered by the Workshop runway (ADR 0012) and #121; learners and scripts pass wave 20-21 at Workshop 5/10 (M3-P009, M3-P014, 240d6c9). Board audit #125."
         }
-      ]
+      ],
+      "closed_at": "2026-10-25T17:19:21.472000Z"
     },
     {
       "id": 81,
@@ -2802,7 +2837,7 @@
       "id": 98,
       "title": "An environment-pipeline design (game lifecycle, state ownership, recovery, throughput) is recorded as an ADR from a scout map and an architecture review, before any refactor is implemented",
       "body": "Developer direction 2026-09-30: map first (scout), then an architecture specialist designs, then implement. Goals: robustness (single owner of game state, the world-held invariant, one recovery path, snapshots allowed) and throughput (emulator RAM/cores/rendering, bridge overhead). The #95 targeted fix lands independently first. Refs #95",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-09-30 10:18",
@@ -2815,20 +2850,30 @@
         {
           "at": "2026-09-30 10:57",
           "text": "User delegated both decisions to the lead. Decided: (1) a cold -read-only relaunch is accepted as golden recovery; this needs an ADR and a matching AGENTS.md/task.md wording change, with no weakening of the requirement. (2) Gate 0: a short 7-actor check run after the #95 landing. If it is clean (no stale/WORLD_NOT_HELD cascades, no dead games), launch M3-P016 and build P1-P3 during the run. Otherwise P3 (relaunch) goes before M3-P016."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Done-condition met: ADR 0016 recorded (5aa5ded). Unbuilt packages P1/P3/P4 get their own items. Board audit #125."
         }
-      ]
+      ],
+      "closed_at": "2026-10-25T17:19:21.671650Z"
     },
     {
       "id": 99,
       "title": "A short 7-actor check stage on merged #95 code records every invalid episode's first reason and whether any game died, and decides M3-P016 launch vs P3-first",
       "body": "",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-09-30 11:10",
           "text": "User stopped M3-P016 at ~2k decisions to build the speed levers first; a fresh run follows once they're verified. Gate 0 folds into the verification of the new build."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Obsolete: Gate 0 folded into the new build's verification; M3-P016 attempt 3 ran on it (1b2d730, 1cd7664). Board audit #125."
         }
-      ]
+      ],
+      "closed_at": "2026-10-25T17:19:21.519498Z"
     },
     {
       "id": 100,
@@ -2920,19 +2965,24 @@
       "id": 106,
       "title": "A reward design derived from game mechanics and RL practice (candidates ranked, recommended formula, required bridge fields, validation experiment) is presented to the developer and, if adopted, recorded as an ADR",
       "body": "",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-09-30 21:18",
           "text": "Reward design delivered. Waves are timer-driven (35.0 s median; 99.97% in [34.5, 35.6] over 30,266 waves), so waves-as-reward equals survival time at coarser resolution. There is no internal score. Recommended as a test only: health-potential shaping r~ = (1-d)V_REF + d\u03a6(s') - \u03a6(s), \u03a6 = 0.1\u00b7V_REF\u00b7health_fraction, \u03a6(terminal) = 0; it needs no bridge field. The developer's hypothesis (\u03b3 0.999 adds noise) is contradicted on noise: M3-P015 had lower |TD| and gradient norm and a better value fit than M3-P014, but the performance gap is confounded (6 actors, 67-79% valid). Keep 0.999. Awaiting the developer's decision."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Delivered, not adopted: developer cancelled reward shaping (2026-10-01); discount set by ADR 0019 (362321c). Board audit #125."
         }
-      ]
+      ],
+      "closed_at": "2026-10-25T17:19:21.567900Z"
     },
     {
       "id": 107,
       "title": "Reward research phase: a literature-grounded shortlist of 3-4 reward designs is pre-registered and compared at ~100k decisions per arm with enough seeds to detect a pre-stated effect, and the result names the reward for the next full run",
       "body": "",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-09-30 21:43",
@@ -2957,8 +3007,13 @@
         {
           "at": "2026-10-01 06:41",
           "text": "Developer cancelled shaping (no health, no defense bonus). Shaping engineer stopped; branch shaping not to land. Reward next step open."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Retired: shaping cancelled 2026-10-01; later work went to discount (ADR 0019, 362321c) and scripted builds (#120-#122). Reopen as a new item if reward work returns. Board audit #125."
         }
-      ]
+      ],
+      "closed_at": "2026-10-25T17:19:21.620316Z"
     },
     {
       "id": 108,
@@ -3245,6 +3300,10 @@
         {
           "at": "2026-10-25 12:58",
           "text": "Run 2 launched 2026-10-25 (4 stages, pre-registered order) \u2192 state/records/blender-ws10-run2/. The 2026-10-03 attempt aborted before any episode: no X display for the host renderer (log kept as aborted-no-x-display-stage-build-blender-r1.log)."
+        },
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Run 2 on 29.1.3 (49439cc): 1:1 blender IQM 69.73 vs DA floor 102.00, diff -32.27 [-32.95,-31.58]; game updated to 29.1.3 (e9985c5), floor unchanged. Research (Notion hub/Fandom): after the switch the blender survives on Health/Def%, not DA; Thorns kills bosses; Attack Speed triggers knockback. Next: turtle-into-blender arm (switch on in-wave damage), after recording in-wave health and orb/range geometry."
         }
       ]
     },
@@ -3266,8 +3325,14 @@
       "id": 125,
       "title": "Board audit: 2026-10-25",
       "body": "Audit of current milestone open items and In progress cards with no live worker.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-10-25 18:19",
+          "text": "Applied: closed #2 (M1 complete), #10, #13, #80, #98, #99, #106, #107; created #127-#129 (ADR 0016 P1/P3/P4); commented #11, #73; #58 to Backlog. Not applied: M3/M4 milestones (developer decision), #65 milestone."
+        }
+      ],
+      "closed_at": "2026-10-25T17:19:35.965241Z"
     },
     {
       "id": 126,
@@ -3281,6 +3346,27 @@
         }
       ],
       "closed_at": "2026-10-25T12:06:27.912889Z"
+    },
+    {
+      "id": 127,
+      "title": "Instance failures are classified by cause (ADR 0016 P1): bring-up, bridge loss and game death are distinct, named outcomes in the fleet record",
+      "body": "From #98 / ADR 0016 package P1; no code on main as of 49439cc.",
+      "status": "Backlog",
+      "comments": []
+    },
+    {
+      "id": 128,
+      "title": "A dead or stale instance is recovered by a cold -read-only relaunch inside a run (ADR 0016 P3), with a test that kills one instance mid-run",
+      "body": "From #98 / ADR 0016 P3; replaces #10's socket-reconnect premise.",
+      "status": "Backlog",
+      "comments": []
+    },
+    {
+      "id": 129,
+      "title": "The bridge holds the game across a host disconnect (ADR 0016 P4), reported as BRIDGE_LOST when it cannot",
+      "body": "From #98 / ADR 0016 P4.",
+      "status": "Backlog",
+      "comments": []
     }
   ],
   "milestones": [

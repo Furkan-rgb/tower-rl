@@ -2467,6 +2467,31 @@ with three rounds, 21 episodes. That also counts rejections on the fixed bridge.
 that lets the floor carry over. The six random episodes that survived on `9037f1cf…`
 (IQM 27.0) are recorded and not pooled.
 
+Results on `b8b8cd45…` (`state/records/p021-floors-b/`):
+
+| Arm, at `standing-orders` | Episodes | IQM | Range | Decisions an episode | Purchases an episode |
+|---|---|---|---|---|---|
+| `build-defense-absolute` | 7 | 102.60 | 99–103 | 102 | 131 |
+| `random` | 20 | 26.50 | 20–38 | 27 | 106 |
+
+- **One row a wave costs the script nothing measurable.** 102.60 at `standing-orders`
+  against 102.00 at `choice-points`, with 102 decisions an episode against 2,273.
+- **The drift check did not pass cleanly.** The three `9037f1cf…` rounds read means of
+  100.86, 100.00 and 100.29 and this round 102.14, a gap of about 2.9 standard errors
+  from one comparison made after the fact. I have no mechanism for it: the script's
+  orders are taken at a wave's turn, where a purchase's settled state is not involved.
+- **So the floor is not carried over.** The comparison floor for the primary outcome
+  is `build-defense-absolute` on `b8b8cd45…` only: these 7 episodes, plus two more
+  rounds of 7 run straight after the pilot, 21 in all. This amends "the 21
+  scripted-floor episodes" under Primary outcome.
+- **No rejections on the fixed bridge** in 27 episodes. That is consistent with the
+  fix and does not prove it: at `M3-P019`'s rate of 1.3% about 0.4 would be expected.
+  The pilot's own count and a stale-price count on its replay are the test.
+- **One bring-up failure in 28,** on `emulator-5566` in `random-orders-3`:
+  `main_unavailable` after 300 s, while the other six came up on the same image. That
+  rules out the version gate, which refuses every instance. It is why `random` has 20
+  episodes and not 21. No cause was established.
+
 **Launch: `M3-P020`'s, with exactly these changes.**
 
 - **Cadence:** `--decision-cadence standing-orders`.
@@ -2488,7 +2513,7 @@ that lets the floor carry over. The six random episodes that survived on `9037f1
 
 **Primary outcome.** The run's pre-registered final evaluation: 30 exploration-free
 episodes on the selected checkpoint, read by a stratified bootstrap of the IQM
-difference against the 21 scripted-floor episodes (`M3-P019`'s method). As in
+difference against the 21 scripted-floor episodes on `b8b8cd45…` (`M3-P019`'s method). As in
 `M3-P020`, "beats" needs the interval wholly above 0 and "matches" means it includes
 0.
 

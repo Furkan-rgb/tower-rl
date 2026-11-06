@@ -3427,7 +3427,12 @@
       "title": "A purchase's settled state shows the row's new price: mask_legal_rejected stops ending episodes",
       "body": "Found 2026-11-06 from a mask_legal_rejected in M3-P021's random floor. M3-P019's replay: 606 of 94,606 purchases left a state with the old price, and all 606 had the new one a step later. The game writes level and cash, then the price, and the bridge's 5 ms poll can land between them. 6 of M3-P019's 9 invalid episodes were this outcome, and standing orders re-buy at once, so they meet it more often. Fix in the bridge, not by absorbing the rejection.",
       "status": "In progress",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-06 23:18",
+          "text": "Fixed bridge b8b8cd45: 0 rejections in 27 episodes at standing-orders, consistent but not proof. Stays open until M3-P021's rejection count and a stale-price count on its replay."
+        }
+      ]
     }
   ],
   "milestones": [

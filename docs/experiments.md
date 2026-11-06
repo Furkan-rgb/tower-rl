@@ -2411,6 +2411,32 @@ this cadence were not a credible answer.
 **Consequence.** ADR 0020, Proposed, and `M3-P021` below. `M3-P020` is not launched
 as written; it is superseded by `M3-P021`.
 
+## The stale price behind `mask_legal_rejected` (`#133`, 2026-11-06)
+
+**What was seen.** The first `random` stage at `standing-orders` lost one episode of
+7 to "a mask-legal purchase was rejected by the bridge: `precondition_failed`". That
+outcome has been in the records since `#86` with no cause found: 6 of `M3-P019`'s 9
+invalid episodes, 16 of 34 in an earlier run's segments. It matters more at this
+cadence, because a standing order buys again in the same held world.
+
+**Cause, from `M3-P019`'s replay** (`state/analysis/stale_price.py`, machine-local).
+Of 94,606 purchases, the settled state still showed the row's old price in 606
+(0.64%). In all 606 the price had risen by the next step, and in all 606 the cash had
+already been taken. So the game writes the level and takes the cash, then writes the
+price, and the bridge's 5 ms confirmation poll can land between the two. The state
+sent there offers the row at the old price. If the remaining cash lies between the
+old and new prices, the mask allows a purchase the bridge then refuses.
+
+This has not been caught on a failing episode directly: such an episode leaves no
+record. The stale states are measured, and the rejection is the consequence they
+predict. The test is the rate after the fix.
+
+**Fix.** After confirming a purchase, the bridge polls until the row's price moves,
+bounded at 50 ms, before it sends the state: `a8602aee…` and `b8b8cd45…`
+(`docs/setup.md`). The host still ends an episode on a rejection, as `#86` requires.
+The world is held throughout, so this costs one poll on a purchase in about 150 and
+changes nothing in the game.
+
 ## M3-P021: DreamerV3 at one decision a wave, Workshop 10, The Tower 29.1.4 (pre-registered, written before any of its device episodes)
 
 **Date:** 2026-11-06. Board `#131`. Single seed, single run, from scratch on `main`
@@ -2432,13 +2458,23 @@ Workshop 10, `--upgrade-availability all`:
 If step 2's IQM falls more than 10 waves below step 1's, the pilot still runs, and
 the entry reports that the cadence itself costs that much.
 
+Amended before the launch, after the first pass. Steps 1 and 2 stand, on `9037f1cf…`:
+choice-points IQM 102.00 (n=7, range 99–103), standing-orders IQM 100.18 (n=21, range
+97–103, about 100 decisions an episode), a cost of about 2 waves. Step 3 lost an
+episode to the stale price above, so the random floor is re-measured on `b8b8cd45…`
+with three rounds, 21 episodes. That also counts rejections on the fixed bridge. One
+`build-defense-absolute` round at `standing-orders` on `b8b8cd45…` is the drift check
+that lets the floor carry over. The six random episodes that survived on `9037f1cf…`
+(IQM 27.0) are recorded and not pooled.
+
 **Launch: `M3-P020`'s, with exactly these changes.**
 
 - **Cadence:** `--decision-cadence standing-orders`.
 - **Discount:** `--discount-per-game-second 0.99991416`, which is 0.997 per 35
   game-second wave.
 - **Train ratio:** `--train-ratio 2048`, 2 updates a decision (ADR 0020 item 5).
-- **Bridge:** `9037f1cf…`, on 29.1.4.
+- **Bridge:** `b8b8cd45…`, on 29.1.4. This replaces `9037f1cf…`, amended before the
+  launch; see `The stale price behind mask_legal_rejected`.
 - **Budget:** `--budget-decisions 150000`, about 1,500 episodes and 14 hours.
 - **Periods:** `--checkpoint-every-decisions 2500`,
   `--selection-period-decisions 5000`.
@@ -2475,7 +2511,7 @@ difference against the 21 scripted-floor episodes (`M3-P019`'s method). As in
 - The purchase mix per period.
 - Learner utilization and updates an hour, against the ceiling of about 42,000.
 
-**Stop rules:** `M3-P020`'s, with the digest `9037f1cf…`.
+**Stop rules:** `M3-P020`'s, with the digest `b8b8cd45…`.
 
 **Command.** Under `M3-P020`'s detached scope, with `TOWER_BRIDGE_BUILD_DIR` on the
 29.1.4 render-interval-16 build, and the run name stamped at launch:

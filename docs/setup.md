@@ -202,17 +202,22 @@ d541eb742f74b781ed62c31a1b7b69829b060466deb867098d39340cd9531471   33d7ada0… w
 a0bac6d0675fe1c5e5f5d345c277e97bef203bf667b868089b10de2d28d5c644   the same with the clockprobe line's frame-timing fields (#112), 2026-10-01; state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe2/, a probe build only
 4ed87c8f1a0a68b7dfadcaa77c7ad29a96975e7c63d9775256f2028085f11cfd   f5e9d9a4… for The Tower 29.1.3, 2026-10-25; state/bridge/builds/ws2913-default-nodelay/, not installed
 7fd97b26e0fb9bb01e4ededdf5a97b9a85c733a7a8624569dd03d30b09fff7f7   33d7ada0… for The Tower 29.1.3, 2026-10-25; state/bridge/builds/ws2913-render-interval-16-nodelay/
-de5f2dcbcff6044c149828d8dfb636902d20b7c9b7a18a9811396a55c17302c0   f5e9d9a4… for The Tower 29.1.4, 2026-11-06; state/bridge/builds/ws2914-default-nodelay/; installed at state/bridge/current
+de5f2dcbcff6044c149828d8dfb636902d20b7c9b7a18a9811396a55c17302c0   f5e9d9a4… for The Tower 29.1.4, 2026-11-06; state/bridge/builds/ws2914-default-nodelay/, not installed
 9037f1cf643b9d6d192071a5eea881614da92e925bbe767e7e41e7703b7d2e18   33d7ada0… for The Tower 29.1.4, 2026-11-06; state/bridge/builds/ws2914-render-interval-16-nodelay/
+a8602aeef431d1d660dcfc507d7b12eadfd4d5a1c8786f2450d1b2256ccf610b   de5f2dcb… with the settled purchase price (#133), 2026-11-06; state/bridge/builds/ws2914b-default-nodelay/; installed at state/bridge/current
+b8b8cd451a6735dfed2fb1c6a699517fe851753eae267dcce4d8c137e7dd8587   9037f1cf… with the settled purchase price (#133), 2026-11-06; state/bridge/builds/ws2914b-render-interval-16-nodelay/
 ```
 
-**On The Tower 29.1.4 only `de5f2dcb…` and `9037f1cf…` handshake.** Every build
-above them carries an older identity. They are the same source as `f5e9d9a4…`
-and `33d7ada0…`, and that source still reproduces `4ed87c8f…` and `7fd97b26…`
-under the 29.1.3 profile. Only `profile.cmake`'s version, version code,
-`libil2cpp` digest and profile id changed. `libunity.so` is unchanged in 29.1.4,
-so `libunity-bridge.so` is the same file. `9037f1cf…` is the training and
-benchmark build, and `de5f2dcb…` the evaluation build.
+**On The Tower 29.1.4 only the last four handshake, and `a8602aee…` and
+`b8b8cd45…` are the ones to run.** Every build above them carries an older
+identity. `de5f2dcb…` and `9037f1cf…` are the same source as `f5e9d9a4…` and
+`33d7ada0…`, and that source still reproduces `4ed87c8f…` and `7fd97b26…` under
+the 29.1.3 profile. Only `profile.cmake`'s version, version code, `libil2cpp`
+digest and profile id changed. `libunity.so` is unchanged in 29.1.4, so
+`libunity-bridge.so` is the same file. `b8b8cd45…` is the training and benchmark
+build, and `a8602aee…` the evaluation build. They differ from the build before
+only in waiting for a purchased row's new price before sending the state
+(`The stale price behind mask_legal_rejected` in `experiments.md`).
 
 `f5e9d9a4…` and `33d7ada0…` are the ones to run. Each is `33de6826…` and
 `53d346ae…` with the transport fix (`SendFrame` writes header and payload in

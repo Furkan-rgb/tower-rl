@@ -67,6 +67,7 @@ constexpr useconds_t kCommandPollMicros = 50000;
 // How often a purchase is checked for the game's own level increment. Each poll
 // is a sleep the host waits out, so it is the floor of a purchase's round trip.
 constexpr useconds_t kPurchasePollMicros = 5000;
+constexpr useconds_t kPriceSettleMicros = 50000;
 constexpr useconds_t kLifecycleTimeoutMicros = 30000000;
 constexpr useconds_t kLifecyclePollMicros = 250000;
 // Floors the cadence so a very high speed cannot spin the loop, but it must stay
@@ -2684,6 +2685,16 @@ void ServeClient(int client, const Il2CppApi& api, const MainFields& fields) {
                 !after.unlocked) { outcome = "ambiguous"; reason = "contradictory_state_change"; break; }
           }
           if (!confirmed && std::strcmp(outcome, "ambiguous") != 0) { outcome = "ambiguous"; reason = "confirmation_timeout"; }
+          // The game writes the level and takes the cash before it writes the
+          // new price, and a poll can land between them: 606 of 94,606 purchases
+          // in `M3-P019`'s replay. A state sent there offers the row at its old
+          // price and the next purchase is rejected (`#86`). A row whose price
+          // really does not move waits out the bound and nothing else.
+          for (useconds_t elapsed = 0; confirmed && after.cost == before.cost &&
+                                       elapsed < kPriceSettleMicros; elapsed += kPurchasePollMicros) {
+            usleep(kPurchasePollMicros);
+            if (!ReadUpgradeEvidence(api, fields, command.family, command.index, &after)) break;
+          }
         }
       }
       std::strncpy(last_request_id, command.request_id, sizeof(last_request_id) - 1);

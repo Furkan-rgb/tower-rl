@@ -482,10 +482,13 @@ clean_instances() {
     # stopped answering would otherwise hold the supervisor open for as long as
     # it liked — and teardown ignores the signals that would have freed it.
     # `-k` follows the TERM with a KILL, which is what actually ends a child
-    # that inherited this phase's ignored SIGTERM.
-    if timeout -k 10 "$cleanup_timeout" "$bridge_script" cleanup "$serial"; then
+    # that inherited this phase's ignored SIGTERM. A timeout that had to send
+    # the KILL exits 137 rather than 124, and both are a cleanup that hung.
+    cleanup_status=0
+    timeout -k 10 "$cleanup_timeout" "$bridge_script" cleanup "$serial" || cleanup_status=$?
+    if [ "$cleanup_status" -eq 0 ]; then
       cleaned=$((cleaned + 1))
-    elif [ $? -eq 124 ]; then
+    elif [ "$cleanup_status" -eq 124 ] || [ "$cleanup_status" -eq 137 ]; then
       echo "cleanup: $serial did not finish cleaning up within ${cleanup_timeout}s" >&2
       cleanup_ok=no
     elif instance_exited "$serial"; then

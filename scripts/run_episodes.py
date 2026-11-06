@@ -328,7 +328,8 @@ def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
         choices=[cadence.value for cadence in DecisionCadence],
         default=DecisionCadence.CHOICE_POINTS.value,
         help="which cadence stops the policy is asked about: choice-points is "
-        "the contract, every-slice reproduces run 1's protocol (ADR 0009)",
+        "the contract, every-slice reproduces run 1's protocol (ADR 0009), "
+        "standing-orders is one decision a wave, on trial (ADR 0020)",
     )
 
 

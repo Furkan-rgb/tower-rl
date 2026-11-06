@@ -1,0 +1,78 @@
+# ADR 0020 — One decision a wave, by standing order
+
+**Status:** Proposed, 2026-11-06. Board `#131`. Nothing here is the contract:
+`choice-points` stays the default and ADR 0009 and ADR 0019 stand. The pilot
+`M3-P021` (`docs/experiments.md`) is the spike whose output is this decision, and
+the developer accepts or rejects it.
+
+## Context
+
+The developer asked whether the reward is right. The audit in `docs/experiments.md`
+("The credit audit") found the reward's formula correct and aligned, and found
+that the setup around it cannot credit what the game needs credited.
+
+At Workshop 10 the agent takes about 22 decisions a wave and discounts at 0.997
+per game-second, a horizon of about 9.5 waves (ADR 0019). A purchase that adds one
+wave of survival is worth, in return, 0.33 ten waves from death, 0.014 at forty,
+0.0002 at eighty. Against `M3-P019`'s return scale (S = 7.82) and DreamerV3's
+entropy scale (3e-4), that advantage moves the action odds by 414× at forty waves
+from death, 2.1× at sixty and 1.01× at a hundred.
+
+The measured policies show the same shape. In the last 150,000 decisions of
+`M3-P019`, Defense Absolute's share over uniform falls from 9–11× within ten waves
+of death to 1.2× past sixty, and `M3-P018` falls from 18× to 1.8×. Distance to
+death is correlated with wave number, so this is a correlation and not proof. It
+does match the arithmetic.
+
+The horizon cannot simply be raised at this cadence. ADR 0013 chose 0.999 per
+game-second and it lost to 0.997 (ADR 0019). Imagination stops after 15 decisions,
+which is about 28 game-seconds here. At wave 1000 about 94% of an episode's
+decisions would sit more than sixty waves from death, where the odds barely move.
+
+## Decision (proposed)
+
+1. **One decision a wave.** A third `DecisionCadence`, `standing-orders`. The
+   policy is asked at a wave's first choice point, over the unchanged action mask,
+   and its answer stands until the wave turns
+   (`docs/environment-contract.md`, "Decision cadence").
+2. **Actions stay semantic and the mask stays affordability.** A row out of reach
+   is saved for by ordering `WAIT`, so scripted policies run unchanged and the same
+   policy can be measured at both cadences.
+3. **The discount is 0.997 per wave**, which is `γ_s = 0.997^(1/35) ≈ 0.99991416`
+   per game-second. That gives DreamerV3 its stock horizon of 333 of its own steps,
+   here 333 waves. The discount stays a task parameter per game-second (ADR 0013).
+4. **The reward is unchanged**: `(1−d)·V_REF` with `d = γ_s^Δt`.
+5. **Train ratio 2048.** A wave-long decision yields about 11,000 decisions an hour
+   against the learner's ceiling of about 42,000 updates an hour, so 512 would use
+   about 13% of it. ADR 0018 requires a deviation to name what forces it, and this
+   cadence does: decisions arrive about eight times slower while the update
+   ceiling is unchanged. 2048 is 2 updates a decision, about half the ceiling.
+
+On paper, the odds a +1-wave advantage earns rise to e^30 at a hundred waves from
+death, e^9 at five hundred and about e^2 at a thousand, at a return scale of about
+2.3. That is arithmetic, not a measurement, and the pilot is what tests it.
+
+## Options rejected
+
+- **A logarithmic survival reward** would need a new acceptance decision under
+  `docs/task.md` §7.5, and does nothing about the imagination cutoff.
+- **A longer discount alone** at this cadence: see ADR 0019's evidence.
+- **Offering rows that are not yet affordable.** It lets the agent name a row
+  before it can pay, but needs a second mask beside the one every policy, record
+  and test reads. Saving through `WAIT` costs less than a wave's delay on a
+  purchase. Revisit if the floor at this cadence shows that delay matters.
+
+## Costs to be measured
+
+- One row a wave is a real restriction. The floor at this cadence is measured
+  against the same policy at `choice-points` before the learner runs.
+- A checkpoint from one cadence cannot be resumed or evaluated at another.
+- **This lifts no account ceiling.** Scripted play at Workshop 10 ends near wave
+  102, and a better learner at that level does not make wave 1000 reachable.
+
+## Revisit if
+
+- `M3-P021` does not beat its floors, or beats them only at `choice-points`'
+  known level.
+- The scripted floor at `standing-orders` falls well below `choice-points`'.
+- Wave 1000 needs more than one purchase row a wave.

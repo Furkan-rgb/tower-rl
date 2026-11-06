@@ -77,6 +77,12 @@ class DecisionCadence(StrEnum):
     #: reproducing run 1 and replaying its checkpoints under the protocol they
     #: were collected under - and for nothing else.
     EVERY_SLICE = "every-slice"
+    #: One decision a wave (ADR 0020). The policy is asked at a wave's first
+    #: choice point, over the same legal set, and its answer stands until the
+    #: wave turns: the ordered row is bought again whenever it is affordable,
+    #: and WAIT buys nothing. A wave that offers no choice folds into the
+    #: decision before it, as a forced slice does under `CHOICE_POINTS`.
+    STANDING_ORDERS = "standing-orders"
 
 
 class UpgradeAvailability(StrEnum):
@@ -546,9 +552,9 @@ class _Advance:
     events: tuple[DecisionEvent, ...]
     requested_game_ms: int
     reasons: tuple[str, ...]
-    #: Set only when the port itself failed, in which case it replaces the
-    #: action's own outcome so the episode is classified as a pipeline failure
-    #: rather than as an ordinary wait.
+    #: Set only when an advance or a purchase failed, in which case it replaces
+    #: the action's own outcome so the episode is classified by that failure
+    #: rather than as an ordinary wait or an executed purchase.
     failure: ActionOutcome | None = None
     #: Measured round-clock game time across this advance, and how many times
     #: the world was actually advanced to produce it. Zero for the settles that
@@ -887,7 +893,8 @@ class InstrumentedRunEnvironment:
     def step(self, action: RunActionId) -> RunTransition:
         """Execute one semantic decision and advance to the next one.
 
-        Under `CHOICE_POINTS` the next decision is the next choice point, so
+        Under `CHOICE_POINTS` the next decision is the next choice point, and
+        under `STANDING_ORDERS` the first choice point after the wave turns, so
         the transition this returns may cover several advances. Its reward is
         the wave progress across the whole span and its `game_ms` the measured
         game time of it; what the environment withheld is the decision, never
@@ -919,62 +926,13 @@ class InstrumentedRunEnvironment:
                 ("action is masked",), advances=0, game_ms=0.0,
             )
 
-        outcome = ActionOutcome.WAITED
-        purchase_result: AdvanceResultLike | None = None
-        try:
-            if not action.is_wait:
-                assert action.family is not None and action.slot is not None
-                purchase_started = time.perf_counter()
-                with self.profile.span(BRIDGE_ROUND_TRIP):
-                    purchase_result = self.port.buy_upgrade(
-                        action.family.value,
-                        action.slot,
-                        expected_sequence=state.source_sequence,
-                    )
-                self._tally.purchase_round_trip_seconds += time.perf_counter() - purchase_started
-                outcome = _purchase_outcome(purchase_result.outcome)
-                if outcome is ActionOutcome.EXECUTED:
-                    self._tally.purchases += 1
-                    self._tally.charge_purchase(str(action))
-                if outcome in (ActionOutcome.AMBIGUOUS, ActionOutcome.FAILED):
-                    # An unconfirmed purchase leaves the game in a state the record
-                    # cannot describe, so the episode is classified, not continued.
-                    after = self._read_state()
-                    return self._finish(
-                        state, after, action, outcome, started, 0, (),
-                        (f"purchase was not confirmed: {purchase_result.reason}",),
-                        advances=0, game_ms=0.0,
-                    )
-                if outcome is ActionOutcome.UNAVAILABLE:
-                    # The mask already refused this action above when it disagreed;
-                    # reaching here means the mask said this purchase was legal and
-                    # the bridge rejected it anyway. The first disagreement ends the
-                    # episode rather than being absorbed as an ordinary wait: nothing
-                    # a greedy policy would do next tells the two apart, so retrying
-                    # would only spin against the same disagreement (`#86`).
-                    after = self._read_state()
-                    return self._finish(
-                        state, after, action, outcome, started, 0, (),
-                        (f"{MASK_LEGAL_PURCHASE_REJECTED}: {purchase_result.reason}",),
-                        advances=0, game_ms=0.0,
-                    )
-
-            advanced = self._advance_to_choice_point(state, action, purchase_result)
-        except _DeathBoundaryUnresolved as unresolved:
-            # A death boundary the world would not settle is a pipeline failure,
-            # not a wait: nothing here can say what the game did next. Only the
-            # purchase settle can raise this far - an advance inside the span
-            # returns the failure with the advance it really made - and a
-            # purchase settle advances nothing, so this span is empty.
-            return self._finish(
-                state, None, action, unresolved.outcome, started, 0, (), (unresolved.reason,),
-                advances=0, game_ms=0.0,
-            )
+        advanced = self._advance_to_choice_point(state, action)
         return self._finish(
             state,
             advanced.state,
             action,
-            advanced.failure or outcome,
+            advanced.failure
+            or (ActionOutcome.WAITED if action.is_wait else ActionOutcome.EXECUTED),
             started,
             advanced.requested_game_ms,
             advanced.events,
@@ -985,35 +943,40 @@ class InstrumentedRunEnvironment:
 
     # -- internals ---------------------------------------------------------
 
-    def _advance_to_choice_point(
-        self,
-        state: RunState,
-        action: RunActionId,
-        purchase_result: AdvanceResultLike | None = None,
-    ) -> _Advance:
+    def _advance_to_choice_point(self, state: RunState, action: RunActionId) -> _Advance:
         """Advance until the policy has something to choose, or the run ends.
 
         Under `EVERY_SLICE` this is one advance and nothing else, which is what
         run 1 collected. Under `CHOICE_POINTS` a settled state offering only
         WAIT is not a decision - the policy has one answer available - so the
-        environment takes that answer itself and advances again. Every advance
-        in the span is an ordinary one: same cadence, same divergence check,
-        same wave and episode tallies. The span stops at a choice point, at the
-        end of the run, or at the first thing that makes the transition
-        inadmissible, because a span may not be built across a state the record
-        cannot describe.
+        environment takes that answer itself and advances again. Under
+        `STANDING_ORDERS` the policy has already answered for the rest of its
+        wave, so the environment carries that answer out until the wave turns
+        and then runs on to the next choice point. Every advance in the span is
+        an ordinary one: same cadence, same divergence check, same wave and
+        episode tallies. The span stops at the next decision, at the end of the
+        run, or at the first thing that makes the transition inadmissible,
+        because a span may not be built across a state the record cannot
+        describe.
         """
-        span = self._advance_to_decision(state, action, purchase_result)
+        span = self._carry_out(state, action)
         if self.decision_cadence is DecisionCadence.EVERY_SLICE:
             return span
-        while self._span_continues(span):
+        standing = self.decision_cadence is DecisionCadence.STANDING_ORDERS
+        order_wave = state.wave if standing else None
+        while self._span_continues(span, order_wave):
             assert span.state is not None
             self._enter(span.state)
-            span = span.followed_by(self._advance_to_decision(span.state, WAIT))
+            answer = action if span.state.wave == order_wave else WAIT
+            span = span.followed_by(self._carry_out(span.state, answer))
         return span
 
-    def _span_continues(self, span: _Advance) -> bool:
-        """Whether the environment may withhold the decision and advance again."""
+    def _span_continues(self, span: _Advance, order_wave: int | None = None) -> bool:
+        """Whether the environment may withhold the decision and advance again.
+
+        `order_wave` is the wave a standing order was given in; a choice point
+        inside it is already answered.
+        """
         return (
             span.state is not None
             and span.failure is None
@@ -1021,7 +984,75 @@ class InstrumentedRunEnvironment:
             and span.state.valid
             and span.state.lifecycle == "active"
             and not span.state.terminal
-            and not span.state.is_choice_point
+            and (span.state.wave == order_wave or not span.state.is_choice_point)
+        )
+
+    def _carry_out(self, state: RunState, action: RunActionId) -> _Advance:
+        """Take one step of `action` from `state`: buy it if it can be bought, else advance."""
+        if action.is_wait or not state.action_mask[action_index(action)]:
+            return self._advance_to_decision(state)
+        return self._buy(state, action)
+
+    def _buy(self, state: RunState, action: RunActionId) -> _Advance:
+        """Send one purchase and settle on what it did.
+
+        Spends no game time, so what it returns is the state a confirmed
+        purchase left, or the failure that ends the episode with whatever span
+        led up to it.
+        """
+        assert action.family is not None and action.slot is not None
+        purchase_started = time.perf_counter()
+        with self.profile.span(BRIDGE_ROUND_TRIP):
+            result = self.port.buy_upgrade(
+                action.family.value,
+                action.slot,
+                expected_sequence=state.source_sequence,
+            )
+        self._tally.purchase_round_trip_seconds += time.perf_counter() - purchase_started
+        outcome = _purchase_outcome(result.outcome)
+        try:
+            if outcome is ActionOutcome.EXECUTED:
+                self._tally.purchases += 1
+                self._tally.charge_purchase(str(action))
+                return self._settle_purchase(state, result)
+            if outcome is ActionOutcome.UNAVAILABLE:
+                # The mask already refused this action when it disagreed;
+                # reaching here means the mask said this purchase was legal and
+                # the bridge rejected it anyway. The first disagreement ends the
+                # episode rather than being absorbed as an ordinary wait: nothing
+                # a greedy policy would do next tells the two apart, so retrying
+                # would only spin against the same disagreement (`#86`).
+                reason = f"{MASK_LEGAL_PURCHASE_REJECTED}: {result.reason}"
+            else:
+                # An unconfirmed purchase leaves the game in a state the record
+                # cannot describe, so the episode is classified, not continued.
+                reason = f"purchase was not confirmed: {result.reason}"
+            return _Advance(self._read_state(), (), 0, (reason,), failure=outcome)
+        except _DeathBoundaryUnresolved as unresolved:
+            # A death boundary the world would not settle is a pipeline failure,
+            # not a wait: nothing here can say what the game did next.
+            return _Advance(None, (), 0, (unresolved.reason,), failure=unresolved.outcome)
+
+    def _settle_purchase(self, state: RunState, result: AdvanceResultLike) -> _Advance:
+        """The state a confirmed purchase left, without advancing the world.
+
+        A confirmed purchase already changed the decision problem: cash fell
+        and that slot's price rose. Re-decide immediately rather than advancing
+        the world first. The command result carries the state the bridge sent
+        immediately before it, the same mechanism an advance uses, so reading
+        again would cost a second round trip and could only show a later state
+        than the one the result describes.
+        """
+        after = self._build_state(result.state)
+        if after is None:
+            return _Advance(
+                None, (DecisionEvent.RUN_ENDED,), 0, ("run ended during the purchase",)
+            )
+        return _Advance(
+            after,
+            (DecisionEvent.PURCHASE_SETTLED,),
+            0,
+            validate_transition(state, after),
         )
 
     def _first_choice_point(self, state: RunState) -> RunState:
@@ -1040,7 +1071,7 @@ class InstrumentedRunEnvironment:
         while self._span_continues(span):
             assert span.state is not None
             self._enter(span.state)
-            span = span.followed_by(self._advance_to_decision(span.state, WAIT))
+            span = span.followed_by(self._advance_to_decision(span.state))
         if span.state is None:
             detail = "; ".join(span.reasons) or "the port returned no state"
             raise RunPortError(f"the run reached no first observation: {detail}")
@@ -1055,32 +1086,8 @@ class InstrumentedRunEnvironment:
         if state.lifecycle == "active":
             self._tally.active_game_speed = state.game_speed
 
-    def _advance_to_decision(
-        self,
-        state: RunState,
-        action: RunActionId,
-        purchase_result: AdvanceResultLike | None = None,
-    ) -> _Advance:
+    def _advance_to_decision(self, state: RunState) -> _Advance:
         """Advance game time until something actionable changes."""
-        if not action.is_wait:
-            # A confirmed purchase already changed the decision problem: cash fell
-            # and that slot's price rose. Re-decide immediately rather than
-            # advancing the world first. The command result carries the state
-            # the bridge sent immediately before it, the same mechanism an
-            # advance uses, so reading again would cost a second round trip and
-            # could only show a later state than the one the result describes.
-            assert purchase_result is not None
-            after = self._build_state(purchase_result.state)
-            if after is None:
-                reason = ("run ended during the purchase",)
-                return _Advance(None, (DecisionEvent.RUN_ENDED,), 0, reason)
-            return _Advance(
-                after,
-                (DecisionEvent.PURCHASE_SETTLED,),
-                0,
-                validate_transition(state, after),
-            )
-
         # The choice-points loop (`_advance_to_choice_point`, `_first_choice_point`)
         # calls this repeatedly with WAIT, without ever returning to `step`'s own
         # check, while the settled state offers nothing but WAIT. A bridge that

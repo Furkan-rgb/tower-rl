@@ -9,14 +9,15 @@ single-device baseline on it is:
 - API 36 Google Play x86_64 system image, which the ARM64 game runs on through
   the image's own native-bridge translation;
 - Pixel 2 device definition at 1080×1920 portrait;
-- The Tower 29.1.3 (`versionCode=1253`) acquired through Google Play on the
-  user-provisioned test account, updated in the rooted clone on 2026-10-25
-  because the game's server refuses 29.0.3 at startup ("OLD VERSION"; see
-  `The Tower 29.1.3: the image update` in `experiments.md`). The canonical
-  account AVD and its golden snapshot are still 29.0.3, and the 29.0.3 clone is
-  backed up at `~/.android/avd-backup/`. The local 29.0.1 XAPK is retained for
-  metadata and compatibility inspection only; it is not the runtime
-  installation.
+- The Tower 29.1.4 (`versionCode=1262`) acquired through Google Play on the
+  user-provisioned test account, updated in the rooted clone on 2026-11-06
+  because the game's server refuses an old version at startup ("OLD VERSION";
+  see `The Tower 29.1.3: the image update` and `The Tower 29.1.4: the second
+  forced update` in `experiments.md`, and the recipe under section 3). The
+  canonical account AVD and its golden snapshot are still 29.0.3, and the
+  29.0.3 and 29.1.3 clones are backed up at `~/.android/avd-backup/`. The local
+  29.0.1 XAPK is retained for metadata and compatibility inspection only; it is
+  not the runtime installation.
 
 The operator completed first-run legal consent and signed in through Play. The
 game reaches the Tier-1 Battle home, and the canonical golden snapshot
@@ -199,17 +200,19 @@ f5e9d9a4971718822462369ae8e2b849a9ba8aede6b0339003ecaaa3da0e1601   the Workshop 
 33d7ada0b7709970b82755b06199ff114dbebf83f08fb65f5ae2d32534b53ef8   the same with TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16, 2026-09-30; state/bridge/builds/workshop-render-interval-16-nodelay/
 d541eb742f74b781ed62c31a1b7b69829b060466deb867098d39340cd9531471   33d7ada0… with TOWER_BRIDGE_DIAGNOSTICS=ON (the clockprobe line), 2026-10-01; state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe/, a probe build only
 a0bac6d0675fe1c5e5f5d345c277e97bef203bf667b868089b10de2d28d5c644   the same with the clockprobe line's frame-timing fields (#112), 2026-10-01; state/bridge/builds/workshop-render-interval-16-nodelay-clockprobe2/, a probe build only
-4ed87c8f1a0a68b7dfadcaa77c7ad29a96975e7c63d9775256f2028085f11cfd   f5e9d9a4… for The Tower 29.1.3, 2026-10-25; state/bridge/builds/ws2913-default-nodelay/; installed at state/bridge/current
+4ed87c8f1a0a68b7dfadcaa77c7ad29a96975e7c63d9775256f2028085f11cfd   f5e9d9a4… for The Tower 29.1.3, 2026-10-25; state/bridge/builds/ws2913-default-nodelay/, not installed
 7fd97b26e0fb9bb01e4ededdf5a97b9a85c733a7a8624569dd03d30b09fff7f7   33d7ada0… for The Tower 29.1.3, 2026-10-25; state/bridge/builds/ws2913-render-interval-16-nodelay/
+de5f2dcbcff6044c149828d8dfb636902d20b7c9b7a18a9811396a55c17302c0   f5e9d9a4… for The Tower 29.1.4, 2026-11-06; state/bridge/builds/ws2914-default-nodelay/; installed at state/bridge/current
+9037f1cf643b9d6d192071a5eea881614da92e925bbe767e7e41e7703b7d2e18   33d7ada0… for The Tower 29.1.4, 2026-11-06; state/bridge/builds/ws2914-render-interval-16-nodelay/
 ```
 
-**On The Tower 29.1.3 only `4ed87c8f…` and `7fd97b26…` handshake.** Every build
-above them carries the 29.0.3 identity. They are the same source as `f5e9d9a4…`
-and `33d7ada0…`, and that source still reproduces those two digests under the
-29.0.3 profile. Only `profile.cmake`'s version, version code, `libil2cpp`
-digest and profile id changed. `libunity.so` is unchanged in 29.1.3, so
-`libunity-bridge.so` is the same file. `7fd97b26…` is the training and benchmark
-build, and `4ed87c8f…` the evaluation build.
+**On The Tower 29.1.4 only `de5f2dcb…` and `9037f1cf…` handshake.** Every build
+above them carries an older identity. They are the same source as `f5e9d9a4…`
+and `33d7ada0…`, and that source still reproduces `4ed87c8f…` and `7fd97b26…`
+under the 29.1.3 profile. Only `profile.cmake`'s version, version code,
+`libil2cpp` digest and profile id changed. `libunity.so` is unchanged in 29.1.4,
+so `libunity-bridge.so` is the same file. `9037f1cf…` is the training and
+benchmark build, and `de5f2dcb…` the evaluation build.
 
 `f5e9d9a4…` and `33d7ada0…` are the ones to run. Each is `33de6826…` and
 `53d346ae…` with the transport fix (`SendFrame` writes header and payload in
@@ -337,6 +340,39 @@ Two AVDs exist, and nothing in the project confuses them:
   `scripts/instrumented_bridge.sh` address.
 
 Do not place AVD data, snapshots, or Android user data in the repository.
+
+### Updating the game when the server refuses it
+
+The server refuses an old version without notice: 29.0.3 on 2026-10-25 and
+29.1.3 on 2026-11-06, twelve days apart. The signature is a Unity log that stops
+after `[RC] Remote Config initialized` and a bring-up that fails
+`main_unavailable` after 300 s. Updating is the only answer; bypassing the gate
+is out of bounds. Only the rooted clone is updated, never the account AVD.
+
+1. Stop everything that uses the clone, then copy the whole
+   `tower_rl_instrumented_api36.avd` directory to
+   `~/.android/avd-backup/tower_rl_instrumented_api36.avd.<version>-<date>`.
+2. Boot the clone writable, once, with its radios on. Update the game through the
+   Play Store on the provisioned account, launch it online once to the Battle
+   home, then turn the radios off, restore airplane mode and shut down cleanly.
+3. Pull `base.apk` and the arm64 split from the clone and read the digests of
+   `libil2cpp.so` and `libunity.so` and the signer certificate. If `libunity.so`
+   changed, rebuild the overlay: LIEF `add_library` of the bridge's absolute
+   on-device path reproduces it byte for byte, and `patchelf --add-needed` does
+   not. Then also update `TOWER_BRIDGE_ORIGINAL_LIBUNITY_SHA256`.
+4. First rebuild the bridge under the old `state/bridge/config/profile.cmake` and
+   confirm it reproduces the current digests, so a difference can only come from
+   the profile. Then change the version, version code, `libil2cpp` digest and
+   profile id and build render intervals 1 and 16 into
+   `state/bridge/builds/ws<version>-{default,render-interval-16}-nodelay/`. Point
+   `state/bridge/current` at the render-interval-1 build.
+5. Run one `build-defense-absolute` episode under `run_stage.sh` with
+   `TOWER_BRIDGE_BUILD_DIR` set to the render-interval-16 build. It must be valid
+   and end near the floor, with `cleanup ok`.
+
+A checkpoint carries its profile and `resume_point` refuses another one, so a
+forced update ends any resume. Every floor is re-measured on the new version
+before a result is read against it.
 
 ## 4. Inspect and boot
 

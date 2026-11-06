@@ -365,6 +365,7 @@ def build_arm(
         backbone: Backbone = DreamerBackbone(
             config=DreamerConfig(
                 seed=arguments.seed,
+                train_ratio=arguments.train_ratio,
                 discount_per_game_second=arguments.discount_per_game_second,
                 survival_time_reward=arguments.survival_time_reward,
             ),
@@ -737,9 +738,9 @@ def run_manifest(
 #: `embodied/run/train.py` 71). An item is a step with a whole window after it.
 DREAMER_WARMUP_ITEMS = 16 * 64
 
-def dreamer_loop_settings() -> dict[str, object]:
+def dreamer_loop_settings(train_ratio: float) -> dict[str, object]:
     """The training-loop settings DreamerV3 fixes, by argument name (solution.md 9.4c)."""
-    config = DreamerConfig()
+    config = DreamerConfig(train_ratio=train_ratio)
     return {
         # The window trained on; replay adds the context step before it.
         "sequence_length": config.batch_length,
@@ -762,7 +763,7 @@ def dreamer_loop_settings() -> dict[str, object]:
 
 
 #: Flags R2D2 does not read: its replay ratio is per item (`build_arm`).
-R2D2_UNREAD_FLAGS = ("gradient_steps_per_decision",)
+R2D2_UNREAD_FLAGS = ("gradient_steps_per_decision", "train_ratio")
 
 
 def r2d2_loop_settings() -> dict[str, object]:
@@ -795,7 +796,7 @@ def settle_fixed_settings(
     one the backbone does not read, is refused rather than silently overridden.
     """
     fixed, unread, name, source = (
-        (dreamer_loop_settings(), (), "DreamerV3", "docs/solution.md 9.4c")
+        (dreamer_loop_settings(arguments.train_ratio), (), "DreamerV3", "docs/solution.md 9.4c")
         if arguments.backbone == DREAMERV3
         else (r2d2_loop_settings(), R2D2_UNREAD_FLAGS, "R2D2", "ADR 0018")
     )
@@ -870,6 +871,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=1.0,
         help="the replay ratio per decision, which DreamerV3 fixes; R2D2's is per item",
+    )
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=DreamerConfig().train_ratio,
+        help=(
+            "DreamerV3's replayed steps per decision, from which it fixes "
+            "--gradient-steps-per-decision. 512 is the published value; a "
+            "wave-long decision needs more to use the learner (ADR 0020)"
+        ),
     )
     parser.add_argument("--warmup-sequences", type=int, default=100)
     parser.add_argument("--sequence-length", type=int, default=80)

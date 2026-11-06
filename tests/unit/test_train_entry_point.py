@@ -379,6 +379,23 @@ def test_a_flag_that_contradicts_a_dreamerv3_value_is_refused(
         dreamer_arguments(tmp_path, flag, value)
 
 
+def test_a_dreamerv3_train_ratio_sets_the_gradient_steps_it_fixes(tmp_path: Path) -> None:
+    arguments = dreamer_arguments(tmp_path, "--train-ratio", "2048")
+
+    assert arguments.gradient_steps_per_decision == 2.0
+
+
+def test_r2d2_refuses_the_train_ratio_it_does_not_read(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="--train-ratio is not read by"):
+        train.parse_arguments(
+            [
+                "--budget-decisions", "1000", "--run-dir", str(tmp_path),
+                "--backbone", "r2d2", *DREAMER_DISCOUNT, "--survival-time-reward",
+                "--train-ratio", "2048",
+            ]
+        )
+
+
 #: The flags of the deleted stacked-dqn backbone (cb2f324 is the last commit that
 #: has it): gone from the parser, so a command line that still gives one fails
 #: loudly under either backbone rather than being read as something else.

@@ -346,6 +346,21 @@ in every per-episode row and in the session records around them, and in
 and a cross-cadence evaluation (`policies.checkpoint_policy`) by name; a
 checkpoint whose identity names no cadence is read as `every-slice`.
 
+**`standing-orders` is one decision a wave, on trial.**
+`DecisionCadence.STANDING_ORDERS`, selected by `--decision-cadence
+standing-orders`, is proposed in [ADR
+0020](adr/0020-one-decision-a-wave-by-standing-order.md) and is not the contract.
+The policy is asked at a wave's first choice point, over the same legal set. Its
+answer stands until the wave turns: at each cadence stop in that wave the ordered
+row is bought if it is affordable, and otherwise the world advances. `WAIT` buys
+nothing for the wave. After the wave turns, a state with nothing to buy folds into
+the same decision, as a forced slice does under choice points, so a transition may
+cover more than one wave. A row out of reach at the wave's turn is saved for by
+ordering `WAIT`. `decisions` counts orders and `purchases` counts every purchase,
+so `purchases` can exceed `decisions`. A rejected or unconfirmed purchase inside an
+order ends the episode exactly as a decided one does, and the transition keeps the
+span that led to it.
+
 ## Transition and reward
 
 `RunTransition` contains the previous observation, optional next observation,

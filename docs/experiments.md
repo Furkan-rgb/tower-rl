@@ -2335,6 +2335,176 @@ is kept as `state/runs/m3-p020-dreamerv3-ws10-v2913-20261025T185541Z-aborted-pre
 so the real run uses the pre-registered name. The launcher is
 `state/launch/m3-p020.sh`: the command above, machine-local.
 
+## The Tower 29.1.4: the second forced update (2026-11-06)
+
+**Why.** `M3-P020` stalled at `main_unavailable` during bring-up on 29.1.3, twelve
+days after the last update, with the same log signature. The Play Store showed an
+update, so the gate was read from that without a screenshot. The developer had
+asked for the update to be done without stopping to ask.
+
+**What was done.** The recipe now in `docs/setup.md` section 3.
+
+- **Backup:** `~/.android/avd-backup/tower_rl_instrumented_api36.avd.29.1.3-20261106`,
+  machine-local.
+- **Result:** The Tower **29.1.4, versionCode 1262**, installer
+  `com.android.vending`, updated in the rooted clone only. The account AVD was not
+  touched.
+- **Identity:** `libil2cpp.so` is `614353c5…6e6c2a`. `libunity.so` (`ffc1f3ef…`),
+  the signer certificate (`b6c646d3…`) and Unity 6000.3.15f1 are unchanged, so
+  `libunity-bridge.so` is the same file.
+- **The bridge:** the source reproduced `4ed87c8f…` and `7fd97b26…` under the old
+  profile, then built `de5f2dcb…` (render interval 1, now `state/bridge/current`)
+  and `9037f1cf…` (render interval 16, training and benchmark).
+- **Smoke check:** one `build-defense-absolute` episode on `9037f1cf…`
+  (`state/records/v2914-smoke/`): valid, final wave 102, 22.56 decisions a wave,
+  confirmed 120 Hz, `cleanup ok`.
+
+One episode is not a floor. Every floor below that says 29.1.3 stays a 29.1.3
+number until it is re-measured.
+
+**Consequence.** Forced updates arrived twelve days apart, and a checkpoint cannot
+be resumed across one. A campaign longer than about two weeks has to expect losing
+its resume point, or it has to carry the profile across, which is a decision of its
+own.
+
+## The credit audit: the reward is right, its reach is not (2026-11-06)
+
+**The question,** from the developer: are we certain the reward is correct?
+**Answer:** the formula is correct and aligned. What fails is how far back it can
+credit a purchase. Scripts: `state/analysis/p019_credit.py`,
+`state/analysis/signal.py`, machine-local, reading `M3-P018`'s and `M3-P019`'s
+replay dumps.
+
+**Formula and alignment.** The reward is `(1−d)·V_REF` with `d = γ_s^Δt`, so a
+return is `V_REF(1−γ^T)`, as ADR 0013 designed. In `M3-P019`'s replay, `action[t]`
+is legal under `mask[t]` in 99.91% of steps. There is no bug.
+
+**Credit by distance from death,** at 0.997 per game-second. Return gained by one
+more wave of survival, and what that does to action odds, `exp(A/(S·3e-4))`, with
+`M3-P019`'s S = 7.82:
+
+| Waves from death | 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 100 |
+|---|---|---|---|---|---|---|---|---|---|
+| Return gained | 0.33 | 0.116 | 0.040 | 0.014 | | 0.0017 | | 0.0002 | 0.00003 |
+| Odds multiplier | | | | 414 | 8.2 | 2.1 | 1.3 | 1.09 | 1.01 |
+
+**What the policies did.** Defense Absolute's share of actions over a uniform
+choice among affordable actions, in the last 150,000 decisions:
+
+| Waves from death | 0–5 | 5–10 | 10–20 | 20–30 | 30–40 | 40–60 | 60+ |
+|---|---|---|---|---|---|---|---|
+| `M3-P019` | 9× | 11× | 9× | 5× | 3× | 2.3× | 1.2× |
+| `M3-P018` | 18× | 15× | 10× | 12× | 11× | 4.8× | 1.8× |
+
+Distance from death is correlated with wave number, so this table is a correlation
+and not proof. It does have the shape the arithmetic predicts.
+
+**Scripted play, for scale.** `build-defense-absolute` waits on 94% of its decisions
+and puts 44% of its purchases into Defense Absolute. `M3-P019` waits on 75–86% and
+puts 44% of its purchases into other rows, with 6–10% into Defense Absolute.
+
+**A mistake of mine, corrected here.** `M3-P020`'s budget and my estimate of 2–5M
+decisions did not take account of ADR 0019's caveat that training past 1,000,000
+decisions did not help at Workshop 5 (63.28 at 1M, 55.77 at 2M). More decisions at
+this cadence were not a credible answer.
+
+**Consequence.** ADR 0020, Proposed, and `M3-P021` below. `M3-P020` is not launched
+as written; it is superseded by `M3-P021`.
+
+## M3-P021: DreamerV3 at one decision a wave, Workshop 10, The Tower 29.1.4 (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-06. Board `#131`. Single seed, single run, from scratch on `main`
+at this entry's commit. n=1, seed 0. It is the spike for ADR 0020, and its output is
+a decision.
+
+**Question.** With one decision a wave and a discount of 0.997 per wave, does credit
+reach the early and middle waves, and does the learner beat its floors at the same
+cadence?
+
+**Floors first, one at a time, 7 actors, 1 episode per actor,** on `9037f1cf…` at
+Workshop 10, `--upgrade-availability all`:
+
+1. `build-defense-absolute` at `choice-points`, the drift check against 102.00.
+2. `build-defense-absolute` at `standing-orders`, three rounds, 21 episodes: the
+   scripted floor at this cadence, and the price of one row a wave.
+3. `random` at `standing-orders`, 7 episodes: the random floor.
+
+If step 2's IQM falls more than 10 waves below step 1's, the pilot still runs, and
+the entry reports that the cadence itself costs that much.
+
+**Launch: `M3-P020`'s, with exactly these changes.**
+
+- **Cadence:** `--decision-cadence standing-orders`.
+- **Discount:** `--discount-per-game-second 0.99991416`, which is 0.997 per 35
+  game-second wave.
+- **Train ratio:** `--train-ratio 2048`, 2 updates a decision (ADR 0020 item 5).
+- **Bridge:** `9037f1cf…`, on 29.1.4.
+- **Budget:** `--budget-decisions 150000`, about 1,500 episodes and 14 hours.
+- **Periods:** `--checkpoint-every-decisions 2500`,
+  `--selection-period-decisions 5000`.
+- **Plateau stop:** `--early-stop-patience-periods 6
+  --early-stop-min-improvement 1.0`, 30,000 decisions, about 2.7 hours.
+- **Kill bars:** `30000:15000:21`, `60000:45000:21`, `90000:75000:21`, the collapse
+  guard at this cadence's scale.
+- **Unchanged:** DreamerV3 at its official conventions apart from the train ratio
+  (ADR 0018), the survival-time reward formula, 7 actors, seed 0, `--frame-game-ms
+  100`.
+
+**Primary outcome.** The run's pre-registered final evaluation: 30 exploration-free
+episodes on the selected checkpoint, read by a stratified bootstrap of the IQM
+difference against the 21 scripted-floor episodes (`M3-P019`'s method). As in
+`M3-P020`, "beats" needs the interval wholly above 0 and "matches" means it includes
+0.
+
+**What it decides.**
+
+- **Evidence for ADR 0020:** the final evaluation's IQM is above 63.28, the best
+  final evaluation any learner has had (`M3-P018`, Workshop 5), and the credit
+  readout improves.
+- **Evidence against:** at or below 54.14, `M3-P019`'s best period at Workshop 10,
+  with the credit readout flat.
+- In between, the entry reports what it shows and the developer decides.
+
+**Readouts (not gates).**
+
+- The credit readout: `state/analysis/p019_credit.py`'s table on this run's replay,
+  beside the two above. The test of the idea is the 40–60 and 60+ columns, against
+  `M3-P019`'s 2.3× and 1.2×.
+- The learning curve, and the decisions and wall time at which the period mean first
+  reaches 60, 80, 90 and 100.
+- The purchase mix per period.
+- Learner utilization and updates an hour, against the ceiling of about 42,000.
+
+**Stop rules:** `M3-P020`'s, with the digest `9037f1cf…`.
+
+**Command.** Under `M3-P020`'s detached scope, with `TOWER_BRIDGE_BUILD_DIR` on the
+29.1.4 render-interval-16 build, and the run name stamped at launch:
+
+    scripts/run_stage.sh --name $N-train --instances 7 --log-directory state/runs/$N/logs -- \
+      uv run --extra tracking python scripts/train.py --backbone dreamerv3 \
+      --actors 7 --renderer host --frame-rate-hz 120 --decision-cadence standing-orders \
+      --upgrade-availability all --workshop-level 10 --budget-decisions 150000 \
+      --train-ratio 2048 --checkpoint-every-decisions 2500 \
+      --selection-period-decisions 5000 --seed 0 --frame-game-ms 100 \
+      --discount-per-game-second 0.99991416 --survival-time-reward \
+      --early-stop-patience-periods 6 --early-stop-min-improvement 1.0 \
+      --kill-bar 30000:15000:21 --kill-bar 60000:45000:21 --kill-bar 90000:75000:21 \
+      --run-name $N
+
+**Known confounds, in advance.**
+
+- n=1, one seed, and a game version none of the earlier learners ran on.
+- The train ratio changes with the cadence, so a win cannot be split between them.
+- The on-paper odds in ADR 0020 assume a +1-wave advantage the critic can resolve.
+  At S about 2.3 that advantage is about 1% of the return scale at a hundred waves
+  from death, and whether the value head resolves it is the open question.
+- **Wave 1000 is not reachable here.** No tested policy passes about wave 104 at
+  Workshop 10. This run tests whether the learner can use the time horizon the game
+  has, which is a precondition for that goal and not that goal.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

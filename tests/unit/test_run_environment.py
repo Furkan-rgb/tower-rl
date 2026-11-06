@@ -50,13 +50,16 @@ from tower_rl.environment.run_state import (
 
 #: The cadence `_environment` builds under, rebound per test by the autouse
 #: fixture below. Every test in this module therefore runs twice, once under
-#: each named cadence, so the invariants that predate choice points are pinned
-#: under both rather than only under the new default. A test about one cadence
-#: in particular names it explicitly and ignores this.
+#: each cadence that asks once per advance on this fake, so the invariants that
+#: predate choice points are pinned under both rather than only under the new
+#: default. `STANDING_ORDERS` spans a wave by design and has its own tests. A
+#: test about one cadence in particular names it explicitly and ignores this.
 CADENCE = DecisionCadence.CHOICE_POINTS
 
 
-@pytest.fixture(params=list(DecisionCadence), autouse=True)
+@pytest.fixture(
+    params=[DecisionCadence.CHOICE_POINTS, DecisionCadence.EVERY_SLICE], autouse=True
+)
 def both_cadences(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> DecisionCadence:
@@ -638,8 +641,8 @@ def test_the_stall_guard_ignores_a_long_streak_of_zero_game_time_purchases(
 ) -> None:
     """A run that only ever buys, never waiting, must not be mistaken for a hang.
 
-    Purchase settles never touch the game clock (`_advance_to_decision`'s
-    purchase branch), so a policy that spends a while buying rather than
+    Purchase settles never touch the game clock (`_settle_purchase`), so a
+    policy that spends a while buying rather than
     waiting is ordinary play up to the stall window, and only a genuine absence
     of progress across that whole window ends the episode.
     """
@@ -1470,6 +1473,105 @@ def test_every_slice_asks_at_every_slice_however_little_it_offers() -> None:
     assert following.next_state is not None
     assert not following.next_state.is_choice_point
     assert port.advances == 1, "the purchase itself advanced nothing"
+
+
+#: A world where an order can be bought again inside its wave: the one row costs
+#: 5, then 7.5, the run opens able to afford it once, and a six-second wave
+#: earns the price of the next level.
+def _earning_enough_to_buy_again(**overrides: object) -> dict[str, object]:
+    return _broke_after_buying(cash_per_second=1.5, **overrides)
+
+
+def test_a_standing_order_is_one_decision_that_buys_again_until_the_wave_turns() -> None:
+    environment, port = _environment(
+        DecisionCadence.STANDING_ORDERS, **_earning_enough_to_buy_again()
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+
+    bought = next(row for row in port.slots.values() if row.level > 0)
+    assert bought.level == 2, "the order was bought once at once and again when it came in reach"
+    assert transition.next_state is not None
+    assert transition.next_state.wave > state.wave, "the choice inside the wave was not asked"
+    assert transition.next_state.is_choice_point
+    assert transition.admissible
+    summary = environment.summarize(TerminationOutcome.GAME_OVER)
+    assert (summary.decisions, summary.purchases) == (1, 2)
+
+
+def test_a_standing_wait_buys_nothing_for_the_wave_however_much_is_affordable() -> None:
+    environment, port = _environment(DecisionCadence.STANDING_ORDERS)
+    state = environment.reset()
+    assert state.is_choice_point
+
+    transition = environment.step(WAIT)
+
+    assert all(slot.level == 0 for slot in port.slots.values())
+    assert transition.outcome is ActionOutcome.WAITED
+    assert transition.next_state is not None
+    assert transition.next_state.wave == state.wave + 1
+
+
+def test_a_wave_that_offers_no_choice_folds_into_the_decision_before_it() -> None:
+    """Broke past the wave's turn, the order runs on to the next choice point.
+
+    Cash comes back at 0.5/s and the next level costs 7.5, so nothing is
+    affordable until the wave after the one the order ends in.
+    """
+    environment, _ = _environment(DecisionCadence.STANDING_ORDERS, **_broke_after_buying())
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+
+    assert transition.next_state is not None
+    assert transition.next_state.is_choice_point
+    assert transition.next_state.wave == state.wave + 2
+    assert transition.reward == 2.0
+
+
+def test_a_purchase_rejected_inside_an_order_ends_the_episode_with_the_span_it_ended() -> None:
+    """The first purchase is confirmed; the one after it, a wave's time later, is not."""
+    environment, port = _environment(
+        DecisionCadence.STANDING_ORDERS, **_earning_enough_to_buy_again()
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+    real_buy = port.buy_upgrade
+    calls: list[int] = []
+
+    def rejected_the_second_time(
+        family: str, slot_index: int, *, expected_sequence: int
+    ) -> FakeCommandResult:
+        calls.append(expected_sequence)
+        if len(calls) == 2:
+            return FakeCommandResult("rejected", "precondition_failed")
+        return real_buy(family, slot_index, expected_sequence=expected_sequence)
+
+    port.buy_upgrade = rejected_the_second_time  # type: ignore[method-assign]
+
+    transition = environment.step(target.action)
+
+    assert transition.termination is TerminationOutcome.MASK_LEGAL_REJECTED
+    assert transition.advances > 0 and transition.game_ms > 0.0, "the wave so far stays counted"
+    assert environment.summarize(transition.termination).purchases == 1
+
+
+def test_a_run_that_ends_inside_a_standing_order_terminates_that_decision() -> None:
+    environment, _ = _environment(
+        DecisionCadence.STANDING_ORDERS,
+        **_earning_enough_to_buy_again(damage_per_second=4.0, max_health=5.0),
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+
+    transition = environment.step(target.action)
+
+    assert transition.terminated
+    assert transition.next_state is not None and transition.next_state.terminal
+    assert environment.summarize(TerminationOutcome.GAME_OVER).valid
 
 
 def test_the_reward_of_a_span_is_the_wave_progress_across_the_whole_of_it() -> None:

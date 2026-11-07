@@ -361,6 +361,17 @@ so `purchases` can exceed `decisions`. A rejected or unconfirmed purchase inside
 order ends the episode exactly as a decided one does, and the transition keeps the
 span that led to it.
 
+**`saving-orders` is `standing-orders` over every row on sale, on trial.**
+`DecisionCadence.SAVING_ORDERS`, selected by `--decision-cadence saving-orders`, is
+ADR 0020 as amended after `M3-P021`, and is not the contract. The legal set is
+`WAIT` and every row the run still sells: unlocked, priced and not maxed, whatever
+the cash says. A row's `available` flag and `affordability` still say what the cash
+reaches, and the environment buys on those. An order for a row out of reach buys
+nothing else, so it saves for that row, and buys it at the first cadence stop in
+the wave that can pay. An order the wave could not pay for ends with outcome
+`WAITED`, and the next wave's turn asks again. A wave folds into the decision
+before it only if nothing at all is on sale.
+
 ## Transition and reward
 
 `RunTransition` contains the previous observation, optional next observation,

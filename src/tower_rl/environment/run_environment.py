@@ -83,6 +83,11 @@ class DecisionCadence(StrEnum):
     #: and WAIT buys nothing. A wave that offers no choice folds into the
     #: decision before it, as a forced slice does under `CHOICE_POINTS`.
     STANDING_ORDERS = "standing-orders"
+    #: `STANDING_ORDERS`, over every row on sale rather than every row the cash
+    #: reaches (ADR 0020). An order for a row out of reach buys nothing else, so
+    #: it saves for that row, and it buys the row the moment it is affordable
+    #: inside the wave. Its outcome is `WAITED` if the wave could not pay.
+    SAVING_ORDERS = "saving-orders"
 
 
 class UpgradeAvailability(StrEnum):
@@ -645,6 +650,10 @@ class InstrumentedRunEnvironment:
     def __post_init__(self) -> None:
         # A negative level is refused here, not at the first round start.
         workshop_rows(self.workshop_level)
+        self.builder = replace(
+            self.builder,
+            offers_rows_out_of_reach=self.decision_cadence is DecisionCadence.SAVING_ORDERS,
+        )
 
     # -- episode lifecycle -------------------------------------------------
 
@@ -926,13 +935,14 @@ class InstrumentedRunEnvironment:
                 ("action is masked",), advances=0, game_ms=0.0,
             )
 
+        purchases_before = self._tally.purchases
         advanced = self._advance_to_choice_point(state, action)
+        bought = self._tally.purchases > purchases_before
         return self._finish(
             state,
             advanced.state,
             action,
-            advanced.failure
-            or (ActionOutcome.WAITED if action.is_wait else ActionOutcome.EXECUTED),
+            advanced.failure or (ActionOutcome.EXECUTED if bought else ActionOutcome.WAITED),
             started,
             advanced.requested_game_ms,
             advanced.events,
@@ -962,7 +972,10 @@ class InstrumentedRunEnvironment:
         span = self._carry_out(state, action)
         if self.decision_cadence is DecisionCadence.EVERY_SLICE:
             return span
-        standing = self.decision_cadence is DecisionCadence.STANDING_ORDERS
+        standing = self.decision_cadence in (
+            DecisionCadence.STANDING_ORDERS,
+            DecisionCadence.SAVING_ORDERS,
+        )
         order_wave = state.wave if standing else None
         while self._span_continues(span, order_wave):
             assert span.state is not None
@@ -989,7 +1002,7 @@ class InstrumentedRunEnvironment:
 
     def _carry_out(self, state: RunState, action: RunActionId) -> _Advance:
         """Take one step of `action` from `state`: buy it if it can be bought, else advance."""
-        if action.is_wait or not state.action_mask[action_index(action)]:
+        if action.is_wait or not state.rows[action_index(action) - 1].available:
             return self._advance_to_decision(state)
         return self._buy(state, action)
 
@@ -1278,8 +1291,8 @@ class InstrumentedRunEnvironment:
             events.append(DecisionEvent.RUN_ENDED)
         if after.wave != before.wave:
             events.append(DecisionEvent.WAVE_CHANGED)
-        gained = zip(before.action_mask, after.action_mask, strict=True)
-        if any(now and not was for was, now in gained):
+        gained = zip(before.rows, after.rows, strict=True)
+        if any(now.available and not was.available for was, now in gained):
             events.append(DecisionEvent.NEWLY_AFFORDABLE)
         health_move = abs(after.health_fraction - before.health_fraction)
         if health_move >= self.cadence.health_change_fraction:

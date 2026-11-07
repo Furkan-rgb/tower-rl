@@ -275,6 +275,9 @@ class UpgradeRow:
     unlocked: bool
     maxed: bool
     available: bool
+    #: Whether the run still sells this row, whatever the cash says. `available`
+    #: is this and the price in hand.
+    on_sale: bool = False
 
 
 @dataclass(frozen=True)
@@ -311,10 +314,9 @@ class RunState:
 
         A state whose only legal action is `WAIT` is not a decision: the policy
         has exactly one answer available and the environment already knows what
-        it is. The mask is built from cash and prices in `_build_row`, so this
-        is read off the mask rather than recomputed - what is legal and what is
-        a choice point cannot drift apart. Index 0 is `WAIT`; every other index
-        is a purchase.
+        it is. This is read off the mask rather than recomputed, so what is
+        legal and what is a choice point cannot drift apart. Index 0 is `WAIT`;
+        every other index is a purchase.
         """
         return any(self.action_mask[1:])
 
@@ -325,6 +327,9 @@ class RunStateBuilder:
 
     profile_id: str
     slots_per_family: int = SLOTS_PER_FAMILY
+    #: Whether the legal set is every row on sale rather than every row the cash
+    #: reaches. The environment sets it under `saving-orders` (ADR 0020).
+    offers_rows_out_of_reach: bool = False
 
     def build(
         self, reading: ExactRunReadingLike, *, captured_at_monotonic: float
@@ -362,7 +367,8 @@ class RunStateBuilder:
         rows = tuple(self._build_row(entries, action, cash, active) for action in RUN_ACTIONS[1:])
         # WAIT is always available inside a valid active run and never otherwise:
         # waiting on a terminal run is not a decision, it is a stalled actor.
-        mask = (active, *(row.available for row in rows))
+        legal = (row.on_sale if self.offers_rows_out_of_reach else row.available for row in rows)
+        mask = (active, *legal)
 
         return RunState(
             source_sequence=reading.sequence,
@@ -444,7 +450,7 @@ class RunStateBuilder:
         # difference between an early purchase and a late one. `log1p` keeps that
         # ordering at a learnable magnitude without a ceiling to saturate at.
         affordability = _log_scale(cash / cost) if priced else 0.0
-        available = active and unlocked and not maxed and priced and cost <= cash
+        on_sale = active and unlocked and not maxed and priced
         return UpgradeRow(
             action=action,
             cost_log=_log_scale(cost) if priced else 0.0,
@@ -454,7 +460,8 @@ class RunStateBuilder:
             headroom=headroom,
             unlocked=unlocked,
             maxed=maxed,
-            available=available,
+            available=on_sale and cost <= cash,
+            on_sale=on_sale,
         )
 
 

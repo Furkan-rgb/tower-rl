@@ -1,9 +1,11 @@
 # ADR 0020 — One decision a wave, by standing order
 
-**Status:** Proposed, 2026-11-06. Board `#131`. Nothing here is the contract:
-`choice-points` stays the default and ADR 0009 and ADR 0019 stand. The pilot
-`M3-P021` (`docs/experiments.md`) is the spike whose output is this decision, and
-the developer accepts or rejects it.
+**Status:** Proposed, 2026-11-06. Item 2 amended 2026-11-07 on `M3-P021`'s result:
+it first kept the mask at affordability, and that form is recorded under Options
+rejected. Board `#131`, `#134`. Nothing here is the contract: `choice-points` stays
+the default and ADR 0009 and ADR 0019 stand. The pilots `M3-P021` and `M3-P022`
+(`docs/experiments.md`) are the spikes whose output is this decision, and the
+developer accepts or rejects it.
 
 ## Context
 
@@ -35,9 +37,11 @@ decisions would sit more than sixty waves from death, where the odds barely move
    policy is asked at a wave's first choice point, over the unchanged action mask,
    and its answer stands until the wave turns
    (`docs/environment-contract.md`, "Decision cadence").
-2. **Actions stay semantic and the mask stays affordability.** A row out of reach
-   is saved for by ordering `WAIT`, so scripted policies run unchanged and the same
-   policy can be measured at both cadences.
+2. **Actions stay semantic and the legal set is every row on sale.** `saving-orders`
+   is `standing-orders` over every row the run still sells, affordable or not. An
+   order buys nothing else, so one for a row out of reach saves for it, and buys it
+   the moment the wave has earned the price. Affordability stays in each row's
+   features. `standing-orders` stays selectable as `M3-P021`'s recorded control.
 3. **The discount is 0.997 per wave**, which is `γ_s = 0.997^(1/35) ≈ 0.99991416`
    per game-second. That gives DreamerV3 its stock horizon of 333 of its own steps,
    here 333 waves. The discount stays a task parameter per game-second (ADR 0013).
@@ -57,10 +61,15 @@ death, e^9 at five hundred and about e^2 at a thousand, at a return scale of abo
 - **A logarithmic survival reward** would need a new acceptance decision under
   `docs/task.md` §7.5, and does nothing about the imagination cutoff.
 - **A longer discount alone** at this cadence: see ADR 0019's evidence.
-- **Offering rows that are not yet affordable.** It lets the agent name a row
-  before it can pay, but needs a second mask beside the one every policy, record
-  and test reads. Saving through `WAIT` costs less than a wave's delay on a
-  purchase. Revisit if the floor at this cadence shows that delay matters.
+- **The affordability mask, saving through `WAIT`.** This ADR's first form, chosen
+  because saving through `WAIT` cost a script less than a wave's delay and because
+  a wider mask looked like a second mask. It weighed the wrong cost. `M3-P021`'s
+  policy took Defense Absolute about 70% of the time at decisions 31–50 when the
+  mask offered it, the mask offered it 27–39% of the time, and when it did not the
+  policy bought another row 89–93% of the time, which kept the row out of reach. A
+  script saves by rule, and a learner has to find a run of `WAIT`s that pay nothing
+  until the last one (`docs/experiments.md`, "`M3-P021`: outcome"). No second mask
+  was needed: a row already says whether it can be paid for.
 
 ## Costs to be measured
 

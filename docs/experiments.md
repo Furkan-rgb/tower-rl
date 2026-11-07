@@ -3087,6 +3087,72 @@ and from three waves out on unseen ones (0.567 against 0.635). This is a direct
 measurement of what the audit only inferred: a purchase earns no honest credit in
 imagination at train ratio 2048.
 
+**The continue head on the prior, and what it does.** One line against the frozen code:
+`cont` is trained on a prior sample of each step, the input it meets in imagination,
+with the same split, data order and reads as the ratio table above. The prior sample is
+detached and `deter` is not. AUC is the mean of the last four reads.
+
+| Ratio | Old head, held-out | Old head, trained | Prior head, held-out | Prior head, trained |
+|---|---|---|---|---|
+| 128 | 0.903 | 0.914 | 0.968 | 0.977 |
+| 128, seed 1 | 0.820 | 0.864 | 0.969 | 0.977 |
+| 256 | 0.827 | 0.934 | 0.936 | 0.993 |
+| 512 | 0.682 | 0.984 | 0.892 | 1.0 |
+| 1024 | 0.637 | 0.992 | 0.839 | 1.0 |
+| 2048 | not run | not run | 0.823 | 1.0 |
+
+It beats the old head at every ratio, and at ratio 128 it beats health alone (0.945) on
+both seeds, with no swing: the old head's median prediction at a death was 0.376 on one
+seed and 0.009 on the other, and the prior head's was 0.533 and 0.467. It does not stop
+memorisation. From ratio 256 up the trained read stays near 1.0 and the held-out read
+falls, so this fix corrects what the head learns and the ratio still sets how much of
+the data is memorised.
+
+**At ratio 128 the plan earns the right outcome.** The test above, on models trained at
+ratio 128 under a new seed, so the seed is a replication. Imagined survival to the wave
+of the real death, 120 episodes with 8 samples each:
+
+| Start | Prior head: recorded | `WAIT` | Defense Absolute | Old head: recorded | `WAIT` | Defense Absolute |
+|---|---|---|---|---|---|---|
+| Held-out, 3 waves before death | 0.585 | 0.397 | 0.930 | 0.739 | 0.462 | 0.988 |
+| Held-out, 5 waves before death | 0.552 | 0.267 | 0.960 | 0.740 | 0.340 | 0.995 |
+| Held-out, 10 waves before death | 0.521 | 0.129 | 0.989 | 0.740 | 0.223 | 0.998 |
+| Trained, 3 waves before death | 0.603 | 0.434 | 0.948 | 0.770 | 0.554 | 0.998 |
+| Trained, 5 waves before death | 0.586 | 0.313 | 0.980 | 0.776 | 0.418 | 0.999 |
+| Trained, 10 waves before death | 0.563 | 0.170 | 0.991 | 0.776 | 0.301 | 0.997 |
+
+Defense Absolute survives longer than the recorded play, the recorded play longer than
+`WAIT`, on both heads and on both sets, and held-out reads within 0.05 of trained on the
+prior head. So the low ratio restores the ordering, and the prior head brings the
+recorded line closer to its real outcome, a death. Defense Absolute's height is not a
+calibrated number: actions go in unmasked, and `M3-P021`'s mask showed the row only when
+it could be paid, so this data holds no order that failed to buy.
+
+**The other heads, on `M3-P022`'s own weights.** 140 died episodes each side, at d20062,
+d40026 and d70018. The true return is rebuilt from `game_ms` as the learner does; the
+stored `reward` is the wave reward.
+
+| Read | Unseen | Trained |
+|---|---|---|
+| Reward head on prior, live steps, mean error (real 0.028) | 0.0002–0.0003 | 0.0001 |
+| Mask decoder on prior, live steps, rows wrong of 49 | 0.08–0.15 | 0–0.005 |
+| Critic against the real return, correlation, all steps | 0.85–0.92 | 0.93–0.99 |
+| Critic against the real return, correlation at the same wave | 0.25–0.38 | 0.63–0.80 |
+| Critic bias, value less real return (real 0.85–1.11) | +0.31 to +1.48 | +0.34 to +1.25 |
+
+The reward head and mask decoder need nothing. `cont` was the exposed one because only
+its target is defined by the terminal observation. The critic memorises too: it knows
+how long a trained episode lasted and largely does not know it on an unseen one. On the
+ratio-128 models that gap is gone, at 0.508 held-out and 0.502 trained on the prior head
+and 0.471 and 0.464 on the old head, so the ratio fixes the critic as well. Value there
+still runs above the real return by 0.27 to 0.32, about the same on both sets, which may
+be the offline actor imagining a better policy than the recorded one and is unmeasured.
+
+Imagination also starts from every posterior state, deaths included. The old head reads
+0.999 hazard at a death posterior and so zeroes those starts. The prior head, never
+trained on a posterior, reads 0.51 to 0.55, so taken alone it would train the actor and
+critic on dead states at about half weight. Replay already knows which steps are terminal.
+
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 
 **Date:** 2026-11-07. Board `#135`.

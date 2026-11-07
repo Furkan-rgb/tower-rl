@@ -1,5 +1,5 @@
 {
-  "next_id": 149,
+  "next_id": 156,
   "items": [
     {
       "id": 1,
@@ -1449,6 +1449,10 @@
         {
           "at": "2026-10-25 19:57",
           "text": "M3-P020 pre-registered (a242151) and ready, launch withdrawn at the developer's request until their quota resets (d0b7c15). Start: state/launch/m3-p020.sh (header has the pre-check and the detached command)."
+        },
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: stale and unplaced. Last activity 2026-10-25 (the withdrawn M3-P020 start); M3-P021 and M3-P022 ran on their own cards. Whether the learner comparison is still wanted, and under which goal, is a scope question for the developer."
         }
       ]
     },
@@ -3467,6 +3471,10 @@
         {
           "at": "2026-11-07 16:34",
           "text": "Held by the live run M3-P022. Closes on its pre-registered mechanism read. Only same-wave saving is covered here; saving across waves belongs to #136."
+        },
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: the body's 'the trap is the mask, not the credit' no longer holds. On M3-P022's own d70018 weights a purchase earns no honest credit in imagination at ratio 2048 (docs/experiments.md, Review of the training setup). So a failed mechanism read from M3-P022 is confounded by a learner that memorised, and cannot reject saving-orders alone. The title's saving is same-wave only: an order spends what it can once a wave (see the 16:34 comment)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3497,6 +3505,10 @@
         {
           "at": "2026-11-07 16:57",
           "text": "Game-path review in docs/experiments.md. UNCHARGED_ROUND_TIME, the idle classification and boot_best_wave are in this commit. Report acted on."
+        },
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: measure the floors on #147's ws2914c build once it passes its device check. Floors on b8b8cd45 would be the old behaviour's, and #147 re-measures floors anyway. Waits on M3-P022's emulators."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3584,6 +3596,10 @@
         {
           "at": "2026-11-07 16:34",
           "text": "Any floor is measured on the cadence the next run uses, which is filling-orders unless its floors say otherwise."
+        },
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: every entropy reading so far is from M3-P021/M3-P022, on the ratio-2048 learner whose critic memorised. Read entropy on #148's pilot, the first run on 6bfa8b8 and 19030ba, before choosing a floor."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3636,15 +3652,25 @@
       "title": "ADR 0020 is accepted or rejected on M3-P022's result and the filling-orders floors",
       "body": "Replaces #131, whose condition can no longer come true: M3-P021 gave neither result (736147c). The ADR is Proposed and now rests on M3-P022 and on what #136's floors show. The acceptance is the developer's.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: premise restated. M3-P022 runs at 2048 with no world model ratio, so it speaks to item 2 (orders may name rows out of reach) only. The cadence rests on #136's floors, and item 5 as amended (world model at 128, 19030ba) on #148's pilot. Its bar in docs/experiments.md was written before that amendment."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 145,
       "title": "A turtle-into-blender script on the guides' in-run order is measured at Workshop 10, with Enemy Attack Level Skip's effect read above level 1",
       "body": "Replaces #138. The guides define Blender on maxed Workshop and Labs, so 'guide-faithful' cannot be checked at Workshop 10. The script follows their in-run order: cash, Free Upgrades, then Health, Defense %, Knockback, Orbs and Orb Speed, Thorns, Attack Speed, the Recovery rows, with Skips from the late guide. A benchmark only, handed to no learner. Needs #136's floors first, so it runs after M3-P022.",
-      "status": "Next",
-      "comments": [],
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: blocked on M3-P022's emulators and on #147. The guide order puts Free Upgrades second, and on b8b8cd45 10-40% of free levels land on empty slots; the fix is only in #147's ws2914c build, not yet run on a device."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -3652,7 +3678,12 @@
       "title": "Speed-up parity is measured at Workshop 10 past wave 50 on the current game and bridge, and evaluation's build is settled",
       "body": "No parity evidence exists on 29.1.4 or the current build, or above wave 16 on any. One pre-registered stage: the same script at 16.667 vs 100 ms and render interval 1 vs 16, read per wave. The result settles which build evaluation plays on, and docs/solution.md follows. Evidence: docs/experiments.md, 'Review of the game path'.",
       "status": "Blocked",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: blocked on M3-P022's emulators. Measure on the ws2914c pair from #147 (bff836b8, 5b6a7d33), not on b8b8cd45, which is being replaced."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -3676,6 +3707,87 @@
       "id": 148,
       "title": "A pilot with the world model at ratio 128 reads unseen and trained deaths alike, and imagined WAIT never outlives recorded play",
       "body": "Serves the learner row of the verification table (docs/task.md 1.1). Offline evidence: docs/experiments.md, Review of the training setup. Read from learner_dreamer_unseen_* and learner_dreamer_trained_* (death_rank, prior_kl, plan_gap). Runs only inside a pre-registration made once the other rows are verified.",
+      "status": "Next",
+      "comments": [
+        {
+          "at": "2026-11-07 23:51",
+          "text": "Audit 2026-11-07: correction, docs/task.md 1.1 lists the six setup elements; it holds no table. Gated by the other elements' cards: #136/#144 (action semantics), #141 (observation), #146/#147 (game path, evaluation build), and the plateau rule and the reward decision below."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 149,
+      "title": "Board audit: 2026-11-07",
+      "body": "",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-07 23:52",
+          "text": "Applied: corrected premises on #134 and #144; dependency comments on #136, #140, #146, #148; #145 moved to Blocked (M3-P022's emulators, #147); #58 flagged stale for the developer.\nCreated #150 (setup elements), #151 and #152 (developer decisions: DreamerV3 survival reward; all rows), #153 (plateau rule), #154 (double compression), #155 (the wave-483 wall).\nNo item was done-but-open, duplicated or obsolete."
+        }
+      ],
+      "closed_at": "2026-11-07T22:52:24.946515Z"
+    },
+    {
+      "id": 150,
+      "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
+      "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 151,
+      "title": "The developer accepts or rejects the survival-time reward for DreamerV3",
+      "body": "docs/task.md 7.5 records the acceptance for R2D2 only, and DreamerV3 runs use the flag (docs/experiments.md). The decision is the developer's; the Lead recommends acceptance.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-07 23:52",
+          "text": "Blocked on the developer's decision."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 152,
+      "title": "The developer decides whether runs open every in-run row (--upgrade-availability all), where the account offers 6",
+      "body": "48 rows are opened where the account offers 6 (docs/experiments.md). It bears on 'minimal Workshop levels' and on whether the learner plays the game a human can. The decision is the developer's.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-07 23:52",
+          "text": "Blocked on the developer's decision."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 153,
+      "title": "The next pre-registration sets its plateau stop rule from measured learning curves",
+      "body": "The current rule (patience 6, min improvement 1.0) ends a run at its first plateau; M3-P022 rose from 72 to 95 after a long flat stretch (periods 9-15). Settle before #148 is pre-registered.",
+      "status": "Next",
+      "comments": [
+        {
+          "at": "2026-11-07 23:52",
+          "text": "Correction to the body: the flat stretch was periods 2-15, between 60 and 73, before the rise to 89-95 at periods 16-21."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 154,
+      "title": "The observation's log-scaled features are compressed once, or the second compression is measured harmless",
+      "body": "Features are log1p'd in the environment and symlog'd again by the learner (docs/experiments.md, Review of the training setup).",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 155,
+      "title": "Why every Workshop 79 episode ends on exactly wave 483 is explained",
+      "body": "All 7 episodes at uniform Workshop 79 ended on wave 483 at full health then died in 3-4 waves (docs/experiments.md, Workshop scan). A fixed wall there bears directly on wave 999.",
       "status": "Next",
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

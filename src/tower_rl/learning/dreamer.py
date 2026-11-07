@@ -26,8 +26,10 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
+import numpy
 import torch
 from torch import Tensor, nn
 from torch.nn import functional
@@ -50,6 +52,7 @@ from tower_rl.learning.dreamer_math import (
     unimix_probs,
 )
 from tower_rl.learning.dreamer_replay import DREAMER_REPLAY_CONTEXT
+from tower_rl.learning.step_arrays import StepArrays
 from tower_rl.learning.value_learning import (
     game_time_discounts,
     real_step_td_errors,
@@ -63,6 +66,10 @@ ACTIONS = len(RUN_ACTIONS)
 #: The one action every active run allows, so a decoded mask always keeps it.
 WAIT_INDEX = action_index(WAIT)
 ROWS_WIDTH = ROW_COUNT * ROW_WIDTH
+#: How many steps before a death `read_episode` starts its two imagined plans,
+#: and how many latents it draws for each reading.
+READ_PLAN_STEPS = 5
+READ_SAMPLES = 8
 
 
 @dataclass(frozen=True)
@@ -477,6 +484,101 @@ class DreamerBackbone:
         probs = unimix_probs(logits, self.config.latent_unimix)
         onehot = functional.one_hot(sample_index(probs, uniform), self.config.classes)
         return (onehot.to(probs.dtype) + (probs - probs.detach())).flatten(-2)
+
+    def read_episode(self, steps: StepArrays) -> dict[str, float] | None:
+        """What the world model says about one episode that ended in a death.
+
+        Every monitor of `learn` reads replayed steps, and a model that has
+        memorised them reads perfectly there (`docs/experiments.md`, "Review of
+        the training setup"). This reads any episode, so a run can read one no
+        update has touched beside one replay has held (`TrainingRun`):
+
+        - `death_rank`: the share of the episode's other steps the prior's
+          hazard at the death reads above. 0.5 is no warning at all.
+        - `prior_kl`: the prior's distance from the posterior before the
+          death, in nats.
+        - `plan_gap`: imagined survival to the death from `READ_PLAN_STEPS`
+          before it, under `WAIT` less under the recorded actions. No purchase
+          weakens the tower, so an honest model reads at most 0.
+
+        None when there is no death to read, or too little before it.
+        """
+        count = len(steps.action)
+        if not steps.terminal[-1] or count <= READ_PLAN_STEPS:
+            return None
+        c = self.config
+        assert c.discount_per_game_second is not None
+        world = self.world_model
+        dynamics = world.dynamics
+        generator = torch.Generator(device=self.device).manual_seed(self._steps)
+
+        def draw(logits: Tensor) -> Tensor:
+            many = logits.expand(READ_SAMPLES, *logits.shape[1:])
+            uniform = torch.rand(
+                READ_SAMPLES, c.stoch, device=self.device, generator=generator
+            )
+            return self._latent(many, uniform)
+
+        def alive(deter: Tensor, stoch: Tensor) -> Tensor:
+            many = deter.expand(READ_SAMPLES, -1)
+            head = torch.sigmoid(world.cont(torch.cat((many, stoch), -1)).float()).squeeze(-1)
+            return (head / discount).clamp(max=1.0)
+
+        def survival(plan: Tensor, deter: Tensor, stoch: Tensor) -> float:
+            alive_so_far = torch.ones(READ_SAMPLES, device=self.device)
+            for action in plan:
+                deter = dynamics.core(deter, stoch, action.expand(READ_SAMPLES, -1))
+                stoch = draw(dynamics.prior_logits(deter))
+                alive_so_far = alive_so_far * alive(deter, stoch)
+            return float(alive_so_far.mean())
+
+        tensor = partial(torch.as_tensor, device=self.device)
+        # One typical step's discount, because a step's own would give the
+        # death away: the wave it ends is cut short.
+        discount = game_time_discounts(
+            c.discount_per_game_second, tensor(float(numpy.median(steps.game_ms[1:-1])))
+        ).to(torch.float32)
+        actions = functional.one_hot(tensor(steps.action), ACTIONS).to(torch.float32)
+        start = count - 1 - READ_PLAN_STEPS
+        hazards = []
+        distances = []
+        with torch.no_grad():
+            tokens = world.encode(
+                tensor(steps.scalars),
+                tensor(steps.rows).view(count, ROW_COUNT, ROW_WIDTH),
+                tensor(steps.mask),
+            )
+            deter, stoch, previous = self.initial_state()
+            for step in range(count):
+                deter = dynamics.core(deter, stoch, previous)
+                prior_logits = dynamics.prior_logits(deter)
+                logits = dynamics.posterior_logits(deter, tokens[step : step + 1])
+                hazards.append(1.0 - float(alive(deter, draw(prior_logits)).mean()))
+                distances.append(float(categorical_kl(
+                    unimix_probs(logits, c.latent_unimix),
+                    unimix_probs(prior_logits, c.latent_unimix),
+                ).sum()))
+                stoch = self._latent(
+                    logits, torch.rand(1, c.stoch, device=self.device, generator=generator)
+                )
+                if step == start:
+                    plan_from = (
+                        deter.expand(READ_SAMPLES, -1), stoch.expand(READ_SAMPLES, -1)
+                    )
+                previous = actions[step : step + 1]
+            recorded = survival(actions[start : count - 1], *plan_from)
+            waiting = functional.one_hot(
+                tensor([WAIT_INDEX] * READ_PLAN_STEPS), ACTIONS
+            ).to(torch.float32)
+            plan_gap = survival(waiting, *plan_from) - recorded
+        death = hazards[-1]
+        others = hazards[:-1]
+        below = sum(float(hazard < death) + 0.5 * float(hazard == death) for hazard in others)
+        return {
+            "death_rank": below / len(others),
+            "prior_kl": sum(distances[:-1]) / len(others),
+            "plan_gap": plan_gap,
+        }
 
     def replay_entry(self, state: tuple[Tensor, Tensor, Tensor]) -> tuple[Any, Any]:
         """The latent `act` just reached, as replay stores it: the official `dyn` entry.

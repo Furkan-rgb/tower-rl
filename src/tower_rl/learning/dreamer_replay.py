@@ -71,6 +71,8 @@ from tower_rl.learning.step_arrays import StepArrays, read_rows, write_rows
 DREAMER_REPLAY_CAPACITY = 5_000_000
 #: `configs.yaml` `replay_context`.
 DREAMER_REPLAY_CONTEXT = 1
+#: How many episodes newer than it an episode needs to read as trained on.
+TRAINED_EPISODE_AGE = 50
 #: The layout of a saved step replay. 1 and 2 were the window buffer's,
 #: which this buffer refuses: a DreamerV3 run saved before stored latents
 #: cannot continue under them.
@@ -179,6 +181,22 @@ class DreamerReplay:
     @property
     def steps_held(self) -> int:
         return sum(len(episode.steps) for episode in self._episodes.values())
+
+    def trained_episode(self) -> EpisodeSteps | None:
+        """An episode that ended in a death, at least `TRAINED_EPISODE_AGE` episodes old.
+
+        Older than the actors' own recent episodes, so updates have had time to
+        reach it. It draws from the sampler's stream, which a dump keeps.
+        """
+        newest = self._next_episode - TRAINED_EPISODE_AGE
+        numbers = [
+            number
+            for number, episode in self._episodes.items()
+            if number < newest and episode.steps.terminal[-1]
+        ]
+        if not numbers:
+            return None
+        return self._episodes[numbers[self._random.randrange(len(numbers))]].steps
 
     def add(self, actor_id: str, metadata: SequenceMetadata, steps: EpisodeSteps) -> bool:
         """Append one episode to its actor's stream; every position it completes becomes an item."""

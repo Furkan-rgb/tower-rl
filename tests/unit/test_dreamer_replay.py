@@ -11,7 +11,12 @@ import pytest
 
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
 from tower_rl.environment.run_actions import RUN_ACTIONS
-from tower_rl.learning.dreamer_replay import DreamerReplay, EpisodeSteps, episode_steps
+from tower_rl.learning.dreamer_replay import (
+    TRAINED_EPISODE_AGE,
+    DreamerReplay,
+    EpisodeSteps,
+    episode_steps,
+)
 from tower_rl.learning.replay import REPLAY_DUMP_METADATA, ReplayDumpError, SequenceMetadata
 
 METADATA = SequenceMetadata(
@@ -47,6 +52,18 @@ def _replay(capacity: int = 64) -> DreamerReplay:
 
 def _positions(replay: DreamerReplay, sample_size: int) -> list[list[float]]:
     return replay.sample(sample_size).arrays["reward"].tolist()
+
+
+def test_a_trained_episode_is_old_and_ended_in_a_death() -> None:
+    replay = DreamerReplay(capacity=4096, length=3, seed=0)
+    died = replace(_episode(0, 3), terminal=numpy.array([False, False, True]))
+    assert replay.add("a", METADATA, _episode(0, 3))
+    assert replay.add("a", METADATA, died)
+    for _ in range(TRAINED_EPISODE_AGE - 1):
+        replay.add("a", METADATA, _episode(0, 3))
+    assert replay.trained_episode() is None  # the death is one episode too new
+    replay.add("a", METADATA, _episode(0, 3))
+    assert replay.trained_episode() is died
 
 
 def test_every_step_starts_an_item_once_its_window_is_complete() -> None:

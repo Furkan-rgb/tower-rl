@@ -28,7 +28,12 @@ from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunE
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.learning.actor import Actor, Decision
 from tower_rl.learning.backbone import SequenceBatch, acting_copy
-from tower_rl.learning.dreamer import WAIT_INDEX, DreamerBackbone, DreamerConfig
+from tower_rl.learning.dreamer import (
+    READ_PLAN_STEPS,
+    WAIT_INDEX,
+    DreamerBackbone,
+    DreamerConfig,
+)
 from tower_rl.learning.dreamer_math import symlog
 from tower_rl.learning.dreamer_replay import (
     DreamerReplay,
@@ -434,6 +439,109 @@ def test_a_short_training_run_on_the_fake_port_takes_finite_optimisation_steps()
     assert backbone.model_version == report.optimisation_steps
     assert all(math.isfinite(loss) for loss in report.recent_weighted_losses)
 
+
+
+def test_reading_an_episode_reports_the_three_numbers_of_a_death() -> None:
+    read = _backbone().read_episode(_episode(LENGTH + 2))
+    assert read is not None
+    assert set(read) == {"death_rank", "prior_kl", "plan_gap"}
+    assert 0.0 <= read["death_rank"] <= 1.0
+    assert read["prior_kl"] >= 0.0
+    assert -1.0 <= read["plan_gap"] <= 1.0
+
+
+def test_an_episode_with_no_death_or_too_little_before_it_reads_nothing() -> None:
+    backbone = _backbone()
+    assert backbone.read_episode(_episode(LENGTH + 2, died=False)) is None
+    assert backbone.read_episode(_episode(READ_PLAN_STEPS)) is None
+
+
+class _FlatHead(torch.nn.Module):
+    """A continue head that says the same of every state."""
+
+    def forward(self, feature: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(*feature.shape[:-1], 1)
+
+
+def test_a_head_that_gives_no_warning_ranks_the_death_at_a_half() -> None:
+    """The wave a death cuts short is not a warning: `M3-P022`'s weights read 0.995 on it."""
+    backbone = _backbone()
+    backbone.world_model.cont = _FlatHead()
+    read = backbone.read_episode(_episode(LENGTH + 2, game_ms=(1000.0,) * LENGTH + (100.0,)))
+    assert read is not None
+    assert read["death_rank"] == 0.5
+
+
+def test_the_two_plans_run_from_the_same_state_to_the_death() -> None:
+    """The recorded plan is the actions from that state, the other is `WAIT` at every step."""
+    backbone = _backbone()
+    dynamics = backbone.world_model.dynamics
+    core = dynamics.core
+    fed: list[int] = []
+
+    def recording(deter: torch.Tensor, stoch: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        fed.append(int(action[0].argmax()))
+        return core(deter, stoch, action)
+
+    dynamics.core = recording  # type: ignore[assignment,method-assign]
+    episode = _episode(LENGTH + 2)
+    backbone.read_episode(episode)
+    count = len(episode.action)
+    assert fed[count : count + READ_PLAN_STEPS] == list(
+        episode.action[count - 1 - READ_PLAN_STEPS : count - 1]
+    )
+    assert fed[count + READ_PLAN_STEPS :] == [WAIT_INDEX] * READ_PLAN_STEPS
+
+
+def test_a_read_draws_from_neither_the_learner_nor_the_acting_stream() -> None:
+    backbone = _backbone()
+    acting = backbone._random.getstate()
+    learner = torch.get_rng_state()
+    backbone.read_episode(_episode(LENGTH + 2))
+    assert backbone._random.getstate() == acting
+    assert torch.equal(torch.get_rng_state(), learner)
+
+
+def test_a_run_reads_each_episode_before_replay_holds_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tower_rl.learning.dreamer_replay.TRAINED_EPISODE_AGE", 1)
+    environment = InstrumentedRunEnvironment(
+        port=FakeRunPort(damage_per_second=2.0),
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+    backbone = _backbone()
+    replay = DreamerReplay(capacity=256, length=LENGTH + 1, seed=0)
+    actor = Actor(environment=environment, policy=acting_copy(backbone), replay=replay)
+    training = TrainingRun(
+        actors=[actor],
+        replay=replay,
+        backbone=backbone,
+        config=TrainingConfig(
+            budget_decisions=120,
+            warmup_sequences=2,
+            batch_size=SMALL.batch_size,
+            gradient_steps_per_decision=0.25,
+            exploration=ExplorationSchedule(
+                epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+            ),
+        ),
+    )
+    read = actor.before_replay
+    assert read is not None
+    unseen: list[bool] = []
+
+    def noting(episode: EpisodeSteps) -> None:
+        unseen.append(all(held.steps is not episode for held in replay._episodes.values()))
+        read(episode)
+
+    actor.before_replay = noting
+    report = training.run()
+    assert len(unseen) > 1 and all(unseen)
+    for kind in ("unseen", "trained"):
+        for name in ("death_rank", "prior_kl", "plan_gap"):
+            assert report.recent_diagnostics[f"dreamer_{kind}_{name}"]
 
 
 def test_an_acting_copy_takes_each_finished_step_between_decisions() -> None:

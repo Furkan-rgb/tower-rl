@@ -94,7 +94,8 @@ from tower_rl.environment.run_state import INVENTORY_TOO_WIDE, OUT_OF_RANGE_REAS
 from tower_rl.environment.upgrade_setup import UPGRADE_SETUP_DRIFT
 from tower_rl.learning.actor import Actor, EpisodeResult
 from tower_rl.learning.backbone import Backbone, LearnMetrics, acting_copy
-from tower_rl.learning.dreamer_replay import DreamerReplay
+from tower_rl.learning.dreamer import DreamerBackbone
+from tower_rl.learning.dreamer_replay import DreamerReplay, EpisodeSteps
 from tower_rl.learning.evaluator import EvaluationReport
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.learner import Learner, LearnerLoad, LearnerThread
@@ -1073,6 +1074,8 @@ class TrainingRun:
             actor.before_decision = partial(
                 self._before_decision, actor_id, copy, actor.profile
             )
+            if isinstance(copy, DreamerBackbone):
+                actor.before_replay = partial(self._read_episode, copy, actor.profile)
             self.report.actors.setdefault(actor_id, ActorProgress(actor_id))
 
     @property
@@ -1397,6 +1400,31 @@ class TrainingRun:
             with profile.span(PARAMETER_LOAD):
                 self._loaded[actor_id] = self.learner.publish_to(acting)
         self._since_sync[actor_id] = 0
+
+    def _read_episode(
+        self, acting: DreamerBackbone, profile: DecisionTimeProfile, episode: EpisodeSteps
+    ) -> None:
+        """Read an episode no update has touched, beside one replay has held.
+
+        Both under the acting copy's weights, on its own thread, so the gap
+        between `dreamer_unseen_*` and `dreamer_trained_*` is the model's and
+        not the weights': what the learner's own monitors, which read replayed
+        steps only, cannot show (`DreamerBackbone.read_episode`).
+        """
+        assert isinstance(self.replay, DreamerReplay)
+        with measured_apart(profile):
+            with self.replay.lock:
+                trained = self.replay.trained_episode()
+            reads = {
+                "unseen": acting.read_episode(episode),
+                "trained": None if trained is None else acting.read_episode(trained),
+            }
+            with self._lock:
+                for kind, read in reads.items():
+                    for name, value in (read or {}).items():
+                        self.report.recent_diagnostics.setdefault(
+                            f"dreamer_{kind}_{name}", []
+                        ).append(value)
 
     def _before_decision(
         self, actor_id: str, acting: Backbone, profile: DecisionTimeProfile

@@ -1778,6 +1778,24 @@ logged per learn window, as a mean over the last hundred updates, as
   every invalid entry, which rows locked all run would dilute), and the share
   of truly valid entries decoded invalid (`dreamer_mask_false_invalid_rate`).
 
+**Episode reads.** Those monitors read replayed steps, where a model that has
+memorised them reads perfectly (`docs/experiments.md`, "Review of the training
+setup"). So as a death enters replay, the actor's copy reads that episode, which
+no update has touched, and one episode at least 50 older, chosen at random, with
+the same weights (`DreamerBackbone.read_episode`, `TrainingRun._read_episode`).
+Each number is logged as `learner_dreamer_unseen_*` and `learner_dreamer_trained_*`,
+a mean over the last hundred episodes:
+
+- `death_rank`: the share of the episode's other steps the prior's hazard at
+  the death reads above, 0.5 for no warning;
+- `prior_kl`: the prior's distance from the posterior before the death, in nats;
+- `plan_gap`: imagined survival to the death from five steps before it, under
+  `WAIT` less under the recorded actions. No purchase weakens the tower, so a
+  model reading above 0 credits doing less than was done.
+
+The gap between the two sets is the read. On `M3-P022`'s weights at d70018 they are
+0.659 unseen and 1.0 trained, 16.3 and 1.3 nats, and −0.06 and +0.49.
+
 **Step time.** At batch 16 the learner was bound by launching kernels, not by
 arithmetic: an update launched about 14,800 kernels, and the GPU was busy for
 less than half of it. So on CUDA the two recurrent loops of `learn` - the

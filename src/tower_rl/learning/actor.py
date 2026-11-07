@@ -35,7 +35,7 @@ from tower_rl.environment.run_actions import (
 )
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
 from tower_rl.environment.run_state import OBSERVATION_SCHEMA_VERSION
-from tower_rl.learning.dreamer_replay import DreamerReplay, episode_steps
+from tower_rl.learning.dreamer_replay import DreamerReplay, EpisodeSteps, episode_steps
 from tower_rl.learning.policies import Policy
 from tower_rl.learning.r2d2 import R2D2Backbone
 from tower_rl.learning.r2d2_replay import (
@@ -119,6 +119,10 @@ class Actor:
     #: inside one. A training run refreshes the policy's parameters here
     #: (`TrainingRun._before_decision`); None leaves the policy alone.
     before_decision: Callable[[], None] | None = None
+    #: Called on this actor's thread with a DreamerV3 episode the moment before
+    #: replay holds it, the last moment no update has touched it
+    #: (`TrainingRun._read_episode`); None leaves it unread.
+    before_replay: Callable[[EpisodeSteps], None] | None = None
 
     def run_episode(self) -> EpisodeResult:
         """Play one episode to its classified end and emit it to replay."""
@@ -252,6 +256,8 @@ class Actor:
             deter=[deter for deter, _ in entries],
             stoch=[stoch for _, stoch in entries],
         )
+        if self.before_replay is not None:
+            self.before_replay(episode)
         with self.profile.acquiring(replay.lock):
             accepted = replay.add(self.config.actor_id, self._metadata(summary), episode)
         return 1, int(accepted)

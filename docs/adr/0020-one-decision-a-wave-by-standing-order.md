@@ -2,7 +2,7 @@
 
 **Status:** Proposed, 2026-11-06. Item 2 amended 2026-11-07 on `M3-P021`'s result:
 it first kept the mask at affordability, and that form is recorded under Options
-rejected. Board `#131`, `#134`. Nothing here is the contract: `choice-points` stays
+rejected. Board `#144`, `#134`. Nothing here is the contract: `choice-points` stays
 the default and ADR 0009 and ADR 0019 stand. The pilots `M3-P021` and `M3-P022`
 (`docs/experiments.md`) are the spikes whose output is this decision, and the
 developer accepts or rejects it.

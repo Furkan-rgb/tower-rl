@@ -1,5 +1,5 @@
 {
-  "next_id": 143,
+  "next_id": 146,
   "items": [
     {
       "id": 1,
@@ -3402,14 +3402,19 @@
       "id": 131,
       "title": "A wave-long standing-order decision is measured against its floors: ADR 0020 is accepted or rejected on M3-P021's result",
       "body": "From the reward audit, 2026-11-06: the survival reward's formula is right, and credit past about sixty waves from death is lost to the discount horizon. ADR 0020 (Proposed) answers it with one decision a wave and 0.997 per wave. Additive: choice-points stays the contract until the developer accepts it. Output is a decision, not a goal.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 06:19",
           "text": "M3-P021 finished: plateau stop at 50,322 decisions, final evaluation 47.87 (SD 4.15, n=30), below the script. Credit readout improved (40-60: 10x vs 2.3x; 60+: 11x vs 1.2x), so neither pre-registered bar. Diagnosis: the policy takes Defense Absolute about 70% of the time at decisions 31-50 when offered, but the affordability mask offers it only 27-39% of the time. Follow-up on #134."
+        },
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Retired, replaced by #144. M3-P021 was measured in 736147c and gave neither result, so 'on M3-P021's result' can no longer come true. Found by board audit #143."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-07T15:34:38.605848Z"
     },
     {
       "id": 132,
@@ -3449,7 +3454,7 @@
       "id": 134,
       "title": "An order may name a row out of reach: the learner can save for the row it wants",
       "body": "M3-P021's replay shows the policy picks Defense Absolute about 70% of the time when the mask offers it (decisions 31-50), but the mask offers it only 27-39% of the time, because when it is out of reach the policy spends on another row 89-93% of the time and it stays out of reach. The trap is the mask, not the credit. Spike: a saving-orders cadence whose legal set is every row on sale, so an order for a row out of reach saves for it. M3-P022 tests it, one change from M3-P021. ADR 0020's rejected alternative, revisited on this evidence.",
-      "status": "In progress",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-07 08:48",
@@ -3458,6 +3463,10 @@
         {
           "at": "2026-11-07 16:00",
           "text": "Review recorded in docs/experiments.md, 'Review of the training setup'. Reward correct. Saving is partial: an order spends all it can, once a wave. World-model death AUC 0.512 unseen vs 1.0 trained; entropy under 0.32 nats. Guides read in full: script 102 was no guide turtle (cash rows never bought), no script was a guide Blender, and Blender as the guides define it rests on Workshop and Labs."
+        },
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Held by the live run M3-P022. Closes on its pre-registered mechanism read. Only same-wave saving is covered here; saving across waves belongs to #136."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3479,25 +3488,45 @@
       "id": 136,
       "title": "An order buys one level and stands until filled: the learner can keep cash, buy two rows in a wave and save across waves",
       "body": "ADR 0020's saving-orders spends every level the cash reaches, once a wave. A new cadence: an order buys exactly one level as soon as cash reaches its price and buys nothing else; the policy is asked again after filling, when tower health moves 5%, or at run end; WAIT holds until the next wave's turn. Done when unit tests cover one level, two rows in a wave, a save across waves and cancellation by health, and its floors are measured. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "In progress",
-      "comments": [],
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Code and unit conditions are in ab4aa63. Only the floors remain, and they need the emulators M3-P022 holds. As built, a fall in health ends an order, not any 5% move (docs/environment-contract.md)."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 137,
       "title": "World-model death prediction and the critic are measured on episodes the learner has not trained on",
       "body": "AUC 0.512 unseen vs 1.0 trained at M3-P021 d40035; every existing monitor reads replayed steps. Done when a held-out read is logged during training and a memorisation remedy has been tested against it offline on M3-P021's replay. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "Next",
-      "comments": [],
+      "status": "In progress",
+      "comments": [
+        {
+          "at": "2026-11-07 16:28",
+          "text": "Offline test running from a frozen copy of the code: a fresh model learns from M3-P021's replay with two actors' whole streams held out (724 trained episodes, 291 held out). Arms: baseline, input noise, coarse inputs, a smaller model, a tighter KL. 20,000 updates each, about 560 replays per step, read every 2,500 updates. Live run undisturbed: low priority, about 6 GB of free GPU memory."
+        },
+        {
+          "at": "2026-11-07 16:34",
+          "text": "The offline test answers only the remedy half. A held-out read logged during training still needs code, and docs/task.md 1.1 requires it, so this stays open after the test ends."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 138,
       "title": "A guide-faithful turtle into blender floor is measured at Workshop 10: cash first, Skips, 4 Orbs, Health, Free Upgrades",
       "body": "No script so far bought economy rows, Skips, Free Upgrades or Recovery rows, and all ended on 2 of 4 Orbs. Needs orders that stand until filled. Also measures what Enemy Attack Level Skip does at levels above 1, read off wave_base_damage. A benchmark only; it is not handed to the learner.",
-      "status": "Next",
-      "comments": [],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Retired, replaced by #145. 'Guide-faithful' cannot be checked at Workshop 10, since the guides define Blender on maxed Workshop and Labs. Found by board audit #143."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-07T15:34:38.727989Z"
     },
     {
       "id": 139,
@@ -3518,7 +3547,12 @@
       "title": "The policy keeps trying rows it has not bought: a two-phase plan can be discovered",
       "body": "Entropy falls under 0.32 nats of about 3.7 and whole rows go unordered, and the reference code applies no actor unimix, so a floor is a deviation ADR 0018 requires forced. Done when a floor or scale is chosen on measured evidence, recorded with what forces it, and absent from evaluation. Evidence: docs/experiments.md, 'Review of the training setup'.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Any floor is measured on the cadence the next run uses, which is filling-orders unless its floors say otherwise."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -3526,13 +3560,46 @@
       "title": "The observation carries the wave just played: lowest health, kills, cash earned",
       "body": "At a wave's turn enemies_spawned is zero in 99.7% of states, enemies_killed in 89.9%, cash_earned_this_wave_log in 91.7%. Nothing summarises the span since the last decision, so the policy cannot see a wave that nearly killed it. An observation schema change. Evidence: docs/experiments.md, 'Review of the training setup'.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-07 16:34",
+          "text": "The zero rates were read at one-decision-a-wave cadences. Under filling-orders decisions fall mid-wave, so re-read them there before fixing the schema."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 142,
       "title": "The device package has a name that does not claim a simulator",
       "body": "src/tower_rl/simulation holds the adapter to the real game, in a public repo whose claim is that no simulator is used, and docs/task.md section 6 forbids one. Rename once no run is live: a lazy import in a running stage must not break. The import contract and docs/architecture.md move with it.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Blocked on M3-P022: no rename while a run is live. Kept in M3 because the developer asked for the whole setup, structure included, to be correct."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 143,
+      "title": "Board audit: 2026-11-07",
+      "body": "Exit #139 closed, so an audit is due. Scope: every open item of M3 and every In progress item with no live worker.",
+      "status": "In progress",
+      "comments": []
+    },
+    {
+      "id": 144,
+      "title": "ADR 0020 is accepted or rejected on M3-P022's result and the filling-orders floors",
+      "body": "Replaces #131, whose condition can no longer come true: M3-P021 gave neither result (736147c). The ADR is Proposed and now rests on M3-P022 and on what #136's floors show. The acceptance is the developer's.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 145,
+      "title": "A turtle-into-blender script on the guides' in-run order is measured at Workshop 10, with Enemy Attack Level Skip's effect read above level 1",
+      "body": "Replaces #138. The guides define Blender on maxed Workshop and Labs, so 'guide-faithful' cannot be checked at Workshop 10. The script follows their in-run order: cash, Free Upgrades, then Health, Defense %, Knockback, Orbs and Orb Speed, Thorns, Attack Speed, the Recovery rows, with Skips from the late guide. A benchmark only, handed to no learner. Needs #136's floors first, so it runs after M3-P022.",
       "status": "Next",
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

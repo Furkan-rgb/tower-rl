@@ -1,10 +1,33 @@
 # Tower-RL — Workstation Handoff
 
-## START HERE — current state, 2026-09-19
+## START HERE — current state, 2026-11-07
 
 This section is the one place that says where the project actually is. Everything
 below it is historical and dated; read this first and treat older sections as
-context rather than as current truth.
+context rather than as current truth. Open work is on the board, milestone
+`M3 A learned policy reaches wave 999 on a verified setup`.
+
+- **The goal** is in `docs/task.md` §1.1: a learned policy reaches wave 999 of Tier 1,
+  at minimal Workshop levels, on a setup whose parts are evidenced, with learning
+  shown on data the learner has not trained on. Workshop 10 is the benchmark. Scripts
+  are benchmarks only and hand the learner nothing.
+- **The game** is The Tower 29.14 on the rooted clone AVD `tower_rl_instrumented_api36`,
+  read-only instances on even ports from 5556, offline. `emulator-5554` is the master
+  and is never touched. Bridge build: `state/bridge/builds/ws2914b-render-interval-16-nodelay`,
+  selected with `TOWER_BRIDGE_BUILD_DIR`, digest `b8b8cd45…`.
+- **The learner** is the DreamerV3 port, which follows its reference code unless the
+  environment forces otherwise (ADR 0018). R2D2 is built and not in use for this goal.
+- **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change.
+- **The cadence** is on trial. `choice-points` is the contract and ADR 0020 is Proposed.
+  `saving-orders` is what `M3-P022` runs. `filling-orders` buys one level and stands
+  until filled, and is not yet played on the game.
+- **The last full reading of the setup** is `docs/experiments.md`, "Review of the
+  training setup". It says what is verified and what is not, and supersedes the
+  older sections below where they differ.
+- **A run** is pre-registered in `docs/experiments.md` before it starts, and launched
+  through `scripts/run_stage.sh`. Launch files under `state/launch/` are machine-local.
+
+## State as of 2026-09-19 (historical)
 
 ### The protocol the project collects under
 

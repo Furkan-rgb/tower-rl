@@ -1,5 +1,5 @@
 {
-  "next_id": 140,
+  "next_id": 143,
   "items": [
     {
       "id": 1,
@@ -3512,6 +3512,30 @@
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
       "closed_at": "2026-11-07T15:22:37.905094Z"
+    },
+    {
+      "id": 140,
+      "title": "The policy keeps trying rows it has not bought: a two-phase plan can be discovered",
+      "body": "Entropy falls under 0.32 nats of about 3.7 and whole rows go unordered, and the reference code applies no actor unimix, so a floor is a deviation ADR 0018 requires forced. Done when a floor or scale is chosen on measured evidence, recorded with what forces it, and absent from evaluation. Evidence: docs/experiments.md, 'Review of the training setup'.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 141,
+      "title": "The observation carries the wave just played: lowest health, kills, cash earned",
+      "body": "At a wave's turn enemies_spawned is zero in 99.7% of states, enemies_killed in 89.9%, cash_earned_this_wave_log in 91.7%. Nothing summarises the span since the last decision, so the policy cannot see a wave that nearly killed it. An observation schema change. Evidence: docs/experiments.md, 'Review of the training setup'.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 142,
+      "title": "The device package has a name that does not claim a simulator",
+      "body": "src/tower_rl/simulation holds the adapter to the real game, in a public repo whose claim is that no simulator is used, and docs/task.md section 6 forbids one. Rename once no run is live: a lazy import in a running stage must not break. The import contract and docs/architecture.md move with it.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],
   "milestones": [

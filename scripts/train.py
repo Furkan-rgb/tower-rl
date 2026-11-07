@@ -892,7 +892,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "discount by game time: a transition that spans t game-seconds is "
             "discounted by this ** t, so a purchase costs no discount "
-            "(docs/solution.md 9.4d); the protocol's value is 0.999 (ADR 0013); "
+            "(docs/solution.md 9.4d); the protocol's value is 0.997 (ADR 0019); "
             "required"
         ),
     )
@@ -1144,7 +1144,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         # neither backbone has a per-decision one to fall back on.
         raise SystemExit(
             f"--backbone {arguments.backbone} discounts by game time and needs "
-            "--discount-per-game-second (the protocol's is 0.999, ADR 0013)"
+            "--discount-per-game-second (the protocol's is 0.997, ADR 0019)"
         )
     if arguments.burn_in >= arguments.sequence_length:
         raise SystemExit(

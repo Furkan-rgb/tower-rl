@@ -97,9 +97,10 @@ def categorical_kl(left: Tensor, right: Tensor) -> Tensor:
 def masked_policy_log_probs(logits: Tensor, mask: Tensor, unimix: float) -> Tensor:
     """Log-probabilities of the actor's categorical, restricted to valid actions.
 
-    The official categorical mixes 1% uniform over every action; here the mix
-    is uniform over the valid ones, and an invalid action has probability
-    exactly zero (log-probability minus infinity), so it can never be sampled.
+    The official policy head is a plain categorical, so a run passes `unimix`
+    0 (docs/solution.md 9.4c). Any mix is uniform over the valid actions only,
+    and an invalid action has probability exactly zero (log-probability minus
+    infinity), so it can never be sampled.
     """
     masked = logits.masked_fill(~mask, float("-inf"))
     probs = torch.softmax(masked, -1)

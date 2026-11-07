@@ -1384,6 +1384,21 @@ def test_a_wait_bought_nothing_and_says_so() -> None:
     assert seen[-1].purchase is None
 
 
+def test_an_order_that_bought_nothing_says_so() -> None:
+    environment, port = _environment(
+        DecisionCadence.SAVING_ORDERS, **_broke_after_buying(start_cash=0.0)
+    )
+    seen: list[DecisionView] = []
+    environment.on_decision = seen.append
+    state = environment.reset()
+    target = next(row for row in state.rows if row.on_sale)
+
+    environment.step(target.action)
+
+    assert all(slot.level == 0 for slot in port.slots.values())
+    assert seen[-1].purchase is None
+
+
 def test_the_last_view_of_an_episode_is_the_one_marked_done() -> None:
     """A watcher learns the tower died from the stream, not from a summary."""
     environment, _ = _environment(damage_per_second=2.0, max_health=1.0)

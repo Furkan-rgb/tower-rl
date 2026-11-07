@@ -379,10 +379,10 @@ tracker holds. A run folder holds one run however many sittings it took: each
 sitting is a segment with a run id of its own, and the manifest's `segments`
 list is the one thing a later segment appends to.
 
-## 5a. The two loose modules
+## 5a. The three loose modules
 
-Two modules sit at the top level of `tower_rl` rather than in a package, because
-neither is part of a run:
+Three modules sit at the top level of `tower_rl` rather than in a package, because
+none is part of a run:
 
 - `doctor.py` — read-only host, package and Android-device diagnostics, returning
   `CheckResult` rows with a `pass`/`warn`/`fail` status: host and SDK inventory,
@@ -396,6 +396,8 @@ neither is part of a run:
   (manifest, splits, checksums), used by `doctor` and by `tests/unit/test_xapk.py`.
   It never extracts or copies proprietary bytes. The XAPK is reference material;
   the validated runtime is Play-installed.
+- `console_timestamp.py` — a `print` that stamps the time, used by the scripts that
+  log a long run.
 
 ## 6. Flow: a fleet collection run
 

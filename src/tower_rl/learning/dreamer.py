@@ -69,8 +69,9 @@ ROWS_WIDTH = ROW_COUNT * ROW_WIDTH
 class DreamerConfig:
     """Every DreamerV3 setting, at the official values (`configs.yaml`).
 
-    `size12m` for the network sizes; the batch and the train ratio of the
-    `atari100k` preset, the official low-data, one-environment setting.
+    `size12m` for the network sizes; the batch of the `atari100k` preset, the
+    official low-data, one-environment setting, and its train ratio as the
+    default a run may set otherwise.
     `docs/solution.md` 9.4c cites each and records every departure.
     """
 
@@ -146,7 +147,7 @@ class DreamerConfig:
     #: `horizon: 333`. A transition that spans t game-seconds is discounted by
     #: this ** t, which the continue target carries (`contdisc`); a purchase
     #: spans none and is not discounted (docs/solution.md 9.4c, 9.4d). Not a
-    #: code default: the protocol's is 0.999, and the run sets it. None only
+    #: code default: the run sets it (ADR 0013, ADR 0019). None only
     #: rebuilds, to act, a policy from a checkpoint from before it; `learn`
     #: refuses it.
     discount_per_game_second: float | None = None

@@ -1648,7 +1648,7 @@ class InstrumentedRunEnvironment:
         )
 
     def _purchase(self, transition: RunTransition, shown: RunState) -> PurchaseView | None:
-        """What the decision bought, in the game's own terms, or None for a wait.
+        """What the decision bought, in the game's own terms, or None if nothing.
 
         The price comes from the state the decision was taken *from*, which is
         the price that was paid; the level comes from the state it produced,
@@ -1656,7 +1656,7 @@ class InstrumentedRunEnvironment:
         would quote either the next level's price or the level before the buy.
         """
         action = transition.action
-        if action.is_wait:
+        if action.is_wait or transition.outcome is not ActionOutcome.EXECUTED:
             return None
         reached = next((row for row in shown.rows if row.action == action), None)
         priced = next((row for row in transition.state.rows if row.action == action), None)

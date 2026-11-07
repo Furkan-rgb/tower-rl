@@ -3514,6 +3514,14 @@
         {
           "at": "2026-11-07 16:34",
           "text": "The offline test answers only the remedy half. A held-out read logged during training still needs code, and docs/task.md 1.1 requires it, so this stays open after the test ends."
+        },
+        {
+          "at": "2026-11-07 17:22",
+          "text": "First five-arm read: every arm generalises early (held-out AUC 0.85-0.95 by 2,500-7,500 updates) and falls to about 0.70 by 20,000 while trained reach 0.95-0.99. Noise, coarse inputs and a tighter KL change the path, not the outcome. Baseline 0.89 then 0.70; noise 0.95 then unstable. Next: data arriving in time order at ratios 128 to 1024."
+        },
+        {
+          "at": "2026-11-07 18:57",
+          "text": "Sweep read: held-out vs trained AUC at ratio 128 .90/.91, 256 .83/.93, 512 .68/.98, 1024 .64/.99, so the ratio sets the gap. But a smaller model with no gap still fell, which exposed a second cause. The terminal observation gives death away (mask all zero, health exactly 0, mid-wave counters) and cont trains on the posterior (dreamer.py:661). On M3-P022's own weights: head on posterior AUC 1.0 everywhere; death-step deter + previous stoch 0.0001, previous deter + death stoch 1.0, so the head reads stoch alone. Prior at death: 1.0 trained, 0.0-0.0002 unseen; KL at death 120-137 unseen vs 1; KL elsewhere 7-10.7 unseen vs 0.75. Imagined survival at d70018 to the real death's wave, 10 waves out on trained states: recorded 0.016, WAIT 0.587, DA 0.649; unseen, 3 waves out: 0.914/0.924/0.898. Purchases earn no honest credit. Remedy arm running: cont on the prior, one line, ratios 128-2048. docs/experiments.md 'Review of the training setup'."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

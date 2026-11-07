@@ -2839,8 +2839,8 @@ about 131,000 purchases.
   0.185 trained.
 - The critic's correlation with waves remaining is 0.90–0.97 trained, 0.33–0.51 unseen.
 - `value_fit_correlation` and the `dreamer_*` checks run on replayed steps only, so
-  they read healthy throughout. `M3-P019` at train ratio 512 shows the same thing, so
-  the ratio sets its speed and not whether it happens.
+  they read healthy throughout. `M3-P019` at train ratio 512 shows the same thing.
+  The sweep under "What takes it away" shows the ratio decides whether it happens.
 
 An inference, not a measurement: exact float features fingerprint an episode, and this
 may be what caps the plateau.
@@ -3010,8 +3010,82 @@ bought at all. A human on this account would have to unlock those rows first.
 **Memorisation, on a clean split.** A fresh model on `M3-P021`'s replay, with two
 actors' whole streams held out so no training window touches them, reads a held-out AUC
 of 0.893 at 2,500 updates and 0.698 at 20,000, while trained episodes reach 0.99 by
-10,000. So the world model can learn this, and over-replay is what takes it away. Other
-arms are not yet read.
+10,000. So the world model can learn this, and over-replay is what takes it away.
+
+**What takes it away: the train ratio sets the gap.** The same test with data revealed in
+time order, as a run receives it, on the 36,650 trained steps. AUC is the mean of the
+last four of eight reads. Health alone reads 0.945 on the held-out set.
+
+| Arm | Held-out AUC | Trained AUC |
+|---|---|---|
+| Ratio 128 | 0.903 | 0.914 |
+| Ratio 256 | 0.827 | 0.934 |
+| Ratio 512 | 0.682 | 0.984 |
+| Ratio 1024 | 0.637 | 0.992 |
+| Ratio 256, 5% input noise | 0.857 | 0.860 |
+| Ratio 512, 5% input noise | 0.753 | 0.908 |
+
+At all data and 20,000 updates, noise, coarse inputs and a tighter KL each kept a gap, and
+reads at ratio 128 still swing between 0.81 and 0.95. This corrects the audit's "the
+ratio sets its speed and not whether it happens": at 128 no gap opens on this much data.
+
+**A smaller model showed it is not only memorisation.** `deter` 512 and 64 units opened no
+gap, and fell anyway: held-out and trained AUC moved together, 0.93 at 2,500 updates and
+0.64 at 12,500, with a mean prediction of 0.0003 against a real rate of 0.019. A head
+trained by cross-entropy should stay calibrated on its own data, and it did not, which
+pointed at the read: the head is trained on one distribution and used on another.
+
+**The last observation gives death away, and the continue head reads it there.** An
+episode's last step is taken at the moment of death, mid-wave. Across 1,015 deaths in
+`M3-P021` it has an all-zero action mask (39.7 legal actions the step before), health
+exactly 0 (the smallest value anywhere else is 0.0019), wall health 0, no row on offer,
+and the mid-wave counters that the wave-turn snapshot almost never carries.
+`learning/dreamer.py:661` trains `cont` on the posterior feature, which has seen that
+observation, as the official code does. Imagination applies the same head to prior
+samples, which have not.
+
+`M3-P022`'s own weights, on episodes played after the checkpoint (140) and on episodes
+over 1,000 decisions older than it (140), each read as "is this step the terminal one".
+
+| Checkpoint | Prior AUC, unseen | Prior AUC, trained | Prior at death, unseen | Prior at death, trained | KL at death, unseen | Trained | KL elsewhere, unseen | Trained |
+|---|---|---|---|---|---|---|---|---|
+| d10039 | 0.779 | 1.0 | 0.0002 | 1.0 | 71.7 | 0.9 | 9.53 | 0.78 |
+| d20062 | 0.663 | 1.0 | 0.0001 | 1.0 | 105.0 | 1.0 | 10.48 | 0.68 |
+| d40026 | 0.800 | 1.0 | 0.0001 | 1.0 | 121.2 | 0.8 | 10.48 | 0.76 |
+| d60065 | 0.429 | 0.994 | 0.0 | 1.0 | 120.5 | 0.9 | 7.0 | 0.77 |
+| d70018 | 0.563 | 1.0 | 0.0 | 1.0 | 137.0 | 1.0 | 10.66 | 0.73 |
+
+On the posterior the head is perfect on both sets at every checkpoint: AUC 1.0, at least
+0.99 at death, under 0.0001 elsewhere. Swapping inputs shows why. At the death step, the same `deter`
+with the previous step's `stoch` reads 0.0001 at d40026, and the previous step's `deter`
+with the death step's `stoch` reads 1.0. So the head reads the code of the death
+observation and `deter` adds nothing, and imagination sees a death only if the prior
+draws that code, which it does for memorised episodes and not otherwise. KL elsewhere
+shows the prior is 9 to 15 times worse on unseen ordinary steps as well, so the dynamics
+are memorised, not only the death.
+
+**Inside imagination the plan does not earn the right outcome.** The d70018 weights roll
+the prior forward from real states under the recorded actions, under `WAIT` every wave,
+and under Defense Absolute every wave, 120 episodes with 8 samples each. Actions go in
+unmasked. Imagined survival to the wave of the real death:
+
+| Start | Recorded | `WAIT` | Defense Absolute |
+|---|---|---|---|
+| Trained, 3 waves before death | 0.011 | 0.204 | 0.275 |
+| Trained, 5 waves before death | 0.011 | 0.426 | 0.421 |
+| Trained, 10 waves before death | 0.016 | 0.587 | 0.649 |
+| Unseen, 3 waves before death | 0.914 | 0.924 | 0.898 |
+| Unseen, 5 waves before death | 0.874 | 0.855 | 0.817 |
+| Unseen, 10 waves before death | 0.810 | 0.848 | 0.798 |
+
+No purchase weakens the tower, so `WAIT` cannot truly outlive the recorded play, and the
+model says it does by 19 to 39 times on trained states. Death there belongs to the
+recorded sequence, and any departure from it escapes. On unseen states no plan matters
+and a death three waves off reads as 91% survival. Over the full 15 waves, Defense
+Absolute reads below `WAIT` from ten waves out on trained states (0.204 against 0.419)
+and from three waves out on unseen ones (0.567 against 0.635). This is a direct
+measurement of what the audit only inferred: a purchase earns no honest credit in
+imagination at train ratio 2048.
 
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 

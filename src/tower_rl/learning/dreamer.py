@@ -760,7 +760,15 @@ class DreamerBackbone:
         # * gamma_s ** t, 1 for a purchase, where the official target is
         # (1 - terminal) * (1 - 1 / horizon).
         continue_target = (1.0 - terminal_in) * discount_in
-        continue_logits = world.cont(feature).float().squeeze(-1)
+        # Read on a prior sample of the same step, the input imagination gives
+        # it, where the official head reads the posterior: a death's own
+        # observation names it, so a head trained there reads the observation
+        # and not the dynamics (§9.4c).
+        prior_stoch = self._latent(
+            dynamics.prior_logits(deter_all),
+            torch.rand(size, length, c.stoch, device=self.device),
+        ).detach()
+        continue_logits = world.cont(torch.cat((deter_all, prior_stoch), -1)).float().squeeze(-1)
         continue_loss = functional.binary_cross_entropy_with_logits(
             continue_logits, continue_target, reduction="none"
         )
@@ -773,6 +781,11 @@ class DreamerBackbone:
             )
             imagined_reward = twohot_mean(world.reward(imagined).float(), self._bins)
             imagined_continue = torch.sigmoid(world.cont(imagined).float()).squeeze(-1)
+            # A start is a replayed posterior, which the head is not trained
+            # on; replay knows its continue, 0 at a death.
+            imagined_continue = torch.cat(
+                (continue_target.reshape(starts, 1), imagined_continue[:, 1:]), 1
+            )
             slow_value = twohot_mean(self.slow_critic(imagined).float(), self._bins)
         log_probs = masked_policy_log_probs(
             self.actor(imagined[:, :-1]).float(), masks, c.actor_unimix

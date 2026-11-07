@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import io
+import itertools
 import math
 import threading
 from dataclasses import replace
@@ -687,16 +688,16 @@ def _timed_batch(*, wave_reward: float = 0.0) -> SequenceBatch:
     )
 
 
-def _continue_targets(
+def _continue_head(
     backbone: DreamerBackbone, batch: SequenceBatch, monkeypatch: pytest.MonkeyPatch
-) -> torch.Tensor:
-    """The continue head's target in one update: the only [B, T] cross-entropy target."""
-    seen: list[torch.Tensor] = []
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The continue head's logits and target in one update: the only [B, T] cross-entropy."""
+    seen: list[tuple[torch.Tensor, torch.Tensor]] = []
     original = functional.binary_cross_entropy_with_logits
 
     def recording(logits: torch.Tensor, target: torch.Tensor, **options: object) -> torch.Tensor:
         if tuple(target.shape) == (batch.batch_size, LENGTH):
-            seen.append(target.detach().clone())
+            seen.append((logits.detach().clone(), target.detach().clone()))
         return original(logits, target, **options)  # type: ignore[arg-type]
 
     monkeypatch.setattr(functional, "binary_cross_entropy_with_logits", recording)
@@ -713,11 +714,73 @@ def test_the_continue_target_carries_each_transitions_own_game_time_discount(
     Dreamer's step t carries the transition into it; the window's last step
     in an episode that ends there is the stored terminal observation.
     """
-    targets = _continue_targets(_backbone(), _timed_batch(), monkeypatch)
+    _, targets = _continue_head(_backbone(), _timed_batch(), monkeypatch)
     ended, running = targets.tolist()
     expected = [1.0, 0.999**17, 1.0, 0.999**2, 0.999, 0.999]
     assert running == pytest.approx(expected, rel=1e-6)
     assert ended == pytest.approx([*expected[:-1], 0.0], rel=1e-6)
+
+
+def _continue_logits_with_posterior(step: int, category: int) -> torch.Tensor:
+    """One update's continue logits with the posterior at window `step` forced to `category`.
+
+    The head is given weights that read their input, as a fresh one says 0 of
+    every state; a fresh encoder moves the posterior too little to change a draw.
+    """
+    backbone = _backbone()
+    torch.manual_seed(0)
+    for parameter in backbone.world_model.cont.parameters():
+        torch.nn.init.normal_(parameter, std=0.3)
+    dynamics = backbone.world_model.dynamics
+    original = dynamics.posterior_logits
+    calls = itertools.count()
+
+    def forced(deter: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
+        logits = original(deter, tokens)
+        if next(calls) == step:
+            logits = logits + 50.0 * functional.one_hot(torch.tensor(category), SMALL.classes)
+        return logits
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(dynamics, "posterior_logits", forced)
+        torch.manual_seed(1)
+        logits, _ = _continue_head(backbone, _timed_batch(), patch)
+    return logits
+
+
+def test_the_continue_head_cannot_read_a_death_from_the_death_observation() -> None:
+    """It trains on a prior sample of each step, which has not seen that step's observation.
+
+    The official head reads the posterior, and the observation a death ends on
+    names it: `M3-P022`'s head read every death there and almost none from the
+    prior (`docs/experiments.md`, "Review of the training setup").
+    """
+    death = LENGTH - 1
+    at_death = [_continue_logits_with_posterior(death, category)[0, death] for category in (0, 1)]
+    assert torch.equal(at_death[0], at_death[1])
+    # The posterior a step before still reaches it, through the dynamics.
+    before = [_continue_logits_with_posterior(death - 1, category)[0, death] for category in (0, 1)]
+    assert not torch.equal(before[0], before[1])
+
+
+def test_imagination_weighs_each_start_by_its_replayed_continue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start is a posterior, which the head is not trained on: a death start weighs 0."""
+    batch = _timed_batch()
+    weights: list[torch.Tensor] = []
+    original = torch.cumprod
+
+    def recording(values: torch.Tensor, dim: int, **options: Any) -> torch.Tensor:
+        if values.shape == (batch.batch_size * LENGTH, SMALL.imagination_horizon + 1):
+            weights.append(values.detach().clone())
+        return original(values, dim, **options)
+
+    monkeypatch.setattr(torch, "cumprod", recording)
+    _, targets = _continue_head(_backbone(), batch, monkeypatch)
+    assert len(weights) == 1
+    assert torch.equal(weights[0][:, 0], targets.flatten())
+    assert targets[0, -1].item() == 0.0
 
 
 def _learn_rewards(learn: Any, batch: SequenceBatch, module: Any) -> torch.Tensor:

@@ -3530,6 +3530,10 @@
         {
           "at": "2026-11-07 20:48",
           "text": "Critic and other heads read on M3-P022's own weights (d20062, d40026, d70018; 140 died episodes each, unseen vs trained).\nCritic: real memorisation. Correlation with the return that followed, at the same wave: unseen .25-.38, trained .63-.80. Overestimates on both: bias +.31 to +1.48 unseen, +.34 to +1.25 trained.\nReward head on prior, live steps: error .0002 on .028; verified, no change needed. Mask decoder on prior: .08-.15 rows wrong of 49 unseen; harmless.\nPrior-head sweep, held/trained AUC, last four reads: 128 .968/.977; 512 .892/1.0; 1024 .839/1.0; 2048 .823/1.0. Old head: 128 .903/.914; 512 .682/.984; 1024 .637/.992. 256 re-running.\nSo the prior head helps at every ratio, and the ratio still decides memorisation; only 128 closes the gap.\nGap found in the one-line remedy: imagination also starts from death posteriors, and a prior-trained head no longer zeroes them. Being read now.\nTwo arms died of GPU memory beside the live run (my four at once); M3-P022 unaffected, past 100,500 decisions. Re-running at two at a time."
+        },
+        {
+          "at": "2026-11-07 21:06",
+          "text": "Plan test on ratio-128 models, seed 1, held-out survival to the true death's wave, 10 waves out: prior head recorded .521, WAIT .129, DA .989; old head .740/.223/.998. Honest ordering on both sets and both heads, so the ratio restores it. The prior head adds calibration (AUC .968/.969 across seeds vs old .903/.820).\nCritic memorisation gone at 128: same-wave correlation .508 held, .502 trained.\nDeath posteriors read .51-.55 hazard on the prior head (old .999): a real gap, to be closed from replay's terminal flag.\nOfficial repval_grad is True, so the critic's real-return regression trains the RSSM. Three stop-gradient arms at ratio 512 queued, to find which gradient teaches deter the episode. If one closes the gap the learner keeps its update rate. Recorded in docs/experiments.md."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

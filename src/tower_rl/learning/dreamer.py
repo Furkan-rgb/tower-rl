@@ -122,6 +122,11 @@ class DreamerConfig:
     batch_length: int = 64
     #: Replayed steps per collected decision.
     train_ratio: float = 512.0
+    #: The world model's own replayed steps per decision, a whole fraction of
+    #: `train_ratio`: it learns from one update in `world_model_every`, the
+    #: actor and critic from every one. None is `train_ratio`, the official
+    #: code's single ratio (docs/solution.md 9.4c).
+    world_model_ratio: float | None = None
     imagination_horizon: int = 15
     return_lambda: float = 0.95
     entropy_scale: float = 3e-4
@@ -169,6 +174,11 @@ class DreamerConfig:
             raise ValueError("discount per game-second must be within (0, 1)")
         if self.survival_time_reward and self.discount_per_game_second is None:
             raise ValueError("the survival-time reward needs a discount per game-second")
+        if self.world_model_ratio is not None and not (
+            0.0 < self.world_model_ratio <= self.train_ratio
+            and (self.train_ratio / self.world_model_ratio).is_integer()
+        ):
+            raise ValueError("the world model's ratio must divide the train ratio")
         if self.deter % self.blocks:
             raise ValueError("the deterministic state must split evenly into blocks")
         if self.hidden < 1 or self.units < 1:
@@ -180,6 +190,13 @@ class DreamerConfig:
     def gradient_steps_per_decision(self) -> float:
         """The train ratio as this project counts it: one step replays a whole batch."""
         return self.train_ratio / (self.batch_size * self.batch_length)
+
+    @property
+    def world_model_every(self) -> int:
+        """The world model learns from one update in this many."""
+        if self.world_model_ratio is None:
+            return 1
+        return int(self.train_ratio / self.world_model_ratio)
 
 
 # -- layers ------------------------------------------------------------------
@@ -635,6 +652,11 @@ class DreamerBackbone:
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()  # type: ignore[no-untyped-call]
+        if self._steps % c.world_model_every:
+            # The actor and critic alone learn from this update. LaProp passes
+            # over a parameter with no gradient, so its moments wait as well.
+            for parameter in self.world_model.parameters():
+                parameter.grad = None
         gradient_norm = torch.nn.utils.get_total_norm(
             [
                 parameter.grad

@@ -763,6 +763,25 @@ def test_the_continue_head_cannot_read_a_death_from_the_death_observation() -> N
     assert not torch.equal(before[0], before[1])
 
 
+def test_the_world_model_learns_from_one_update_in_its_ratio() -> None:
+    """At a quarter of the train ratio it takes one update in four; the actor and critic, all."""
+    backbone = _backbone(replace(SMALL, train_ratio=512.0, world_model_ratio=128.0))
+    for step in range(8):
+        _learn(backbone, _batch(), seed=step)
+
+    def taken(module: torch.nn.Module) -> set[int]:
+        return {backbone.optimizer.state[parameter]["step"] for parameter in module.parameters()}
+
+    assert taken(backbone.world_model) == {2}
+    assert taken(backbone.actor) == taken(backbone.critic) == {8}
+
+
+@pytest.mark.parametrize("ratio", [0.0, 300.0, 1024.0])
+def test_a_world_model_ratio_must_divide_the_train_ratio(ratio: float) -> None:
+    with pytest.raises(ValueError, match="must divide the train ratio"):
+        replace(SMALL, train_ratio=512.0, world_model_ratio=ratio)
+
+
 def test_imagination_weighs_each_start_by_its_replayed_continue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

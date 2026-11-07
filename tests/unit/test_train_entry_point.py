@@ -385,13 +385,20 @@ def test_a_dreamerv3_train_ratio_sets_the_gradient_steps_it_fixes(tmp_path: Path
     assert arguments.gradient_steps_per_decision == 2.0
 
 
-def test_r2d2_refuses_the_train_ratio_it_does_not_read(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="--train-ratio is not read by"):
+def test_a_dreamerv3_world_model_ratio_is_read_and_fixes_nothing_else(tmp_path: Path) -> None:
+    arguments = dreamer_arguments(tmp_path, "--train-ratio", "2048", "--world-model-ratio", "128")
+
+    assert (arguments.world_model_ratio, arguments.gradient_steps_per_decision) == (128.0, 2.0)
+
+
+@pytest.mark.parametrize("flag", ["--train-ratio", "--world-model-ratio"])
+def test_r2d2_refuses_the_ratios_it_does_not_read(tmp_path: Path, flag: str) -> None:
+    with pytest.raises(SystemExit, match=f"{flag} is not read by"):
         train.parse_arguments(
             [
                 "--budget-decisions", "1000", "--run-dir", str(tmp_path),
                 "--backbone", "r2d2", *DREAMER_DISCOUNT, "--survival-time-reward",
-                "--train-ratio", "2048",
+                flag, "2048",
             ]
         )
 
@@ -2041,15 +2048,15 @@ def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_r
 ) -> None:
     """Format 6: zero-start windows and no stored latents. Resuming it would mix two replays.
 
-    It recorded an actor unimix of 0.01 and no mask encoding, and its network
-    took the mask as 0/1.
+    It recorded an actor unimix of 0.01, no mask encoding and no world model
+    ratio, and its network took the mask as 0/1.
     """
     from tower_rl.learning.dreamer import DreamerBackbone
 
     checkpoint = latest_checkpoint(dreamer_session(tmp_path / "first"))
     parent = load(checkpoint)
     settings = {**parent.resolved_config, "dreamer_actor_unimix": 0.01}
-    del settings["dreamer_mask_one_hot"]
+    del settings["dreamer_mask_one_hot"], settings["dreamer_world_model_ratio"]
     playing = dict(
         decision_cadence=settings["decision_cadence"],
         upgrade_availability=settings["upgrade_availability"],
@@ -2068,6 +2075,7 @@ def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_r
     policy, _ = checkpoint_policy(older, **playing)
     assert policy.config.actor_unimix == 0.01
     assert policy.config.mask_one_hot is False
+    assert policy.config.world_model_ratio is None
     features = StateFeatures(
         scalars=(0.5,) * SCALAR_COUNT,
         rows=(0.5,) * (ROW_COUNT * ROW_WIDTH),

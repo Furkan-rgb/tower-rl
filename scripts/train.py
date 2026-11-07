@@ -366,6 +366,7 @@ def build_arm(
             config=DreamerConfig(
                 seed=arguments.seed,
                 train_ratio=arguments.train_ratio,
+                world_model_ratio=arguments.world_model_ratio,
                 discount_per_game_second=arguments.discount_per_game_second,
                 survival_time_reward=arguments.survival_time_reward,
             ),
@@ -763,7 +764,7 @@ def dreamer_loop_settings(train_ratio: float) -> dict[str, object]:
 
 
 #: Flags R2D2 does not read: its replay ratio is per item (`build_arm`).
-R2D2_UNREAD_FLAGS = ("gradient_steps_per_decision", "train_ratio")
+R2D2_UNREAD_FLAGS = ("gradient_steps_per_decision", "train_ratio", "world_model_ratio")
 
 
 def r2d2_loop_settings() -> dict[str, object]:
@@ -880,6 +881,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "DreamerV3's replayed steps per decision, from which it fixes "
             "--gradient-steps-per-decision. 512 is the published value; a "
             "wave-long decision needs more to use the learner (ADR 0020)"
+        ),
+    )
+    parser.add_argument(
+        "--world-model-ratio",
+        type=float,
+        default=None,
+        help=(
+            "DreamerV3's world model's own replayed steps per decision, a whole "
+            "fraction of --train-ratio; left out, it learns at --train-ratio, "
+            "as the official code does (docs/solution.md 9.4c)"
         ),
     )
     parser.add_argument("--warmup-sequences", type=int, default=100)

@@ -2,7 +2,8 @@
 
 **Status:** Proposed, 2026-11-06. Item 2 amended 2026-11-07 on `M3-P021`'s result:
 it first kept the mask at affordability, and that form is recorded under Options
-rejected. Board `#144`, `#134`. Nothing here is the contract: `choice-points` stays
+rejected. Item 5 amended 2026-11-07 on the review of the training setup: the world
+model learns at 128. Board `#144`, `#134`. Nothing here is the contract: `choice-points` stays
 the default and ADR 0009 and ADR 0019 stand. The pilots `M3-P021` and `M3-P022`
 (`docs/experiments.md`) are the spikes whose output is this decision, and the
 developer accepts or rejects it.
@@ -51,6 +52,11 @@ decisions would sit more than sixty waves from death, where the odds barely move
    about 13% of it. ADR 0018 requires a deviation to name what forces it, and this
    cadence does: decisions arrive about eight times slower while the update
    ceiling is unchanged. 2048 is 2 updates a decision, about half the ceiling.
+   The world model learns at 128 of those, from one update in sixteen
+   (`--world-model-ratio 128`, `docs/solution.md` §9.4c), because at 2048 it
+   memorised `M3-P022`'s episodes: a purchase earned no honest credit in
+   imagination, and on the same data the world model memorises from ratio 256
+   (`docs/experiments.md`, "Review of the training setup").
 
 On paper, the odds a +1-wave advantage earns rise to e^30 at a hundred waves from
 death, e^9 at five hundred and about e^2 at a thousand, at a return scale of about

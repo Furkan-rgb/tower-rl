@@ -3534,6 +3534,10 @@
         {
           "at": "2026-11-07 21:06",
           "text": "Plan test on ratio-128 models, seed 1, held-out survival to the true death's wave, 10 waves out: prior head recorded .521, WAIT .129, DA .989; old head .740/.223/.998. Honest ordering on both sets and both heads, so the ratio restores it. The prior head adds calibration (AUC .968/.969 across seeds vs old .903/.820).\nCritic memorisation gone at 128: same-wave correlation .508 held, .502 trained.\nDeath posteriors read .51-.55 hazard on the prior head (old .999): a real gap, to be closed from replay's terminal flag.\nOfficial repval_grad is True, so the critic's real-return regression trains the RSSM. Three stop-gradient arms at ratio 512 queued, to find which gradient teaches deter the episode. If one closes the gap the learner keeps its update rate. Recorded in docs/experiments.md."
+        },
+        {
+          "at": "2026-11-07 22:42",
+          "text": "In the learner (6bfa8b8): cont trains on a prior sample of each step; imagination weighs each start by replay's continue target. Two tests fail on the old code (the death read, the start weight); 269 DreamerV3-touching tests pass. Deviation rows in solution.md 9.4c.\nRatio ladder, prior head, plan test, trained set 3 waves out (recorded vs WAIT): 128 .60/.43 honest; 256 .32/.60 breaking; 512 .13/.63 broken. Prior KL held/trained 3.1/2.8, 7.3/3.4, 12.5/2.9. World-model ceiling: ratio 128.\nStop-gradient arms at 512 (critic replay value, cont into deter, both): held .809/.841/.812 vs .892, trained 1.0 all. No single gradient carries the memorisation; it is the world model's own fit.\nSplit arms running: world model at 128, actor-critic at 128/1024/2048."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

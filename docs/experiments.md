@@ -3153,6 +3153,55 @@ Imagination also starts from every posterior state, deaths included. The old hea
 trained on a posterior, reads 0.51 to 0.55, so taken alone it would train the actor and
 critic on dead states at about half weight. Replay already knows which steps are terminal.
 
+**Where the plan stops earning the right outcome.** The prior head at ratios 256 and 512,
+same test, seed 0 (the ratio-128 row is the seed-1 model above). Imagined survival to the
+real death's wave from three waves before it, with
+the prior's distance from the posterior elsewhere and the critic's same-wave correlation:
+
+| Ratio | Trained: recorded | Trained: `WAIT` | Held-out: recorded | Held-out: `WAIT` | Prior KL, held-out / trained | Critic at the same wave, held-out / trained |
+|---|---|---|---|---|---|---|
+| 128 | 0.603 | 0.434 | 0.585 | 0.397 | 3.1 / 2.8 | 0.508 / 0.502 |
+| 256 | 0.322 | 0.604 | 0.563 | 0.585 | 7.3 / 3.4 | 0.477 / 0.569 |
+| 512 | 0.125 | 0.628 | 0.784 | 0.807 | 12.5 / 2.9 | 0.520 / 0.704 |
+
+From 256, `WAIT` outlives the recorded play on trained states, the memorised signature,
+and the critic's gap opens. At 512, `WAIT` outlives it at every distance up to ten waves.
+The world model's ceiling on this data is ratio 128.
+
+**No single gradient carries the memorisation.** The official default `repval_grad: True`
+lets the critic's regression onto each replayed episode's real return train the RSSM,
+and `cont` trains `deter` to carry a death's precursors. Either could teach `deter` the
+episode. At ratio 512 with the prior head (0.892 held-out, 1.0 trained), stopping the
+critic's gradient read 0.809 held-out, stopping `cont`'s into `deter` 0.841, and both
+0.812, trained 1.0 in each. So the memorisation is the world model's own fit of too few
+episodes replayed too often. Two saved arms reproduced their sweep runs to the third
+decimal, so these comparisons are not run-to-run noise.
+
+**The world model slow, the actor-critic fast.** Both head fixes as committed, with the
+world model's gradients dropped on all but every eighth or sixteenth update, so it sees
+the data at ratio 128 while the actor and critic train at the full ratio:
+
+| Actor-critic ratio | World model updates | World model AUC, held-out / trained | Prior KL, held-out / trained | Critic at the same wave, held-out / trained | Critic bias, held-out |
+|---|---|---|---|---|---|
+| 128 | about 4,540 | 0.968 / 0.977 | 3.6 / 3.1 | 0.495 / 0.502 | +0.18 |
+| 1024 | about 4,540 | 0.966 / 0.971 | 3.4 / 3.1 | 0.546 / 0.575 | +0.32 |
+| 2048 | about 4,540 | 0.958 / 0.962 | 3.5 / 3.3 | 0.578 / 0.582 | +0.32 |
+
+Imagined survival to the real death's wave, held-out:
+
+| Actor-critic ratio | 3 waves: recorded / `WAIT` / Defense Absolute | 5 waves | 10 waves |
+|---|---|---|---|
+| 128 | 0.380 / 0.244 / 0.826 | 0.346 / 0.177 / 0.900 | 0.330 / 0.105 / 0.977 |
+| 1024 | 0.403 / 0.226 / 0.805 | 0.317 / 0.099 / 0.862 | 0.240 / 0.018 / 0.966 |
+| 2048 | 0.659 / 0.511 / 0.896 | 0.581 / 0.322 / 0.917 | 0.494 / 0.102 / 0.972 |
+
+Trained states read within 0.08 of held-out in every entry. The world model stays where
+ratio 128 put it, the critic opens no gap at sixteen times its updates, and its read of
+unseen episodes improves with them, 0.495 to 0.578. Its bias rises from +0.18 to +0.32,
+which may again be the offline actor valuing a policy better than the recorded one. What
+this cannot show is whether the extra updates make a better policy: the actor here never
+plays.
+
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 
 **Date:** 2026-11-07. Board `#135`.

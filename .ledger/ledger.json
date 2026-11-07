@@ -1,5 +1,5 @@
 {
-  "next_id": 136,
+  "next_id": 140,
   "items": [
     {
       "id": 1,
@@ -3449,13 +3449,56 @@
       "title": "An order may name a row out of reach: the learner can save for the row it wants",
       "body": "M3-P021's replay shows the policy picks Defense Absolute about 70% of the time when the mask offers it (decisions 31-50), but the mask offers it only 27-39% of the time, because when it is out of reach the policy spends on another row 89-93% of the time and it stays out of reach. The trap is the mask, not the credit. Spike: a saving-orders cadence whose legal set is every row on sale, so an order for a row out of reach saves for it. M3-P022 tests it, one change from M3-P021. ADR 0020's rejected alternative, revisited on this evidence.",
       "status": "In progress",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-07 08:48",
+          "text": "Independent audit reported. Reward chain, legality and order mechanics: no bug. New findings: world model and critic reported as memorising (death AUC on unseen episodes 0.512), policy near-deterministic within ~3,000 updates, an order is all-in for its wave. Reproducing the memorisation result before acting on it. M3-P022 collection read 65.7 over its latest 25 episodes at about 4,300 decisions."
+        },
+        {
+          "at": "2026-11-07 16:00",
+          "text": "Review recorded in docs/experiments.md, 'Review of the training setup'. Reward correct. Saving is partial: an order spends all it can, once a wave. World-model death AUC 0.512 unseen vs 1.0 trained; entropy under 0.32 nats. Guides read in full: script 102 was no guide turtle (cash rows never bought), no script was a guide Blender, and Blender as the guides define it rests on Workshop and Labs."
+        }
+      ]
     },
     {
       "id": 135,
       "title": "How far the script goes at Workshop 20, 40 and 79 is measured: what wave 1000 would take",
       "body": "Measurement only, no training. Sizes the earned-Workshop path for the developer's decision on wave 1000: build-defense-absolute at uniform Workshop 20, 40, then 79 on read-only clones, written to the live heap as ADR 0012 already does, no coins or permanent progression. It does not hand the learner any level.",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-07 16:00",
+          "text": "Measured, build-defense-absolute at saving-orders, 7 episodes a level: WS20 170.86 (170-171), WS40 282.14 (280-284), WS79 483.00 (all 7 exactly 483, unexplained). Extrapolates wave 1000 to a uniform level near 200, above the ceiling of 79. Defense Absolute only: it does not measure turtle into blender. docs/experiments.md, 'Workshop scan'."
+        }
+      ],
+      "closed_at": "2026-11-07T15:00:28.694293Z"
+    },
+    {
+      "id": 136,
+      "title": "An order buys one level and stands until filled: the learner can keep cash, buy two rows in a wave and save across waves",
+      "body": "ADR 0020's saving-orders spends every level the cash reaches, once a wave. A new cadence: an order buys exactly one level as soon as cash reaches its price and buys nothing else; the policy is asked again after filling, when tower health moves 5%, or at run end; WAIT holds until the next wave's turn. Done when unit tests cover one level, two rows in a wave, a save across waves and cancellation by health, and its floors are measured. Evidence: docs/experiments.md, 'Review of the training setup'.",
       "status": "In progress",
+      "comments": []
+    },
+    {
+      "id": 137,
+      "title": "World-model death prediction and the critic are measured on episodes the learner has not trained on",
+      "body": "AUC 0.512 unseen vs 1.0 trained at M3-P021 d40035; every existing monitor reads replayed steps. Done when a held-out read is logged during training and a memorisation remedy has been tested against it offline on M3-P021's replay. Evidence: docs/experiments.md, 'Review of the training setup'.",
+      "status": "Next",
+      "comments": []
+    },
+    {
+      "id": 138,
+      "title": "A guide-faithful turtle into blender floor is measured at Workshop 10: cash first, Skips, 4 Orbs, Health, Free Upgrades",
+      "body": "No script so far bought economy rows, Skips, Free Upgrades or Recovery rows, and all ended on 2 of 4 Orbs. Needs orders that stand until filled. Also measures what Enemy Attack Level Skip does at levels above 1, read off wave_base_damage. A benchmark only; it is not handed to the learner.",
+      "status": "Next",
+      "comments": []
+    },
+    {
+      "id": 139,
+      "title": "The two enemy-health curves below wave 40 are explained",
+      "body": "wave_base_health follows two exact curves below wave 40 in M3-P021 and M3-P022, about 13% apart at wave 39, in the first 2,700 replay positions. No row explains it, and the rule 'until the instance reaches 40' failed, though that check may be misaligned with the replay's streams. If the game's enemies differ by history, the fixed baseline is not fixed.",
+      "status": "Next",
       "comments": []
     }
   ],

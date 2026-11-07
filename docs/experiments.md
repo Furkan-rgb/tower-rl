@@ -2606,9 +2606,11 @@ bar it reached, at 30,000 decisions, read 52.78 against 21.
   needed 450,059 decisions, about 18,200 waves and about 225,000 updates. The cadence
   collects game time 2.5× faster (312,912 game-seconds an hour against 123,869) and
   used about 6× fewer updates. It did not learn more per wave experienced.
-- **Exploration-free play is worse than sampling here.** 47.87 against 52.64 over the
-  last 200 collected episodes. 8 of 30 evaluation episodes ended at waves 41–42,
-  against 27 of 200 collected.
+- **The evaluation read below collection, and I cannot say why.** 47.87 against 52.64
+  over the last 200 collected episodes. 8 of 30 evaluation episodes ended at waves
+  41–42, against 27 of 200 collected. DreamerV3's evaluation samples the same policy
+  it collected with (`docs/solution.md` §9.4c), so this is not exploration against
+  no exploration, which is how this line first read. The gap is unexplained.
 
 **The credit readout improved.** Defense Absolute's share of actions over a uniform
 choice among affordable rows, `state/analysis/p019_credit.py`:
@@ -2802,6 +2804,130 @@ about another hour.
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+## Review of the training setup: reward, actions, saving and learning
+
+**Date:** 2026-11-07. Board `#134`. The developer asked whether the reward is right,
+what the agent can and cannot do, whether it can save and buy as a human does, and
+whether that is verified. An independent audit read the code and replay; I re-ran its
+two critical findings myself. The scripts live in the session's scratchpad and are not
+committed. Numbers are at `M3-P021` unless stated.
+
+**Reward: correct, kept.** `(1−d)·V_REF` with `d = γ_s^Δt` is correct and aligned from
+the game clock to the λ-return. The terminal step keeps its partial reward and continue
+0. Nothing else earns reward, and ordering is preserved episode by episode. Waves stay
+35 s through wave 483, so game-seconds and waves agree. The return is concave: a 50/50
+of waves 50 or 200 has mean 125 and certainty equivalent 116.6, a mild risk aversion.
+`docs/task.md:314` records acceptance for the flag as taken by R2D2, not DreamerV3.
+
+**Legality and order mechanics: no bug.** 0 `mask_legal_rejected` in 1,017 episodes and
+about 131,000 purchases.
+
+**The world model memorises, and no monitor saw it.** Critical.
+
+| "Dies this coming wave", AUC at d40035 | Unseen (192 episodes, 10,040 states) | Trained (200 episodes, over 1,000 decisions old) |
+|---|---|---|
+| World model | **0.512** | **1.0** |
+| Wave alone | 0.929 | 0.934 |
+| 1 − health alone | 0.936 | 0.956 |
+
+- The audit's hazard reads 0.0015 on unseen states, 0.0011 at 100–300 decisions old,
+  0.287 at 300–700 and 1.0000 past 700. The onset is by d5015.
+- 7,974 of 7,981 unseen states were predicted under 0.1%, against a real rate of 1.88%.
+- From 1–2 waves before death, imagined survival over 15 waves reads 0.966 unseen and
+  0.185 trained.
+- The critic's correlation with waves remaining is 0.90–0.97 trained, 0.33–0.51 unseen.
+- `value_fit_correlation` and the `dreamer_*` checks run on replayed steps only, so
+  they read healthy throughout. `M3-P019` at train ratio 512 shows the same thing, so
+  the ratio sets its speed and not whether it happens.
+
+An inference, not a measurement: exact float features fingerprint an episode, and this
+may be what caps the plateau.
+
+**The policy stops exploring.** Critical for a two-phase plan. On unseen states,
+entropy is 0.961 nats at d2515, 0.27 at d20007 and 0.316 at d40035, of about 3.7
+possible; `M3-P022` read 0.08 at d2542. In `M3-P021` Orbs were on offer in 7.86% of
+decisions and ordered once. In `M3-P022`'s last 8,000 decisions, Orbs, Health, Thorn
+Damage, both Knockback rows, Cash Bonus, Cash / Wave and both Enemy Level Skips have
+no order at all.
+
+**What an order cannot do at `saving-orders`.** It buys every level the cash reaches,
+at the wave's first instant, so no reserve survives it. It cannot buy one level, a
+chosen number, two rows in a wave, or a cheap row while saving. A save across waves
+must be chosen again each wave: the audit puts P(an order keeps cash) at 0.002–0.129,
+and a ten-wave save at about 1e-9. It cannot react inside a wave. 96.2% of waves bought
+one row and none bought two.
+
+**What the agent cannot see.** The wave-turn snapshot loses the wave just played:
+`enemies_spawned` is zero in 99.7% of states, `enemies_killed` in 89.9%,
+`cash_earned_this_wave_log` in 91.7%, and the boss flags are zero. Enemy types and
+counts, the next wave's boss, current wall health and what a row does are not
+observed either.
+
+**Smaller findings.** The plateau rule ends a run at its first plateau, so a plan that
+dips before paying cannot survive it. Double compression (log1p, then symlog). Two
+transitions with `game_ms` 0 spanning waves 13→15 and 15→19, beside the learner-start
+stall, because `validate_transition` never compares the round clock. `wait_decisions`
+no longer catches a policy that buys nothing, and `_purchase` reports a purchase for
+an order that bought nothing. Comments at `dreamer_math.py:100`, `dreamer.py:72-73`,
+`dreamer.py:149` and `train.py:1147` are stale.
+
+**What the game's guides say.** WebFetch returned nothing for these pages and Chrome's
+connection was down, so they were read through the same public page data the browser
+loads ([Turtle](https://the-tower.notion.site/Turtle-Strategy-early-game-1bc91383b93f809c81d0e2825cfeac07),
+[early Blender](https://the-tower.notion.site/Blender-Strategy-early-game-1bc91383b93f80e4b384c148c67b66f8),
+[Blender](https://the-tower.notion.site/Blender-Strategy-mid-end-game-23f91383b93f802d9854e3da97f23a85),
+[Tier progression](https://the-tower.notion.site/Guide-on-Tier-Progression-23f91383b93f8024b142c9163954e218)).
+They are community guides. Their row ceilings match the game's here (Thorn Damage 99,
+Defense % 99, Knockback Chance 80, Cash Bonus 149, Free Upgrades 99, Interest 99, Max
+Recovery 500, Package Chance 60), and Cash / Wave at 4 per level is exact: the replay
+reads 40 at level 10, 44 at 11, 76 at 19.
+
+- **Turtle:** "you can run it with 0 Workshop and Lab upgrades". The order is cash
+  rows first, then Defense Absolute, with Thorns at 11, 21, 34 and 51%. Bosses take
+  50% from Thorns. Defense Absolute applies after Defense %.
+- **Blender:** Orbs kill normal enemies on touch, Knockback keeps them near the Orbs,
+  and Thorns take bosses and close-range threats. The tower survives on Health, Regen
+  and Defense %, not Defense Absolute. The early guide lists cash, Free Upgrades
+  (Utility, then Defense, then Attack), Health, Defense %, Knockback, Orbs and Orb
+  Speed, Thorns, Attack Speed, Lifesteal, the Recovery rows, then Multishot, Rapid
+  Fire and Bounce Shot, with the rest of the cash going to Health. It allows Orbs to
+  be bought in-run if the Workshop price is too high.
+- **Enemy Level Skips:** the late guide starts a run on them, Attack for an eHP build.
+  A patch note found by search says both became deterministic; the per-level value was
+  not found.
+- **Free Upgrades:** 0.5% per level, to 49.5% a wave, a level for free. Max Recovery
+  adds ×0.031 health per level, to ×16.5. Interest pays 0.06% per level on cash held.
+- **Contrary:** both Blender guides define it as "just maxing your workshop" and "a
+  just max everything approach to the game and its workshops and labs". A
+  minimal-Workshop Blender is not what they describe, and no guide reaches wave 1000
+  without Workshop and Labs. Vampires deal 2% of max health a second and disable regen,
+  and the labs for them (Garlic Thorns) are out of scope here.
+
+**What this changes in our own reading.**
+
+- `build-defense-absolute`, the 102 this project calls its best script, is not a guide
+  turtle. It ends with Cash Bonus and Cash / Wave at their starting level 10. This was
+  noted at `M3-P019`; the guide makes it a gap in the floor. Cash / Wave's level 10
+  costs 16 and pays 4 a wave.
+- None of the three blender scripts was a guide Blender. None bought Skips, Free
+  Upgrades, Recovery rows or economy rows. All three ended on 2 of 4 Orbs: run 1 and
+  the turtle arm while saving for the 4,000 third level, run 2 at its 1,250 ceiling.
+- ADR 0012's "Interest is worth $0" was written about the Workshop profile, where cash
+  was not held. It does not hold for an agent that saves. No ADR text is changed here.
+
+**Two things measured and not resolved.**
+
+- One level of a Skip row shows no effect: 0 of 69 states off the wave's usual enemy
+  damage at Enemy Attack Level Skip 1 in `M3-P022`. This says nothing about higher
+  levels, and no `M3-P022` episode has held more than one.
+- Below wave 40, `wave_base_health` follows two exact curves in both `M3-P021` and
+  `M3-P022`. The lower reads 17.53 at wave 10, 54.08 at 20, 126.92 at 30 and 207.65 at
+  39, against 18.36, 59.25, 143.36 and 239.26, and none of its states is at wave 40 or
+  above. It is 1,692 and 2,110 states, in the first 2,700 positions of each replay. No row
+  explains it. A rule that an instance leaves it on first reaching wave 40 failed, with
+  83 and 268 episodes breaking it, though that check may itself be misaligned with the
+  replay's streams.
+
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 
 **Date:** 2026-11-07. Board `#135`.
@@ -2823,6 +2949,23 @@ permanent progression. Level 79 is the uniform ceiling, set by Critical Chance.
 - A uniform level is not what coins would buy first, so it does not price the path.
 - It measures neither coins earned nor Workshop prices, which the bridge does not
   expose yet.
+
+**Result.** Every episode was valid.
+
+| Uniform level | Episodes | Mean final wave | Range | Defense Absolute level |
+|---|---|---|---|---|
+| 10 (`M3-P022`'s floor) | 21 | IQM 101.73 | 97–103 | median 68 |
+| 20 | 7 | 170.86 | 170–171 | 112–113 |
+| 40 | 7 | 282.14 | 280–284 | 179–182 |
+| 79 | 7 | 483.00 | 483–483 | 299–300 |
+
+All 7 episodes at level 79 ended on exactly wave 483, which I have not explained. The
+tower sits at 100% health, then dies in 3–4 waves. The local exponent of final wave on
+level is about 0.74–0.79, which extrapolates wave 1000 to a uniform level near 200,
+well above the ceiling of 79.
+
+This measures Defense Absolute only. It says nothing about turtle into blender, and
+the framing of wave 1000 around it was wrong: see "Review of the training setup".
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

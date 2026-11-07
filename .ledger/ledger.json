@@ -1,5 +1,5 @@
 {
-  "next_id": 148,
+  "next_id": 149,
   "items": [
     {
       "id": 1,
@@ -3505,7 +3505,7 @@
       "id": 137,
       "title": "World-model death prediction and the critic are measured on episodes the learner has not trained on",
       "body": "AUC 0.512 unseen vs 1.0 trained at M3-P021 d40035; every existing monitor reads replayed steps. Done when a held-out read is logged during training and a memorisation remedy has been tested against it offline on M3-P021's replay. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 16:28",
@@ -3538,9 +3538,14 @@
         {
           "at": "2026-11-07 22:42",
           "text": "In the learner (6bfa8b8): cont trains on a prior sample of each step; imagination weighs each start by replay's continue target. Two tests fail on the old code (the death read, the start weight); 269 DreamerV3-touching tests pass. Deviation rows in solution.md 9.4c.\nRatio ladder, prior head, plan test, trained set 3 waves out (recorded vs WAIT): 128 .60/.43 honest; 256 .32/.60 breaking; 512 .13/.63 broken. Prior KL held/trained 3.1/2.8, 7.3/3.4, 12.5/2.9. World-model ceiling: ratio 128.\nStop-gradient arms at 512 (critic replay value, cont into deter, both): held .809/.841/.812 vs .892, trained 1.0 all. No single gradient carries the memorisation; it is the world model's own fit.\nSplit arms running: world model at 128, actor-critic at 128/1024/2048."
+        },
+        {
+          "at": "2026-11-07 23:46",
+          "text": "Done: both measured on episodes no update has touched, offline (docs/experiments.md, Review of the training setup) and in every run's log (ef91f03).\nFound memorisation in cont and the critic. Fixes: cont on a prior sample, imagination starts weighed by replay (6bfa8b8); world model at its own ratio (19030ba).\nOffline: honest plan ordering at world model 128; actor-critic to 2048 adds no gap. Live check is its own card."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-07T22:46:36.050916Z"
     },
     {
       "id": 138,
@@ -3665,6 +3670,14 @@
           "text": "Code is committed (df608e4) and both ws2914c builds are compiled, but neither has run on a device. The device check of Free levels, stale prices, unlock read-back and whether Pause toggles needs the instances M3-P022 holds."
         }
       ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 148,
+      "title": "A pilot with the world model at ratio 128 reads unseen and trained deaths alike, and imagined WAIT never outlives recorded play",
+      "body": "Serves the learner row of the verification table (docs/task.md 1.1). Offline evidence: docs/experiments.md, Review of the training setup. Read from learner_dreamer_unseen_* and learner_dreamer_trained_* (death_rank, prior_kl, plan_gap). Runs only inside a pre-registration made once the other rows are verified.",
+      "status": "Next",
+      "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],

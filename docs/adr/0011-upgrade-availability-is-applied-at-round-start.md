@@ -1,6 +1,9 @@
 # ADR 0011 — Upgrade availability is applied at round start
 
-**Status:** accepted, 2026-09-20. Evidence: `M2-E008`; board `#54`.
+**Status:** accepted, 2026-09-20. Evidence: `M2-E008`; board `#54`. Amended
+2026-11-07 under the developer's delegation to make the setup correct: the bridge
+flags named rows only, because flagging every slot sent free levels to rows that do
+not exist (`docs/experiments.md`, "Review of the game path"; board `#147`).
 
 ## Context
 
@@ -53,13 +56,11 @@ the profile image, and it is applied at each round start.**
   a resume, through `checkpoint.load(expected=...)`, and an evaluation, through
   `policies.checkpoint_policy`, which every path that plays a checkpoint tells
   which cadence and which availability it is about to play under.
-- Every slot of every family is written, not only the real ones. The legal set
-  already excludes an empty row without reference to its flag: an empty-named
-  row is priced zero, and `_build_row` masks any row whose cost is not positive
-  (`available = active and unlocked and not maxed and priced and cost <= cash`).
-  The device agrees — the cost arrays were populated for 17 / 18 / 13 rows
-  before any write, and the flagged tail rows stayed unpurchasable. Writing all
-  twenty is what the bridge already does and is one rule rather than two.
+- Only named rows are written. This first read "every slot", on the argument that a
+  flagged empty row stays unpurchasable: an empty-named row is priced zero, and
+  `_build_row` masks any row whose cost is not positive. That holds for buying and
+  misses free upgrades, which roll over every flagged slot, so a free level could land
+  on a row that does not exist. The read-back rule above is unchanged.
 - The bridge's `unlock_state` and `unlock_all_upgrades` commands move into the
   production build. A capability an ordinary measured run depends on cannot live
   behind a diagnostics flag; this changes the production digest, which is

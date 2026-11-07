@@ -856,7 +856,19 @@ bool ReportUnlockState(const Il2CppApi& api, const MainFields& fields, bool unlo
           array != seen[family] || length != lengths[family]) {
         return false;
       }
-      for (size_t index = 0; index < length; ++index) {
+      Il2CppArray* names = nullptr;
+      if (!ReadField(api, main, fields.labels[family].labels, &names) || names == nullptr) {
+        wrote_every_slot = false;
+        break;
+      }
+      const size_t named = std::min(length, static_cast<size_t>(api.array_length(names)));
+      for (size_t index = 0; index < named; ++index) {
+        // A slot with no name is one no tier offers. Flagged, the game's free
+        // upgrades roll over it, and a free level lands on a row that is not
+        // there: 17%, 10% and 40% of them in `M3-P021`.
+        void* name = nullptr;
+        if (!ReadPrimitiveArray(api, names, index, &name)) { wrote_every_slot = false; break; }
+        if (name == nullptr || api.string_length(name) == 0) continue;
         const uint8_t truth = 1;
         if (!WritePrimitiveArray(api, array, index, truth)) { wrote_every_slot = false; break; }
       }
@@ -2264,6 +2276,9 @@ bool AdvanceUntilEvent(int client, const Il2CppApi& api, const MainFields& field
     // frames but not as game time; what they are really worth is small, and the
     // round clock does measure it.
     clock.set_capture_delta(0.0F);
+    // A wave's end grants free levels, and the game reprices only the tab on
+    // screen, so a row would go on quoting the price of the level it has passed.
+    if (std::strcmp(stopped_on, "wave_changed") == 0) RefreshCosts();
     send(TOWER_BRIDGE_MAIN_GAME_OBJECT, "Pause", "");
     const uint64_t settle_started = MonotonicMicros();
 #ifdef TOWER_BRIDGE_DIAGNOSTICS

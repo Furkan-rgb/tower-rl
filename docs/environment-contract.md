@@ -130,9 +130,9 @@ evidence `M2-E008`). `--upgrade-availability` selects it on every runner:
   through the same `RunPort` it drives everything else with, and reads it back.
   A *real* row is a slot with a non-empty `slot_labels` name — 17 attack, 18
   defense, 13 utility on the supported baseline; the rest of each twenty-wide
-  array is an unpriced tail that is never legal whatever its flag says, which is
-  why writing every slot is safe and only the real rows are required to come
-  back true.
+  array is an unpriced tail that is never legal whatever its flag says. Only real
+  rows are written and required to come back true, because free upgrades roll over
+  every flagged slot (`ws2914c` builds; `b8b8cd45…` and older flag the tail too).
 
 The profile id is the same under both: the image is profile v1 either way. The
 availability travels in `resolved_config`, in every per-episode row

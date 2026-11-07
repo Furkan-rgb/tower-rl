@@ -2995,6 +2995,14 @@ understates exactly the plan the goal needs.
 - Floors play on fresh boots and final evaluations on seasoned ones, so each episode now
   records `boot_best_wave`.
 
+**Built, not yet played.** The bridge now flags named rows only and refreshes prices at
+a wave's turn. `ws2914c-render-interval-16-nodelay` is `bff836b8…`, and
+`ws2914c-default-nodelay` is `5b6a7d33…`, both compiled from this commit with
+`ws2914b`'s configuration, the render interval apart. Neither has run on a device, and
+every floor on `b8b8cd45…` is a floor of the old behaviour. The bridge does not press
+`Pause` again when a hold slips: whether `Pause` toggles is unknown, and pressing it
+blind could release a held world, so that waits for a device check.
+
 **One the audit did not raise.** `--upgrade-availability all` opens all 48 rows, where
 this account offers 6. ADR 0011 accepted this, and it is why Orbs and the Skips can be
 bought at all. A human on this account would have to unlock those rows first.

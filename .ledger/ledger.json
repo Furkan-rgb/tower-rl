@@ -3631,7 +3631,12 @@
       "title": "A bridge build rolls Free Upgrades only on real rows, pauses a world that slipped, and refreshes prices at the wave turn",
       "body": "Three defects from 'Review of the game path', one build. Writing unlock flags only on real rows amends ADR 0011. The digest changes, so floors are measured again on it. Blocked on M3-P022 for the device check; the source and the build do not need the emulators.",
       "status": "In progress",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-07 17:00",
+          "text": "Named-rows-only and the wave-turn price refresh are in the source and compile: ws2914c-render-interval-16-nodelay bff836b8, ws2914c-default-nodelay 5b6a7d33. Not run on a device. Re-pressing Pause is held for a device check, since a blind press could release a held world if Pause toggles."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],

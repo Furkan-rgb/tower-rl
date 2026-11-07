@@ -2606,11 +2606,13 @@ bar it reached, at 30,000 decisions, read 52.78 against 21.
   needed 450,059 decisions, about 18,200 waves and about 225,000 updates. The cadence
   collects game time 2.5× faster (312,912 game-seconds an hour against 123,869) and
   used about 6× fewer updates. It did not learn more per wave experienced.
-- **The evaluation read below collection, and I cannot say why.** 47.87 against 52.64
-  over the last 200 collected episodes. 8 of 30 evaluation episodes ended at waves
-  41–42, against 27 of 200 collected. DreamerV3's evaluation samples the same policy
-  it collected with (`docs/solution.md` §9.4c), so this is not exploration against
-  no exploration, which is how this line first read. The gap is unexplained.
+- **The evaluation read below collection because the final weights did.** 47.87
+  against 52.64 over the last 200 collected episodes, but 47.63 over the last 30 and
+  45.53 over the last 15. Thirty-episode windows after episode 400 swing from 44.23 to
+  59.77, and 14.8% of them sit at or below 47.87. DreamerV3's evaluation samples the
+  same policy it collected with (`docs/solution.md` §9.4c), so this is not exploration
+  against no exploration, which is how this line first read. Thirty episodes of final
+  weights read one point of that swing.
 
 **The credit readout improved.** Defense Absolute's share of actions over a uniform
 choice among affordable rows, `state/analysis/p019_credit.py`:
@@ -2935,6 +2937,73 @@ that a read-only boot starts below 40. What it changes:
   trained policy meets after its first wave 40.
 - A cold relaunch returns an instance to the lower curve. It touches waves 1–39 of one
   episode, so final waves near 100 barely move.
+
+## Review of the game path: is what the agent plays the game?
+
+**Date:** 2026-11-07. Board `#136`. A second independent audit, read-only, of what the
+training review left out. Marked below: **confirmed** where I re-read the source or
+re-ran the numbers, and **as audited** otherwise. Its scripts are in the session's
+scratchpad and are not committed.
+
+**What holds.**
+
+- Every valid episode ended in a real death at health 0: 1,015 of 1,015 in `M3-P021`,
+  1,084 of 1,084 in `M3-P022`, as audited. Row identity is read from the game's labels.
+- Each episode starts fresh. In `M3-P021` first-state stats are constant and no in-run
+  level carries over, as audited.
+- Evaluation never reaches replay or training, as audited.
+
+**Speed-up fidelity is unverified on this game and build. High for a wave-999 claim.**
+As audited, parity evidence exists only on 29.0.3 and older builds, at most near wave
+16: `M2-S001`, `#27` stage 3, `M1B-E018`, `M1B-E053/54`. On 29.1.4 and `b8b8cd45…` there
+is none, and nothing at Workshop 10, with Orbs, or above wave 16 on any version. The
+reference was always a stepped 16.667 ms run, never a free-running game. Training steps
+107 ms of round clock a frame against about 17 ms, and renders 1 frame in 16. The ADR
+0007 cross-check cannot run: the canonical AVD holds 29.0.3 and the server refuses it.
+
+**The world's hold is assumed, not read. Medium, confirmed.** `WORLD_NOT_HELD` reads
+`_held_after`, a host record of what the bridge should have done, and the bridge's idle
+branch only sends a heartbeat. As audited, hidden round-clock time totals 263.6 s of
+1,745,350 s in `M3-P021` and 1.1 s in `M3-P022`. It is periodic, fits a 300 s wall-clock
+event, and autosave is the suspect, unproven. It grows with how long a host blocks: the
+two `M3-P021` transitions with `game_ms` 0 moved 99.7 s and 140.6 s beside the
+learner-start stall, and the agent's observation there was stale. A transition now
+fails by name when the round clock moved more than three frames past what it charged
+(`UNCHARGED_ROUND_TIME`). The bridge does not yet press `Pause` again.
+
+**Free Upgrades land on rows that do not exist. Medium, growing with the goal,
+confirmed.** ADR 0011 writes the unlock flag on all 20 slots of a family, and the game
+rolls free levels over them. The replay shows empty slots at level 1 in all three
+families. As audited, `M3-P021` lost 17.2%, 10.0% and 40.3% of attack, defense and
+utility free levels this way. The shares fit the slots, 3, 2 and 7 of 20. That a human's
+roll cannot land on an unset slot is inferred. The guides lean on Free Upgrades, so this
+understates exactly the plan the goal needs.
+
+**Smaller findings.**
+
+- A free level leaves a stale posted price, in 201 of 67,799 `M3-P022` states, because
+  costs refresh only after a purchase or at round start. As audited.
+- `enemiesKilledThisWave` is not reset at round start, a small fingerprint of the
+  previous episode at wave 1. As audited.
+- A valid `idle` state was not classified, so the actor would have recorded it as a
+  death. It has never happened, and it is now `UI_STATE_LOST`.
+- `docs/solution.md` says evaluation stays on the default build. `train.py` and the
+  floors evaluate on the render-interval build. They agree with each other.
+- Cold relaunch exists only at bring-up. A failing actor is withdrawn and not restarted,
+  with 0 withdrawals in `M3-P021` and `M3-P022`.
+- "Greedy" and "exploration-free" are false labels for DreamerV3's evaluation.
+- Floors play on fresh boots and final evaluations on seasoned ones, so each episode now
+  records `boot_best_wave`.
+
+**One the audit did not raise.** `--upgrade-availability all` opens all 48 rows, where
+this account offers 6. ADR 0011 accepted this, and it is why Orbs and the Skips can be
+bought at all. A human on this account would have to unlock those rows first.
+
+**Memorisation, on a clean split.** A fresh model on `M3-P021`'s replay, with two
+actors' whole streams held out so no training window touches them, reads a held-out AUC
+of 0.893 at 2,500 updates and 0.698 at 20,000, while trained episodes reach 0.99 by
+10,000. So the world model can learn this, and over-replay is what takes it away. Other
+arms are not yet read.
 
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 

@@ -32,6 +32,7 @@ from tower_rl.environment.run_environment import (
     GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
     MIN_RATIO_EVIDENCE_GAME_MS,
+    UNCHARGED_ROUND_TIME,
     UNLOCK_NOT_APPLIED,
     UNLOCK_REVERTED,
     CadenceConfig,
@@ -841,6 +842,81 @@ def test_a_persistently_contradictory_state_is_still_invalid() -> None:
     assert state is not None and not state.valid
     assert "negative health in an active run" in state.invalid_reasons
     assert environment._tally.recovered_transients == 0, "nothing admissible was recovered"
+
+
+def test_game_time_no_advance_charged_is_refused_by_name() -> None:
+    """M3-P021: the world ran on through a stall and a purchase settled waves later."""
+    environment, port = _environment(
+        DecisionCadence.SAVING_ORDERS,
+        **_broke_after_buying(start_cash=100.0, cash_per_second=0.0),
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+    original = port.buy_upgrade
+
+    def buying_after_the_world_ran(
+        family: str, slot_index: int, *, expected_sequence: int
+    ) -> FakeCommandResult:
+        port.elapsed_ms += 99_676.0
+        return original(family, slot_index, expected_sequence=expected_sequence)
+
+    port.buy_upgrade = buying_after_the_world_ran  # type: ignore[method-assign]
+
+    transition = environment.step(target.action)
+
+    assert not transition.admissible
+    assert any(reason.startswith(UNCHARGED_ROUND_TIME) for reason in transition.invalid_reasons)
+    assert transition.termination is TerminationOutcome.OBSERVATION_INVALID
+
+
+def test_a_frame_of_clock_the_advance_did_not_charge_is_not_a_world_running() -> None:
+    environment, port = _environment(
+        DecisionCadence.SAVING_ORDERS, **_broke_after_buying(start_cash=100.0)
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.available)
+    port.elapsed_ms += environment.cadence.frame_game_ms
+
+    transition = environment.step(target.action)
+
+    assert transition.admissible
+
+
+def test_a_round_that_leaves_play_without_dying_is_not_recorded_as_a_death() -> None:
+    from dataclasses import replace
+
+    environment, port = _environment()
+    environment.reset()
+    original = port.advance_until_event
+
+    def gone_idle(**kwargs):
+        result = original(**kwargs)
+        assert result.state is not None
+        idle = replace(result.state, lifecycle="idle", terminal=False)
+        return replace(result, reason="event:run_ended", state=idle)
+
+    port.advance_until_event = gone_idle  # type: ignore[method-assign]
+
+    transition = environment.step(WAIT)
+
+    assert transition.termination is TerminationOutcome.UI_STATE_LOST
+
+
+def test_an_episode_says_how_far_its_boot_had_already_reached() -> None:
+    """The game's enemies change once an instance first reaches wave 40."""
+    environment, _ = _environment(seconds_per_wave=1.0)
+
+    environment.reset()
+    assert environment.summarize(TerminationOutcome.GAME_OVER).boot_best_wave == 0
+    transition = environment.step(WAIT)
+    while not transition.terminated:
+        transition = environment.step(WAIT)
+    reached = environment.summarize(TerminationOutcome.GAME_OVER).final_wave
+    assert reached > 1
+
+    environment.reset()
+
+    assert environment.summarize(TerminationOutcome.GAME_OVER).boot_best_wave == reached
 
 
 def test_a_recovery_advance_that_is_not_confirmed_fails_the_episode_visibly() -> None:

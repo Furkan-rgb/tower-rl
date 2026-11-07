@@ -386,6 +386,11 @@ it too. Decisions therefore follow purchases: several a wave while levels are ch
 fewer than one a wave while saving. A span may cross many waves, and `d = γ_s^Δt` is
 already written for that.
 
+**A transition is charged for all the game time it covers.** If the round clock moved
+more than three frames past what a transition's advances measured, the transition fails
+as `UNCHARGED_ROUND_TIME`. A hold is otherwise taken from the bridge's own record, so
+this is the one check that reads the game.
+
 ## Transition and reward
 
 `RunTransition` contains the previous observation, optional next observation,

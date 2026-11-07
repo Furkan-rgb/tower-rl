@@ -342,6 +342,7 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
         # build, without carrying every purchase decision as its own record.
         "final_upgrade_levels": dict(summary.final_upgrade_levels),
         "final_cash": summary.final_cash,
+        "boot_best_wave": summary.boot_best_wave,
     }
     if summary.upgrade_setup_drifted and summary.upgrade_setup is not None:
         # An episode played on another setup than the run's carries the setup

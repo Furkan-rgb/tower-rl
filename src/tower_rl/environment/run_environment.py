@@ -331,6 +331,15 @@ ADVANCE_TRUNCATED_BY_WALL = "an advance was cut off by the bridge's wall-time ce
 #: some unknown fraction of the time (`#95`, ADR 0015).
 WORLD_NOT_HELD = "WORLD_NOT_HELD: the world was running when the agent was asked to decide"
 
+#: A transition across which the round clock moved by more than its advances
+#: charged. Nothing else reads the game for this: `WORLD_NOT_HELD` reads the
+#: port's own record of the hold, and the round-clock ratio counts only what
+#: advances measured. In `M3-P021` the world ran on through a learner stall and a
+#: purchase then settled up to four waves later, charged no time at all.
+UNCHARGED_ROUND_TIME = "UNCHARGED_ROUND_TIME"
+#: How much uncharged round clock is a frame's rounding, not a world left running.
+UNCHARGED_ROUND_TIME_FRAMES = 3.0
+
 #: The game time each advance asks for while a run left live by the previous
 #: episode is being retired: the most the wire protocol carries
 #: (`MAX_ADVANCE_BUDGET_GAME_MS` in `simulation/instrumented_bridge.py`), since
@@ -653,6 +662,7 @@ class InstrumentedRunEnvironment:
     _setup: UpgradeSetup | None = field(default=None, init=False)
     #: Why this episode's setup is not the run's, when it is not.
     _setup_drift: str | None = field(default=None, init=False)
+    _boot_best_wave: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         # A negative level is refused here, not at the first round start.
@@ -713,6 +723,8 @@ class InstrumentedRunEnvironment:
         state = self._setup_held(state)
         self._state = state
         self._episode_id = uuid.uuid4().hex
+        if self._episodes:
+            self._boot_best_wave = max(self._boot_best_wave, self._tally.peak_wave)
         self._episodes += 1
         self._tally = _EpisodeTally(
             started_at=time.monotonic(),
@@ -903,6 +915,7 @@ class InstrumentedRunEnvironment:
                 str(row.action): row.level for row in state.rows if row.level > 0
             },
             final_cash=round(math.expm1(state.cash_log), 3),
+            boot_best_wave=self._boot_best_wave,
         )
 
     # -- stepping ----------------------------------------------------------
@@ -954,12 +967,25 @@ class InstrumentedRunEnvironment:
             started,
             advanced.requested_game_ms,
             advanced.events,
-            advanced.reasons,
+            advanced.reasons + self._uncharged_round_time(state, advanced),
             advances=advanced.advances,
             game_ms=advanced.round_ms,
         )
 
     # -- internals ---------------------------------------------------------
+
+    def _uncharged_round_time(self, state: RunState, advanced: _Advance) -> tuple[str, ...]:
+        """The reason a transition's round clock moved further than it charged, if it did."""
+        after = advanced.state
+        if after is None or after.lifecycle != "active":
+            return ()
+        elapsed_ms = 1000.0 * (
+            math.expm1(after.live["round_time_log"]) - math.expm1(state.live["round_time_log"])
+        )
+        uncharged_ms = elapsed_ms - advanced.round_ms
+        if uncharged_ms <= UNCHARGED_ROUND_TIME_FRAMES * self.cadence.frame_game_ms:
+            return ()
+        return (f"{UNCHARGED_ROUND_TIME}: {uncharged_ms:.0f} ms",)
 
     def _advance_to_choice_point(self, state: RunState, action: RunActionId) -> _Advance:
         """Advance until the policy has something to choose, or the run ends.
@@ -1710,4 +1736,6 @@ def _classify(
         return TerminationOutcome.OBSERVATION_INVALID
     if next_state.terminal:
         return TerminationOutcome.GAME_OVER
+    if next_state.lifecycle != "active":
+        return TerminationOutcome.UI_STATE_LOST
     return None

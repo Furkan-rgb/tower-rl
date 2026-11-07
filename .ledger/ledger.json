@@ -1,5 +1,5 @@
 {
-  "next_id": 146,
+  "next_id": 148,
   "items": [
     {
       "id": 1,
@@ -3493,6 +3493,10 @@
         {
           "at": "2026-11-07 16:34",
           "text": "Code and unit conditions are in ab4aa63. Only the floors remain, and they need the emulators M3-P022 holds. As built, a fall in health ends an order, not any 5% move (docs/environment-contract.md)."
+        },
+        {
+          "at": "2026-11-07 16:57",
+          "text": "Game-path review in docs/experiments.md. UNCHARGED_ROUND_TIME, the idle classification and boot_best_wave are in this commit. Report acted on."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3564,6 +3568,10 @@
         {
           "at": "2026-11-07 16:34",
           "text": "The zero rates were read at one-decision-a-wave cadences. Under filling-orders decisions fall mid-wave, so re-read them there before fixing the schema."
+        },
+        {
+          "at": "2026-11-07 16:57",
+          "text": "Also from the game-path review: enemiesKilledThisWave is not reset at round start, so wave 1 carries a fingerprint of the previous episode. Fix it with this schema change."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3585,8 +3593,14 @@
       "id": 143,
       "title": "Board audit: 2026-11-07",
       "body": "Exit #139 closed, so an audit is due. Scope: every open item of M3 and every In progress item with no live worker.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-07 16:34",
+          "text": "Applied in 45e7026: #131 and #138 retired for #144 and #145; #134, #136, #142 moved to Blocked on M3-P022 with comments; comments on #137, #140, #141. Kept #142 in M3 against the audit, because the developer asked for the whole setup to be correct."
+        }
+      ],
+      "closed_at": "2026-11-07T15:34:41.331253Z"
     },
     {
       "id": 144,
@@ -3601,6 +3615,22 @@
       "title": "A turtle-into-blender script on the guides' in-run order is measured at Workshop 10, with Enemy Attack Level Skip's effect read above level 1",
       "body": "Replaces #138. The guides define Blender on maxed Workshop and Labs, so 'guide-faithful' cannot be checked at Workshop 10. The script follows their in-run order: cash, Free Upgrades, then Health, Defense %, Knockback, Orbs and Orb Speed, Thorns, Attack Speed, the Recovery rows, with Skips from the late guide. A benchmark only, handed to no learner. Needs #136's floors first, so it runs after M3-P022.",
       "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 146,
+      "title": "Speed-up parity is measured at Workshop 10 past wave 50 on the current game and bridge, and evaluation's build is settled",
+      "body": "No parity evidence exists on 29.1.4 or the current build, or above wave 16 on any. One pre-registered stage: the same script at 16.667 vs 100 ms and render interval 1 vs 16, read per wave. The result settles which build evaluation plays on, and docs/solution.md follows. Evidence: docs/experiments.md, 'Review of the game path'.",
+      "status": "Blocked",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 147,
+      "title": "A bridge build rolls Free Upgrades only on real rows, pauses a world that slipped, and refreshes prices at the wave turn",
+      "body": "Three defects from 'Review of the game path', one build. Writing unlock flags only on real rows amends ADR 0011. The digest changes, so floors are measured again on it. Blocked on M3-P022 for the device check; the source and the build do not need the emulators.",
+      "status": "In progress",
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }

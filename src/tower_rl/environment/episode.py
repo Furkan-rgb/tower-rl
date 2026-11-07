@@ -357,6 +357,10 @@ class EpisodeSummary:
     #: it in. Beside `final_upgrade_levels`, since what an episode ended
     #: holding is as much a description of it as what it bought.
     final_cash: float = 0.0
+    #: The highest wave this instance had reached in its boot before this episode.
+    #: Below 40 the episode plays the game's easier enemy-health curve
+    #: (`docs/experiments.md`, "Review of the training setup").
+    boot_best_wave: int = 0
 
     @property
     def valid(self) -> bool:

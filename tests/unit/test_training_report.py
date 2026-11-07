@@ -174,6 +174,7 @@ EPISODE_RECORD_KEYS = {
     "waves",
     "final_upgrade_levels",
     "final_cash",
+    "boot_best_wave",
 }
 
 

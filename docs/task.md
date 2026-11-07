@@ -35,10 +35,9 @@ learning is shown by the checkpoint learning curve. This must not rest on
 beating weak baselines alone; the three-learner comparison and the curve
 carry the evidence. A human reference recorded on the same fixed account
 state may be added later as a separate decision. Attainable waves are
-bounded by the fixed permanent account state; the §6 non-goal on
-guaranteeing a maximum wave still stands. Much higher waves (e.g. 100) would
-require a stronger fixed baseline or the M8–M11 progression program, and
-that is a separate decision.
+bounded by the fixed permanent account state. The developer's decision of
+2026-11-07 below sets the target above that bound's known reach; it does not
+promise that the target is attainable (§6).
 
 **Outcome C, results reporting.** `README.md` presents a comparison table.
 Per learner it gives mean, median, and maximum final wave with 95%
@@ -55,6 +54,23 @@ scaling). Every claim carries its `docs/experiments.md` evidence pointer.
 
 This end goal does not relax any V1 gate, safety boundary, or non-goal in
 this document.
+
+**Developer decision, 2026-11-07: the target is final wave 999.** The project's
+formal goal is a learned policy that reaches wave 999 of Tier 1, on these terms:
+
+- **By actual learning.** The policy chooses every purchase in the run. No scripted
+  build, imitation of a script, reward shaping toward a row, or plan built into the
+  observation or action space may hand it the strategy. Scripts are benchmarks only.
+- **At minimal Workshop levels.** Workshop levels are the easy way out, not the path.
+  The benchmark stays Workshop 10 (`#121`). Raising it is a separate developer decision,
+  taken on measured evidence that the level cannot reach the target.
+- **On a correct setup.** A result counts only when the reward, legality, action
+  semantics, observation, evaluation isolation and learner each carry a
+  `docs/experiments.md` pointer, and learning is shown on data the learner has not
+  trained on. No completion claim may rest on replayed data alone.
+
+This is a target and not a V1 gate: M5's rule that V1 acceptance needs no fixed wave
+threshold stands, and this decision relaxes nothing else in this document.
 
 **Developer decision, 2026-09-24: one training run per learner.** Each
 learner's comparison-table row (Outcome C) is one run fixed by
@@ -241,7 +257,7 @@ unless ADR 0006 explicitly defines the bounded training-only exception:
 - arbitrary free-form screen-coordinate actions learned by the agent;
 - support for tiers other than Tier 1;
 - mobile-device deployment or unattended remote/cloud deployment;
-- guaranteeing a specific maximum wave, because attainable performance depends on the supplied account state and game version.
+- guaranteeing that any specific wave is attainable, because attainable performance depends on the supplied account state and game version. Wave 999 is the project's target (§1.1), and whether it can be reached at minimal Workshop levels is an open question.
 
 Use only the APK and account/save material the user is authorized to possess. Keep the experiment local and isolated from competitive or transactional features.
 

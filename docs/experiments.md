@@ -2915,18 +2915,26 @@ reads 40 at level 10, 44 at 11, 76 at 19.
 - ADR 0012's "Interest is worth $0" was written about the Workshop profile, where cash
   was not held. It does not hold for an agent that saves. No ADR text is changed here.
 
-**Two things measured and not resolved.**
+**A Skip level is still unmeasured.** One level of a Skip row shows no effect: 0 of 69
+states off the wave's usual enemy damage at Enemy Attack Level Skip 1 in `M3-P022`.
+This says nothing about higher levels, and no `M3-P022` episode has held more than one.
 
-- One level of a Skip row shows no effect: 0 of 69 states off the wave's usual enemy
-  damage at Enemy Attack Level Skip 1 in `M3-P022`. This says nothing about higher
-  levels, and no `M3-P022` episode has held more than one.
-- Below wave 40, `wave_base_health` follows two exact curves in both `M3-P021` and
-  `M3-P022`. The lower reads 17.53 at wave 10, 54.08 at 20, 126.92 at 30 and 207.65 at
-  39, against 18.36, 59.25, 143.36 and 239.26, and none of its states is at wave 40 or
-  above. It is 1,692 and 2,110 states, in the first 2,700 positions of each replay. No row
-  explains it. A rule that an instance leaves it on first reaching wave 40 failed, with
-  83 and 268 episodes breaking it, though that check may itself be misaligned with the
-  replay's streams.
+**The game's enemies depend on what the instance has already played.** Below wave 40,
+`wave_base_health` follows two exact curves in `M3-P021` and `M3-P022`. The lower reads
+17.53 at wave 10, 54.08 at 20, 126.92 at 30 and 207.65 at 39, against 18.36, 59.25,
+143.36 and 239.26, and the two meet at wave 40. Enemy damage does not differ. An
+instance plays the lower curve through the first episode in which it reaches wave 40,
+and the higher one for the rest of its boot: 0 exceptions in 2,064 episodes across 14
+actors, read per actor in episode order. That first episode came 2 to 14 episodes in.
+The cause inside the game is not established; the rule fits a record of the best wave
+that a read-only boot starts below 40. What it changes:
+
+- The baseline is not one fixed game. It is fixed per boot, then moves once.
+- A policy that never reaches wave 40 never leaves the lower curve. `random`'s floor of
+  27.88 (21–41) is read almost entirely there, up to about 13% easier than what a
+  trained policy meets after its first wave 40.
+- A cold relaunch returns an instance to the lower curve. It touches waves 1–39 of one
+  episode, so final waves near 100 barely move.
 
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 

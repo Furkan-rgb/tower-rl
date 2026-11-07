@@ -3408,7 +3408,8 @@
           "at": "2026-11-07 06:19",
           "text": "M3-P021 finished: plateau stop at 50,322 decisions, final evaluation 47.87 (SD 4.15, n=30), below the script. Credit readout improved (40-60: 10x vs 2.3x; 60+: 11x vs 1.2x), so neither pre-registered bar. Diagnosis: the policy takes Defense Absolute about 70% of the time at decisions 31-50 when offered, but the affordability mask offers it only 27-39% of the time. Follow-up on #134."
         }
-      ]
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 132,
@@ -3458,7 +3459,8 @@
           "at": "2026-11-07 16:00",
           "text": "Review recorded in docs/experiments.md, 'Review of the training setup'. Reward correct. Saving is partial: an order spends all it can, once a wave. World-model death AUC 0.512 unseen vs 1.0 trained; entropy under 0.32 nats. Guides read in full: script 102 was no guide turtle (cash rows never bought), no script was a guide Blender, and Blender as the guides define it rests on Workshop and Labs."
         }
-      ]
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 135,
@@ -3478,28 +3480,38 @@
       "title": "An order buys one level and stands until filled: the learner can keep cash, buy two rows in a wave and save across waves",
       "body": "ADR 0020's saving-orders spends every level the cash reaches, once a wave. A new cadence: an order buys exactly one level as soon as cash reaches its price and buys nothing else; the policy is asked again after filling, when tower health moves 5%, or at run end; WAIT holds until the next wave's turn. Done when unit tests cover one level, two rows in a wave, a save across waves and cancellation by health, and its floors are measured. Evidence: docs/experiments.md, 'Review of the training setup'.",
       "status": "In progress",
-      "comments": []
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 137,
       "title": "World-model death prediction and the critic are measured on episodes the learner has not trained on",
       "body": "AUC 0.512 unseen vs 1.0 trained at M3-P021 d40035; every existing monitor reads replayed steps. Done when a held-out read is logged during training and a memorisation remedy has been tested against it offline on M3-P021's replay. Evidence: docs/experiments.md, 'Review of the training setup'.",
       "status": "Next",
-      "comments": []
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 138,
       "title": "A guide-faithful turtle into blender floor is measured at Workshop 10: cash first, Skips, 4 Orbs, Health, Free Upgrades",
       "body": "No script so far bought economy rows, Skips, Free Upgrades or Recovery rows, and all ended on 2 of 4 Orbs. Needs orders that stand until filled. Also measures what Enemy Attack Level Skip does at levels above 1, read off wave_base_damage. A benchmark only; it is not handed to the learner.",
       "status": "Next",
-      "comments": []
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
       "id": 139,
       "title": "The two enemy-health curves below wave 40 are explained",
       "body": "wave_base_health follows two exact curves below wave 40 in M3-P021 and M3-P022, about 13% apart at wave 39, in the first 2,700 replay positions. No row explains it, and the rule 'until the instance reaches 40' failed, though that check may be misaligned with the replay's streams. If the game's enemies differ by history, the fixed baseline is not fixed.",
-      "status": "Next",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-07 16:22",
+          "text": "Explained: an instance plays the lower curve through the first episode that reaches wave 40, then the higher one for the rest of its boot. 0 exceptions in 2,064 episodes across M3-P021 and M3-P022. The earlier failed check used stream_start as a file position; positions are cumulative episode lengths. docs/experiments.md, 'Review of the training setup'."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-07T15:22:37.905094Z"
     }
   ],
   "milestones": [
@@ -3510,6 +3522,10 @@
     {
       "title": "M2 Training",
       "description": "Running and comparing backbones"
+    },
+    {
+      "title": "M3 A learned policy reaches wave 999 on a verified setup",
+      "description": "Serves: docs/task.md 1.1 (developer decision 2026-11-07), ADR-0020. Learned, at minimal Workshop levels, with every part of the setup evidenced and learning shown on data the learner has not trained on."
     }
   ]
 }

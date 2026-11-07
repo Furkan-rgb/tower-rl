@@ -88,6 +88,13 @@ class DecisionCadence(StrEnum):
     #: it saves for that row, and it buys the row the moment it is affordable
     #: inside the wave. Its outcome is `WAITED` if the wave could not pay.
     SAVING_ORDERS = "saving-orders"
+    #: An order buys one level and stands until it is filled (`#136`). Over every
+    #: row on sale, it buys that row's next level the moment the cash reaches its
+    #: price and nothing else, across as many waves as that takes, and the policy
+    #: is asked again at once, so cash left over stays spendable. It also ends
+    #: if the tower loses a health change's worth or the row leaves sale, with
+    #: outcome `WAITED`. WAIT buys nothing until the wave turns.
+    FILLING_ORDERS = "filling-orders"
 
 
 class UpgradeAvailability(StrEnum):
@@ -652,7 +659,8 @@ class InstrumentedRunEnvironment:
         workshop_rows(self.workshop_level)
         self.builder = replace(
             self.builder,
-            offers_rows_out_of_reach=self.decision_cadence is DecisionCadence.SAVING_ORDERS,
+            offers_rows_out_of_reach=self.decision_cadence
+            in (DecisionCadence.SAVING_ORDERS, DecisionCadence.FILLING_ORDERS),
         )
 
     # -- episode lifecycle -------------------------------------------------
@@ -962,15 +970,22 @@ class InstrumentedRunEnvironment:
         environment takes that answer itself and advances again. Under
         `STANDING_ORDERS` the policy has already answered for the rest of its
         wave, so the environment carries that answer out until the wave turns
-        and then runs on to the next choice point. Every advance in the span is
-        an ordinary one: same cadence, same divergence check, same wave and
-        episode tallies. The span stops at the next decision, at the end of the
-        run, or at the first thing that makes the transition inadmissible,
-        because a span may not be built across a state the record cannot
-        describe.
+        and then runs on to the next choice point. Under `FILLING_ORDERS` it
+        carries the order out until `_order_stands` says it has ended. Every
+        advance in the span is an ordinary one: same cadence, same divergence
+        check, same wave and episode tallies. The span stops at the next
+        decision, at the end of the run, or at the first thing that makes the
+        transition inadmissible, because a span may not be built across a state
+        the record cannot describe.
         """
         span = self._carry_out(state, action)
         if self.decision_cadence is DecisionCadence.EVERY_SLICE:
+            return span
+        if self.decision_cadence is DecisionCadence.FILLING_ORDERS:
+            while self._span_admissible(span) and self._order_stands(state, action, span):
+                assert span.state is not None
+                self._enter(span.state)
+                span = span.followed_by(self._carry_out(span.state, action))
             return span
         standing = self.decision_cadence in (
             DecisionCadence.STANDING_ORDERS,
@@ -990,6 +1005,13 @@ class InstrumentedRunEnvironment:
         `order_wave` is the wave a standing order was given in; a choice point
         inside it is already answered.
         """
+        if not self._span_admissible(span):
+            return False
+        assert span.state is not None
+        return span.state.wave == order_wave or not span.state.is_choice_point
+
+    def _span_admissible(self, span: _Advance) -> bool:
+        """Whether a span has reached a live state the record can describe."""
         return (
             span.state is not None
             and span.failure is None
@@ -997,7 +1019,21 @@ class InstrumentedRunEnvironment:
             and span.state.valid
             and span.state.lifecycle == "active"
             and not span.state.terminal
-            and (span.state.wave == order_wave or not span.state.is_choice_point)
+        )
+
+    def _order_stands(self, given: RunState, action: RunActionId, span: _Advance) -> bool:
+        """Whether a filling order given at `given` still answers for `span`'s state."""
+        state = span.state
+        assert state is not None
+        if not state.is_choice_point:
+            return True
+        if state.health_fraction <= given.health_fraction - self.cadence.health_change_fraction:
+            return False
+        if action.is_wait:
+            return state.wave == given.wave
+        return (
+            DecisionEvent.PURCHASE_SETTLED not in span.events
+            and state.rows[action_index(action) - 1].on_sale
         )
 
     def _carry_out(self, state: RunState, action: RunActionId) -> _Advance:

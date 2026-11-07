@@ -372,6 +372,20 @@ the wave that can pay. An order the wave could not pay for ends with outcome
 `WAITED`, and the next wave's turn asks again. A wave folds into the decision
 before it only if nothing at all is on sale.
 
+**`filling-orders` buys one level and stands until filled, on trial.**
+`DecisionCadence.FILLING_ORDERS`, selected by `--decision-cadence filling-orders`
+(`#136`), is not the contract. The legal set is `saving-orders`' set. An order buys the
+row's next level the moment the cash reaches its price, and buys nothing else until
+then, across as many waves as that takes. The transition ends there with outcome
+`EXECUTED`, and the policy is asked at once, so cash left over stays spendable and two
+rows can be bought in one wave. An order that is not filled ends with outcome `WAITED`
+if the tower's health falls by `health_change_fraction` (0.05) from where the order
+was given, or if the row leaves sale, and the cash stays held. Health that rises does
+not end an order. `WAIT` buys nothing until the wave turns, and a fall in health ends
+it too. Decisions therefore follow purchases: several a wave while levels are cheap,
+fewer than one a wave while saving. A span may cross many waves, and `d = γ_s^Δt` is
+already written for that.
+
 ## Transition and reward
 
 `RunTransition` contains the previous observation, optional next observation,

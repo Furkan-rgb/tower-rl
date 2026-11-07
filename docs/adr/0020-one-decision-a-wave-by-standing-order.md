@@ -84,4 +84,7 @@ death, e^9 at five hundred and about e^2 at a thousand, at a return scale of abo
 - `M3-P021` does not beat its floors, or beats them only at `choice-points`'
   known level.
 - The scripted floor at `standing-orders` falls well below `choice-points`'.
-- Wave 1000 needs more than one purchase row a wave.
+- Wave 1000 needs more than one purchase row a wave. The review in
+  `docs/experiments.md` found this limit real for saving as well as buying: an order
+  here spends all it can, and a save must be chosen again each wave. `filling-orders`
+  (`#136`, `docs/environment-contract.md`) is the spike beside this decision.

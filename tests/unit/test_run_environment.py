@@ -52,9 +52,8 @@ from tower_rl.environment.run_state import (
 #: fixture below. Every test in this module therefore runs twice, once under
 #: each cadence that asks once per advance on this fake, so the invariants that
 #: predate choice points are pinned under both rather than only under the new
-#: default. `STANDING_ORDERS` and `SAVING_ORDERS` span a wave by design and have
-#: their own tests. A test about one cadence in particular names it explicitly
-#: and ignores this.
+#: default. The order cadences span a wave by design and have their own tests.
+#: A test about one cadence in particular names it explicitly and ignores this.
 CADENCE = DecisionCadence.CHOICE_POINTS
 
 
@@ -1602,6 +1601,123 @@ def test_an_order_the_wave_cannot_pay_for_keeps_the_cash_and_the_next_wave_is_as
     assert second.outcome is ActionOutcome.EXECUTED
     summary = environment.summarize(TerminationOutcome.GAME_OVER)
     assert (summary.decisions, summary.purchases) == (2, 1)
+
+
+def test_a_filling_order_buys_one_level_and_keeps_the_rest_of_the_cash() -> None:
+    environment, port = _environment(
+        DecisionCadence.FILLING_ORDERS,
+        **_broke_after_buying(start_cash=100.0, cash_per_second=0.0),
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.on_sale)
+
+    transition = environment.step(target.action)
+
+    assert next(slot for slot in port.slots.values() if slot.level > 0).level == 1
+    assert port.cash == 95.0
+    assert transition.outcome is ActionOutcome.EXECUTED
+    assert transition.next_state is not None
+    assert transition.next_state.wave == state.wave
+
+
+def test_two_filling_orders_buy_two_rows_inside_one_wave() -> None:
+    environment, port = _environment(
+        DecisionCadence.FILLING_ORDERS,
+        **_broke_after_buying(
+            offered={"attack": 2, "defense": 0, "utility": 0},
+            start_cash=100.0,
+            cash_per_second=0.0,
+        ),
+    )
+    state = environment.reset()
+    first, second = (row for row in state.rows if row.on_sale)
+
+    environment.step(first.action)
+    transition = environment.step(second.action)
+
+    assert sorted(slot.level for slot in port.slots.values() if slot.level) == [1, 1]
+    assert transition.next_state is not None
+    assert transition.next_state.wave == state.wave
+
+
+def test_a_filling_order_saves_across_waves_in_one_decision() -> None:
+    """Cash 0 at +0.5/s against a price of 5: more than a six-second wave can pay."""
+    environment, port = _environment(
+        DecisionCadence.FILLING_ORDERS, **_broke_after_buying(start_cash=0.0)
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.on_sale)
+
+    transition = environment.step(target.action)
+
+    assert next(slot for slot in port.slots.values() if slot.level > 0).level == 1
+    assert transition.outcome is ActionOutcome.EXECUTED
+    assert transition.admissible
+    assert transition.next_state is not None
+    assert transition.next_state.wave == state.wave + 1
+    assert environment.summarize(TerminationOutcome.GAME_OVER).decisions == 1
+
+
+def test_a_filling_wait_buys_nothing_and_asks_again_when_the_wave_turns() -> None:
+    environment, port = _environment(
+        DecisionCadence.FILLING_ORDERS, **_broke_after_buying(start_cash=100.0)
+    )
+    state = environment.reset()
+
+    transition = environment.step(WAIT)
+
+    assert all(slot.level == 0 for slot in port.slots.values())
+    assert transition.outcome is ActionOutcome.WAITED
+    assert transition.next_state is not None
+    assert transition.next_state.wave == state.wave + 1
+
+
+def test_a_fall_in_health_ends_an_order_unfilled_and_the_cash_is_kept() -> None:
+    environment, port = _environment(
+        DecisionCadence.FILLING_ORDERS,
+        **_broke_after_buying(
+            start_cash=0.0, cash_per_second=0.1, damage_per_second=0.5, max_health=5.0
+        ),
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.on_sale)
+
+    transition = environment.step(target.action)
+
+    assert all(slot.level == 0 for slot in port.slots.values())
+    assert transition.outcome is ActionOutcome.WAITED
+    assert transition.admissible
+    assert transition.next_state is not None
+    assert transition.next_state.health_fraction <= state.health_fraction - 0.05
+    assert transition.next_state.is_choice_point
+
+
+def test_an_order_ends_when_its_row_leaves_sale() -> None:
+    """A free level can max the row an order is saving for, and it must not wait forever."""
+    environment, port = _environment(
+        DecisionCadence.FILLING_ORDERS,
+        **_broke_after_buying(
+            offered={"attack": 2, "defense": 0, "utility": 0}, start_cash=0.0
+        ),
+    )
+    state = environment.reset()
+    target = next(row for row in state.rows if row.on_sale)
+    real_advance = port.advance_until_event
+
+    def maxing_the_row(**kwargs: object) -> FakeCommandResult:
+        slot = port.slots[("attack", 0)]
+        slot.level = slot.max_level
+        return real_advance(**kwargs)
+
+    port.advance_until_event = maxing_the_row  # type: ignore[method-assign]
+
+    transition = environment.step(target.action)
+
+    assert transition.outcome is ActionOutcome.WAITED
+    assert transition.next_state is not None
+    assert not next(
+        row for row in transition.next_state.rows if row.action == target.action
+    ).on_sale
 
 
 def test_a_purchase_rejected_inside_an_order_ends_the_episode_with_the_span_it_ended() -> None:

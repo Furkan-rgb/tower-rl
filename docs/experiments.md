@@ -2735,6 +2735,20 @@ unchanged: each row still reports its price and whether the cash reaches it.
    rather than waiting, and is reported beside its `standing-orders` result.
 2. `random`, two rounds, 14 episodes. Its legal set is wider, so its floor may move.
 
+Results (`state/records/p022-floors/`):
+
+| Arm, at `saving-orders` | Episodes | IQM | Range | Decisions an episode | Purchases an episode |
+|---|---|---|---|---|---|
+| `build-defense-absolute` | 21 | 101.73 | 97–103 | 102 | 132 |
+| `random` | 14 | 27.88 | 21–41 | 29 | 97 |
+
+- **The cadence costs the script nothing.** 101.73 here against 101.50 at
+  `standing-orders`. The script leaves a median of 31 waves without a purchase.
+- **`random` barely moves,** 27.88 against 26.50, at 97 purchases against 106.
+- **No rejection and no failed boot in 35.** That is against 5 of 49 at
+  `standing-orders`, with nothing changed that could explain it. The five stay
+  unexplained.
+
 **Launch: `M3-P021`'s, with that one change.** Budget 150,000 decisions, checkpoints
 every 2,500, selection periods of 5,000, plateau patience 6 periods at 1.0, kill bars
 `30000:15000:21`, `60000:45000:21`, `90000:75000:21`, train ratio 2048, `γ_s` 0.99991416,
@@ -2787,6 +2801,28 @@ about another hour.
 
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
+
+## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
+
+**Date:** 2026-11-07. Board `#135`.
+
+**Question.** How does the best script's final wave grow with the uniform Workshop
+level? It sizes the path to wave 1000 for the developer's decision on the earned
+Workshop route. It trains nothing, and it is not a proposal to hand the learner
+levels: the developer has said that is the easy way out.
+
+**Protocol.** `build-defense-absolute` at `saving-orders`, bridge `b8b8cd45…`,
+`--upgrade-availability all`, 7 actors, 1 episode per actor, at `--workshop-level`
+20, then 40, then 79 if the first two show it can finish in hours. Read-only clones,
+with the profile written to the live heap as ADR 0012 already does. No coins and no
+permanent progression. Level 79 is the uniform ceiling, set by Critical Chance.
+
+**What it cannot say.**
+
+- A script tuned for Workshop 10 gives a lower bound on what a level allows.
+- A uniform level is not what coins would buy first, so it does not price the path.
+- It measures neither coins earned nor Workshop prices, which the bridge does not
+  expose yet.
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

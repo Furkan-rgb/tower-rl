@@ -3928,7 +3928,7 @@
       "id": 148,
       "title": "A pilot with the world model at ratio 128 reads unseen and trained deaths alike, and imagined WAIT never outlives recorded play",
       "body": "Serves the learner row of the verification table (docs/task.md 1.1). Offline evidence: docs/experiments.md, Review of the training setup. Read from learner_dreamer_unseen_* and learner_dreamer_trained_* (death_rank, prior_kl, plan_gap). Runs only inside a pre-registration made once the other rows are verified.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -3961,6 +3961,10 @@
         {
           "at": "2026-11-08 09:32",
           "text": "#146 closed (bdea332): evaluation plays on the training build at 100 ms. Comparisons are read against a stage-to-stage variation of about one wave (+0.91 [+0.18, +1.55] between two stages of one script configuration). Remaining gate: #163."
+        },
+        {
+          "at": "2026-11-08 10:03",
+          "text": "All gates closed: #163 (c01ffcf). The pre-registration is next: cadence, floors 101.82/22.50 at filling-orders, rule 533d282 (#153), evaluation on the training build (bdea332)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4151,6 +4155,10 @@
         {
           "at": "2026-11-08 09:39",
           "text": "Audit #165: scope adds docs/solution.md 16's 'Evaluation exploration-free...' row (ed49f38), beside scripts/train.py:38,563,960."
+        },
+        {
+          "at": "2026-11-08 10:03",
+          "text": "#163 landed with no schema change (c01ffcf), so this rename has no checkpoint break to ride on: it needs a load-time alias for best_period_near_greedy_mean, or a rule that only fresh runs read the new name."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
@@ -4182,6 +4190,10 @@
         {
           "at": "2026-11-08 09:32",
           "text": "Parity stage (bdea332): arm D (5b6a7d33 at 16.667 ms) lost emulator-5558 twice, UNCHARGED_ROUND_TIME 68 ms and 140 ms; no other arm had one in 62 episodes."
+        },
+        {
+          "at": "2026-11-08 10:03",
+          "text": "Carry trace (c01ffcf's evidence): the first UNCHARGED_ROUND_TIME on bff836b8 at 100 ms, emulator-5562, 350 ms at wave 95. Hold slips are not confined to the default build."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4233,7 +4245,7 @@
       "id": 163,
       "title": "An episode's wave-1 kill count is its own, not the previous episode's last wave",
       "body": "Replaces #141 (audit #162). At an episode's first state enemies_killed > 0 in 1,751 of 1,890 M3-P022 episodes, 1,455 with enemies_spawned 0. The host-side correction waits on the traced two-episode game pre-registered in docs/experiments.md, 'The kill count carried into wave 1' (d888688, 9d64993), which runs after #146.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 07:27",
@@ -4246,9 +4258,14 @@
         {
           "at": "2026-11-08 09:39",
           "text": "Audit #165: the pre-registration 'The kill count carried into wave 1' names #141 (retired into this card); its result note will say so."
+        },
+        {
+          "at": "2026-11-08 10:03",
+          "text": "c01ffcf: environment subtracts the count carried into wave 1 (read off the first state) from every wave-1 state. Trace: 7/7 second episodes carried 29-120, wave 1 counts on top, wave 2 resets. Test fails without the fix."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T09:03:20.269424Z"
     },
     {
       "id": 164,

@@ -4063,7 +4063,7 @@
       "id": 153,
       "title": "The next pre-registration sets its plateau stop rule from measured learning curves",
       "body": "The current rule (patience 6, min improvement 1.0) ends a run at its first plateau; M3-P022 rose from 72 to 95 after a long flat stretch (periods 9-15). Settle before #148 is pre-registered.",
-      "status": "Blocked",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:52",
@@ -4088,10 +4088,15 @@
         {
           "at": "2026-11-08 10:17",
           "text": "Adopted by M3-P023's pre-registration (next commit): patience 12 periods at 1.0, WORKSHOP_* stop on played episodes only."
+        },
+        {
+          "at": "2026-11-08 10:17",
+          "text": "d7a2c58: M3-P023's pre-registration adopts 533d282's rule (patience 12 periods at 1.0; WORKSHOP_* stops only on played episodes)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
-      "parent": 148
+      "parent": 148,
+      "closed_at": "2026-11-08T09:17:06.635227Z"
     },
     {
       "id": 154,

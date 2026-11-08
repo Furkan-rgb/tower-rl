@@ -4075,8 +4075,14 @@
       "id": 161,
       "title": "Board audit: 2026-11-08 (after #155)",
       "body": "",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 05:22",
+          "text": "Applied in 091366f: wall entry's 0.77% claim replaced by measured powers (damage ~wave^2.3-3.5, block ~wave^0.75-1.2); ADR 0020 ceiling cost amended; START HERE wall bullet; scan extrapolation qualified; the filling-orders trace recorded (written after its stage). Comments on #145 (turtle phase, Lifesteal, margin switch, Skip read), #152, #140, #141."
+        }
+      ],
+      "closed_at": "2026-11-08T04:22:51.048259Z"
     }
   ],
   "milestones": [

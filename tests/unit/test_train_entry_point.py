@@ -2048,8 +2048,8 @@ def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_r
 ) -> None:
     """Format 6: zero-start windows and no stored latents. Resuming it would mix two replays.
 
-    It recorded an actor unimix of 0.01, no mask encoding and no world model
-    ratio, and its network took the mask as 0/1.
+    It recorded an actor unimix of 0.01, no mask encoding, no world model
+    ratio and no single compression, and its network took the mask as 0/1.
     """
     from tower_rl.learning.dreamer import DreamerBackbone
 
@@ -2057,6 +2057,7 @@ def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_r
     parent = load(checkpoint)
     settings = {**parent.resolved_config, "dreamer_actor_unimix": 0.01}
     del settings["dreamer_mask_one_hot"], settings["dreamer_world_model_ratio"]
+    del settings["dreamer_symlog_once"]
     playing = dict(
         decision_cadence=settings["decision_cadence"],
         upgrade_availability=settings["upgrade_availability"],
@@ -2076,6 +2077,7 @@ def test_a_dreamerv3_checkpoint_from_before_the_step_replay_plays_but_does_not_r
     assert policy.config.actor_unimix == 0.01
     assert policy.config.mask_one_hot is False
     assert policy.config.world_model_ratio is None
+    assert policy.config.symlog_once is False
     features = StateFeatures(
         scalars=(0.5,) * SCALAR_COUNT,
         rows=(0.5,) * (ROW_COUNT * ROW_WIDTH),

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tower_rl.environment.features import LOG_SCALED_SCALARS
 from tower_rl.environment.run_actions import (
     ACTION_SCHEMA_VERSION,
     RUN_ACTIONS,
@@ -352,6 +353,12 @@ def test_only_the_sentinel_itself_is_an_absence() -> None:
     assert f"{OUT_OF_RANGE_REASON}:closestEnemyDistance" in beyond.invalid_reasons
     assert beyond.live["closest_enemy_distance"] == 0.0
     assert beyond.live["enemy_present"] == 0.0
+
+
+def test_the_scalars_named_log_are_exactly_the_ones_compressed_with_log1p() -> None:
+    """A learner that symlogs its inputs skips these by name, so the name must not lie."""
+    magnitudes = {live.feature for live in LIVE_FIELDS if live.transform is LiveTransform.MAGNITUDE}
+    assert set(LOG_SCALED_SCALARS) == magnitudes | {"wave_log", "cash_log", "max_health_log"}
 
 
 def test_the_contract_table_is_the_declaration_it_claims_to_be() -> None:

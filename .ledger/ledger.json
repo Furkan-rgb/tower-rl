@@ -3532,7 +3532,7 @@
       "id": 136,
       "title": "An order buys one level and stands until filled: the learner can keep cash, buy two rows in a wave and save across waves",
       "body": "ADR 0020's saving-orders spends every level the cash reaches, once a wave. A new cadence: an order buys exactly one level as soon as cash reaches its price and buys nothing else; the policy is asked again after filling, when tower health moves 5%, or at run end; WAIT holds until the next wave's turn. Done when unit tests cover one level, two rows in a wave, a save across waves and cancellation by health, and its floors are measured. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3549,6 +3549,10 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: M3-P022's emulators are free; the remaining blocker is #147's device verdict on the ws2914c build these floors run on."
+        },
+        {
+          "at": "2026-11-08 03:29",
+          "text": "#147's device check passed for both built fixes (c723962). Floors pre-registered (7960dfc) and running on bff836b8: DA and random at filling-orders, beside DA and random at saving-orders."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3775,6 +3779,10 @@
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: 'pauses a world that slipped' is in neither ws2914c build; that is ADR 0016 \u00a72's EnsureHeld, now tracked as sub-item #129. This card closes on the two built fixes verified on device (A/B under way) plus floors re-measured on the new digest."
+        },
+        {
+          "at": "2026-11-08 03:14",
+          "text": "A/B 1 (7+7 episodes, Free rows to ~10, dies at wave 20): new build's empty slots read unlocked in 0 of 1,728 slot-states, old build's in 1,704 of 1,704, so named-rows-only is in effect on device. Both 7/7 valid. Old build put 0 of 12 un-ordered free levels on empty slots, where training's share (P021 17/10/40%, P022 17/10/35%, reproduced from replay) predicts ~4; too few to test the bug. Training's free levels do follow the Free rows (rises almost only while one is held). Rerunning with a stronger probe: script opening, then the cheaper of Free level or DA from wave 30."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3869,7 +3877,7 @@
       "id": 154,
       "title": "The observation's log-scaled features are compressed once, or the second compression is measured harmless",
       "body": "Features are log1p'd in the environment and symlog'd again by the learner (docs/experiments.md, Review of the training setup).",
-      "status": "Next",
+      "status": "In progress",
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },

@@ -42,6 +42,14 @@ ROW_FEATURES: tuple[str, ...] = (
     "available",
 )
 
+#: The features `run_state` already compresses with `log1p`: every scalar named
+#: `_log`, and a row's price and affordability. For a non-negative value `log1p`
+#: is `symlog`, so a learner that symlogs its inputs would compress these twice.
+LOG_SCALED_SCALARS: tuple[str, ...] = tuple(
+    name for name in SCALAR_FEATURES if name.endswith("_log")
+)
+LOG_SCALED_ROW_FEATURES: tuple[str, ...] = ("cost_log", "affordability")
+
 SCALAR_COUNT = len(SCALAR_FEATURES)
 ROW_COUNT = len(RUN_ACTIONS) - 1
 ROW_WIDTH = len(ROW_FEATURES)

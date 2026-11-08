@@ -34,7 +34,16 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional
 
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.features import (
+    LOG_SCALED_ROW_FEATURES,
+    LOG_SCALED_SCALARS,
+    ROW_COUNT,
+    ROW_FEATURES,
+    ROW_WIDTH,
+    SCALAR_COUNT,
+    SCALAR_FEATURES,
+    StateFeatures,
+)
 from tower_rl.environment.run_actions import RUN_ACTIONS, WAIT, action_index
 from tower_rl.learning.backbone import LearnMetrics, SequenceBatch
 from tower_rl.learning.dreamer_math import (
@@ -113,6 +122,13 @@ class DreamerConfig:
     #: read by its argmax. False is the 0/1 input and binary head a checkpoint
     #: from before recorded no key for; it still acts that way.
     mask_one_hot: bool = True
+    #: True: the encoder and decoder symlog only the features the environment
+    #: has not log-scaled already. For a non-negative value `log1p` is
+    #: `symlog`, so every feature is compressed once, as the official code
+    #: compresses its raw inputs (`rssm.py` 218, and 299 for the decoder's
+    #: `symlog_mse`). False symlogs every feature again, as a checkpoint from
+    #: before recorded no key for; it still acts that way.
+    symlog_once: bool = True
     actor_outscale: float = 0.01
     free_nats: float = 1.0
     # Loop geometry (configs.yaml batch_size, batch_length; train_ratio per
@@ -307,11 +323,31 @@ class _Dynamics(nn.Module):
 class WorldModel(nn.Module):
     """Encoder, RSSM, decoder, reward and continue heads: everything the model loss trains."""
 
+    symlogged_scalars: Tensor
+    symlogged_rows: Tensor
+
     def __init__(self, config: DreamerConfig) -> None:
         super().__init__()
         c = config
         feature = c.deter + c.stoch * c.classes
         self.mask_classes = 2 if c.mask_one_hot else 1
+        # Which float keys symlog compresses; not in the state dict, so a
+        # checkpoint's weights load whichever way it was trained.
+        self.register_buffer(
+            "symlogged_scalars",
+            torch.tensor(
+                [not (c.symlog_once and name in LOG_SCALED_SCALARS) for name in SCALAR_FEATURES]
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "symlogged_rows",
+            torch.tensor(
+                [not (c.symlog_once and name in LOG_SCALED_ROW_FEATURES) for name in ROW_FEATURES]
+                * ROW_COUNT
+            ),
+            persistent=False,
+        )
         self.encoder = _mlp(
             SCALAR_COUNT + ROWS_WIDTH + ACTIONS * self.mask_classes, c.units, c.encoder_layers
         )
@@ -323,13 +359,21 @@ class WorldModel(nn.Module):
         self.reward = _head(feature, c.units, c.reward_layers, c.bins, 0.0)
         self.cont = _head(feature, c.units, c.continue_layers, 1, 1.0)
 
+    def compress(self, scalars: Tensor, rows: Tensor) -> tuple[Tensor, Tensor]:
+        """The float keys as the encoder takes them and the decoder predicts them."""
+        flat_rows = rows.flatten(-2)
+        return (
+            torch.where(self.symlogged_scalars, symlog(scalars), scalars),
+            torch.where(self.symlogged_rows, symlog(flat_rows), flat_rows),
+        )
+
     def encode(self, scalars: Tensor, rows: Tensor, mask: Tensor) -> Tensor:
-        """Symlog the float keys and concatenate, as `DictConcat` does; the mask one-hot."""
+        """The compressed float keys concatenated, as `DictConcat` does; the mask one-hot."""
         if self.mask_classes == 2:
             encoded = functional.one_hot(mask.long(), 2).flatten(-2).to(scalars.dtype)
         else:
             encoded = mask.to(scalars.dtype)
-        flat = torch.cat((symlog(scalars), symlog(rows.flatten(-2)), encoded), -1)
+        flat = torch.cat((*self.compress(scalars, rows), encoded), -1)
         tokens: Tensor = self.encoder(flat)
         return tokens
 
@@ -771,10 +815,9 @@ class DreamerBackbone:
             categorical_kl(posterior, prior.detach()).sum(-1).clamp(min=c.free_nats)
         )
         decoded = world.decoder(feature)
-        scalars_loss = (world.decode_scalars(decoded).float() - symlog(scalars)).square().sum(-1)
-        rows_loss = (
-            (world.decode_rows(decoded).float() - symlog(rows.flatten(-2))).square().sum(-1)
-        )
+        scalars_target, rows_target = world.compress(scalars, rows)
+        scalars_loss = (world.decode_scalars(decoded).float() - scalars_target).square().sum(-1)
+        rows_loss = (world.decode_rows(decoded).float() - rows_target).square().sum(-1)
         mask_logits = world.mask_logits(decoded)
         mask_loss = world.mask_loss(mask_logits, mask)
         reward_loss = twohot_loss(world.reward(feature).float(), reward_in, self._bins)

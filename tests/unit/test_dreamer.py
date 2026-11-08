@@ -23,7 +23,14 @@ from fakes.fake_run_port import FakeRunPort
 from torch.nn import functional
 
 from tower_rl.environment.episode import TerminationOutcome
-from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
+from tower_rl.environment.features import (
+    ROW_COUNT,
+    ROW_FEATURES,
+    ROW_WIDTH,
+    SCALAR_COUNT,
+    SCALAR_FEATURES,
+    StateFeatures,
+)
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
 from tower_rl.environment.run_state import RunStateBuilder
@@ -240,8 +247,7 @@ def test_the_mask_is_a_two_class_key_as_the_official_code_takes_a_boolean() -> N
     assert first.in_features == SCALAR_COUNT + ROW_COUNT * ROW_WIDTH + 2 * ACTIONS
     flat = torch.cat(
         (
-            symlog(scalars),
-            symlog(rows.flatten(-2)),
+            *world.compress(scalars, rows),
             functional.one_hot(mask.long(), 2).flatten(-2).float(),
         ),
         -1,
@@ -254,6 +260,30 @@ def test_the_mask_is_a_two_class_key_as_the_official_code_takes_a_boolean() -> N
     valid = world.valid_actions(logits)
     assert torch.equal(valid[0, 1:], (logits[0, 1:, 1] > logits[0, 1:, 0]))
     assert valid[0, WAIT_INDEX]
+
+
+def test_each_feature_is_compressed_once_as_the_official_code_compresses_its_raw_inputs() -> None:
+    """`log1p` is `symlog` for a non-negative value, so a log-scaled feature passes as it is.
+
+    The rest are symlogged, as the official encoder (`rssm.py` 218) and the decoder's
+    `symlog_mse` treat every raw vector key. The decoder's targets are the same
+    compression. A backbone from before it symlogs every feature, and still does.
+    """
+    scalars = torch.linspace(0.0, 30.0, SCALAR_COUNT).unsqueeze(0)
+    rows = torch.linspace(0.0, 30.0, ROW_COUNT * ROW_WIDTH).reshape(1, ROW_COUNT, ROW_WIDTH)
+    compressed_scalars, compressed_rows = _backbone().world_model.compress(scalars, rows)
+    for index, name in enumerate(SCALAR_FEATURES):
+        raw = scalars[0, index]
+        assert compressed_scalars[0, index] == (raw if name.endswith("_log") else symlog(raw))
+    for index, name in enumerate(ROW_FEATURES * ROW_COUNT):
+        raw = rows.flatten(-2)[0, index]
+        expected = raw if name in ("cost_log", "affordability") else symlog(raw)
+        assert compressed_rows[0, index] == expected
+
+    older = _backbone(replace(SMALL, symlog_once=False)).world_model
+    assert torch.equal(older.compress(scalars, rows)[0], symlog(scalars))
+    assert torch.equal(older.compress(scalars, rows)[1], symlog(rows.flatten(-2)))
+    assert "symlogged_scalars" not in older.state_dict()
 
 
 def test_a_backbone_from_before_the_one_hot_mask_keeps_its_0_1_mask() -> None:

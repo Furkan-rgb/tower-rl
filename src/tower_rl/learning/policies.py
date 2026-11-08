@@ -671,12 +671,14 @@ def _dreamer_policy(
     # nothing reads now; it rebuilds as a policy with no discount. One from
     # before the one-hot mask took the mask as 0/1, and its network is shaped
     # for that. Acting reads no world model ratio, and one from before it had
-    # the single ratio.
+    # the single ratio. One from before the single compression symlogged every
+    # feature, and its encoder learned on that.
     unrecorded = {
         "discount_per_game_second": None,
         "survival_time_reward": False,
         "mask_one_hot": False,
         "world_model_ratio": None,
+        "symlog_once": False,
     }
     config = DreamerConfig(
         **{

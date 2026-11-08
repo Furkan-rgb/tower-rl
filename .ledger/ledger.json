@@ -3998,6 +3998,10 @@
         {
           "at": "2026-11-08 10:45",
           "text": "Developer chose (2026-11-08): launch now with 4 actors, sharing the host. Pre-registration amended before launch (next commit): 4 actors, ~33 h, shared load as a confound."
+        },
+        {
+          "at": "2026-11-08 10:54",
+          "text": "M3-P023 launched 2026-11-08 10:54 local at 0e4da6a: run m3-p023-dreamerv3-ws10-v2914-20261108T095419Z, 4 actors, bridge bff836b8. Watcher running (state/launch/m3-p023-watch.sh)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

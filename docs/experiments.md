@@ -3326,6 +3326,48 @@ which may again be the offline actor valuing a policy better than the recorded o
 this cannot show is whether the extra updates make a better policy: the actor here never
 plays.
 
+## Bridge `ws2914c` on the device: free levels and posted prices (measurement only)
+
+**Date:** 2026-11-08. Board `#147`. Does `bff836b8…` (`ws2914c-render-interval-16-nodelay`)
+fix the two defects the game-path review found, against `b8b8cd45…`? It trains nothing.
+
+**Instrument, not a floor.** The scripts buy no Free Upgrade row, so they get no free
+levels to read. A probe arm lived only in the session's scratchpad. It plays the
+`build-defense-absolute` opening, and from wave 30 orders the cheaper of the next
+level of a Free Upgrade row and the next level of Defense Absolute. It writes every
+state it is shown: each row's level, unlock flag and posted price. 7 actors, 1 episode
+each, `saving-orders`, Workshop 10, `--upgrade-availability all`, one build after the
+other. A first arm that bought only Free rows died by wave 21 with 12 free levels a
+build, too few to read, and is left out except for its unlock flags.
+
+| | `b8b8cd45…` | `bff836b8…` |
+|---|---|---|
+| Valid episodes, final waves | 6 of 6, 55–60 | 7 of 7, 55–59 |
+| Free levels landing on an empty slot | **9 of 23** (attack 3/7, defense 2/8, utility 4/8) | **0 of 17** |
+| Empty slots levelled at the end | 9, in 6 episodes | 0 |
+| Empty slots reading unlocked | 2,388 of 2,388 slot-states | 0 of 2,340 |
+| Free levels on a real row whose posted price did not move by the next decision | **10 of 14** | **0 of 17** |
+| Purchases whose posted price did not move | 2 of 194 | 1 of 188 |
+
+A free level is a level rise on a row the probe did not order. Both differences hold
+alone: one-sided Fisher p = 0.003 for the empty slots and 2×10⁻⁵ for the prices. The
+first arm's flags read the same, 1,704 of 1,704 against 0 of 1,728.
+
+- **Both fixes work on the device.** The new build flags only named rows, so free
+  levels land only on rows that exist. A free level now reprices its row at the wave's
+  turn.
+- **The defect is what the review measured.** From the replays, free levels on empty
+  slots are 17.2%, 10.0% and 40.3% by family in `M3-P021`, as audited, and 17.1%, 10.4%
+  and 34.7% in `M3-P022`. They occur almost only while the family's Free Upgrade row is
+  held: in `M3-P021`, 371 of 376 attack free levels on real rows came while Free Attack
+  Upgrade was above 0, over 14,037 of 51,336 steps.
+- **One device loss on `b8b8cd45…`:** `emulator-5568`'s bridge closed the stream between
+  rounds, and the device was gone from adb by teardown. It is the old build, it is not
+  what this changes, and it is left unexplained.
+- **Not covered:** the default build `5b6a7d33…` has not run on a device. The bridge
+  still does not press `Pause` again when a hold slips (`#129`). The script floors on
+  the new digest are not measured here.
+
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 
 **Date:** 2026-11-07. Board `#135`.

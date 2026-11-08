@@ -1451,9 +1451,10 @@ advance loop settled the first of these: `captureDeltaTime` is reachable,
 settable, and applying, with the game's own round clock advancing 4.877
 game-seconds per wall-second against a measured speed-up of 5.013, and Unity's
 `maximumDeltaTime` of 0.3333 s standing as the hard ceiling on `frame_game_ms`
-(`M1B-E017`). The rest are still design intent, and no speed has yet been shown
-admissible: whether 100 ms per frame preserves fidelity is what the pending sweep
-decides. The numbers that settle it are the ones
+(`M1B-E017`). The rest are still design intent. 100 ms per frame was shown to
+play the game as the default build does at 16.667 ms, on 29.1.4 at Workshop 10 to
+wave 103 (`docs/experiments.md`, "Speed-up parity on `ws2914c`", 2026-11-08). The
+numbers that settle it are the ones
 `EvaluationReport` now reports: `decisions_per_episode`, `decisions_per_wave`,
 `total_frames`, `total_budgeted_game_seconds`, `total_round_seconds` and
 `speedup`, with
@@ -2610,7 +2611,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Fixed Tier-1 baseline | Baseline manager | Fingerprint checks and restore test |
 | Structured valid observations | Vision + validator | Fixture accuracy and soak audit |
 | Semantic verified actions | Controller + state machine | Per-action integration tests |
-| Instrumented training parity | Native bridge + `InstrumentedTowerDevice` | M1B bridge/visible scripted parity gate |
+| Instrumented training parity | Native bridge + `InstrumentedTowerDevice` | M1B bridge/visible scripted parity gate; on 29.1.4, `docs/experiments.md` ("Speed-up parity on `ws2914c`") |
 | Reliable episode lifecycle | Controller + environment | 100/1,000 episode gates |
 | Episodes independent after an invalid end; decisions on a held world (ADR 0015) | `InstrumentedRunEnvironment._retire_live_run` / `_hand_over` + `InstrumentedRunAdapter._hold_the_world` | `tests/unit/test_live_run_retirement.py`, `tests/unit/test_world_held_at_handoff.py`, device probe in `docs/experiments.md` ("Invalid cuts no longer cascade") |
 | An episode counts only in a world that simulated the game time it was asked for | `InstrumentedRunEnvironment._round_clock_fidelity` against `expected_round_ms` | `tests/unit/test_run_environment.py` (the deflation tests at dense and sparse advances, the floor's boundary, and `test_an_advance_expects_the_round_time_of_the_frames_it_simulated`), device probe in `docs/experiments.md` ("Round-clock probe") |

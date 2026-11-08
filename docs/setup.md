@@ -206,16 +206,23 @@ de5f2dcbcff6044c149828d8dfb636902d20b7c9b7a18a9811396a55c17302c0   f5e9d9a4… f
 9037f1cf643b9d6d192071a5eea881614da92e925bbe767e7e41e7703b7d2e18   33d7ada0… for The Tower 29.1.4, 2026-11-06; state/bridge/builds/ws2914-render-interval-16-nodelay/
 a8602aeef431d1d660dcfc507d7b12eadfd4d5a1c8786f2450d1b2256ccf610b   de5f2dcb… with the settled purchase price (#133), 2026-11-06; state/bridge/builds/ws2914b-default-nodelay/; installed at state/bridge/current
 b8b8cd451a6735dfed2fb1c6a699517fe851753eae267dcce4d8c137e7dd8587   9037f1cf… with the settled purchase price (#133), 2026-11-06; state/bridge/builds/ws2914b-render-interval-16-nodelay/
+5b6a7d33fdd30327ad0628fbc2aec188a85dcbd66077b8c85b59dad7ef8ef20e   a8602aee… with free levels on named rows only and prices refreshed at the wave's turn (#147), 2026-11-07; state/bridge/builds/ws2914c-default-nodelay/
+bff836b819cd82498127c7998c41740bbcc3cb7f45bd552b8f00a6fc463a9382   b8b8cd45… with the same change (#147), 2026-11-07; state/bridge/builds/ws2914c-render-interval-16-nodelay/
 ```
 
-**On The Tower 29.1.4 only the last four handshake, and `a8602aee…` and
-`b8b8cd45…` are the ones to run.** Every build above them carries an older
-identity. `de5f2dcb…` and `9037f1cf…` are the same source as `f5e9d9a4…` and
+**On The Tower 29.1.4 only the last six handshake, and `bff836b8…` and
+`5b6a7d33…` are the ones to run.** `bff836b8…` is the training, benchmark and
+evaluation build, and `5b6a7d33…` renders every frame, for human-facing recordings.
+Evaluation plays on the render-interval build since speed-up parity was measured
+(`Speed-up parity on ws2914c` in `experiments.md`). The two differ from
+`b8b8cd45…` and `a8602aee…` in putting free levels only on named rows and
+refreshing prices at a wave's turn (`Bridge ws2914c on the device`). Every build
+above the last six carries an older identity. `de5f2dcb…` and `9037f1cf…` are the same source as `f5e9d9a4…` and
 `33d7ada0…`, and that source still reproduces `4ed87c8f…` and `7fd97b26…` under
 the 29.1.3 profile. Only `profile.cmake`'s version, version code, `libil2cpp`
 digest and profile id changed. `libunity.so` is unchanged in 29.1.4, so
-`libunity-bridge.so` is the same file. `b8b8cd45…` is the training and benchmark
-build, and `a8602aee…` the evaluation build. They differ from the build before
+`libunity-bridge.so` is the same file. `b8b8cd45…` and `a8602aee…` were the
+training and evaluation builds before `ws2914c`. They differ from the build before
 only in waiting for a purchased row's new price before sending the state
 (`The stale price behind mask_legal_rejected` in `experiments.md`).
 

@@ -1,5 +1,5 @@
 {
-  "next_id": 165,
+  "next_id": 166,
   "items": [
     {
       "id": 1,
@@ -1602,7 +1602,12 @@
       "title": "Checkpoint ladder: every saved checkpoint of a run evaluated (default build) and charted, with videos at chosen stages",
       "body": "Objective (developer request, 2026-09-24): see the model learn, i.e. how it performs at successive training stages.\n\nCurrent state (facts): train.py saves every --checkpoint-every-game-seconds (60000 in runs 4/5) and keeps all of them, about 3 MB each (scripts/train.py:651-660). Periodic evaluation is off (evaluate_every_episodes=0). The only in-training curve is the near-greedy actors' windowed mean.\n\nDone-condition: for a chosen run, each numbered checkpoint is evaluated exploration-free on the default build (n per checkpoint pre-registered), and the curve of final wave vs training stage with CIs is recorded in docs/experiments.md. Panel videos (spectate --no-window --record + render_recording.py) are recorded for selected stages.",
       "status": "Backlog",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-08 09:39",
+          "text": "Audit #165: the '(default build)' in this title is stale: since bdea332 evaluation plays on the render-interval build (solution.md 6.3)."
+        }
+      ]
     },
     {
       "id": 66,
@@ -3736,6 +3741,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162: #155's trace is closed (77c29ec). Device queue: #146 parity (running), then #163's two-episode game, #145, and #159's device check."
+        },
+        {
+          "at": "2026-11-08 09:39",
+          "text": "Audit #165: #146 is done (bdea332). Device queue: #163's trace (running), then #145, then #159's device check."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3782,6 +3791,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162: both pieces of evidence the title names are recorded (5a18a2f, 7712a66). The card waits on #148's pilot. Adopting filling-orders needs ADR 0020 amended first, since it still names saving-orders."
+        },
+        {
+          "at": "2026-11-08 09:39",
+          "text": "Audit #165: the card waits on #148's pilot and then the developer's accept/reject of ADR 0020; both pieces of evidence the title names are recorded (5a18a2f, 7712a66)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3811,6 +3824,10 @@
         {
           "at": "2026-11-08 05:22",
           "text": "Audit #161, to amend before pre-registering: (a) the body gives the blender order only; define the turtle phase (cash rows, Defense Absolute, Thorns per the turtle guide) and the switch. (b) Put Lifesteal back after Attack Speed, as the guide orders it (experiments.md 'Review of the game path' guide summary). (c) The developer's switch is 'when defense is enough': read it from the observation's margin base x (1 - Defense %) - Defense Absolute (ab98c09), not from health below full, which froze #122's arm. (d) Base damage per wave is a fixed schedule, so read the Skip effect as a departure from it. Record the margin each wave."
+        },
+        {
+          "at": "2026-11-08 09:34",
+          "text": "Finding for (c), from the W10 filling-orders trace (scratchpad wall_trace/filling, first actor): the margin base x (1 - Def%) - DA is still negative at death: -54.6 at wave 97 (health 1.00), -41.7 at 99 (0.94), -15.2 at 102 (0.72). Health falls while DA exceeds base damage after Def% by 4-17%, so some enemy type hits harder than base. The switch has to read the margin against a multiple of base damage, set from the enemy types' multipliers, which the pre-registration must measure or cite first."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3986,6 +4003,10 @@
         {
           "at": "2026-11-08 07:33",
           "text": "Evaluation isolation row: experiments.md 'Evaluation isolation' (630b121), traceability row in solution.md 16 (ed49f38). Remaining rows wait on #163 (observation), #144 (action semantics) and #148 (learner). Back to Next."
+        },
+        {
+          "at": "2026-11-08 09:39",
+          "text": "Audit #165: no loop. #148's pre-registration needs the action-semantics evidence that exists (floors 7712a66, legality in 'Review of the training setup'); ADR 0020's acceptance (#144) follows the pilot and is not a precondition of it."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4126,6 +4147,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162 risk: this card pairs with the observation schema change, whose checkpoint break made an alias unnecessary. If #163 is a host-side fix with no schema bump, renaming best_period_near_greedy_mean (checkpoint.py, training.py) needs a load-time alias or a fresh-run-only rule."
+        },
+        {
+          "at": "2026-11-08 09:39",
+          "text": "Audit #165: scope adds docs/solution.md 16's 'Evaluation exploration-free...' row (ed49f38), beside scripts/train.py:38,563,960."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
@@ -4217,6 +4242,10 @@
         {
           "at": "2026-11-08 09:32",
           "text": "#146 done; launching the pre-registered two-episode carry trace (d888688) on the devices."
+        },
+        {
+          "at": "2026-11-08 09:39",
+          "text": "Audit #165: the pre-registration 'The kill count carried into wave 1' names #141 (retired into this card); its result note will say so."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4234,6 +4263,13 @@
       ],
       "parent": 150,
       "closed_at": "2026-11-08T06:32:58.070669Z"
+    },
+    {
+      "id": 165,
+      "title": "Board audit: 2026-11-08 (after #146)",
+      "body": "Audit due: exit #146 closed.",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

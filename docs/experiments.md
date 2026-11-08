@@ -3086,6 +3086,8 @@ is none, and nothing at Workshop 10, with Orbs, or above wave 16 on any version.
 reference was always a stepped 16.667 ms run, never a free-running game. Training steps
 107 ms of round clock a frame against about 17 ms, and renders 1 frame in 16. The ADR
 0007 cross-check cannot run: the canonical AVD holds 29.0.3 and the server refuses it.
+(2026-11-08: measured on 29.1.4 at Workshop 10 to wave 103, parity holds at ±3 waves,
+bdea332; see "Speed-up parity on `ws2914c`".)
 
 **The world's hold is assumed, not read. Medium, confirmed.** `WORLD_NOT_HELD` reads
 `_held_after`, a host record of what the bridge should have done, and the bridge's idle
@@ -3115,6 +3117,8 @@ understates exactly the plan the goal needs.
   death. It has never happened, and it is now `UI_STATE_LOST`.
 - `docs/solution.md` says evaluation stays on the default build. `train.py` and the
   floors evaluate on the render-interval build. They agree with each other.
+  (2026-11-08: `docs/solution.md` §6.3 now puts evaluation on the render-interval
+  build, on the parity result, bdea332.)
 - Cold relaunch exists only at bring-up. A failing actor is withdrawn and not restarted,
   with 0 withdrawals in `M3-P021` and `M3-P022`.
 - "Greedy" and "exploration-free" are false labels for DreamerV3's evaluation.
@@ -3128,6 +3132,8 @@ a wave's turn. `ws2914c-render-interval-16-nodelay` is `bff836b8…`, and
 every floor on `b8b8cd45…` is a floor of the old behaviour. The bridge does not press
 `Pause` again when a hold slips: whether `Pause` toggles is unknown, and pressing it
 blind could release a held world, so that waits for a device check.
+(2026-11-08: both builds have since run on a device, in "Bridge `ws2914c` on the
+device" and "Speed-up parity on `ws2914c`".)
 
 **One the audit did not raise.** `--upgrade-availability all` opens all 48 rows, where
 this account offers 6. ADR 0011 accepted this, and it is why Orbs and the Skips can be

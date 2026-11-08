@@ -45,6 +45,7 @@ from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import (
     INVENTORY_TOO_WIDE,
     LIVE_FEATURES,
+    RunState,
     RunStateBuilder,
     hud_readings,
 )
@@ -587,6 +588,38 @@ def test_an_episode_with_nothing_bought_reports_no_upgrade_levels() -> None:
 
     assert summary.final_upgrade_levels == {}
     assert summary.waves[0].upgrades_bought == ()
+
+
+def test_wave_one_counts_only_this_episodes_kills() -> None:
+    """The game carries its last kill count into the next round's wave 1 (`#163`).
+
+    Wave 1 counts on top of it and wave 2 starts from zero, so every state of
+    the second episode must read its own kills. This fake kills each enemy as
+    it spawns, so its own count is the spawn count. It dies three seconds into
+    wave 2, holding three kills.
+    """
+    environment, port = _environment(
+        carries_kills_into_wave_one=True, damage_per_second=0.5, max_health=4.5
+    )
+
+    def play() -> list[RunState]:
+        states = [environment.reset()]
+        transition = environment.step(WAIT)
+        while not (transition.terminated or transition.truncated):
+            assert transition.next_state is not None
+            states.append(transition.next_state)
+            transition = environment.step(WAIT)
+        return states
+
+    play()
+    second = play()
+
+    assert port._carried_kills > 0, "the round started holding the last count"
+    assert {state.wave for state in second} >= {1, 2}
+    assert all(state.valid for state in second)
+    assert all(
+        state.live["enemies_killed"] == state.live["enemies_spawned"] for state in second
+    )
 
 
 def test_the_summary_records_the_wave_the_episode_actually_started_at() -> None:

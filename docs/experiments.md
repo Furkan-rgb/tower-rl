@@ -3662,6 +3662,35 @@ has to reset the reading. It trains nothing.
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+### Result (2026-11-08)
+
+`#141` was retired into `#163` before the stage ran, so the correction is `#163`'s. The
+stage ran as protocolled: 7 actors, 2 episodes each, wall 18 min, `cleanup ok`. 13
+episodes were valid. `emulator-5562`'s first episode was invalid at wave 95 as
+`UNCHARGED_ROUND_TIME`, 350 ms. That is the first such episode seen on `bff836b8…` at
+100 ms (`#159`). Final waves of the valid episodes were 100–103. The traces are in the
+scratchpad (`wall_trace/carry`), read by `check_carry.py`. They are split into
+episodes where the wave falls.
+
+- **First episodes,** the first after a cold launch, read 0 kills at their first state.
+- **Second episodes read a carried count at their first state:** 96, 119, 120, 37,
+  111, 29 and 52. Nothing had been killed: 0 spawned in six episodes and 1 in the
+  seventh. The value is not the last count the previous episode's decisions read
+  (9, 21 and 8 for the first three), so it is the count when that round ended.
+- **Wave 1 counts on top of it.** In all 7 second episodes the carried count holds
+  until spawns begin. After that, kills less the carried count stay between 0 and the
+  spawn count. They follow the first episodes' own pattern, 3–4 kills in the first
+  decision with spawns, then 12–13, then 21–22.
+- **Wave 2 starts from zero.** All 14 episodes read 0 kills at wave 2's first state.
+
+**What it decides.** A host-side subtraction is exact, and the bridge need not reset
+the field. The environment reads the carried count off an episode's first state and
+subtracts it from every wave-1 state. A wave-1 count below the carried one fails the
+state by name (`docs/environment-contract.md`, live readings). The test
+`test_wave_one_counts_only_this_episodes_kills` (`tests/unit/test_run_environment.py`)
+uses a fake port that carries its last count the same way, and fails without the
+subtraction.
+
 ## The plateau stop rule, read from `M3-P021`'s and `M3-P022`'s curves (analysis, no device)
 
 **Date:** 2026-11-08. Board `#153`. Both runs used patience 6 and a minimum

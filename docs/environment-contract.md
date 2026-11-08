@@ -78,7 +78,7 @@ field without a translation table.
 | `currentWaveBaseDamage` | damage | log1p | `wave_base_damage_log` |
 | `currentWaveBaseKillCash` | cash | log1p | `wave_base_kill_cash_log` |
 | `enemiesSpawnedThisWave` | enemies | raw | `enemies_spawned` |
-| `enemiesKilledThisWave` | enemies | raw | `enemies_killed` |
+| `enemiesKilledThisWave` | enemies | raw; in wave 1, less the count the game carried in from the previous episode (below) | `enemies_killed` |
 | `estimatedEnemiesToSpawnThisWave` | enemies | raw | `enemies_expected` |
 | `closestEnemyDistance` | metres | raw; the 10000 no-enemy sentinel reads as distance 0 and flag 0 | `closest_enemy_distance`, `enemy_present` |
 | `bossWaveBool` | boolean | raw 0/1 | `boss_wave` |
@@ -90,6 +90,13 @@ field without a translation table.
 | `cashPerWave` | cash per wave | log1p | `cash_per_wave_log` |
 | `cashEarnedThisWave` | cash | log1p | `cash_earned_this_wave_log` |
 | `gameplayTimeThisRound` | seconds | log1p | `round_time_log` |
+
+The game does not reset `enemiesKilledThisWave` at a round start. Wave 1 counts on
+top of the previous episode's last count, and wave 2 starts from zero
+(`docs/experiments.md`, "The kill count carried into wave 1"). The environment reads
+the carried count off an episode's first state, where the round has just started,
+and subtracts it from every wave-1 state. A wave-1 count below the carried one fails
+the state by name.
 
 Every one of these carries a range invariant, which is what makes a bad reading
 an attributable anomaly rather than a plausible number (the M1B-E017 lesson): a

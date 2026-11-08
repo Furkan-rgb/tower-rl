@@ -340,6 +340,11 @@ UNCHARGED_ROUND_TIME = "UNCHARGED_ROUND_TIME"
 #: How much uncharged round clock is a frame's rounding, not a world left running.
 UNCHARGED_ROUND_TIME_FRAMES = 3.0
 
+#: The live feature the game carries across a round start (`_own_kills`).
+KILLS = "enemies_killed"
+#: A wave-1 kill count below the count carried into it, which the device never read.
+KILLS_BELOW_CARRIED = "wave 1's kill count fell below the count carried into it"
+
 #: The game time each advance asks for while a run left live by the previous
 #: episode is being retired: the most the wire protocol carries
 #: (`MAX_ADVANCE_BUDGET_GAME_MS` in `simulation/instrumented_bridge.py`), since
@@ -663,6 +668,9 @@ class InstrumentedRunEnvironment:
     #: Why this episode's setup is not the run's, when it is not.
     _setup_drift: str | None = field(default=None, init=False)
     _boot_best_wave: int = field(default=0, init=False)
+    #: The kill count the game carried into this episode's wave 1, read off its
+    #: first state (`_own_kills`).
+    _carried_kills: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
         # A negative level is refused here, not at the first round start.
@@ -691,6 +699,7 @@ class InstrumentedRunEnvironment:
         self._workshop_reverted = None
         self._workshop_read = None
         self._setup_drift = None
+        self._carried_kills = 0.0
         # Before the Workshop write and the round start: a run the previous
         # episode left live is never continued (ADR 0015), and the write has to
         # land before the round that is actually played.
@@ -716,6 +725,14 @@ class InstrumentedRunEnvironment:
         state = self._read_state()
         if state is None or state.lifecycle != "active":
             raise RunPortError("the instance did not reach an active run")
+        # The game does not reset `enemiesKilledThisWave` at a round start: wave 1
+        # counts on top of the previous episode's last count, and wave 2 starts
+        # from zero (`docs/experiments.md`, "The kill count carried into wave 1").
+        # The round has only just started, so what the first state reads is that
+        # carried count, and nothing of this episode's own.
+        if state.wave == 1:
+            self._carried_kills = state.live[KILLS]
+            state = self._own_kills(state)
         # The setup is read off the first observation, after any unlock, and
         # the Workshop read above: what the game held, not what was asked for.
         self._setup = UpgradeSetup.read_back(labels, state, self._workshop_read)
@@ -1361,6 +1378,23 @@ class InstrumentedRunEnvironment:
             events.append(DecisionEvent.HEALTH_CHANGED)
         return tuple(events)
 
+    def _own_kills(self, state: RunState) -> RunState:
+        """The state with wave 1's kills counted from this episode's start.
+
+        A count below what was carried in is not a reading of this episode at
+        all, so it is named rather than clipped to zero.
+        """
+        if not self._carried_kills or state.wave != 1:
+            return state
+        own = state.live[KILLS] - self._carried_kills
+        if own < 0.0:
+            return replace(
+                state,
+                valid=False,
+                invalid_reasons=state.invalid_reasons + (KILLS_BELOW_CARRIED,),
+            )
+        return replace(state, live={**state.live, KILLS: own})
+
     def _read_state(self) -> RunState | None:
         with self.profile.span(BRIDGE_ROUND_TRIP):
             reading = self.port.read_state()
@@ -1370,7 +1404,9 @@ class InstrumentedRunEnvironment:
         if reading is None:
             return None
         with self.profile.span(OBSERVATION_DECODE):
-            state = self.builder.build(reading, captured_at_monotonic=time.monotonic())
+            state = self._own_kills(
+                self.builder.build(reading, captured_at_monotonic=time.monotonic())
+            )
         if tuple(state.invalid_reasons) == (DEATH_BOUNDARY_TRANSIENT,):
             state = self._settle_death_boundary(state)
         return self._setup_held(self._workshop_held(self._availability_held(state)))
@@ -1581,7 +1617,9 @@ class InstrumentedRunEnvironment:
                 f"the death boundary did not settle: {result.reason}",
             )
         with self.profile.span(OBSERVATION_DECODE):
-            settled = self.builder.build(result.state, captured_at_monotonic=time.monotonic())
+            settled = self._own_kills(
+                self.builder.build(result.state, captured_at_monotonic=time.monotonic())
+            )
         if result.reason == _BRIDGE_WALL_CEILING_REASON:
             # A stall long enough to hit the wall ceiling while rendering a
             # single frame is exactly what the invariant exists to hear, so this

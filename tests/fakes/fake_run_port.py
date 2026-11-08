@@ -239,6 +239,11 @@ class FakeRunPort:
     #: with the world running (`#95`).
     holds_at_round_start: bool = True
     holds_after_advance: bool = True
+    #: Set to have a round start keep the last kill count, as the game's
+    #: `enemiesKilledThisWave` does: wave 1 counts on top of it, and wave 2 starts
+    #: from zero (`docs/experiments.md`, "The kill count carried into wave 1").
+    carries_kills_into_wave_one: bool = False
+    _carried_kills: float = field(default=0.0, init=False)
 
     sequence: int = field(default=0, init=False)
     #: `RunPort.world_held`. A session starts with the world running.
@@ -300,6 +305,8 @@ class FakeRunPort:
             self.sequence += 1
             self.world_held = self.holds_at_round_start
             return
+        if self.carries_kills_into_wave_one:
+            self._carried_kills = self._live()["enemiesKilledThisWave"]
         self._build_slots()
         self.workshop_commands.append(("begin", 0, ()))
         if self.workshop_reverts_at_round_start:
@@ -448,7 +455,8 @@ class FakeRunPort:
         live["currentWaveBaseDamage"] = 1.176 * 1.18 ** (self.wave - 1)
         live["currentWaveBaseKillCash"] = 1.0
         live["enemiesSpawnedThisWave"] = float(int(wave_seconds))
-        live["enemiesKilledThisWave"] = float(int(wave_seconds))
+        carried = self._carried_kills if self.wave == 1 else 0.0
+        live["enemiesKilledThisWave"] = carried + float(int(wave_seconds))
         live["estimatedEnemiesToSpawnThisWave"] = float(20 + self.wave)
         # The game stores a sentinel rather than an absence, and an idle world
         # has no enemy at all.

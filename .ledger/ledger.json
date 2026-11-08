@@ -1,5 +1,5 @@
 {
-  "next_id": 161,
+  "next_id": 162,
   "items": [
     {
       "id": 1,
@@ -3981,7 +3981,7 @@
       "id": 155,
       "title": "Why every Workshop 79 episode ends on exactly wave 483 is explained",
       "body": "All 7 episodes at uniform Workshop 79 ended on wave 483 at full health then died in 3-4 waves (docs/experiments.md, Workshop scan). A fixed wall there bears directly on wave 999.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 04:46",
@@ -3990,9 +3990,14 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Pre-registered in c6d8cce; 7 traced games at Workshop 79 on b8b8cd45 running now."
+        },
+        {
+          "at": "2026-11-08 05:13",
+          "text": "Explained in ab98c09: base damage after Defense % (49.5%) first exceeds Defense Absolute on wave 483 in 6 of 7 traced games; the 7th died at 482, 167 short. Damage grows ~0.77%/wave against the block's ~0.24%; the schedule is fixed and the script's block differs by at most one level, so every game crosses on the same wave. Block-first order would cross at 343 and is contradicted."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T04:13:32.901305Z"
     },
     {
       "id": 156,
@@ -4049,6 +4054,13 @@
         }
       ],
       "closed_at": "2026-11-08T03:58:14.031647Z"
+    },
+    {
+      "id": 161,
+      "title": "Board audit: 2026-11-08 (after #155)",
+      "body": "",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

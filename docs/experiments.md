@@ -3476,7 +3476,7 @@ permanent progression. Level 79 is the uniform ceiling, set by Critical Chance.
 | 40 | 7 | 282.14 | 280–284 | 179–182 |
 | 79 | 7 | 483.00 | 483–483 | 299–300 |
 
-All 7 episodes at level 79 ended on exactly wave 483, which I have not explained. The
+All 7 episodes at level 79 ended on exactly wave 483, explained in "The wall at wave 483" below. The
 tower sits at 100% health, then dies in 3–4 waves. The local exponent of final wave on
 level is about 0.74–0.79, which extrapolates wave 1000 to a uniform level near 200,
 well above the ceiling of 79.

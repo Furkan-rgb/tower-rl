@@ -3571,6 +3571,65 @@ therefore holds about two thirds as many episodes, and its standard error is abo
   `WORKSHOP_NOT_APPLIED` is a failed start: it is retried and counted, as `M3-P022`'s
   watcher already did.
 
+## Speed-up parity on `ws2914c` at Workshop 10 (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-08. Board `#146`. Measurement only, no learner.
+
+**Question.** Training plays the game at 100 ms of round clock a frame on the build that
+renders one frame in sixteen. Does that play the game the reference way? Here the
+reference is the default build, which renders every frame, at 16.667 ms a frame.
+The game-path review found no parity evidence on 29.1.4 or on the current bridge, and
+none above wave 16 on any version.
+
+**First, the default build's own check.** `ws2914c-default-nodelay` (`5b6a7d33…`) has
+never run on a device. Before the parity stage it runs one round of 7 episodes of the
+scratchpad probe `#147` used on `bff836b8…`. The probe plays the script's opening,
+then from wave 30 the cheaper of the next Free Upgrade level or the next Defense
+Absolute level. It reads free levels on empty slots, empty slots reading unlocked,
+and stale posted prices after a free level, against `bff836b8…`'s 0 of 17, 0 of
+2,340 and 0 of 17. If any of the three is not zero, the parity stage stops and that is
+explained first.
+
+**Protocol.** `build-defense-absolute` at `saving-orders`, Workshop 10,
+`--upgrade-availability all`, 7 actors, 1 episode each. There are four arms:
+
+| Arm | Build | `--frame-game-ms` |
+|---|---|---|
+| A, training | `ws2914c-render-interval-16-nodelay` (`bff836b8…`) | 100 |
+| B | `bff836b8…` | 16.667 |
+| C | `ws2914c-default-nodelay` (`5b6a7d33…`) | 100 |
+| D, reference | `5b6a7d33…` | 16.667 |
+
+The arms run three rounds each, interleaved A, B, C, D, then the same order twice
+more, for 21 episodes an arm. A round that loses instances is not repeated, and
+the count is reported as it fell.
+
+**Read.**
+
+- **Primary:** D minus A, the final-wave IQM difference by the stratified bootstrap
+  (strata by instance, seed 0, 10,000 resamples).
+- **Attribution:** B minus A gives the frame budget alone, and C minus A gives
+  rendering alone.
+- **Per wave:** each arm's mean Defense Absolute level and mean `cash_log` at waves
+  25, 50, 75 and 95, and the first wave at which health ends below full.
+- Invalid episodes by reason, failed bring-ups, and wall time a round.
+
+**What it decides.** Parity holds at this resolution if D minus A has its interval
+inside ±3 waves, the floors' margin.
+
+- **If parity holds,** evaluation may play on the training build and frame budget.
+  `docs/solution.md` §6.3, which keeps evaluation on the default build, changes to
+  cite this entry.
+- **If it fails,** evaluation stays on the default build at 16.667 ms. Every training
+  period mean is then read as the training build's own number, not the reference
+  game's.
+
+Either way the result reaches only as far as this script's play: the waves up to
+about 103, with Defense Absolute and no Orbs.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 **Safety,** the scan's: clone only, read-only instances, offline, no screenshots, no
 input, no coins or permanent progression.
 

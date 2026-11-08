@@ -3340,22 +3340,32 @@ each, `saving-orders`, Workshop 10, `--upgrade-availability all`, one build afte
 other. A first arm that bought only Free rows died by wave 21 with 12 free levels a
 build, too few to read, and is left out except for its unlock flags.
 
-| | `b8b8cd45…` | `bff836b8…` |
-|---|---|---|
-| Valid episodes, final waves | 6 of 6, 55–60 | 7 of 7, 55–59 |
-| Free levels landing on an empty slot | **9 of 23** (attack 3/7, defense 2/8, utility 4/8) | **0 of 17** |
-| Empty slots levelled at the end | 9, in 6 episodes | 0 |
-| Empty slots reading unlocked | 2,388 of 2,388 slot-states | 0 of 2,340 |
-| Free levels on a real row whose posted price did not move by the next decision | **10 of 14** | **0 of 17** |
-| Purchases whose posted price did not move | 2 of 194 | 1 of 188 |
+| | `b8b8cd45…` | `bff836b8…` | `5b6a7d33…`, default build |
+|---|---|---|---|
+| Valid episodes, final waves | 6 of 6, 55–60 | 7 of 7, 55–59 | 7 of 7, 57–60 |
+| Free levels landing on an empty slot | **9 of 26** (attack 3/7, defense 2/10, utility 4/9) | **0 of 18** | **0 of 30** |
+| Empty slots levelled at the end | 9, in 6 episodes | 0 | 0 |
+| Empty slots reading unlocked | 2,388 of 2,388 slot-states | 0 of 2,340 | 0 of 2,400 |
+| Free levels on a real row whose posted price did not move by the next decision | **11 of 17** | **1 of 18** | **0 of 30** |
+| Purchases whose posted price did not move | 0 of 163 | 0 of 187 | 0 of 192 |
 
 A free level is a level rise on a row the probe did not order. Both differences hold
-alone: one-sided Fisher p = 0.003 for the empty slots and 2×10⁻⁵ for the prices. The
-first arm's flags read the same, 1,704 of 1,704 against 0 of 1,728.
+alone: one-sided Fisher p = 0.004 for the empty slots and 3×10⁻⁴ for the prices,
+`b8b8cd45…` against `bff836b8…`. The first arm's flags read the same, 1,704 of 1,704
+against 0 of 1,728.
 
-- **Both fixes work on the device.** The new build flags only named rows, so free
-  levels land only on rows that exist. A free level now reprices its row at the wave's
-  turn.
+**Corrected 2026-11-08.** This table first gave 9 of 23, 10 of 14, 0 of 17, 0 of 17,
+and 2 of 194 against 1 of 188, from an earlier pairing of traces with episodes
+that the current reader does not reproduce. The probe's traces begin at wave 30, so
+their length does not identify an episode. The figures above pair each episode with the trace whose last state is nearest its
+final levels, within 0 to 2 levels for every pair. The empty-slot counts come from
+all 7 traces of each build. The `5b6a7d33…` column is that build's first device run,
+the check `#146`'s pre-registration puts before parity.
+
+- **Both fixes work on the device.** The new builds flag only named rows, so free
+  levels land only on rows that exist. A free level reprices its row by the next
+  decision in 17 of 18 on `bff836b8…` and 30 of 30 on `5b6a7d33…`. The one exception,
+  `utility:4` at the turn from wave 41 to 42, was repriced at the decision after.
 - **The defect is what the review measured.** From the replays, free levels on empty
   slots are 17.2%, 10.0% and 40.3% by family in `M3-P021`, as audited, and 17.1%, 10.4%
   and 34.7% in `M3-P022`. They occur almost only while the family's Free Upgrade row is
@@ -3364,8 +3374,8 @@ first arm's flags read the same, 1,704 of 1,704 against 0 of 1,728.
 - **One device loss on `b8b8cd45…`:** `emulator-5568`'s bridge closed the stream between
   rounds, and the device was gone from adb by teardown. It is the old build, it is not
   what this changes, and it is left unexplained.
-- **Not covered:** the default build `5b6a7d33…` has not run on a device. The bridge
-  still does not press `Pause` again when a hold slips (`#159`). The script floors on
+- **Not covered:** the bridge still does not press `Pause` again when a hold slips
+  (`#159`). The script floors on
   the new digest are not measured here.
 
 ## Floors on `ws2914c` at `saving-orders` and `filling-orders` (pre-registered, written before any of its device episodes)

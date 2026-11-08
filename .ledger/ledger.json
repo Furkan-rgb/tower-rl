@@ -4041,8 +4041,14 @@
       "id": 160,
       "title": "Board audit: 2026-11-08 (after #136, #147)",
       "body": "",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Applied in 8b09dcc: #153 Blocked on #148 (which adopts 533d282's rule), #148's gates restated (#141, #146, #151), #145 to Next, #144's contradiction corrected, #141/#146/#155/#150/#142 commented; Safety lines, #159 reference and START HERE fixed. #147's title keeps its Pause clause, recorded as moved to #159."
+        }
+      ],
+      "closed_at": "2026-11-08T03:58:14.031647Z"
     }
   ],
   "milestones": [

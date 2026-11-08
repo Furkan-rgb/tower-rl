@@ -3520,6 +3520,57 @@ is read from where the two curves cross, not from an exact equality.
 **What it decides.** Nothing about a learner or the path to wave 999. It explains, or
 fails to explain, a number the Workshop scan left open.
 
+## The plateau stop rule, read from `M3-P021`'s and `M3-P022`'s curves (analysis, no device)
+
+**Date:** 2026-11-08. Board `#153`. Both runs used patience 6 and a minimum
+improvement of 1.0 wave, over periods of 5,000 decisions. The data are each run's
+`segments/1/episodes.jsonl`, with episodes placed in periods by cumulative decisions.
+Those periods match the log's own period means to within 0.6 waves.
+
+**How noisy a period mean is.** The standard error of a period mean has a median of
+0.83 waves for `M3-P021`, range 0.51–1.47, and 0.80 for `M3-P022`, range 0.30–1.81.
+A minimum improvement of 1.0 is about one standard error.
+
+**What each rule would have done.** The table gives the period each rule stops at.
+"Runs on" means it would not stop within the periods the run recorded.
+
+| Patience (periods) | 4 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|
+| `M3-P021` (10 periods recorded) | 8 | 10 | runs on | runs on | runs on |
+| `M3-P022` (27 periods recorded) | 8 | 27 | runs on | runs on | runs on |
+
+Every minimum improvement from 0 to 3 waves gives this same table. Patience is the
+only setting that changed a stop.
+
+- `M3-P022` reached 62 at period 2 and stayed between 61 and 73 until period 15. It
+  jumped to 89 at period 16 and reached 95 at period 21. Before that best, its longest
+  run without an improvement was 4 periods (5–8). Patience 6 survived the flat stretch
+  by 2 periods. Patience 4 would have stopped the run at period 8, at 65.
+- `M3-P021` stopped at period 10, so its curve after that is unknown.
+
+**What it cannot say.** These are two curves, and only one of them rose late. They
+measure no limit on how long a flat stretch can run before a rise. A
+`filling-orders` episode takes about 1.5 times the decisions of a `saving-orders`
+one (`#136`'s floors: 147 against 101 for the script). A 5,000-decision period
+therefore holds about two thirds as many episodes, and its standard error is about
+1.2 times larger.
+
+**The rule the next pre-registration takes from this.**
+
+- **Minimum improvement 1.0 wave.** It is about one standard error, and nothing from
+  0 to 3 changed a stop.
+- **Patience 12 periods,** which is 60,000 decisions. That is three times the longest
+  run without improvement that came before `M3-P022`'s best. At `M3-P022`'s 8,054
+  decisions an hour it costs about 7.5 h of a flat run, where patience 6 cost 3.7 h.
+  The figure is sized from one late rise, not measured as a limit.
+- **The `WORKSHOP_*` stop applies to played episodes.** `M3-P022` met a conflict
+  between two inherited rules: stop on any `WORKSHOP_*` event, and retry a failed
+  start's `stale_or_duplicate` as a note. The stop exists so that no episode is played
+  on the wrong levels. So the next pre-registration stops on `workshop_reverted` or
+  `upgrade_setup_drift` in any played episode. A start the controller refused with
+  `WORKSHOP_NOT_APPLIED` is a failed start: it is retried and counted, as `M3-P022`'s
+  watcher already did.
+
 **Safety,** the scan's: clone only, read-only instances, offline, no screenshots, no
 input, no coins or permanent progression.
 

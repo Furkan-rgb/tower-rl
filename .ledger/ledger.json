@@ -3458,7 +3458,7 @@
       "id": 134,
       "title": "An order may name a row out of reach: the learner can save for the row it wants",
       "body": "M3-P021's replay shows the policy picks Defense Absolute about 70% of the time when the mask offers it (decisions 31-50), but the mask offers it only 27-39% of the time, because when it is out of reach the policy spends on another row 89-93% of the time and it stays out of reach. The trap is the mask, not the credit. Spike: a saving-orders cadence whose legal set is every row on sale, so an order for a row out of reach saves for it. M3-P022 tests it, one change from M3-P021. ADR 0020's rejected alternative, revisited on this evidence.",
-      "status": "Blocked",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 08:48",
@@ -3475,9 +3475,14 @@
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: the body's 'the trap is the mask, not the credit' no longer holds. On M3-P022's own d70018 weights a purchase earns no honest credit in imagination at ratio 2048 (docs/experiments.md, Review of the training setup). So a failed mechanism read from M3-P022 is confounded by a learner that memorised, and cannot reject saving-orders alone. The title's saving is same-wave only: an order spends what it can once a wave (see the 16:34 comment)."
+        },
+        {
+          "at": "2026-11-08 02:45",
+          "text": "M3-P022 (5a18a2f): the learner saves for the row it wants. Defense Absolute 59.3% of spend through wave 50 [58.6, 60.0], +27.1 pts over M3-P021; it names DA on 55.7% of decisions 31-50 (M3-P021 ~23%), and every unfilled order was a save for a row out of reach. Same-wave saving only; saving across waves is #136. Final IQM 86.94, 14.79 below the script."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T01:45:24.952327Z"
     },
     {
       "id": 135,
@@ -3651,11 +3656,15 @@
       "id": 144,
       "title": "ADR 0020 is accepted or rejected on M3-P022's result and the filling-orders floors",
       "body": "Replaces #131, whose condition can no longer come true: M3-P021 gave neither result (736147c). The ADR is Proposed and now rests on M3-P022 and on what #136's floors show. The acceptance is the developer's.",
-      "status": "Next",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: premise restated. M3-P022 runs at 2048 with no world model ratio, so it speaks to item 2 (orders may name rows out of reach) only. The cadence rests on #136's floors, and item 5 as amended (world model at 128, 19030ba) on #148's pilot. Its bar in docs/experiments.md was written before that amendment."
+        },
+        {
+          "at": "2026-11-08 02:45",
+          "text": "M3-P022 recorded (5a18a2f). Item 2's pre-registered bar is met: diagnosis holds and IQM 86.94 > 63.28. Below the saving-orders script by 14.79 [-17.53, -12.62], above M3-P021 by 38.19. Build is DA + Thorn, 93% of spend, almost no attack rows. Learner was the memorising one (ratio 2048, old cont head), so the plan is not shown to come from honest credit. Still needs #136's filling-orders floors and #148's pilot for item 5, then the developer's acceptance."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

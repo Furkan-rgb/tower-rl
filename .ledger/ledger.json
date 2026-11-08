@@ -3819,6 +3819,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Pre-registered in bb21342: four arms (training build at 100 ms vs default build at 16.667 ms, plus both single changes), interleaved, 21 episodes each, after a free-level/price probe on 5b6a7d33. Gate: D minus A inside +/-3. Queued behind #155's trace and #141's traced game."
+        },
+        {
+          "at": "2026-11-08 05:32",
+          "text": "46e331e: default build 5b6a7d33's first device run passes the pre-registered check (0 of 30 free levels on empty slots, 0 of 2,400 unlocked, 0 of 30 stale prices). Parity stage launched: A,B,C,D x 3 rounds to state/records/p2914c-parity/."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3856,6 +3860,10 @@
         {
           "at": "2026-11-08 04:46",
           "text": "Done on the two built fixes: free levels only on named rows and the wave-turn price refresh, both verified on the device (c723962). Floors on bff836b8 in 7712a66: script at saving-orders -1.18 [-1.91, -0.36] against b8b8cd45, inside the +/-3 gate. The title's Pause clause is not built; it is #159."
+        },
+        {
+          "at": "2026-11-08 05:32",
+          "text": "Correction 46e331e: re-read with each episode paired to its nearest trace, bff836b8 puts 0 of 18 free levels on empty slots and leaves 1 of 18 stale prices (a wave turn, repriced at the next decision); b8b8cd45 9 of 26 and 11 of 17. The verdict holds."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",

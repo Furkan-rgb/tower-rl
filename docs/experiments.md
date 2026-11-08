@@ -3484,6 +3484,45 @@ well above the ceiling of 79.
 This measures Defense Absolute only. It says nothing about turtle into blender, and
 the framing of wave 1000 around it was wrong: see "Review of the training setup".
 
+## The wall at wave 483: a traced Workshop 79 game (measurement only, written before its device episodes)
+
+**Date:** 2026-11-08. Board `#155`.
+
+**Question.** What ends every Workshop 79 episode on wave 483? Three explanations
+are named before the run:
+
+1. **Per-hit damage overtakes the flat block.** An enemy's damage, after Defense %,
+   rises past Defense Absolute near wave 480, and from then every hit lands.
+2. **Defense Absolute stops growing.** Its price outruns the wave's income, so the
+   script's purchases slow and the block falls behind.
+3. **Something tied to the wave number,** such as a boss or an enemy type that first
+   appears there.
+
+**Protocol.** The scan's level-79 arm repeated with a trace: `build-defense-absolute`
+at `saving-orders`, bridge `b8b8cd45…`, `--upgrade-availability all`,
+`--workshop-level 79`, 7 actors, 1 episode each. A scratchpad wrapper around the
+unchanged script writes, at every decision, every scalar the observation carries
+with Defense Absolute's level and price. The script's choices are unchanged, so
+the episodes should end on wave 483 again.
+
+**Read.** Against the wave number:
+
+- `wave_base_damage_log` against `defense_absolute_log`, with Defense % applied
+  either way round, because the record does not say whether the game applies Defense %
+  before or after the block;
+- Defense Absolute's level and price, and the wave's income;
+- health, maximum health and regeneration through the last ten waves;
+- the boss and mini-boss flags in the waves the tower loses health.
+
+Base damage is the wave's figure, and an enemy type can hit harder than that, so (1)
+is read from where the two curves cross, not from an exact equality.
+
+**What it decides.** Nothing about a learner or the path to wave 999. It explains, or
+fails to explain, a number the Workshop scan left open.
+
+**Safety,** the scan's: clone only, read-only instances, offline, no screenshots, no
+input, no coins or permanent progression.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

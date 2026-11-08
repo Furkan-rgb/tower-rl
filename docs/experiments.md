@@ -3479,7 +3479,8 @@ permanent progression. Level 79 is the uniform ceiling, set by Critical Chance.
 All 7 episodes at level 79 ended on exactly wave 483, explained in "The wall at wave 483" below. The
 tower sits at 100% health, then dies in 3–4 waves. The local exponent of final wave on
 level is about 0.74–0.79, which extrapolates wave 1000 to a uniform level near 200,
-well above the ceiling of 79.
+well above the ceiling of 79. That extrapolation holds only for this script: see
+"The wall at wave 483" below.
 
 This measures Defense Absolute only. It says nothing about turtle into blender, and
 the framing of wave 1000 around it was wrong: see "Review of the training setup".
@@ -3551,8 +3552,8 @@ and Defense Absolute within one level.
    health, against regeneration of 302 a second. Yet health sat at full through
    wave 476 in every game. So the game subtracts the block after Defense %.
 2. **Explanation 2 is wrong as stated.** Defense Absolute kept growing: +8.3% from
-   wave 450 to the end, about 0.24% a wave. Base damage grew 28.8% over the same
-   span, about 0.77% a wave. The block lost a race. It did not stop.
+   wave 450 to the end, against 28.8% for base damage over the same span. The block
+   lost a race. It did not stop.
 3. **Explanation 3 is not a separate cause.** Wave 483 is not a boss wave; the bosses
    fall on multiples of ten. Base damage does step 3.4% into wave 483, the
    second-largest step after wave 400 (wave 401's is 7.7%). That step moves the margin
@@ -3563,13 +3564,54 @@ fixed schedule, identical in every game. The script and its income are determini
 enough that Defense Absolute differs by at most one level, about 150 of block. That is
 less than the 1,150 that base damage adds at wave 483.
 
-**What this says beyond the scan.** A flat block falls behind damage that compounds at
-about 0.77% a wave. Defense Absolute alone therefore has a wall at every Workshop
-level, and the scan's extrapolation of wave 1000 to a uniform level near 200 assumed
-this one strategy. Getting past the wall needs something that does not ride the block:
+**How the two grow.** Over spans of waves from 50 to 480, base damage grows about
+as the wave raised to a power that rises from 2.3 to 3.5. The block the script buys
+grows as a power from 0.75 to 1.2. The block's share of damage therefore falls about
+as the inverse square of the wave.
+
+**What this says beyond the scan.** Under those powers, more Workshop levels move the
+wall but cannot remove it. That fits the walls the scan found at every level it
+measured, though this trace is the mechanism at level 79 only. The scan's
+extrapolation of wave 1000 to a uniform level near 200 assumed this one strategy. Getting past the wall needs something that does not ride the block:
 health and regeneration, lifesteal, or killing enemies before they reach the tower,
 which is what the blender does. This is a reading of one script's play. It is not a
 measurement of turtle into blender, which is `#145`.
+
+## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
+
+**Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the
+practice is to write one before. It is a descriptive reading and decides nothing by
+itself.
+
+**Question.** "Review of the training setup" found that a decision taken at the wave's
+turn sees almost nothing of the wave just played. Does that still hold when orders
+fill inside waves?
+
+**Protocol.** `build-defense-absolute` at `filling-orders`, Workshop 10, `bff836b8…`,
+`--upgrade-availability all`, `--frame-game-ms 100`, 7 actors, 1 episode each. The
+scratchpad wrapper from "The wall at wave 483" writes every scalar at every
+decision. 7 of 7 valid, 8 min 42 s.
+
+**Result.** Each figure is the share of decisions at which the reading is zero.
+
+| Reading | `saving-orders`, the review | `saving-orders`, the wave-483 trace | `filling-orders`, this trace |
+|---|---|---|---|
+| `enemies_spawned` | 99.7% | 100.0% | 36.2% |
+| `enemies_killed` | 89.9% | 91.4% | 34.7% |
+| `cash_earned_this_wave_log` | 91.7% | 91.4% | 34.7% |
+
+- Of 1,029 decisions, 49.6% came in the same wave as the decision before.
+- 9.5% came with health at least 0.05 below where it stood at the decision before.
+  That is the cadence asking again on a fall.
+- At `filling-orders` the policy is asked inside waves, and asked again whenever
+  health falls by 0.05. So a wave that nearly kills the tower is seen as it happens,
+  to within that step. Kills and cash earned are the current wave's counts so far, and
+  they are zero on about a third of decisions.
+
+**What it cannot say.** These are a script's decisions, not a learner's, and Workshop
+10 only. A fall smaller than 0.05 that heals before the next decision goes unseen. It
+says nothing about `enemiesKilledThisWave` not being reset at round start, which the
+game-path review found and which no cadence fixes.
 
 ## The plateau stop rule, read from `M3-P021`'s and `M3-P022`'s curves (analysis, no device)
 

@@ -3657,6 +3657,10 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: per its own audit comment, the entropy floor is chosen from #148's pilot reading. Blocked on #148."
+        },
+        {
+          "at": "2026-11-08 05:22",
+          "text": "Audit #161: ab98c09 shows a build resting on the block (M3-P022's is Defense Absolute plus Thorn at 93% of spend) hits a wall at every Workshop level the scan measured, so a two-phase plan is needed, not optional. Still blocked on #148."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3686,6 +3690,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Audit #160: the floor records hold per-wave summaries, not per-decision scalars, so they cannot give the zero rates. A traced game of the script at filling-orders on bff836b8 (every decision's scalars) is queued after #155's trace; the re-read comes from it, and then the schema change if still needed."
+        },
+        {
+          "at": "2026-11-08 05:22",
+          "text": "Traced script game at filling-orders (entry 'What a decision sees at filling-orders', written after its stage): zero rates fall to 36.2/34.7/34.7% (spawned/killed/cash earned) from 99.7/89.9/91.7% at saving-orders, and 9.5% of decisions are re-asks on a 0.05 health fall, so a near-fatal wave is seen as it happens. The wave summary is needed only at saving-orders; the wave-1 enemiesKilledThisWave carry-over is a defect at any cadence."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3778,6 +3786,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Audit #160: its last gate, the filling-orders floors, is recorded (7712a66), so it is unblocked. Cadence to measure at: filling-orders, beside saving-orders. Device queue: #155's trace (running), #141's traced filling-orders game, #146's parity stage, then this."
+        },
+        {
+          "at": "2026-11-08 05:22",
+          "text": "Audit #161, to amend before pre-registering: (a) the body gives the blender order only; define the turtle phase (cash rows, Defense Absolute, Thorns per the turtle guide) and the switch. (b) Put Lifesteal back after Attack Speed, as the guide orders it (experiments.md 'Review of the game path' guide summary). (c) The developer's switch is 'when defense is enough': read it from the observation's margin base x (1 - Defense %) - Defense Absolute (ab98c09), not from health below full, which froze #122's arm. (d) Base damage per wave is a fixed schedule, so read the Skip effect as a departure from it. Record the margin each wave."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3934,6 +3946,10 @@
         {
           "at": "2026-11-07 23:52",
           "text": "Blocked on the developer's decision."
+        },
+        {
+          "at": "2026-11-08 05:22",
+          "text": "Audit #161: under 'image' the six in-run rows are Damage, Attack Speed, Crit Chance, Crit Factor, Health and Health Regen: no Defense %, Defense Absolute, Thorns, Orbs, Knockback or Lifesteal. Neither turtle nor blender exists there, so the decision is whether any guide build is playable, not only how minimal the Workshop is."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

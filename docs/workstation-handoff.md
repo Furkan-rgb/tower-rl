@@ -26,6 +26,11 @@ context rather than as current truth. Open work is on the board, milestone
   outcome"). `filling-orders` buys one level and stands until filled. Its floors on
   `bff836b8…` are the script's 101.82 and `random`'s 22.50 (`docs/experiments.md`,
   "Floors on `ws2914c`"). No learner has played it.
+- **The best script and `M3-P022`'s learner both rest on Defense Absolute.** A flat
+  block falls behind base damage, which grows about as the cube of the wave, so that
+  build hits a wall at every Workshop level the scan measured (`docs/experiments.md`,
+  "The wall at wave 483"). Turtle into blender, which does not rest on the block, is
+  `#145`.
 - **The last full reading of the setup** is `docs/experiments.md`, "Review of the
   training setup". It says what is verified and what is not, and supersedes the
   older sections below where they differ.

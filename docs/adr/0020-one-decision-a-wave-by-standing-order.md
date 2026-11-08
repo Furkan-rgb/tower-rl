@@ -3,7 +3,8 @@
 **Status:** Proposed, 2026-11-06. Item 2 amended 2026-11-07 on `M3-P021`'s result:
 it first kept the mask at affordability, and that form is recorded under Options
 rejected. Item 5 amended 2026-11-07 on the review of the training setup: the world
-model learns at 128. Board `#144`, `#134`. Nothing here is the contract: `choice-points` stays
+model learns at 128. The ceiling cost amended 2026-11-08 on the wave-483 trace: the
+script's wall is its build's, not shown to be the account's. Board `#144`, `#134`. Nothing here is the contract: `choice-points` stays
 the default and ADR 0009 and ADR 0019 stand. The pilots `M3-P021` and `M3-P022`
 (`docs/experiments.md`) are the spikes whose output is this decision, and the
 developer accepts or rejects it.
@@ -82,8 +83,11 @@ death, e^9 at five hundred and about e^2 at a thousand, at a return scale of abo
 - One row a wave is a real restriction. The floor at this cadence is measured
   against the same policy at `choice-points` before the learner runs.
 - A checkpoint from one cadence cannot be resumed or evaluated at another.
-- **This lifts no account ceiling.** Scripted play at Workshop 10 ends near wave
-  102, and a better learner at that level does not make wave 1000 reachable.
+- **This lifts no ceiling by itself.** The script's end near wave 102 at Workshop 10 is
+  `build-defense-absolute`'s own wall: base damage after Defense % passes the flat
+  block (`docs/experiments.md`, "The wall at wave 483"). It is not shown to be the
+  account's ceiling. Whether Workshop 10 allows wave 1000 at all is open
+  (`docs/task.md` §1.1), and a build that does not rest on the block is `#145`.
 
 ## Revisit if
 

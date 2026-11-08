@@ -3896,7 +3896,10 @@ mid-run. That stream carries no data and learning does not read it.
 ## M3-P023: DreamerV3 at `filling-orders` with the world model at ratio 128 (pre-registered, written before any of its device episodes)
 
 **Date:** 2026-11-08. Board `#148`, and `#153`, whose rule this adopts. One seed, one
-run, from scratch on `main` at this entry's commit. n=1, seed 0.
+run, from scratch on `main` at this entry's commit. n=1, seed 0. Amended before launch,
+on board audit `#166`: two changes since `M3-P022` were missing, one citation was wrong,
+three readouts had no record behind them, and the stop rules and the evaluation time
+were corrected.
 
 **Question.** This is the learner row of `docs/task.md` §1.1. Does the world model read
 deaths it has not trained on as it reads the ones it has? And does imagined `WAIT`
@@ -3906,20 +3909,24 @@ and `plan_gap` −0.06 against +0.49 (`docs/solution.md` §9.4c, "Episode reads"
 Second, does the policy beat the floors at its cadence?
 
 **This is a pilot of the setup as verified, not a one-change ablation.** It differs from
-`M3-P022` in seven ways, each with its own evidence. Its result is not split among
+`M3-P022` in eight ways, each with its own evidence. Its result is not split among
 them.
 
 1. `--world-model-ratio 128` under `--train-ratio 2048`. ADR 0020 item 5 as amended,
-   `docs/solution.md` §9.4c, and "Review of the training setup", where 128 opened no gap.
+   `docs/solution.md` §9.4c, and "Review of the game path", where 128 opened no gap.
 2. `--decision-cadence filling-orders` (`#136`, `docs/environment-contract.md`,
    "Decision cadence"). Its floors on `bff836b8…` are the script's 101.82 and
    `random`'s 22.50 ("Floors on `ws2914c`").
-3. The continue head trains on a prior sample (6bfa8b8).
+3. The continue head trains on a prior sample, and imagination's starts are weighed by
+   replay's continue target (6bfa8b8).
 4. Inputs are compressed once (59b5108).
 5. Wave 1's kill count is the episode's own (c01ffcf).
 6. Bridge `bff836b8…`: free levels go only on named rows, and prices are refreshed at
    the wave's turn ("Bridge `ws2914c` on the device").
 7. The plateau rule is patience 12 periods at a minimum improvement of 1.0 (533d282).
+8. A transition across which the round clock ran uncharged is invalid as
+   `UNCHARGED_ROUND_TIME`, and a round that leaves play without a death is
+   `UI_STATE_LOST`, not a death (1fb701e, after `M3-P022`'s launch).
 
 **Launch.** Budget 150,000 decisions. Checkpoints every 2,500 and selection periods of
 5,000. Plateau patience 12 at 1.0. Kill bars `30000:15000:21`, `60000:45000:21` and
@@ -3952,31 +3959,42 @@ wall near wave 102 is its build's ("The wall at wave 483").
 
 - The learning curve, and the decisions and wall time at which the period mean first
   reaches 40, 60, 80 and 100.
-- Policy entropy as logged. The rows with no order in the last 200 valid episodes,
-  against `M3-P022`'s ten (`#140`).
-- The share of orders filled, and orders ended by a health fall or by the row leaving
-  sale, against the script's 91.2% filled.
+- Policy entropy on unseen states. It is not logged, so it is read offline from the
+  checkpoints at 10,000 and 40,000 decisions and the final one, as the training-setup
+  review read it. Also the rows with no order in the last 8,000 decisions, against the
+  nine `M3-P022` had (`#140`).
+- The share of orders filled, against the script's 91.2%. Why an unfilled order ended
+  is not recorded, so a health fall or the row leaving sale is inferred from
+  consecutive states, as the floors entry did.
 - Defense Absolute's share of spend through wave 50, and the final levels.
 - Invalid episodes by reason. `UNCHARGED_ROUND_TIME` is read against `#159`: one in 14
-  on this build in the carry trace.
+  on this build in the carry trace, and about one in 105 across every record on it.
+  This is the first learner run under the check.
 - Decisions an hour, updates an hour, and `mask_legal_rejected`.
 
-**Stop rules.** The plateau rule and the kill bars above. The watcher stops the run on a
-`Traceback`, on `WORLD_NOT_HELD`, on an actor failed or withdrawn, on invalid episodes
-above 5% after 20, or on cgroup memory above 90 GiB. It also stops it on
-`workshop_reverted` or `upgrade_setup_drift` in a played episode. A start refused with
-`WORKSHOP_NOT_APPLIED` is a failed start: it is retried and counted.
+**Stop rules.** The plateau rule and the kill bars above stop the run themselves. The
+watcher (`state/launch/m3-p023-watch.sh`) reports the first of the following, and the
+Lead then stops the run with SIGINT, the operator stop:
+
+- a `Traceback`, or an actor failed or withdrawn;
+- invalid episodes above 5% after 20;
+- cgroup memory above 85 GiB, under the scope's 88 GiB throttle;
+- an invalid episode whose first reason is `WORLD_NOT_HELD`, `WORKSHOP_REVERTED` or
+  `UPGRADE_SETUP_DRIFT`.
+
+A start refused with `WORKSHOP_NOT_APPLIED` or `WORLD_NOT_HELD` is a failed start. It
+is retried and counted, as `M3-P022`'s watcher did.
 
 **Expected wall time.** About 19 hours for the full budget, at `M3-P022`'s 8,054
 decisions an hour. The decision rate is set by the device. The plateau rule can stop
 the run from 65,000 decisions, about 8 hours. The final evaluation plays on one
-instance, about 10 minutes an episode (parity arm A: 512–634 s a round), so about
-5 hours.
+instance. `M3-P022`'s 30 episodes took 86 minutes, so this one should take about 1.5
+hours.
 
 **Known confounds, in advance.**
 
 - n=1, one seed.
-- The seven changes are confounded with each other. The primary read is about the
+- The eight changes are confounded with each other. The primary read is about the
   world model as built, not about which change made it.
 - At ratio 128 the world model takes one update in sixteen, about 19,000 in the whole
   budget. If it learns too slowly, the reads can agree because both are poor. So

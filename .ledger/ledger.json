@@ -1,5 +1,5 @@
 {
-  "next_id": 166,
+  "next_id": 169,
   "items": [
     {
       "id": 1,
@@ -3290,6 +3290,10 @@
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: df9a576 fixed train.py help/errors and dreamer.py. 0.999 remains in train.py usage examples and r2d2.py docstrings."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166: train.py:18,33 still show 0.999 in examples, and train.py:911 says the protocol discount is 0.997 per game-second (ADR 0019) while runs use ADR 0020's 0.99991416."
         }
       ]
     },
@@ -3666,6 +3670,10 @@
         {
           "at": "2026-11-08 05:22",
           "text": "Audit #161: ab98c09 shows a build resting on the block (M3-P022's is Defense Absolute plus Thorn at 93% of spend) hits a wall at every Workshop level the scan measured, so a two-phase plan is needed, not optional. Still blocked on #148."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166: no entropy series is logged (dreamer.py diagnostics are dt, continue, mask); M3-P023 reads it offline from its 10k, 40k and final checkpoints on unseen states."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3745,6 +3753,10 @@
         {
           "at": "2026-11-08 09:39",
           "text": "Audit #165: #146 is done (bdea332). Device queue: #163's trace (running), then #145, then #159's device check."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166: the rename waits for M3-P023 to end; the pilot is pinned to main at its pre-registration's commit."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3766,7 +3778,7 @@
       "id": 144,
       "title": "ADR 0020 is accepted or rejected on M3-P022's result and the filling-orders floors",
       "body": "Replaces #131, whose condition can no longer come true: M3-P021 gave neither result (736147c). The ADR is Proposed and now rests on M3-P022 and on what #136's floors show. The acceptance is the developer's.",
-      "status": "Blocked",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -3795,9 +3807,14 @@
         {
           "at": "2026-11-08 09:39",
           "text": "Audit #165: the card waits on #148's pilot and then the developer's accept/reject of ADR 0020; both pieces of evidence the title names are recorded (5a18a2f, 7712a66)."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Retired, replaced by #167 (audit #166): the title named only evidence already recorded (5a18a2f, 7712a66) and not M3-P023, which the decision now waits on."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T09:32:09.451046Z"
     },
     {
       "id": 145,
@@ -3828,6 +3845,10 @@
         {
           "at": "2026-11-08 09:34",
           "text": "Finding for (c), from the W10 filling-orders trace (scratchpad wall_trace/filling, first actor): the margin base x (1 - Def%) - DA is still negative at death: -54.6 at wave 97 (health 1.00), -41.7 at 99 (0.94), -15.2 at 102 (0.72). Health falls while DA exceeds base damage after Def% by 4-17%, so some enemy type hits harder than base. The switch has to read the margin against a multiple of base damage, set from the enemy types' multipliers, which the pre-registration must measure or cite first."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166, the body as it will be pre-registered: (a) turtle phase = cash rows, then Defense Absolute with Thorns at 11/21/34/51%; (b) blender order cash, Free Upgrades (Utility, Defense, Attack), Health, Defense %, Knockback, Orbs + Orb Speed, Thorns, Attack Speed, Lifesteal, Recovery rows; (c) switch on the margin against the strongest enemy type's damage, which #168 measures first; (d) Skip effect read as a departure from the fixed base-damage schedule, margin recorded each wave. Devices: after M3-P023."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3965,6 +3986,10 @@
         {
           "at": "2026-11-08 10:03",
           "text": "All gates closed: #163 (c01ffcf). The pre-registration is next: cadence, floors 101.82/22.50 at filling-orders, rule 533d282 (#153), evaluation on the training build (bdea332)."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166: pre-registration amended before launch (next commit): eight changes not seven (1fb701e), entropy read offline, order-end reasons inferred, stop rules as the watcher applies them (it reports, the Lead stops with SIGINT), evaluation ~1.5 h. Watcher fixed (upper-case reasons, 85 GiB, refuses a missing name file)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4011,6 +4036,10 @@
         {
           "at": "2026-11-08 09:39",
           "text": "Audit #165: no loop. #148's pre-registration needs the action-semantics evidence that exists (floors 7712a66, legality in 'Review of the training setup'); ADR 0020's acceptance (#144) follows the pilot and is not a precondition of it."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166 map: reward (Review of the training setup + task.md 7.5), legality (same entry), action semantics (#167 after M3-P023; floors 7712a66), observation (kill count c01ffcf entry; symlog-once 59b5108 has no experiments.md entry yet), evaluation isolation (630b121), learner (#148). The six pointers are to be collected as rows in solution.md 16."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4168,6 +4197,10 @@
         {
           "at": "2026-11-08 10:03",
           "text": "#163 landed with no schema change (c01ffcf), so this rename has no checkpoint break to ride on: it needs a load-time alias for best_period_near_greedy_mean, or a rule that only fresh runs read the new name."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166: M3-P023 starts before this lands, so its checkpoints carry best_period_near_greedy_mean; the rename needs a load-time alias."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
@@ -4203,6 +4236,10 @@
         {
           "at": "2026-11-08 10:03",
           "text": "Carry trace (c01ffcf's evidence): the first UNCHARGED_ROUND_TIME on bff836b8 at 100 ms, emulator-5562, 350 ms at wave 95. Hold slips are not confined to the default build."
+        },
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Audit #166 rates on bff836b8 at 100 ms: about 1 in 105 episodes across all records (carry trace 1/14, parity A 0/21, floors 0/~70); default build at 16.667 ms 2/21. Device check needs a gap after M3-P023."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4302,6 +4339,34 @@
         }
       ],
       "closed_at": "2026-11-08T08:40:00.814406Z"
+    },
+    {
+      "id": 166,
+      "title": "Board audit: 2026-11-08 (after #163)",
+      "body": "Audit due: exit #163 closed.",
+      "status": "In progress",
+      "comments": []
+    },
+    {
+      "id": 167,
+      "title": "The developer accepts, amends to filling-orders, or rejects ADR 0020 on M3-P022's and M3-P023's results",
+      "body": "Replaces #144 (audit #166). Evidence: M3-P022 outcome (5a18a2f), the filling-orders floors (7712a66), M3-P023 (pre-registered d7a2c58, #148). ADR 0020 item 2 names saving-orders and keeps filling-orders only as the spike beside it (ADR 0020 Revisit if), so accepting filling-orders needs the ADR amended first.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Blocked on #148 (M3-P023's result)."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 168,
+      "title": "Each enemy type's damage relative to the wave's base damage is measured at Workshop 10, or cited from the game's data",
+      "body": "Sub-item of #145 (audit #166). The W10 filling trace shows health falling while Defense Absolute exceeds base damage after Defense % by 4-17% (#145, 09:34), so the turtle-into-blender switch on the margin needs these multipliers first.",
+      "status": "Next",
+      "comments": [],
+      "parent": 145
     }
   ],
   "milestones": [

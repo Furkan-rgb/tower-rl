@@ -3885,8 +3885,14 @@
       "id": 156,
       "title": "Board audit: 2026-11-08",
       "body": "Audit due: exit #134 closed. Checklist per task-ledger skill.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Applied (4d2f5c3): blockers re-pointed from M3-P022 to #147/#136 on #136, #142, #145, #146; #140 and #148 to Blocked (#148's gate is #136, not #144); #129 and #123 under #147; map on #150; curve and stop-rule conflict on #153; #11 retired; #157 added for DreamerV3's false greedy labels. #58 still awaits the developer."
+        }
+      ],
+      "closed_at": "2026-11-08T02:02:30.961246Z"
     },
     {
       "id": 157,

@@ -351,18 +351,21 @@ about twenty-four times the episode throughput of the normal-speed reference.
 A renderer or resolution change must be re-validated against the screen
 classifier before any unattended run, because the boundary taps depend on it.
 
-**Training collection and evaluation deliberately run on different bridge
-builds.** The default build (`state/bridge/current`) renders every frame and
-is what every baseline and formal evaluation has ever been measured under.
-An experiment variant built with `TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16`
-renders one player-loop frame in sixteen; fleet equivalence held on final
-wave, decisions/wave, and `advances_cut_short`, and per-actor collection
-throughput was 1.92× the default build's (`#27` stage 3, `docs/experiments.md`).
-The Lead decision (2026-09-24) adopted the render-interval-16 build for
-**training collection only**: evaluation arms stay on the default build so
-their numbers remain like-for-like with the baselines and with run 4, and
-`scripts/spectate.py` recordings never use it, because a human-facing
-recording must show the game rendering normally. The build is selected per
+**Training collection and evaluation run on the render-interval-16 build.** The
+default build (`state/bridge/current`) renders every frame. A variant built with
+`TOWER_BRIDGE_RENDER_FRAME_INTERVAL=16` renders one player-loop frame in sixteen.
+Fleet equivalence held on final wave, decisions/wave, and `advances_cut_short`, and
+per-actor collection throughput was 1.92× the default build's (`#27` stage 3,
+`docs/experiments.md`). The Lead adopted it for training collection on 2026-09-24
+and kept evaluation on the default build until parity was shown on the current
+game. On 29.1.4 with `ws2914c` at Workshop 10, the script on the training build at
+100 ms a frame and on the default build at 16.667 ms differ by −0.91 waves
+[−1.45, −0.27], inside the pre-registered ±3. That is no more than two stages of one
+configuration differ (`docs/experiments.md`, "Speed-up parity on `ws2914c`"). So
+evaluation plays on the training build and frame budget, like the floors it is read
+against. The parity reaches only as far as that script's play, to about wave 103.
+`scripts/spectate.py` recordings never use the training build, because a
+human-facing recording must show the game rendering normally. The build is selected per
 stage by `TOWER_BRIDGE_BUILD_DIR`, never by repointing `state/bridge/current`,
 so the split is reversible per invocation with no code change either way.
 

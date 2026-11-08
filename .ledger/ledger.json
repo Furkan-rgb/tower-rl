@@ -3852,6 +3852,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162: correction to 07:20. 6 rounds were done then (a-1, b-1, c-1, d-1, a-2, b-2), and c-2 was running, not done. The worker is the device driver state/launch/parity-2914c.sh (background shell). About 2 h to go."
+        },
+        {
+          "at": "2026-11-08 07:33",
+          "text": "c-2 lost emulator-5556 at bring-up (CloneError: never became ready, main_unavailable); 6 of 7 valid. A failed bring-up, not an invalid episode; counted as it fell per the protocol."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

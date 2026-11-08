@@ -16,10 +16,15 @@ context rather than as current truth. Open work is on the board, milestone
   and is never touched. Bridge build: `state/bridge/builds/ws2914c-render-interval-16-nodelay`,
   selected with `TOWER_BRIDGE_BUILD_DIR`, digest `bff836b8…`. It puts free levels
   only on real rows and refreshes prices at the wave turn (`docs/experiments.md`,
-  "Bridge `ws2914c` on the device").
+  "Bridge `ws2914c` on the device"). Runs open every in-run row
+  (`--upgrade-availability all`, `docs/task.md` §7.2).
+- **Evaluation** plays on that build at 100 ms a frame. Speed-up parity against the
+  default build holds, −0.91 [−1.45, −0.27], and two stages of one configuration differ
+  by about a wave (`docs/experiments.md`, "Speed-up parity on `ws2914c`").
 - **The learner** is the DreamerV3 port, which follows its reference code unless the
   environment forces otherwise (ADR 0018). R2D2 is built and not in use for this goal.
-- **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change.
+- **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change. The
+  developer accepted it for DreamerV3 on 2026-11-08 (`docs/task.md` §7.5).
 - **The cadence** is on trial. `choice-points` is the contract and ADR 0020 is Proposed.
   `saving-orders` is what `M3-P022` ran: IQM 86.94 on its final evaluation, against
   `M3-P021`'s 48.75 and the script's 101.73 (`docs/experiments.md`, "`M3-P022`:

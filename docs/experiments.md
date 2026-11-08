@@ -3435,6 +3435,9 @@ Differences are `tower_rl.experiment.comparison.stratified_bootstrap_difference`
   `#148`'s pre-registration is not stopped. The interval does exclude zero: the
   script ends about one wave lower on the new build. It buys no Free Upgrade row, so
   neither of the build's fixes should touch it, and I have not explained the shift.
+  (2026-11-08, after the parity stage: two stages of this exact arm differ by +0.91
+  [+0.18, +1.55], so a shift of this size is not shown to be the build's. See "Speed-up
+  parity on `ws2914c`", Result.)
 - **On the same build,** `filling-orders` minus `saving-orders` is +1.27 [+0.45, +2.00]
   for the script and −2.75 [−5.50, −0.25] for `random`. The new cadence costs the
   script nothing.
@@ -3762,6 +3765,55 @@ about 103, with Defense Absolute and no Orbs.
 
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
+
+### Result (2026-11-08)
+
+The default build's own check passed: 0 of 30 free levels on empty slots, 0 of 2,400
+empty slots reading unlocked, 0 of 30 stale prices ("Bridge `ws2914c` on the device"
+above). The stage ran all twelve rounds in order. Records are in
+`state/records/p2914c-parity/`, read by `state/analysis/p2914c_parity.py`.
+
+| Arm | n | Lost | IQM [95% CI] | Range | Round wall |
+|---|---|---|---|---|---|
+| A, `bff836b8…` at 100 ms | 21 | 0 | 101.45 [100.91, 101.91] | 98–103 | 512–634 s |
+| B, `bff836b8…` at 16.667 ms | 21 | 0 | 100.55 [100.09, 101.09] | 98–103 | 1,197–1,228 s |
+| C, `5b6a7d33…` at 100 ms | 20 | 1 | 100.70 [100.30, 101.20] | 98–103 | 689–868 s |
+| D, `5b6a7d33…` at 16.667 ms | 19 | 2 | 100.55 [100.27, 101.00] | 99–103 | 2,067–2,255 s |
+
+- **Primary: D minus A is −0.91 [−1.45, −0.27].** The interval lies inside ±3 waves, so
+  parity holds at this resolution, and evaluation may play on the training build at
+  100 ms a frame.
+- **Attribution:** B minus A is −0.91 [−1.55, −0.09], and C minus A is −0.75
+  [−1.33, +0.03]. B, C and D agree with each other, to within 0.15 waves of IQM. A is
+  the one arm that differs.
+- **A differs from itself by the same amount** (comparison made after the result, not
+  pre-registered). The floors stage ran arm A's exact configuration earlier the same
+  day and read 100.55. A minus that stage is +0.91 [+0.18, +1.55], and D minus it is
+  0.00 [−0.64, +0.64]. So two stages of one configuration differ by about one wave,
+  with an interval that excludes 0. The bootstrap resamples episodes within one stage,
+  so its interval does not hold this stage-to-stage variation. The −0.91 above is no
+  larger than that variation, and it is not shown to come from the build or the frame
+  budget. The floors' −1.18 between `b8b8cd45…` and `bff836b8…` is the same size, so it
+  is not shown to come from the build either.
+- **Per wave the arms play alike.** Defense Absolute level is 22.6–22.8 at wave 25,
+  43.0–43.2 at 50, 56.9–57.1 at 75 and 66.0–66.4 at 95. `cash_log` is 4.45–4.49 at
+  wave 25, 5.33–5.54 at 50, 5.48–6.10 at 75 and 5.97–6.47 at 95. Health first ends a
+  wave below full at a median of wave 97.5, 94, 97 and 97 (A, B, C, D), ranges 91–103,
+  91–101, 92–101 and 92–101.
+- **Losses.** No arm had an invalid episode among its scored actors. C lost
+  `emulator-5556` in round 2 at bring-up (`never became ready: main_unavailable`). D
+  lost `emulator-5558` in rounds 1 and 2. Each time its one episode was invalid as
+  `UNCHARGED_ROUND_TIME`, at 68 ms and 140 ms against a 50 ms bound. That is round
+  clock that ran while the world was meant to be held (`#159`), and it was seen only
+  on the default build at 16.667 ms, 2 of 21 episodes.
+- **Wall time.** A round took 554 s on average in arm A and 2,152 s in arm D, 3.9 times
+  as long.
+
+**What this settles.** Evaluation plays on the training build and frame budget.
+`docs/solution.md` §6.3 is changed to cite this entry. The result reaches only as far as
+this script's play: waves up to 103, with Defense Absolute and no Orbs. A comparison
+of two arms is read against a stage-to-stage variation of about one wave, which a
+single stage's bootstrap does not show.
 
 ## Evaluation isolation: the code path, a test, and `M3-P022`'s records (analysis, no device)
 

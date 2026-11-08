@@ -3952,7 +3952,7 @@
       "id": 150,
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-08 03:02",

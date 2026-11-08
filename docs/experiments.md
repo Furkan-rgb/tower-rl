@@ -3406,6 +3406,45 @@ plays that cadence.
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+**Result,** 2026-11-08, records `state/records/p2914c-floors/`. All ten rounds ran in
+the order above. Every one of the 70 episodes was valid, no instance was lost, every
+bring-up succeeded, and `invalid_by_reason` is empty, so `mask_legal_rejected` is 0.
+Differences are `tower_rl.experiment.comparison.stratified_bootstrap_difference`
+(strata by instance, seed 0, 10,000 resamples).
+
+| Arm on `bff836b8…` | n | IQM [95% CI] | Range | Against `b8b8cd45…` at `saving-orders` |
+|---|---|---|---|---|
+| script, `saving-orders` | 21 | 100.55 [100.18, 101.09] | 99–103 | −1.18 [−1.91, −0.36] against 101.73 |
+| script, `filling-orders` | 21 | 101.82 [101.18, 102.36] | 99–103 | +0.09 [−0.73, +0.91] against 101.73 |
+| `random`, `filling-orders` | 14 | 22.50 [21.50, 23.75] | 20–27 | −5.38 [−9.38, −1.88] against 27.88 |
+| `random`, `saving-orders` | 14 | 25.25 [23.00, 27.62] | 21–36 | −2.62 [−7.25, +1.50] against 27.88 |
+
+- **The gate passes.** The script's `saving-orders` interval lies inside ±3 waves, so
+  `#148`'s pre-registration is not stopped. The interval does exclude zero: the
+  script ends about one wave lower on the new build. It buys no Free Upgrade row, so
+  neither of the build's fixes should touch it, and I have not explained the shift.
+- **On the same build,** `filling-orders` minus `saving-orders` is +1.27 [+0.45, +2.00]
+  for the script and −2.75 [−5.50, −0.25] for `random`. The new cadence costs the
+  script nothing.
+- **Decisions and purchases an episode.** The script makes 101 decisions and 131
+  purchases at `saving-orders`, and 147 decisions and 133 purchases at
+  `filling-orders`. `random` makes 26 decisions and 88 purchases at `saving-orders`,
+  and 62 decisions and 46 purchases at `filling-orders`.
+- **Orders filled.** Not counting each episode's last order, which ends by the death,
+  the script's orders were filled on 91.2% of its decisions at `filling-orders`, and
+  `random`'s, `WAIT` included, on 75.4%.
+- **Orders ended by a fall in health.** The record does not name why an unfilled
+  order ended, so this is read from the waves. Of the script's 292 decisions that did
+  not buy in their own wave, 206 came in waves where the tower had taken damage. Only
+  250 of its 3,077 decisions came in such waves. For `random`, the counts are 159 of
+  229 and 420 of 873. The per-wave count cannot attribute the rest: an order that
+  crossed a wave turn, a row that left sale, or damage healed before the wave ended.
+- Rounds took 500–522 s for the script and 327–331 s for `random`.
+
+**What this settles.** `#147`'s build changes no play the script sees beyond about a
+wave. `#136` has its floors. A learner at `filling-orders` is measured against 101.82
+from the script and 22.50 from `random`.
+
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 
 **Date:** 2026-11-07. Board `#135`.

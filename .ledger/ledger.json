@@ -4344,8 +4344,14 @@
       "id": 166,
       "title": "Board audit: 2026-11-08 (after #163)",
       "body": "Audit due: exit #163 closed.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 10:32",
+          "text": "Applied in 9f9e062: M3-P023 pre-registration amended before launch; watcher fixed; #144 retired into #167; #168 under #145; comments on #140, #142, #145, #148, #150, #157, #159, #119."
+        }
+      ],
+      "closed_at": "2026-11-08T09:32:15.473568Z"
     },
     {
       "id": 167,

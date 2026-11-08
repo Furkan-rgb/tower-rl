@@ -1,6 +1,6 @@
 # Tower-RL — Workstation Handoff
 
-## START HERE — current state, 2026-11-07
+## START HERE — current state, 2026-11-08
 
 This section is the one place that says where the project actually is. Everything
 below it is historical and dated; read this first and treat older sections as
@@ -19,8 +19,10 @@ context rather than as current truth. Open work is on the board, milestone
   environment forces otherwise (ADR 0018). R2D2 is built and not in use for this goal.
 - **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change.
 - **The cadence** is on trial. `choice-points` is the contract and ADR 0020 is Proposed.
-  `saving-orders` is what `M3-P022` runs. `filling-orders` buys one level and stands
-  until filled, and is not yet played on the game.
+  `saving-orders` is what `M3-P022` ran: IQM 86.94 on its final evaluation, against
+  `M3-P021`'s 48.75 and the script's 101.73 (`docs/experiments.md`, "`M3-P022`:
+  outcome"). `filling-orders` buys one level and stands until filled, and is not yet
+  played on the game.
 - **The last full reading of the setup** is `docs/experiments.md`, "Review of the
   training setup". It says what is verified and what is not, and supersedes the
   older sections below where they differ.

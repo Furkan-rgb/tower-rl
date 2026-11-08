@@ -2806,6 +2806,130 @@ about another hour.
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+## M3-P022: outcome
+
+**Date:** 2026-11-08. Board `#134`, `#144`. Run
+`m3-p022-dreamerv3-ws10-v2914-20261107T071325Z` at `0478f6d`, which comes before the
+learner changes that "Review of the training setup" below led to. Stopped by its
+pre-registered plateau rule at 135,516 of 150,000 decisions: best period 94.98 at
+period 21, then six periods without a 1.0 improvement. Stage wall 18 h 24 min, of
+which 16 h 50 min collecting and 1 h 26 min on the final evaluation.
+
+**Primary outcome.** The final evaluation, 30 episodes on the final weights: mean
+86.17, SD 4.86, IQM 86.94 [84.25, 89.00], range 77–93, 0 invalid
+(`state/analysis/p022_compare.py`).
+
+| IQM difference | Observed | 95% interval |
+|---|---|---|
+| Against the `saving-orders` floor (21 episodes, IQM 101.73) | −14.79 | [−17.53, −12.62] |
+| Against `M3-P021`'s final evaluation (30, IQM 48.75) | +38.19 | [+35.12, +41.38] |
+
+**The learner is below the script and well above `M3-P021`.**
+
+**What it decides.** Spend through wave 50, the last 200 valid episodes, every one
+of which reached wave 50 (`state/analysis/p022_trace.py`):
+
+| | Spend | Defense Absolute | Health | Regen | Defense % | Thorn | Damage | Attack Speed | Crit Chance | Cash / Wave | The rest |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `M3-P022` | 7,749 | **59.3%** | 0.0% | 0.2% | 0.2% | 33.9% | 0.7% | 0.1% | 0.0% | 2.1% | 3.7% |
+| `M3-P021` (141 reaching 50) | 7,413 | 32.2% | 3.5% | 2.5% | 9.4% | 1.4% | 0.8% | 0.1% | 6.1% | 11.8% | 32.3% |
+| Script (21) | 7,581 | 69.0% | 6.3% | 5.5% | 4.2% | 4.4% | 6.4% | 4.1% | 0.0% | 0.0% | 0.0% |
+
+Defense Absolute's share is 59.3% [58.6, 60.0], and the difference against `M3-P021`
+is +27.1 points [+25.3, +28.8], resampling episodes. **The diagnosis holds, and with
+the IQM above 63.28 this is the pre-registered evidence for ADR 0020 as amended.**
+`M3-P021`'s "the rest" reads 32.3% here and 31.7% in its own entry, because its
+table counted Crit Factor and Cash Bonus as named rows.
+
+**It saves for the row it wants.** Last 200 episodes, 16,838 decisions
+(`state/analysis/p022_orders.py`):
+
+| Decision | Orders naming Defense Absolute | `WAIT` | Orders for a row the cash does not reach | Of those, bought within the wave | Orders that bought nothing |
+|---|---|---|---|---|---|
+| 1–5 | 60.8% | 39.2% | 0% | — | 0% |
+| 6–10 | 60.1% | 20.7% | 20.6% | 88.3% | 2.4% |
+| 11–20 | 55.2% | 0% | 57.4% | 66.4% | 19.3% |
+| 21–30 | 53.7% | 0% | 75.6% | 76.7% | 17.6% |
+| 31–50 | **55.7%** | 0% | 78.9% | 70.6% | 23.2% |
+| 51–70 | 68.5% | 0% | 77.3% | 67.0% | 25.6% |
+| 71+ | 62.5% | 3.5% | 67.0% | 58.5% | 27.8% |
+
+- At decisions 31–50 it orders Defense Absolute 55.7% of the time, against about 23%
+  in `M3-P021`.
+- Saves are Defense Absolute (74.0%) and Thorn Damage (22.0%). All 3,471 orders that
+  bought nothing named a row the cash did not reach, so each is a save the wave did not
+  complete. All but 6 named those two rows.
+- `WAIT` is 698 of 16,838 decisions: 599 in the first ten and 99 past the seventieth.
+
+**The build is all defence.** Defense Absolute and Thorn take 93% of the spend
+through wave 50. Final levels, the last 200 against the script: Defense Absolute 56.0
+against 68.3, Thorn 33.7 against 20.1, Health 10.0 against 23.6, Damage 12.8 against
+24.2, Attack Speed 14.6 against 21.0, Cash / Wave 21.0 against 10.0. Health and Crit
+Chance stay at 10, where the script's unbought Crit Chance also ends, so the policy
+buys almost nothing that attacks. That is a turtle with no blender.
+
+**The credit readout as pre-registered has no meaning here.** Re-based on `available`,
+the uniform baseline counts only rows the cash reaches, and an order that saves for a
+row out of reach counts in the numerator and not the baseline. The ratio then reads
+67–395× and grows with saving, not with credit. I pre-registered the wrong
+instrument a second time. Against a uniform choice over the rows on sale, the mask
+(`state/analysis/p022_credit.py`, last 50,000 decisions):
+
+| Waves from death | 0–5 | 5–10 | 10–20 | 20–30 | 30–40 | 40–60 | 60+ |
+|---|---|---|---|---|---|---|---|
+| Defense Absolute's share of orders over uniform | 23× | 30× | 34× | 35× | 31× | 28× | 30× |
+
+This does not fade with distance from death. Its baseline is the mask's, not
+`M3-P021`'s, so the two rows of numbers do not compare. A policy that orders one row
+about 60% of the time in every state also gives a flat line, so this shows no credit
+by itself.
+
+**The curve.** Period means of 5,000 decisions, collected with the same sampled policy
+the evaluation uses (`docs/solution.md` §9.4c). The log calls them "near-greedy",
+which is wrong for DreamerV3:
+
+39.6, 61.9, 61.3, 65.7, 60.3, 64.6, 61.2, 65.3, 68.5, 70.1, 68.7, 68.2, 66.7, 71.7,
+73.0, 89.1, 91.2, 85.8, 75.4, 86.4, **95.0**, 90.3, 84.2, 88.7, 85.3, 86.9, 79.6.
+
+- **Samples to level:** 60 at period 2 (10,039 decisions, 1 h 09 min), 80 at period 16
+  (80,042, 10 h 03 min), 90 at period 17 (85,060, 10 h 38 min). 100 was not reached.
+- After period 2 it climbs about 11 waves over the next 65,000 decisions. Then it jumps
+  16 waves in one period, from 73.0 to 89.1, and reads 75–95 for its last twelve.
+- **The evaluation reads above the last collection,** 86.17 against 84.19 over the
+  last 200 episodes and 79.6 in the closing period. Thirty episodes on the final
+  weights read one point of the swing, as in `M3-P021`. The best period's checkpoint
+  was not evaluated.
+- The kill bars read 63.46, 68.99 and 88.61 against 21.
+
+**The other readouts.**
+
+- **`mask_legal_rejected`: 0** in 1,891 episodes and 184,709 purchases, and 0 in the
+  evaluation.
+- **Learner:** 268,218 updates, 1.98 a decision, 15,940 an hour against the ceiling of
+  about 42,000.
+- **Rate:** 8,054 decisions an hour, 112.6 episodes an hour, 280,079 game-seconds an
+  hour.
+- **Invalid: 2 of 1,891 (0.1%).** One round's clock ran 0.975× the budgeted game time,
+  and in one the bridge and the host disagreed about the decision event. Replay
+  rejected 2 transitions, those two. Three episode starts failed and were retried. No
+  actor was withdrawn. Four runs left live were played out to the game's own death
+  before a fresh round, 316 s in all.
+- **A stop rule read as a note.** One of the three failed starts, at 62,555 decisions on
+  `emulator-5556`, was `WORKSHOP_NOT_APPLIED: … the bridge reported no Workshop state:
+  stale_or_duplicate`. `M3-P020`'s rules, inherited here, stop on any `WORKSHOP_*`
+  event and treat a failed start's `stale_or_duplicate` as a retried note. The watcher
+  passed every failed start, so it took the second reading, and the run went on. The
+  controller refused the start, so no episode was played on the wrong levels:
+  `workshop_reverted` and `upgrade_setup_drift` read 0 across all 1,891. The literal
+  rule would have stopped the run there, before the jump at period 16.
+- **Purchases an episode:** 134.6 in about 84 waves, against the script's 132 in 102.
+
+**Limits.** n=1, one seed. The learner is the one "Review of the training setup" found
+memorising its episodes at train ratio 2048, so this result does not show that its
+plan came from honest credit. ADR 0020 item 5 has been amended since: the world model
+learns at 128. **Wave 1000 is not reachable here.** The script's wall near wave 102
+stands, and this learner ends 15 waves short of it.
+
 ## Review of the training setup: reward, actions, saving and learning
 
 **Date:** 2026-11-07. Board `#134`. The developer asked whether the reward is right,

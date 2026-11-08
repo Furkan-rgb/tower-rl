@@ -1,5 +1,5 @@
 {
-  "next_id": 156,
+  "next_id": 158,
   "items": [
     {
       "id": 1,
@@ -177,13 +177,18 @@
       "id": 11,
       "title": "run_actors discards driver stdout",
       "body": "Objective (deferred): run_actors discards the driver's stdout, losing handshake and failure evidence.\n\nDone-condition: run_actors captures/surfaces driver stdout for handshake and failure diagnosis.\n\nEvidence: the commit that closes it.\n",
-      "status": "Backlog",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-10-25 18:19",
           "text": "Board audit #125: failure output is captured (run_actors.py:412-419, ActorFailure tail). Remaining scope: keep the success-path handshake log."
+        },
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Retired in audit 2026-11-08: failure output is captured (run_actors.py capture_output); only a success-path handshake log remains, which nothing needs."
         }
-      ]
+      ],
+      "closed_at": "2026-11-08T02:02:03.133095Z"
     },
     {
       "id": 12,
@@ -1791,6 +1796,10 @@
         {
           "at": "2026-10-25 18:19",
           "text": "Board audit #125: kill-bar test already fixed (after_near_greedy). Remaining: test_a_client_left_idle (test_instrumented_bridge.py:1157) and test_run_stage (test_a_cleanup_that_never_returns... fails on main, seen 2026-10-25)."
+        },
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: the test_run_stage half was fixed by 8edd76a (#132). Only test_instrumented_bridge.py's test_a_client_left_idle remains."
         }
       ]
     },
@@ -3237,7 +3246,12 @@
       "title": "train.py carries no flag nothing reads for the chosen backbone: --epsilon-start, --epsilon-anneal-decisions, --exploration and the unused epsilon_end in R2D2's manifest are removed or refused",
       "body": "",
       "status": "Backlog",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: contradicting values are already refused for both backbones (settle_fixed_settings). Flags still parsed; R2D2 not in use for the goal. Low value."
+        }
+      ]
     },
     {
       "id": 117,
@@ -3267,7 +3281,12 @@
       "title": "Comments, help text and usage examples in train.py, r2d2.py and dreamer.py name 0.997 per ADR 0019, not 0.999, as the protocol discount (test fixtures may keep 0.999 where the value is arbitrary)",
       "body": "",
       "status": "Backlog",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: df9a576 fixed train.py help/errors and dreamer.py. 0.999 remains in train.py usage examples and r2d2.py docstrings."
+        }
+      ]
     },
     {
       "id": 120,
@@ -3333,7 +3352,13 @@
       "title": "Episode records' upgrades_bought counts every in-run purchase: Orbs (defense:9) purchases appear, matching final_upgrade_levels",
       "body": "M3-P018 episodes.jsonl: final_upgrade_levels shows defense:9 at 1-2 in 57 episodes while upgrades_bought counts 0 Orbs purchases across 2100 episodes.",
       "status": "Backlog",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: likely free levels, not missed purchases (the script, which buys no Free rows, matches exactly). Re-parented under #147: its A/B logs every state's levels and can show it."
+        }
+      ],
+      "parent": 147
     },
     {
       "id": 124,
@@ -3387,7 +3412,13 @@
       "title": "The bridge holds the game across a host disconnect (ADR 0016 P4), reported as BRIDGE_LOST when it cannot",
       "body": "From #98 / ADR 0016 P4.",
       "status": "Backlog",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: re-parented under #147. Its fix is ADR 0016 \u00a72 (EnsureHeld: read the hold, re-press Pause if it slipped), which needs a device check of whether Pause toggles first. Title is narrower than P4."
+        }
+      ],
+      "parent": 147
     },
     {
       "id": 130,
@@ -3514,6 +3545,10 @@
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: measure the floors on #147's ws2914c build once it passes its device check. Floors on b8b8cd45 would be the old behaviour's, and #147 re-measures floors anyway. Waits on M3-P022's emulators."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: M3-P022's emulators are free; the remaining blocker is #147's device verdict on the ws2914c build these floors run on."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3596,7 +3631,7 @@
       "id": 140,
       "title": "The policy keeps trying rows it has not bought: a two-phase plan can be discovered",
       "body": "Entropy falls under 0.32 nats of about 3.7 and whole rows go unordered, and the reference code applies no actor unimix, so a floor is a deviation ADR 0018 requires forced. Done when a floor or scale is chosen on measured evidence, recorded with what forces it, and absent from evaluation. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "Next",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3605,6 +3640,10 @@
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: every entropy reading so far is from M3-P021/M3-P022, on the ratio-2048 learner whose critic memorised. Read entropy on #148's pilot, the first run on 6bfa8b8 and 19030ba, before choosing a floor."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: per its own audit comment, the entropy floor is chosen from #148's pilot reading. Blocked on #148."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3622,6 +3661,10 @@
         {
           "at": "2026-11-07 16:57",
           "text": "Also from the game-path review: enemiesKilledThisWave is not reset at round start, so wave 1 carries a fingerprint of the previous episode. Fix it with this schema change."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: the zero-rate re-read under filling-orders waits on #136's first device episodes."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3635,6 +3678,10 @@
         {
           "at": "2026-11-07 16:34",
           "text": "Blocked on M3-P022: no rename while a run is live. Kept in M3 because the developer asked for the whole setup, structure included, to be correct."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: M3-P022 has ended (5a18a2f). The rename waits only for no device stage to be live (#147's A/B, #155's trace)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3665,6 +3712,10 @@
         {
           "at": "2026-11-08 02:45",
           "text": "M3-P022 recorded (5a18a2f). Item 2's pre-registered bar is met: diagnosis holds and IQM 86.94 > 63.28. Below the saving-orders script by 14.79 [-17.53, -12.62], above M3-P021 by 38.19. Build is DA + Thorn, 93% of spend, almost no attack rows. Learner was the memorising one (ratio 2048, old cont head), so the plan is not shown to come from honest credit. Still needs #136's filling-orders floors and #148's pilot for item 5, then the developer's acceptance."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: the title's M3-P022 half is met (5a18a2f, bar at docs/experiments.md 'M3-P022: outcome'). Remaining: #136's floors and #148's pilot for item 5; ADR 0020 still Proposed."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3678,6 +3729,10 @@
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: blocked on M3-P022's emulators and on #147. The guide order puts Free Upgrades second, and on b8b8cd45 10-40% of free levels land on empty slots; the fix is only in #147's ws2914c build, not yet run on a device."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: blocked on #147 (free levels only land on real rows in ws2914c) and, per its body, #136's floors on that build."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3691,6 +3746,10 @@
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: blocked on M3-P022's emulators. Measure on the ws2914c pair from #147 (bff836b8, 5b6a7d33), not on b8b8cd45, which is being replaced."
+        },
+        {
+          "at": "2026-11-08 03:01",
+          "text": "Audit 2026-11-08: blocked on #147's device verdict for both ws2914c builds; the A/B covers bff836b8 only, so 5b6a7d33 (default build) still needs its first device run."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3699,7 +3758,7 @@
       "id": 147,
       "title": "A bridge build rolls Free Upgrades only on real rows, pauses a world that slipped, and refreshes prices at the wave turn",
       "body": "Three defects from 'Review of the game path', one build. Writing unlock flags only on real rows amends ADR 0011. The digest changes, so floors are measured again on it. Blocked on M3-P022 for the device check; the source and the build do not need the emulators.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 17:00",
@@ -3708,6 +3767,14 @@
         {
           "at": "2026-11-07 19:08",
           "text": "Code is committed (df608e4) and both ws2914c builds are compiled, but neither has run on a device. The device check of Free levels, stale prices, unlock read-back and whether Pause toggles needs the instances M3-P022 holds."
+        },
+        {
+          "at": "2026-11-08 02:50",
+          "text": "Device check started: A/B of b8b8cd45 vs bff836b8, 7 episodes each, at saving-orders, Workshop 10. Instrument (scratchpad only, not a floor): max the three Free Upgrade rows to level 40 and then buy Defense Absolute, logging every state's levels, unlock flags and prices. Reads free levels on empty slots, empty-slot unlock flags and stale prices. Pause re-press is not in either build and is not tested here."
+        },
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: 'pauses a world that slipped' is in neither ws2914c build; that is ADR 0016 \u00a72's EnsureHeld, now tracked as sub-item #129. This card closes on the two built fixes verified on device (A/B under way) plus floors re-measured on the new digest."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3716,11 +3783,15 @@
       "id": 148,
       "title": "A pilot with the world model at ratio 128 reads unseen and trained deaths alike, and imagined WAIT never outlives recorded play",
       "body": "Serves the learner row of the verification table (docs/task.md 1.1). Offline evidence: docs/experiments.md, Review of the training setup. Read from learner_dreamer_unseen_* and learner_dreamer_trained_* (death_rank, prior_kl, plan_gap). Runs only inside a pre-registration made once the other rows are verified.",
-      "status": "Next",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: correction, docs/task.md 1.1 lists the six setup elements; it holds no table. Gated by the other elements' cards: #136/#144 (action semantics), #141 (observation), #146/#147 (game path, evaluation build), and the plateau rule and the reward decision below."
+        },
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: the gate is #136, not #144 (#144 waits on this card). Blocked on #136, #141, #146/#147, #151 and #153, per its body's 'once the other rows are verified'."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3743,7 +3814,12 @@
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08 map. Reward: experiments.md 'Review of the training setup' (DreamerV3 acceptance open, #151). Legality: same review plus M3-P021/P022 mask_legal_rejected 0. Evaluation isolation: game-path review, 'as audited' only, not confirmed. Action semantics (#136/#144), observation (#141/#154), learner (#148): none yet."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -3781,6 +3857,10 @@
         {
           "at": "2026-11-07 23:52",
           "text": "Correction to the body: the flat stretch was periods 2-15, between 60 and 73, before the rise to 89-95 at periods 16-21."
+        },
+        {
+          "at": "2026-11-08 03:02",
+          "text": "Audit 2026-11-08: M3-P022's full curve is recorded (5a18a2f): 60-73 for periods 2-15, a jump to 89 at 16, best 95 at 21, stopped by patience 6. Also settle there the stop-rule conflict that entry records: WORKSHOP_* is a stop, a failed start's stale_or_duplicate a retried note, and a WORKSHOP_NOT_APPLIED start was both (see #127 for typed failures)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3800,6 +3880,22 @@
       "status": "Next",
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 156,
+      "title": "Board audit: 2026-11-08",
+      "body": "Audit due: exit #134 closed. Checklist per task-ledger skill.",
+      "status": "In progress",
+      "comments": []
+    },
+    {
+      "id": 157,
+      "title": "DreamerV3's period means and final evaluation are labelled as its sampled policy, not near-greedy, greedy or exploration-free",
+      "body": "The log, run_folder.py, select_checkpoint.py and their tests call DreamerV3's collection 'near-greedy' and its evaluation 'greedy'/'exploration-free'; it samples the same policy in both (docs/solution.md 9.4c; docs/experiments.md 'M3-P022: outcome' and the game-path review). Found by audit #156.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "parent": 150
     }
   ],
   "milestones": [

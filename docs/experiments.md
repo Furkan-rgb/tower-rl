@@ -3899,7 +3899,8 @@ mid-run. That stream carries no data and learning does not read it.
 run, from scratch on `main` at this entry's commit. n=1, seed 0. Amended before launch,
 on board audit `#166`: two changes since `M3-P022` were missing, one citation was wrong,
 three readouts had no record behind them, and the stop rules and the evaluation time
-were corrected.
+were corrected. Amended again before launch: 4 actors, not 7, by the developer's choice
+on 2026-11-08, because another project's jobs share the host.
 
 **Question.** This is the learner row of `docs/task.md` §1.1. Does the world model read
 deaths it has not trained on as it reads the ones it has? And does imagined `WAIT`
@@ -3931,7 +3932,7 @@ them.
 **Launch.** Budget 150,000 decisions. Checkpoints every 2,500 and selection periods of
 5,000. Plateau patience 12 at 1.0. Kill bars `30000:15000:21`, `60000:45000:21` and
 `90000:75000:21`, below `random`'s 22.50. Train ratio 2048 and world-model ratio 128.
-`γ_s` 0.99991416 and the survival-time reward. 7 actors, seed 0, `--frame-game-ms 100`,
+`γ_s` 0.99991416 and the survival-time reward. 4 actors, seed 0, `--frame-game-ms 100`,
 `--upgrade-availability all`, `--workshop-level 10`, bridge `bff836b8…`. The final
 evaluation is 30 episodes on the same build and frame budget ("Speed-up parity on
 `ws2914c`").
@@ -3985,15 +3986,21 @@ Lead then stops the run with SIGINT, the operator stop:
 A start refused with `WORKSHOP_NOT_APPLIED` or `WORLD_NOT_HELD` is a failed start. It
 is retried and counted, as `M3-P022`'s watcher did.
 
-**Expected wall time.** About 19 hours for the full budget, at `M3-P022`'s 8,054
-decisions an hour. The decision rate is set by the device. The plateau rule can stop
-the run from 65,000 decisions, about 8 hours. The final evaluation plays on one
+**Expected wall time.** About 33 hours for the full budget, at 4/7 of `M3-P022`'s 8,054
+decisions an hour, about 4,600. The decision rate is set by the device, and this
+assumes a decision's device time does not change under the shared load. The plateau
+rule can stop the run from 65,000 decisions, about 14 hours. The final evaluation plays on one
 instance. `M3-P022`'s 30 episodes took 86 minutes, so this one should take about 1.5
 hours.
 
 **Known confounds, in advance.**
 
 - n=1, one seed.
+- The host is shared. Another project's jobs use about 12 of its 32 cores (load average
+  70–95 when this was written). Decision time, wall time and `UNCHARGED_ROUND_TIME` are
+  read as measured under that load, and are not compared with `M3-P022`'s as like for
+  like. Every count in the budget, the periods and the kill bars is in decisions, so
+  the actor count does not change them.
 - The eight changes are confounded with each other. The primary read is about the
   world model as built, not about which change made it.
 - At ratio 128 the world model takes one update in sixteen, about 19,000 in the whole

@@ -3990,6 +3990,14 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166: pre-registration amended before launch (next commit): eight changes not seven (1fb701e), entropy read offline, order-end reasons inferred, stop rules as the watcher applies them (it reports, the Lead stops with SIGINT), evaluation ~1.5 h. Watcher fixed (upper-case reasons, 85 GiB, refuses a missing name file)."
+        },
+        {
+          "at": "2026-11-08 10:44",
+          "text": "Ready to launch (9f9e062), held: another project's jobs (Sovereignty, ~12 of 32 cores at ~88%, load 70-95 since 10:03) share the host. Under that load nice'd tests starved to timeouts; the fleet's throughput and timing (UNCHARGED_ROUND_TIME) would be confounded. Asked the developer whether to wait or launch alongside."
+        },
+        {
+          "at": "2026-11-08 10:45",
+          "text": "Developer chose (2026-11-08): launch now with 4 actors, sharing the host. Pre-registration amended before launch (next commit): 4 actors, ~33 h, shared load as a confound."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

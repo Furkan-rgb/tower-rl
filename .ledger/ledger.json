@@ -4170,14 +4170,18 @@
       "id": 162,
       "title": "Board audit: 2026-11-08 (after #151)",
       "body": "Audit due: exit #151 closed.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 07:27",
           "text": "Applied: #141 retired into #163 (Blocked on #146); #153 under #148; #164 created under #150; comments on #142, #144, #146, #148, #150, #157, #159; solution.md 6.x availability line and experiments.md 7.5 note fixed (next commit)."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Applied in 4b3d83d: #141 retired into #163 (Blocked on #146); #153 under #148; #164 created under #150; comments on #142, #144, #146, #148, #150, #157, #159; solution.md availability line and experiments.md 7.5 note fixed."
         }
       ],
-      "closed_at": "2026-11-08T06:27:27.334537Z"
+      "closed_at": "2026-11-08T06:27:39.788246Z"
     },
     {
       "id": 163,

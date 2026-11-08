@@ -1,5 +1,5 @@
 {
-  "next_id": 158,
+  "next_id": 160,
   "items": [
     {
       "id": 1,
@@ -3351,14 +3351,19 @@
       "id": 123,
       "title": "Episode records' upgrades_bought counts every in-run purchase: Orbs (defense:9) purchases appear, matching final_upgrade_levels",
       "body": "M3-P018 episodes.jsonl: final_upgrade_levels shows defense:9 at 1-2 in 57 episodes while upgrades_bought counts 0 Orbs purchases across 2100 episodes.",
-      "status": "Backlog",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: likely free levels, not missed purchases (the script, which buys no Free rows, matches exactly). Re-parented under #147: its A/B logs every state's levels and can show it."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Explained, not a defect (audit #158): upgrades_bought equals purchases in all 2,100 M3-P018 episodes; Orbs levels above purchases are free levels from Free Defense Upgrade, which c723962 shows arrive only while a Free row is held. Orbs is a real row, so those levels stay legitimate on bff836b8."
         }
       ],
-      "parent": 147
+      "parent": 147,
+      "closed_at": "2026-11-08T02:41:48.068349Z"
     },
     {
       "id": 124,
@@ -3417,8 +3422,7 @@
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: re-parented under #147. Its fix is ADR 0016 \u00a72 (EnsureHeld: read the hold, re-press Pause if it slipped), which needs a device check of whether Pause toggles first. Title is narrower than P4."
         }
-      ],
-      "parent": 147
+      ]
     },
     {
       "id": 130,
@@ -3669,6 +3673,10 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: the zero-rate re-read under filling-orders waits on #136's first device episodes."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Audit #158: re-read the zero rates from 7960dfc's filling-orders floor records once they land. New fields must follow the _log/MAGNITUDE convention, which test_run_state now enforces (59b5108)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3686,6 +3694,10 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: M3-P022 has ended (5a18a2f). The rename waits only for no device stage to be live (#147's A/B, #155's trace)."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Audit #158: #147's A/B has ended (c723962); the live stage is now 7960dfc's floors, then #155's Workshop 79 trace."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3737,6 +3749,10 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: blocked on #147 (free levels only land on real rows in ws2914c) and, per its body, #136's floors on that build."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Audit #158: #147's device verdict is in (c723962). Waits only on 7960dfc's floors; runs on bff836b8."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3754,6 +3770,10 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: blocked on #147's device verdict for both ws2914c builds; the A/B covers bff836b8 only, so 5b6a7d33 (default build) still needs its first device run."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Audit #158: bff836b8's verdict is in (c723962). 5b6a7d33 (default build) has never run on a device; its first run can be inside this stage, after a short free-level/price probe on it."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3783,6 +3803,10 @@
         {
           "at": "2026-11-08 03:14",
           "text": "A/B 1 (7+7 episodes, Free rows to ~10, dies at wave 20): new build's empty slots read unlocked in 0 of 1,728 slot-states, old build's in 1,704 of 1,704, so named-rows-only is in effect on device. Both 7/7 valid. Old build put 0 of 12 un-ordered free levels on empty slots, where training's share (P021 17/10/40%, P022 17/10/35%, reproduced from replay) predicts ~4; too few to test the bug. Training's free levels do follow the Free rows (rises almost only while one is held). Rerunning with a stronger probe: script opening, then the cheaper of Free level or DA from wave 30."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "c723962: both built fixes verified on device. bff836b8 puts 0 of 17 free levels on empty slots and leaves 0 of 17 stale prices; b8b8cd45 9 of 23 and 10 of 14. Remaining: the floors on the new digest (7960dfc, running). The title's Pause clause is not built and moves to its own M3 exit; this card closes on the two fixes and the floors."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3800,6 +3824,10 @@
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: the gate is #136, not #144 (#144 waits on this card). Blocked on #136, #141, #146/#147, #151 and #153, per its body's 'once the other rows are verified'."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Audit #158: add 7960dfc's gate (a saving-orders script floor that moves beyond \u00b13 waves on bff836b8 stops this pre-registration until explained). The pilot is the first DreamerV3 run with symlog_once (59b5108); the offline ratio-128 AUCs used double-compressed inputs, so they are not like-for-like."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3826,6 +3854,10 @@
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08 map. Reward: experiments.md 'Review of the training setup' (DreamerV3 acceptance open, #151). Legality: same review plus M3-P021/P022 mask_legal_rejected 0. Evaluation isolation: game-path review, 'as audited' only, not confirmed. Action semantics (#136/#144), observation (#141/#154), learner (#148): none yet."
+        },
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Audit #158 map update. Observation: c723962 (prices refresh on device, free levels only on real rows); single compression 59b5108 has a solution.md row but no experiments.md entry yet, to be cited from #148's pilot; #141 still open. Rest as in the 03:02 map."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3916,6 +3948,27 @@
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
       "parent": 150
+    },
+    {
+      "id": 158,
+      "title": "Board audit: 2026-11-08 (after #154)",
+      "body": "Audit due: exit #154 closed. Checklist per task-ledger skill.",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 03:41",
+          "text": "Applied: #147 verdict recorded, Pause clause split to M3 exit #159 and #129 unparented; #123 closed as explained; comments on #141, #142, #145, #146, #148 (7960dfc gate, symlog_once), #150 (map). No duplicates or obsolete items."
+        }
+      ],
+      "closed_at": "2026-11-08T02:41:59.762925Z"
+    },
+    {
+      "id": 159,
+      "title": "The bridge reads the world's hold and presses Pause again when it slipped, after a device check of whether Pause toggles",
+      "body": "Split from #147's third clause (audit #158). ADR 0016 section 2 EnsureHeld. The game-path review rated the unread hold Medium, confirmed: hidden round-clock time 263.6 s in M3-P021, 1.1 s in M3-P022, and UNCHARGED_ROUND_TIME now fails such a transition by name. #129 (hold across a host disconnect) stays beside #127/#128.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],
   "milestones": [

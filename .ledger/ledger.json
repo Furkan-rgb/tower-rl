@@ -3819,7 +3819,7 @@
       "id": 146,
       "title": "Speed-up parity is measured at Workshop 10 past wave 50 on the current game and bridge, and evaluation's build is settled",
       "body": "No parity evidence exists on 29.1.4 or the current build, or above wave 16 on any. One pre-registered stage: the same script at 16.667 vs 100 ms and render interval 1 vs 16, read per wave. The result settles which build evaluation plays on, and docs/solution.md follows. Evidence: docs/experiments.md, 'Review of the game path'.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -3856,9 +3856,14 @@
         {
           "at": "2026-11-08 07:33",
           "text": "c-2 lost emulator-5556 at bring-up (CloneError: never became ready, main_unavailable); 6 of 7 valid. A failed bring-up, not an invalid episode; counted as it fell per the protocol."
+        },
+        {
+          "at": "2026-11-08 09:32",
+          "text": "bdea332: parity holds, D minus A -0.91 [-1.45, -0.27] inside +/-3; same-config stages differ by +0.91 [+0.18, +1.55]. Evaluation plays on the training build at 100 ms (solution.md 6.3). Default build at 16.667 ms lost 2/21 to UNCHARGED_ROUND_TIME."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T08:32:21.995350Z"
     },
     {
       "id": 147,
@@ -3935,6 +3940,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162: gates are #146 and #163 (#141 retired into it). Preconditions for the pre-registration: it names the cadence (filling-orders against floors 101.82/22.50, or saving-orders, which brings back #141's wave summary), and evaluation isolation is verified beyond 'as audited' (experiments.md, Review of the game path)."
+        },
+        {
+          "at": "2026-11-08 09:32",
+          "text": "#146 closed (bdea332): evaluation plays on the training build at 100 ms. Comparisons are read against a stage-to-stage variation of about one wave (+0.91 [+0.18, +1.55] between two stages of one script configuration). Remaining gate: #163."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4144,6 +4153,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162: the parity stage gave one more hold-slip instance. d-1 emulator-5558, UNCHARGED_ROUND_TIME 68 ms (threshold 3 frames = 50 ms), on 5b6a7d33 at 16.667 ms (state/records/p2914c-parity/stage-d-1.log)."
+        },
+        {
+          "at": "2026-11-08 09:32",
+          "text": "Parity stage (bdea332): arm D (5b6a7d33 at 16.667 ms) lost emulator-5558 twice, UNCHARGED_ROUND_TIME 68 ms and 140 ms; no other arm had one in 62 episodes."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4195,11 +4208,15 @@
       "id": 163,
       "title": "An episode's wave-1 kill count is its own, not the previous episode's last wave",
       "body": "Replaces #141 (audit #162). At an episode's first state enemies_killed > 0 in 1,751 of 1,890 M3-P022 episodes, 1,455 with enemies_spawned 0. The host-side correction waits on the traced two-episode game pre-registered in docs/experiments.md, 'The kill count carried into wave 1' (d888688, 9d64993), which runs after #146.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-08 07:27",
           "text": "Blocked on #146: the traced game runs on the devices after the parity stage ends."
+        },
+        {
+          "at": "2026-11-08 09:32",
+          "text": "#146 done; launching the pre-registered two-episode carry trace (d888688) on the devices."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

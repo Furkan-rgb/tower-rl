@@ -3952,7 +3952,7 @@
       "id": 150,
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
-      "status": "In progress",
+      "status": "Next",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -3969,6 +3969,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162 map. Reward: 'Review of the training setup' + task.md 7.5 (796a0e0). Legality: same entry, 'Legality and order mechanics: no bug'. Action semantics: floors at filling-orders (7712a66), ADR 0020 is #144. Observation: compressed once (#154, 59b5108), carry-over #163. Evaluation isolation: #164, labels #157. Learner: #148's pilot."
+        },
+        {
+          "at": "2026-11-08 07:33",
+          "text": "Evaluation isolation row: experiments.md 'Evaluation isolation' (630b121), traceability row in solution.md 16 (ed49f38). Remaining rows wait on #163 (observation), #144 (action semantics) and #148 (learner). Back to Next."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

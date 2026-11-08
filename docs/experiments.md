@@ -3523,6 +3523,54 @@ fails to explain, a number the Workshop scan left open.
 **Safety,** the scan's: clone only, read-only instances, offline, no screenshots, no
 input, no coins or permanent progression.
 
+**Result,** 2026-11-08. One stage of 24 min, 7 of 7 valid. Six games ended on wave 483
+and one on 482, with Defense Absolute at level 299–300, as in the scan. The trace
+reads each scalar at a wave's first decision. Damage after Defense % is
+`base × (1 − Defense %)`, and Defense % reached 49.5% by wave 19–27 in every game and stayed there.
+
+| Wave | Base damage | after Defense % | Defense Absolute | Health |
+|---|---|---|---|---|
+| 200 | 2,424 | 1,224 | 6,625 | full |
+| 351 | 12,400 | 6,262 | 11,820 | full |
+| 450 | 26,790 | 13,530 | 15,710 | full |
+| 480 | 32,600 | 16,463 | 16,870 | full |
+| 482 | 33,360 | 16,847 | 17,020 | 0.76 |
+| 483 | 34,510 | 17,428 | 17,020 | 0.43 |
+
+The table is the first game. The other six read the same base damage at every wave,
+and Defense Absolute within one level.
+
+1. **Explanation 1 holds, with Defense % applied before the block.** Base damage after
+   Defense % first exceeds Defense Absolute on wave 483 in all six games that reached
+   it. In the seventh it stood 167 short at wave 482, where that game died. Health,
+   read at a wave's start, first fell below full between waves 477 and 482. Enemy
+   types that hit harder than the base would cross a little earlier, which fits.
+
+   The other order, `(base − block) × (1 − Defense %)`, crosses at wave 342–344. By
+   wave 450 that order leaks 5,592 a hit, a quarter of the tower's 24,610–25,900
+   health, against regeneration of 302 a second. Yet health sat at full through
+   wave 476 in every game. So the game subtracts the block after Defense %.
+2. **Explanation 2 is wrong as stated.** Defense Absolute kept growing: +8.3% from
+   wave 450 to the end, about 0.24% a wave. Base damage grew 28.8% over the same
+   span, about 0.77% a wave. The block lost a race. It did not stop.
+3. **Explanation 3 is not a separate cause.** Wave 483 is not a boss wave; the bosses
+   fall on multiples of ten. Base damage does step 3.4% into wave 483, the
+   second-largest step after wave 400 (wave 401's is 7.7%). That step moves the margin
+   from between −316 and −167 at wave 482 to between +262 and +411 at wave 483.
+
+**Why every game ends on the same wave.** The base damage of a wave is the game's
+fixed schedule, identical in every game. The script and its income are deterministic
+enough that Defense Absolute differs by at most one level, about 150 of block. That is
+less than the 1,150 that base damage adds at wave 483.
+
+**What this says beyond the scan.** A flat block falls behind damage that compounds at
+about 0.77% a wave. Defense Absolute alone therefore has a wall at every Workshop
+level, and the scan's extrapolation of wave 1000 to a uniform level near 200 assumed
+this one strategy. Getting past the wall needs something that does not ride the block:
+health and regeneration, lifesteal, or killing enemies before they reach the tower,
+which is what the blender does. This is a reading of one script's play. It is not a
+measurement of turtle into blender, which is `#145`.
+
 ## The plateau stop rule, read from `M3-P021`'s and `M3-P022`'s curves (analysis, no device)
 
 **Date:** 2026-11-08. Board `#153`. Both runs used patience 6 and a minimum

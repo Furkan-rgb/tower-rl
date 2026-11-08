@@ -287,9 +287,9 @@ In-run cash rises continuously from kills, so a cash delta is evidence recorded
 with the transition, never the confirmation signal itself.
 
 Which rows are available at all is a configuration of the environment rather
-than a property of the image. `--upgrade-availability image` is the default and
-is what every baseline so far was measured under: the six rows the v1 image
-offers. Under `all` the environment reopens every row the game really has, at
+than a property of the image. `--upgrade-availability image` is the default:
+the six rows the v1 image offers, which the v1 baselines were measured under.
+Runs use `all` (`docs/task.md` §7.2). Under `all` the environment reopens every row the game really has, at
 each round start, through the bridge - the game recomputes its real rows'
 availability whenever a round begins, so the write belongs to the round start
 and nowhere else, and a "profile v2 base image" could not have carried it

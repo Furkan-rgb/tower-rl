@@ -2944,6 +2944,7 @@ the game clock to the λ-return. The terminal step keeps its partial reward and 
 35 s through wave 483, so game-seconds and waves agree. The return is concave: a 50/50
 of waves 50 or 200 has mean 125 and certainty equivalent 116.6, a mild risk aversion.
 `docs/task.md` §7.5 records acceptance for the flag as taken by R2D2, not DreamerV3.
+(2026-11-08: the developer extended it to DreamerV3, 796a0e0.)
 
 **Legality and order mechanics: no bug.** 0 `mask_legal_rejected` in 1,017 episodes and
 about 131,000 purchases.

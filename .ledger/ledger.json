@@ -1,5 +1,5 @@
 {
-  "next_id": 163,
+  "next_id": 165,
   "items": [
     {
       "id": 1,
@@ -3669,7 +3669,7 @@
       "id": 141,
       "title": "The observation carries the wave just played: lowest health, kills, cash earned",
       "body": "At a wave's turn enemies_spawned is zero in 99.7% of states, enemies_killed in 89.9%, cash_earned_this_wave_log in 91.7%. Nothing summarises the span since the last decision, so the policy cannot see a wave that nearly killed it. An observation schema change. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3702,9 +3702,14 @@
         {
           "at": "2026-11-08 05:36",
           "text": "Correction to the 05:xx comment: the carried values (nothing spawned) run 2-122, median 114, not 2-22; the first 20 were early short episodes. Pre-registered in d888688 (range fixed in the next commit)."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Retired, replaced by #163 (audit #162). The filling-orders trace (091366f) cut the zero rates to 36.2/34.7/34.7% and re-asks on a 0.05 health fall, so the wave summary is needed only at saving-orders; if #148's pre-registration picks saving-orders it gets its own card. The carry-over defect is #163."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T06:27:14.364682Z"
     },
     {
       "id": 142,
@@ -3727,6 +3732,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Audit #160: device stages still live: #155's trace, then #141's traced game, #146's parity stage and #145. The rename waits for a gap with none running."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162: #155's trace is closed (77c29ec). Device queue: #146 parity (running), then #163's two-episode game, #145, and #159's device check."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3769,6 +3778,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Audit #160, correcting the 04:46 comment: the evidence for items 1-4 is recorded (5a18a2f, 7712a66); item 5 (world model at 128) is tested by #148's pilot. Acceptance is the developer's. ADR 0020 names saving-orders and keeps filling-orders as a spike beside it, so adopting filling-orders would need an amendment first."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162: both pieces of evidence the title names are recorded (5a18a2f, 7712a66). The card waits on #148's pilot. Adopting filling-orders needs ADR 0020 amended first, since it still names saving-orders."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3835,6 +3848,10 @@
         {
           "at": "2026-11-08 07:20",
           "text": "Parity stage at 6 of 12 rounds (a-1..c-2 done). d-1 lost emulator-5558: its one episode was invalid, UNCHARGED_ROUND_TIME 68 ms, on 5b6a7d33 at 16.667 ms; the other 6 actors played valid. Read with the arm's invalid counts when the stage ends."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162: correction to 07:20. 6 rounds were done then (a-1, b-1, c-1, d-1, a-2, b-2), and c-2 was running, not done. The worker is the device driver state/launch/parity-2914c.sh (background shell). About 2 h to go."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3910,6 +3927,10 @@
         {
           "at": "2026-11-08 07:20",
           "text": "#151 settled 2026-11-08: the developer accepted the survival reward for DreamerV3 (docs/task.md 7.5). Gates still open: #141, #146."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162: gates are #146 and #163 (#141 retired into it). Preconditions for the pre-registration: it names the cadence (filling-orders against floors 101.82/22.50, or saving-orders, which brings back #141's wave summary), and evaluation isolation is verified beyond 'as audited' (experiments.md, Review of the game path)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3944,6 +3965,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Audit #160 map update. Action semantics: filling-orders floors 7712a66 (script 101.82, random 22.50, mask_legal_rejected 0); acceptance still with #144. Observation: c723962 and 59b5108; #141 open. Reward: #151 open. Evaluation isolation: as audited only. Learner: #148."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162 map. Reward: 'Review of the training setup' + task.md 7.5 (796a0e0). Legality: same entry, 'Legality and order mechanics: no bug'. Action semantics: floors at filling-orders (7712a66), ADR 0020 is #144. Observation: compressed once (#154, 59b5108), carry-over #163. Evaluation isolation: #164, labels #157. Learner: #148's pilot."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4013,9 +4038,14 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Rule set from the curves in 533d282 (patience 12 at 1.0 wave; WORKSHOP_* stops only on a played episode). Blocked on #148, whose pre-registration adopts it; this card closes on that commit. It is not a gate #148 waits on."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162: the rule is 533d282's. The next pre-registrations (bb21342, d888688) were scripted and set no stop rule. This closes when #148's pre-registration adopts the rule. Re-parented under #148."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "parent": 148
     },
     {
       "id": 154,
@@ -4075,6 +4105,10 @@
         {
           "at": "2026-11-08 05:35",
           "text": "Scope found: besides log text and MLflow keys, the label is persisted in the checkpoint (checkpoint.py best_period_near_greedy_mean) and the training report's JSON keys. Renaming the series (to 'policy') needs a checkpoint format bump or a read alias. Do it in the same change as #141's observation schema change, which already breaks checkpoint compatibility, so no alias is needed. exploration.py's is_near_greedy stays: it is about epsilon and is right for R2D2."
+        },
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162 risk: this card pairs with the observation schema change, whose checkpoint break made an alias unnecessary. If #163 is a host-side fix with no schema bump, renaming best_period_near_greedy_mean (checkpoint.py, training.py) needs a load-time alias or a fresh-run-only rule."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
@@ -4098,7 +4132,12 @@
       "title": "The bridge reads the world's hold and presses Pause again when it slipped, after a device check of whether Pause toggles",
       "body": "Split from #147's third clause (audit #158). ADR 0016 section 2 EnsureHeld. The game-path review rated the unread hold Medium, confirmed: hidden round-clock time 263.6 s in M3-P021, 1.1 s in M3-P022, and UNCHARGED_ROUND_TIME now fails such a transition by name. #129 (hold across a host disconnect) stays beside #127/#128.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Audit #162: the parity stage gave one more hold-slip instance. d-1 emulator-5558, UNCHARGED_ROUND_TIME 68 ms (threshold 3 frames = 50 ms), on 5b6a7d33 at 16.667 ms (state/records/p2914c-parity/stage-d-1.log)."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -4132,7 +4171,34 @@
       "title": "Board audit: 2026-11-08 (after #151)",
       "body": "Audit due: exit #151 closed.",
       "status": "In progress",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Applied: #141 retired into #163 (Blocked on #146); #153 under #148; #164 created under #150; comments on #142, #144, #146, #148, #150, #157, #159; solution.md 6.x availability line and experiments.md 7.5 note fixed (next commit)."
+        }
+      ],
+      "closed_at": "2026-11-08T06:27:27.334537Z"
+    },
+    {
+      "id": 163,
+      "title": "An episode's wave-1 kill count is its own, not the previous episode's last wave",
+      "body": "Replaces #141 (audit #162). At an episode's first state enemies_killed > 0 in 1,751 of 1,890 M3-P022 episodes, 1,455 with enemies_spawned 0. The host-side correction waits on the traced two-episode game pre-registered in docs/experiments.md, 'The kill count carried into wave 1' (d888688, 9d64993), which runs after #146.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-08 07:27",
+          "text": "Blocked on #146: the traced game runs on the devices after the parity stage ends."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 164,
+      "title": "Evaluation isolation cites a docs/experiments.md entry naming the tests and run records that show evaluation episodes enter no replay and cause no update",
+      "body": "Audit #162: evaluation isolation rests on 'Evaluation never reaches replay or training, as audited' (docs/experiments.md, Review of the game path), with no tests or records named. Serves #150's evaluation-isolation row.",
+      "status": "Next",
+      "comments": [],
+      "parent": 150
     }
   ],
   "milestones": [

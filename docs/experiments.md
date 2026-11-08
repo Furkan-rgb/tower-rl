@@ -3630,7 +3630,8 @@ game-path review found and which no cadence fixes.
 **What is known.** In `M3-P022`'s replay (`d0135516`), an episode's first state reads
 `enemies_killed` above zero in 1,751 of 1,890 episodes. In 1,455 of those,
 `enemies_spawned` reads zero. The seven first episodes after a cold launch read zero.
-The values run 2 to 22, which looks like the previous episode's last wave. A
+Where nothing has spawned, the values run from 2 to 122, with a median of 114.
+That looks like the previous episode's last wave. A
 learner therefore sees, at wave 1, a number from the episode before.
 
 **Question.** During wave 1, does the game count kills on top of the carried value

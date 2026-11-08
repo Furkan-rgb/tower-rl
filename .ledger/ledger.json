@@ -3948,7 +3948,7 @@
       "id": 151,
       "title": "The developer accepts or rejects the survival-time reward for DreamerV3",
       "body": "docs/task.md 7.5 records the acceptance for R2D2 only, and DreamerV3 runs use the flag (docs/experiments.md). The decision is the developer's; the Lead recommends acceptance.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:52",
@@ -3957,10 +3957,14 @@
         {
           "at": "2026-11-08 07:20",
           "text": "Developer accepted on 2026-11-08 (\"Yes\"): DreamerV3 keeps --survival-time-reward. docs/task.md 7.5 extends the 2026-09-25 acceptance to --backbone dreamerv3, same bound and clock-driven condition."
+        },
+        {
+          "at": "2026-11-08 07:20",
+          "text": "Developer accepted 2026-11-08: DreamerV3 keeps --survival-time-reward. 796a0e0 extends docs/task.md 7.5's acceptance to --backbone dreamerv3, same bound and clock-driven condition."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
-      "closed_at": "2026-11-08T06:20:02.512123Z"
+      "closed_at": "2026-11-08T06:20:26.333070Z"
     },
     {
       "id": 152,

@@ -3623,6 +3623,33 @@ decision. 7 of 7 valid, 8 min 42 s.
 says nothing about `enemiesKilledThisWave` not being reset at round start, which the
 game-path review found and which no cadence fixes.
 
+## The kill count carried into wave 1 (measurement only, written before its device episodes)
+
+**Date:** 2026-11-08. Board `#141`.
+
+**What is known.** In `M3-P022`'s replay (`d0135516`), an episode's first state reads
+`enemies_killed` above zero in 1,751 of 1,890 episodes. In 1,455 of those,
+`enemies_spawned` reads zero. The seven first episodes after a cold launch read zero.
+The values run 2 to 22, which looks like the previous episode's last wave. A
+learner therefore sees, at wave 1, a number from the episode before.
+
+**Question.** During wave 1, does the game count kills on top of the carried value
+until the counter resets? The host could then subtract the value it reads at the
+round's start. Or does the counter reset partway through wave 1?
+
+**Protocol.** `build-defense-absolute` at `filling-orders`, Workshop 10, `bff836b8…`,
+`--upgrade-availability all`, `--frame-game-ms 100`. 7 actors play 2 episodes each,
+with no relaunch between them, under the tracing wrapper from "The wall at wave 483".
+`filling-orders` gives several decisions in wave 1. The read is each second episode's
+wave-1 decisions: the kills and spawns at each, against the carried value at its
+first.
+
+**What it decides.** Which host-side correction `#141` makes, or whether the bridge
+has to reset the reading. It trains nothing.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 ## The plateau stop rule, read from `M3-P021`'s and `M3-P022`'s curves (analysis, no device)
 
 **Date:** 2026-11-08. Board `#153`. Both runs used patience 6 and a minimum

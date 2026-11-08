@@ -3669,7 +3669,7 @@
       "id": 141,
       "title": "The observation carries the wave just played: lowest health, kills, cash earned",
       "body": "At a wave's turn enemies_spawned is zero in 99.7% of states, enemies_killed in 89.9%, cash_earned_this_wave_log in 91.7%. Nothing summarises the span since the last decision, so the policy cannot see a wave that nearly killed it. An observation schema change. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3694,6 +3694,10 @@
         {
           "at": "2026-11-08 05:22",
           "text": "Traced script game at filling-orders (entry 'What a decision sees at filling-orders', written after its stage): zero rates fall to 36.2/34.7/34.7% (spawned/killed/cash earned) from 99.7/89.9/91.7% at saving-orders, and 9.5% of decisions are re-asks on a 0.05 health fall, so a near-fatal wave is seen as it happens. The wave summary is needed only at saving-orders; the wave-1 enemiesKilledThisWave carry-over is a defect at any cadence."
+        },
+        {
+          "at": "2026-11-08 05:34",
+          "text": "Carry-over confirmed from M3-P022's replay (d0135516): at an episode's first state, enemies_killed > 0 in 1,751 of 1,890 episodes, and in 1,455 of them with enemies_spawned 0; the 7 cold-launch first episodes read 0. Values (21, 14, 8, ...) look like the previous episode's last wave. Fixing it host-side needs to know whether wave 1 counts on top of the carried value: a traced game of 2 episodes an actor (no relaunch between) will show it, after #146's parity stage."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4041,7 +4045,12 @@
       "title": "DreamerV3's period means and final evaluation are labelled as its sampled policy, not near-greedy, greedy or exploration-free",
       "body": "The log, run_folder.py, select_checkpoint.py and their tests call DreamerV3's collection 'near-greedy' and its evaluation 'greedy'/'exploration-free'; it samples the same policy in both (docs/solution.md 9.4c; docs/experiments.md 'M3-P022: outcome' and the game-path review). Found by audit #156.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-08 05:35",
+          "text": "Scope found: besides log text and MLflow keys, the label is persisted in the checkpoint (checkpoint.py best_period_near_greedy_mean) and the training report's JSON keys. Renaming the series (to 'policy') needs a checkpoint format bump or a read alias. Do it in the same change as #141's observation schema change, which already breaks checkpoint compatibility, so no alias is needed. exploration.py's is_near_greedy stays: it is about epsilon and is right for R2D2."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
       "parent": 150
     },

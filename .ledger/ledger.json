@@ -4200,9 +4200,15 @@
       "id": 164,
       "title": "Evaluation isolation cites a docs/experiments.md entry naming the tests and run records that show evaluation episodes enter no replay and cause no update",
       "body": "Audit #162: evaluation isolation rests on 'Evaluation never reaches replay or training, as audited' (docs/experiments.md, Review of the game path), with no tests or records named. Serves #150's evaluation-isolation row.",
-      "status": "In progress",
-      "comments": [],
-      "parent": 150
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 07:32",
+          "text": "630b121: experiments.md 'Evaluation isolation: the code path, a test, and M3-P022's records'. New test fails on an injected replay leak; M3-P022 replay 137,404 steps before and after its final evaluation, model_version = optimisation_steps 268,218."
+        }
+      ],
+      "parent": 150,
+      "closed_at": "2026-11-08T06:32:58.070669Z"
     }
   ],
   "milestones": [

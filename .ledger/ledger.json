@@ -4084,6 +4084,10 @@
         {
           "at": "2026-11-08 07:27",
           "text": "Audit #162: the rule is 533d282's. The next pre-registrations (bb21342, d888688) were scripted and set no stop rule. This closes when #148's pre-registration adopts the rule. Re-parented under #148."
+        },
+        {
+          "at": "2026-11-08 10:17",
+          "text": "Adopted by M3-P023's pre-registration (next commit): patience 12 periods at 1.0, WORKSHOP_* stop on played episodes only."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",

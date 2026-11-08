@@ -3893,6 +3893,100 @@ not an acting copy. For a fleet that happens only after learning ends. A single-
 with `--evaluate-every-episodes` would advance the learner's acting random stream
 mid-run. That stream carries no data and learning does not read it.
 
+## M3-P023: DreamerV3 at `filling-orders` with the world model at ratio 128 (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-08. Board `#148`, and `#153`, whose rule this adopts. One seed, one
+run, from scratch on `main` at this entry's commit. n=1, seed 0.
+
+**Question.** This is the learner row of `docs/task.md` §1.1. Does the world model read
+deaths it has not trained on as it reads the ones it has? And does imagined `WAIT`
+never outlive the recorded play? `M3-P022`'s weights failed both at d70018. Its
+`death_rank` read 0.659 unseen against 1.0 trained, `prior_kl` 16.3 nats against 1.3,
+and `plan_gap` −0.06 against +0.49 (`docs/solution.md` §9.4c, "Episode reads").
+Second, does the policy beat the floors at its cadence?
+
+**This is a pilot of the setup as verified, not a one-change ablation.** It differs from
+`M3-P022` in seven ways, each with its own evidence. Its result is not split among
+them.
+
+1. `--world-model-ratio 128` under `--train-ratio 2048`. ADR 0020 item 5 as amended,
+   `docs/solution.md` §9.4c, and "Review of the training setup", where 128 opened no gap.
+2. `--decision-cadence filling-orders` (`#136`, `docs/environment-contract.md`,
+   "Decision cadence"). Its floors on `bff836b8…` are the script's 101.82 and
+   `random`'s 22.50 ("Floors on `ws2914c`").
+3. The continue head trains on a prior sample (6bfa8b8).
+4. Inputs are compressed once (59b5108).
+5. Wave 1's kill count is the episode's own (c01ffcf).
+6. Bridge `bff836b8…`: free levels go only on named rows, and prices are refreshed at
+   the wave's turn ("Bridge `ws2914c` on the device").
+7. The plateau rule is patience 12 periods at a minimum improvement of 1.0 (533d282).
+
+**Launch.** Budget 150,000 decisions. Checkpoints every 2,500 and selection periods of
+5,000. Plateau patience 12 at 1.0. Kill bars `30000:15000:21`, `60000:45000:21` and
+`90000:75000:21`, below `random`'s 22.50. Train ratio 2048 and world-model ratio 128.
+`γ_s` 0.99991416 and the survival-time reward. 7 actors, seed 0, `--frame-game-ms 100`,
+`--upgrade-availability all`, `--workshop-level 10`, bridge `bff836b8…`. The final
+evaluation is 30 episodes on the same build and frame budget ("Speed-up parity on
+`ws2914c`").
+
+**Primary outcome: the episode reads.** `learner_dreamer_unseen_*` against
+`learner_dreamer_trained_*`, each a mean over the last 100 read episodes, read at every
+selection period's end from 30,000 decisions on.
+
+- **Alike:** `death_rank` unseen within 0.10 of trained, and `prior_kl` unseen at most
+  twice trained.
+- **`WAIT` never outlives the recorded play:** `plan_gap` at most +0.05 on both sets.
+- **Pass** if both hold at every period end from 30,000 decisions. **Fail** if either
+  fails at the last period end. In between, the entry reports at which periods each
+  failed, and the developer decides.
+
+**Secondary: the final evaluation.** 30 exploration-free episodes on the final weights.
+The IQM difference against the `filling-orders` script floor (101.82) and `random`
+(22.50) is read by the stratified bootstrap (strata by instance, seed 0, 10,000
+resamples). A difference within about one wave is read against the stage-to-stage
+variation that two stages of one configuration showed, +0.91 [+0.18, +1.55]. The result
+goes to `#144` (ADR 0020) beside `M3-P022`'s. It is not read as a ceiling: the script's
+wall near wave 102 is its build's ("The wall at wave 483").
+
+**Readouts (not gates).**
+
+- The learning curve, and the decisions and wall time at which the period mean first
+  reaches 40, 60, 80 and 100.
+- Policy entropy as logged. The rows with no order in the last 200 valid episodes,
+  against `M3-P022`'s ten (`#140`).
+- The share of orders filled, and orders ended by a health fall or by the row leaving
+  sale, against the script's 91.2% filled.
+- Defense Absolute's share of spend through wave 50, and the final levels.
+- Invalid episodes by reason. `UNCHARGED_ROUND_TIME` is read against `#159`: one in 14
+  on this build in the carry trace.
+- Decisions an hour, updates an hour, and `mask_legal_rejected`.
+
+**Stop rules.** The plateau rule and the kill bars above. The watcher stops the run on a
+`Traceback`, on `WORLD_NOT_HELD`, on an actor failed or withdrawn, on invalid episodes
+above 5% after 20, or on cgroup memory above 90 GiB. It also stops it on
+`workshop_reverted` or `upgrade_setup_drift` in a played episode. A start refused with
+`WORKSHOP_NOT_APPLIED` is a failed start: it is retried and counted.
+
+**Expected wall time.** About 19 hours for the full budget, at `M3-P022`'s 8,054
+decisions an hour. The decision rate is set by the device. The plateau rule can stop
+the run from 65,000 decisions, about 8 hours. The final evaluation plays on one
+instance, about 10 minutes an episode (parity arm A: 512–634 s a round), so about
+5 hours.
+
+**Known confounds, in advance.**
+
+- n=1, one seed.
+- The seven changes are confounded with each other. The primary read is about the
+  world model as built, not about which change made it.
+- At ratio 128 the world model takes one update in sixteen, about 19,000 in the whole
+  budget. If it learns too slowly, the reads can agree because both are poor. So
+  `death_rank` is also reported against 0.5, which means no warning.
+- Wave 1000 is not reachable on this evidence. A wall near wave 102 stands for the only
+  script measured, and whether Workshop 10 allows more is `#145`.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

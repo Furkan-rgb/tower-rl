@@ -3877,9 +3877,15 @@
       "id": 154,
       "title": "The observation's log-scaled features are compressed once, or the second compression is measured harmless",
       "body": "Features are log1p'd in the environment and symlog'd again by the learner (docs/experiments.md, Review of the training setup).",
-      "status": "In progress",
-      "comments": [],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 03:35",
+          "text": "Compressed once (59b5108): DreamerV3's encoder input and decoder target skip symlog on the features the environment already log1p's (every _log scalar, cost_log, affordability), which equals the official symlog of the raw value. Tests cover each feature and the old-checkpoint path (symlog_once False). docs/solution.md 9.4c row 'vector inputs'."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T02:35:32.412664Z"
     },
     {
       "id": 155,

@@ -291,6 +291,8 @@ The permanent state a run is played under must be fixed for the run, versioned, 
 
 Baseline v1 is the account at level 0. Baseline v2 is the same account with a runway profile at N > 0; it moves the tower past the wave-20 wall that the v1 account cannot pass. Runs under different profiles are different experiments and are not compared with each other. The v1 results stay valid as recorded, under v1.
 
+**Every in-run row is open.** Developer decision, 2026-11-08 (board `#152`): runs open every in-run row the game has (`--upgrade-availability all`, ADR 0011), where the account alone offers six. Which rows to buy, and when, is the learner's to discover. `M3-P019` to `M3-P022` and the Workshop 10 floors were measured this way.
+
 At minimum, the project must record all visible permanent choices known to affect a run, the Workshop level and rows, the game/app version, device profile, display settings, in-game speed, and relevant configuration.
 
 Normal death-to-new-run navigation should preserve natural variation. A golden recovery state must restore actors that drift, become corrupted, enter an unsupported screen, or otherwise fail baseline verification. The mechanism is a cold relaunch of the instance from its read-only base image, which discards every overlay write and so restores the golden baseline (ADR 0016). The implementation must not silently assume that repeated restoration produces suitable randomness; this must be tested.

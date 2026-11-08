@@ -1,5 +1,5 @@
 {
-  "next_id": 162,
+  "next_id": 163,
   "items": [
     {
       "id": 1,
@@ -3831,6 +3831,10 @@
         {
           "at": "2026-11-08 05:32",
           "text": "46e331e: default build 5b6a7d33's first device run passes the pre-registered check (0 of 30 free levels on empty slots, 0 of 2,400 unlocked, 0 of 30 stale prices). Parity stage launched: A,B,C,D x 3 rounds to state/records/p2914c-parity/."
+        },
+        {
+          "at": "2026-11-08 07:20",
+          "text": "Parity stage at 6 of 12 rounds (a-1..c-2 done). d-1 lost emulator-5558: its one episode was invalid, UNCHARGED_ROUND_TIME 68 ms, on 5b6a7d33 at 16.667 ms; the other 6 actors played valid. Read with the arm's invalid counts when the stage ends."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3970,7 +3974,7 @@
       "id": 152,
       "title": "The developer decides whether runs open every in-run row (--upgrade-availability all), where the account offers 6",
       "body": "48 rows are opened where the account offers 6 (docs/experiments.md). It bears on 'minimal Workshop levels' and on whether the learner plays the game a human can. The decision is the developer's.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 23:52",
@@ -4117,6 +4121,13 @@
         }
       ],
       "closed_at": "2026-11-08T04:22:51.048259Z"
+    },
+    {
+      "id": 162,
+      "title": "Board audit: 2026-11-08 (after #151)",
+      "body": "Audit due: exit #151 closed.",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

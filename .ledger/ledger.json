@@ -1,5 +1,5 @@
 {
-  "next_id": 160,
+  "next_id": 161,
   "items": [
     {
       "id": 1,
@@ -3536,7 +3536,7 @@
       "id": 136,
       "title": "An order buys one level and stands until filled: the learner can keep cash, buy two rows in a wave and save across waves",
       "body": "ADR 0020's saving-orders spends every level the cash reaches, once a wave. A new cadence: an order buys exactly one level as soon as cash reaches its price and buys nothing else; the policy is asked again after filling, when tower health moves 5%, or at run end; WAIT holds until the next wave's turn. Done when unit tests cover one level, two rows in a wave, a save across waves and cancellation by health, and its floors are measured. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3557,9 +3557,14 @@
         {
           "at": "2026-11-08 03:29",
           "text": "#147's device check passed for both built fixes (c723962). Floors pre-registered (7960dfc) and running on bff836b8: DA and random at filling-orders, beside DA and random at saving-orders."
+        },
+        {
+          "at": "2026-11-08 04:46",
+          "text": "Done: code and unit conditions ab4aa63, floors on bff836b8 in 7712a66. Script at filling-orders IQM 101.82 [101.18, 102.36], +1.27 [+0.45, +2.00] over saving-orders on the same build; random 22.50. 70/70 valid, mask_legal_rejected 0. A learner at filling-orders is measured against these."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T03:46:18.059090Z"
     },
     {
       "id": 137,
@@ -3677,6 +3682,10 @@
         {
           "at": "2026-11-08 03:41",
           "text": "Audit #158: re-read the zero rates from 7960dfc's filling-orders floor records once they land. New fields must follow the _log/MAGNITUDE convention, which test_run_state now enforces (59b5108)."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Audit #160: the floor records hold per-wave summaries, not per-decision scalars, so they cannot give the zero rates. A traced game of the script at filling-orders on bff836b8 (every decision's scalars) is queued after #155's trace; the re-read comes from it, and then the schema change if still needed."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3698,6 +3707,10 @@
         {
           "at": "2026-11-08 03:41",
           "text": "Audit #158: #147's A/B has ended (c723962); the live stage is now 7960dfc's floors, then #155's Workshop 79 trace."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Audit #160: device stages still live: #155's trace, then #141's traced game, #146's parity stage and #145. The rename waits for a gap with none running."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3732,6 +3745,14 @@
         {
           "at": "2026-11-08 03:01",
           "text": "Audit 2026-11-08: the title's M3-P022 half is met (5a18a2f, bar at docs/experiments.md 'M3-P022: outcome'). Remaining: #136's floors and #148's pilot for item 5; ADR 0020 still Proposed."
+        },
+        {
+          "at": "2026-11-08 04:46",
+          "text": "7712a66: on bff836b8, filling-orders beats saving-orders for the script by +1.27 [+0.45, +2.00] and loses for random by -2.75 [-5.50, -0.25]. With M3-P022's outcome, both pieces of evidence ADR 0020 asked for are now recorded; the decision is the developer's."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Audit #160, correcting the 04:46 comment: the evidence for items 1-4 is recorded (5a18a2f, 7712a66); item 5 (world model at 128) is tested by #148's pilot. Acceptance is the developer's. ADR 0020 names saving-orders and keeps filling-orders as a spike beside it, so adopting filling-orders would need an amendment first."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3740,7 +3761,7 @@
       "id": 145,
       "title": "A turtle-into-blender script on the guides' in-run order is measured at Workshop 10, with Enemy Attack Level Skip's effect read above level 1",
       "body": "Replaces #138. The guides define Blender on maxed Workshop and Labs, so 'guide-faithful' cannot be checked at Workshop 10. The script follows their in-run order: cash, Free Upgrades, then Health, Defense %, Knockback, Orbs and Orb Speed, Thorns, Attack Speed, the Recovery rows, with Skips from the late guide. A benchmark only, handed to no learner. Needs #136's floors first, so it runs after M3-P022.",
-      "status": "Blocked",
+      "status": "Next",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -3753,6 +3774,10 @@
         {
           "at": "2026-11-08 03:41",
           "text": "Audit #158: #147's device verdict is in (c723962). Waits only on 7960dfc's floors; runs on bff836b8."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Audit #160: its last gate, the filling-orders floors, is recorded (7712a66), so it is unblocked. Cadence to measure at: filling-orders, beside saving-orders. Device queue: #155's trace (running), #141's traced filling-orders game, #146's parity stage, then this."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3761,7 +3786,7 @@
       "id": 146,
       "title": "Speed-up parity is measured at Workshop 10 past wave 50 on the current game and bridge, and evaluation's build is settled",
       "body": "No parity evidence exists on 29.1.4 or the current build, or above wave 16 on any. One pre-registered stage: the same script at 16.667 vs 100 ms and render interval 1 vs 16, read per wave. The result settles which build evaluation plays on, and docs/solution.md follows. Evidence: docs/experiments.md, 'Review of the game path'.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -3774,6 +3799,14 @@
         {
           "at": "2026-11-08 03:41",
           "text": "Audit #158: bff836b8's verdict is in (c723962). 5b6a7d33 (default build) has never run on a device; its first run can be inside this stage, after a short free-level/price probe on it."
+        },
+        {
+          "at": "2026-11-08 04:46",
+          "text": "Floors on bff836b8 recorded in 7712a66 (70/70 valid, 0 instances lost). The default-render build 5b6a7d33 has still not run on a device."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Pre-registered in bb21342: four arms (training build at 100 ms vs default build at 16.667 ms, plus both single changes), interleaved, 21 episodes each, after a free-level/price probe on 5b6a7d33. Gate: D minus A inside +/-3. Queued behind #155's trace and #141's traced game."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3782,7 +3815,7 @@
       "id": 147,
       "title": "A bridge build rolls Free Upgrades only on real rows, pauses a world that slipped, and refreshes prices at the wave turn",
       "body": "Three defects from 'Review of the game path', one build. Writing unlock flags only on real rows amends ADR 0011. The digest changes, so floors are measured again on it. Blocked on M3-P022 for the device check; the source and the build do not need the emulators.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 17:00",
@@ -3807,9 +3840,14 @@
         {
           "at": "2026-11-08 03:41",
           "text": "c723962: both built fixes verified on device. bff836b8 puts 0 of 17 free levels on empty slots and leaves 0 of 17 stale prices; b8b8cd45 9 of 23 and 10 of 14. Remaining: the floors on the new digest (7960dfc, running). The title's Pause clause is not built and moves to its own M3 exit; this card closes on the two fixes and the floors."
+        },
+        {
+          "at": "2026-11-08 04:46",
+          "text": "Done on the two built fixes: free levels only on named rows and the wave-turn price refresh, both verified on the device (c723962). Floors on bff836b8 in 7712a66: script at saving-orders -1.18 [-1.91, -0.36] against b8b8cd45, inside the +/-3 gate. The title's Pause clause is not built; it is #159."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T03:46:18.119266Z"
     },
     {
       "id": 148,
@@ -3828,6 +3866,14 @@
         {
           "at": "2026-11-08 03:41",
           "text": "Audit #158: add 7960dfc's gate (a saving-orders script floor that moves beyond \u00b13 waves on bff836b8 stops this pre-registration until explained). The pilot is the first DreamerV3 run with symlog_once (59b5108); the offline ratio-128 AUCs used double-compressed inputs, so they are not like-for-like."
+        },
+        {
+          "at": "2026-11-08 04:46",
+          "text": "7712a66: the +/-3 gate passes (script at saving-orders on bff836b8 -1.18 [-1.91, -0.36]), and #136 has its floors (script 101.82, random 22.50 at filling-orders). Gates still open: #141, #146, #151, #153."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Audit #160: gates are #141, #146 and #151. #153 is not a precondition: this card's pre-registration adopts 533d282's rule (patience 12 at 1.0, WORKSHOP_* stops only on played episodes), and that closes #153. #152 does not gate it: the pilot runs on --upgrade-availability all like M3-P019-P022 and every floor."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3858,6 +3904,10 @@
         {
           "at": "2026-11-08 03:41",
           "text": "Audit #158 map update. Observation: c723962 (prices refresh on device, free levels only on real rows); single compression 59b5108 has a solution.md row but no experiments.md entry yet, to be cited from #148's pilot; #141 still open. Rest as in the 03:02 map."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Audit #160 map update. Action semantics: filling-orders floors 7712a66 (script 101.82, random 22.50, mask_legal_rejected 0); acceptance still with #144. Observation: c723962 and 59b5108; #141 open. Reward: #151 open. Evaluation isolation: as audited only. Learner: #148."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3892,7 +3942,7 @@
       "id": 153,
       "title": "The next pre-registration sets its plateau stop rule from measured learning curves",
       "body": "The current rule (patience 6, min improvement 1.0) ends a run at its first plateau; M3-P022 rose from 72 to 95 after a long flat stretch (periods 9-15). Settle before #148 is pre-registered.",
-      "status": "Next",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-07 23:52",
@@ -3901,6 +3951,14 @@
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: M3-P022's full curve is recorded (5a18a2f): 60-73 for periods 2-15, a jump to 89 at 16, best 95 at 21, stopped by patience 6. Also settle there the stop-rule conflict that entry records: WORKSHOP_* is a stop, a failed start's stale_or_duplicate a retried note, and a WORKSHOP_NOT_APPLIED start was both (see #127 for typed failures)."
+        },
+        {
+          "at": "2026-11-08 04:50",
+          "text": "533d282: period-mean SE ~0.8 waves; min improvement 0-3 changes no stop on either curve, patience is the lever (P4 would have ended M3-P022 at 65, P6 survived its flat stretch by 2 periods). Rule for #148's pre-registration: patience 12 (60k decisions) at 1.0, and WORKSHOP_* stops only on a played episode; a refused start is a retried failed start. Closes when #148's pre-registration adopts it."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Rule set from the curves in 533d282 (patience 12 at 1.0 wave; WORKSHOP_* stops only on a played episode). Blocked on #148, whose pre-registration adopts it; this card closes on that commit. It is not a gate #148 waits on."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3923,8 +3981,17 @@
       "id": 155,
       "title": "Why every Workshop 79 episode ends on exactly wave 483 is explained",
       "body": "All 7 episodes at uniform Workshop 79 ended on wave 483 at full health then died in 3-4 waves (docs/experiments.md, Workshop scan). A fixed wall there bears directly on wave 999.",
-      "status": "Next",
-      "comments": [],
+      "status": "In progress",
+      "comments": [
+        {
+          "at": "2026-11-08 04:46",
+          "text": "Floors on the current build are done (7712a66). This card's traced Workshop 79 game is next on the devices."
+        },
+        {
+          "at": "2026-11-08 04:58",
+          "text": "Pre-registered in c6d8cce; 7 traced games at Workshop 79 on b8b8cd45 running now."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -3969,6 +4036,13 @@
       "status": "Next",
       "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 160,
+      "title": "Board audit: 2026-11-08 (after #136, #147)",
+      "body": "",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

@@ -3365,7 +3365,7 @@ first arm's flags read the same, 1,704 of 1,704 against 0 of 1,728.
   rounds, and the device was gone from adb by teardown. It is the old build, it is not
   what this changes, and it is left unexplained.
 - **Not covered:** the default build `5b6a7d33…` has not run on a device. The bridge
-  still does not press `Pause` again when a hold slips (`#129`). The script floors on
+  still does not press `Pause` again when a hold slips (`#159`). The script floors on
   the new digest are not measured here.
 
 ## Floors on `ws2914c` at `saving-orders` and `filling-orders` (pre-registered, written before any of its device episodes)
@@ -3520,6 +3520,9 @@ is read from where the two curves cross, not from an exact equality.
 **What it decides.** Nothing about a learner or the path to wave 999. It explains, or
 fails to explain, a number the Workshop scan left open.
 
+**Safety,** the scan's: clone only, read-only instances, offline, no screenshots, no
+input, no coins or permanent progression.
+
 ## The plateau stop rule, read from `M3-P021`'s and `M3-P022`'s curves (analysis, no device)
 
 **Date:** 2026-11-08. Board `#153`. Both runs used patience 6 and a minimum
@@ -3629,9 +3632,6 @@ about 103, with Defense Absolute and no Orbs.
 
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
-
-**Safety,** the scan's: clone only, read-only instances, offline, no screenshots, no
-input, no coins or permanent progression.
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

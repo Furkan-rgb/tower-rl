@@ -13,16 +13,19 @@ context rather than as current truth. Open work is on the board, milestone
   are benchmarks only and hand the learner nothing.
 - **The game** is The Tower 29.14 on the rooted clone AVD `tower_rl_instrumented_api36`,
   read-only instances on even ports from 5556, offline. `emulator-5554` is the master
-  and is never touched. Bridge build: `state/bridge/builds/ws2914b-render-interval-16-nodelay`,
-  selected with `TOWER_BRIDGE_BUILD_DIR`, digest `b8b8cd45…`.
+  and is never touched. Bridge build: `state/bridge/builds/ws2914c-render-interval-16-nodelay`,
+  selected with `TOWER_BRIDGE_BUILD_DIR`, digest `bff836b8…`. It puts free levels
+  only on real rows and refreshes prices at the wave turn (`docs/experiments.md`,
+  "Bridge `ws2914c` on the device").
 - **The learner** is the DreamerV3 port, which follows its reference code unless the
   environment forces otherwise (ADR 0018). R2D2 is built and not in use for this goal.
 - **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change.
 - **The cadence** is on trial. `choice-points` is the contract and ADR 0020 is Proposed.
   `saving-orders` is what `M3-P022` ran: IQM 86.94 on its final evaluation, against
   `M3-P021`'s 48.75 and the script's 101.73 (`docs/experiments.md`, "`M3-P022`:
-  outcome"). `filling-orders` buys one level and stands until filled, and is not yet
-  played on the game.
+  outcome"). `filling-orders` buys one level and stands until filled. Its floors on
+  `bff836b8…` are the script's 101.82 and `random`'s 22.50 (`docs/experiments.md`,
+  "Floors on `ws2914c`"). No learner has played it.
 - **The last full reading of the setup** is `docs/experiments.md`, "Review of the
   training setup". It says what is verified and what is not, and supersedes the
   older sections below where they differ.

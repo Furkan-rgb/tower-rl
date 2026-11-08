@@ -3698,6 +3698,10 @@
         {
           "at": "2026-11-08 05:34",
           "text": "Carry-over confirmed from M3-P022's replay (d0135516): at an episode's first state, enemies_killed > 0 in 1,751 of 1,890 episodes, and in 1,455 of them with enemies_spawned 0; the 7 cold-launch first episodes read 0. Values (21, 14, 8, ...) look like the previous episode's last wave. Fixing it host-side needs to know whether wave 1 counts on top of the carried value: a traced game of 2 episodes an actor (no relaunch between) will show it, after #146's parity stage."
+        },
+        {
+          "at": "2026-11-08 05:36",
+          "text": "Correction to the 05:xx comment: the carried values (nothing spawned) run 2-122, median 114, not 2-22; the first 20 were early short episodes. Pre-registered in d888688 (range fixed in the next commit)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3898,6 +3902,10 @@
         {
           "at": "2026-11-08 04:58",
           "text": "Audit #160: gates are #141, #146 and #151. #153 is not a precondition: this card's pre-registration adopts 533d282's rule (patience 12 at 1.0, WORKSHOP_* stops only on played episodes), and that closes #153. #152 does not gate it: the pilot runs on --upgrade-availability all like M3-P019-P022 and every floor."
+        },
+        {
+          "at": "2026-11-08 07:20",
+          "text": "#151 settled 2026-11-08: the developer accepted the survival reward for DreamerV3 (docs/task.md 7.5). Gates still open: #141, #146."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3940,14 +3948,19 @@
       "id": 151,
       "title": "The developer accepts or rejects the survival-time reward for DreamerV3",
       "body": "docs/task.md 7.5 records the acceptance for R2D2 only, and DreamerV3 runs use the flag (docs/experiments.md). The decision is the developer's; the Lead recommends acceptance.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-07 23:52",
           "text": "Blocked on the developer's decision."
+        },
+        {
+          "at": "2026-11-08 07:20",
+          "text": "Developer accepted on 2026-11-08 (\"Yes\"): DreamerV3 keeps --survival-time-reward. docs/task.md 7.5 extends the 2026-09-25 acceptance to --backbone dreamerv3, same bound and clock-driven condition."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T06:20:02.512123Z"
     },
     {
       "id": 152,

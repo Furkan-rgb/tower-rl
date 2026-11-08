@@ -3076,7 +3076,8 @@ scratchpad and are not committed.
   1,084 of 1,084 in `M3-P022`, as audited. Row identity is read from the game's labels.
 - Each episode starts fresh. In `M3-P021` first-state stats are constant and no in-run
   level carries over, as audited.
-- Evaluation never reaches replay or training, as audited.
+- Evaluation never reaches replay or training, as audited. The evidence is named in
+  "Evaluation isolation: the code path, a test, and `M3-P022`'s records" below.
 
 **Speed-up fidelity is unverified on this game and build. High for a wave-999 claim.**
 As audited, parity evidence exists only on 29.0.3 and older builds, at most near wave
@@ -3761,6 +3762,49 @@ about 103, with Defense Absolute and no Orbs.
 
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
+
+## Evaluation isolation: the code path, a test, and `M3-P022`'s records (analysis, no device)
+
+**Date:** 2026-11-08. Board `#164`. The training-setup review stated "Evaluation never
+reaches replay or training, as audited" and named nothing. This entry names the evidence.
+
+**The path.** `evaluate` builds its actor with `replay=None` and forces epsilon to 0
+(`src/tower_rl/learning/evaluator.py:168-169`). An actor writes only into a
+`DreamerReplay` or an `R2D2Replay` (`actor.py:191-194`), so an evaluation episode has
+nowhere to go. A mid-run evaluation holds the learner still (`TrainingRun._learner_still`),
+and a fleet refuses one outright, because it would borrow an instance that is collecting
+(`TrainingRun._refuse_evaluation_during_collection`, `scripts/train.py:1117`). A fleet's
+one evaluation runs after the budget is spent and after the resume point and its replay
+are saved (`scripts/train.py:1722`, `1739`).
+
+**The test.** `test_an_evaluation_adds_nothing_to_replay_and_takes_no_optimisation_step`
+(`tests/unit/test_dreamer.py`) runs DreamerV3 on the fake port with the real evaluator,
+called through the learner's own network on the actor's own instance after every
+episode. Replay's item and step counts and the optimisation step count are the same
+before and after every evaluation. The evaluations fall while replay is still filling
+and after learning has started, so a leak would show. It fails when one extra actor
+writes the evaluation's episode into replay (checked once by hand, not kept). The tests
+beside it: `test_evaluation_never_explores_even_if_configured_to`,
+`test_evaluation_does_not_consume_the_budget`,
+`test_a_fleet_refuses_to_evaluate_on_an_instance_that_is_still_collecting`,
+`test_an_evaluation_of_another_runs_checkpoint_is_refused`, and
+`test_each_acting_copy_samples_from_a_stream_of_its_own`, which shows acting draws nothing
+from the torch stream the learner samples from.
+
+**`M3-P022`'s records** (`state/runs/m3-p022-dreamerv3-ws10-v2914-20261107T071325Z`,
+read 2026-11-08):
+
+- The replay saved at the resume point before the final evaluation
+  (`replay/d0135516/replay.json`) holds 137,404 steps. The summary written after the
+  30-episode evaluation (`segments/1/summary.json`) reads `replay.steps` 137,404.
+- The evaluation's `model_version` is 268,218, the run's `optimisation_steps`.
+- The evaluation's `decisions` field is 135,516, the run's collected decisions, so the
+  evaluation's own decisions were not counted in the budget.
+
+**What it does not cover.** The evaluation plays through the learner's network itself,
+not an acting copy. For a fleet that happens only after learning ends. A single-actor run
+with `--evaluate-every-episodes` would advance the learner's acting random stream
+mid-run. That stream carries no data and learning does not read it.
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

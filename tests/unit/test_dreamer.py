@@ -49,6 +49,7 @@ from tower_rl.learning.dreamer_replay import (
     EpisodeSteps,
     episode_steps,
 )
+from tower_rl.learning.evaluator import EvaluationReport, evaluate
 from tower_rl.learning.exploration import ExplorationSchedule
 from tower_rl.learning.learner import Learner
 from tower_rl.learning.replay import SequenceMetadata
@@ -469,6 +470,57 @@ def test_a_short_training_run_on_the_fake_port_takes_finite_optimisation_steps()
     assert report.optimisation_steps > 0
     assert backbone.model_version == report.optimisation_steps
     assert all(math.isfinite(loss) for loss in report.recent_weighted_losses)
+
+
+def test_an_evaluation_adds_nothing_to_replay_and_takes_no_optimisation_step() -> None:
+    """Evaluation isolation (docs/task.md 1.1), with the real evaluator.
+
+    It plays through the learner's own network on the actor's own instance, as
+    `scripts/train.py` does, and must leave replay and the step count where it
+    found them.
+    """
+    environment = InstrumentedRunEnvironment(
+        port=FakeRunPort(damage_per_second=2.0),
+        builder=RunStateBuilder(profile_id="fake-profile-v1"),
+        cadence=CadenceConfig(max_quiet_game_ms=1000),
+    )
+    backbone = _backbone()
+    replay = DreamerReplay(capacity=256, length=LENGTH + 1, seed=0)
+    actor = Actor(environment=environment, policy=acting_copy(backbone), replay=replay)
+    training = TrainingRun(
+        actors=[actor],
+        replay=replay,
+        backbone=backbone,
+        config=TrainingConfig(
+            budget_decisions=120,
+            warmup_sequences=2,
+            batch_size=SMALL.batch_size,
+            gradient_steps_per_decision=0.25,
+            exploration=ExplorationSchedule(
+                epsilon_start=0.0, epsilon_end=0.0, anneal_decisions=1
+            ),
+            evaluate_every_episodes=1,
+        ),
+    )
+    readings: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
+
+    def held() -> tuple[int, int, int]:
+        return len(replay), replay.steps_held, training.report.optimisation_steps
+
+    def evaluate_now() -> EvaluationReport:
+        before = held()
+        report = evaluate(environment, backbone, episodes=1, profile_id="fake-profile-v1")
+        readings.append((before, held()))
+        return report
+
+    training.evaluate = evaluate_now
+    training.run()
+
+    assert all(before == after for before, after in readings)
+    # Evaluations fell where an addition or a step could have shown: while
+    # replay was still filling and after learning had started.
+    assert len({before[1] for before, _ in readings}) > 1
+    assert any(before[2] > 0 for before, _ in readings)
 
 
 

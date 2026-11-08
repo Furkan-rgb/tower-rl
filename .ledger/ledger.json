@@ -4200,7 +4200,7 @@
       "id": 164,
       "title": "Evaluation isolation cites a docs/experiments.md entry naming the tests and run records that show evaluation episodes enter no replay and cause no update",
       "body": "Audit #162: evaluation isolation rests on 'Evaluation never reaches replay or training, as audited' (docs/experiments.md, Review of the game path), with no tests or records named. Serves #150's evaluation-isolation row.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [],
       "parent": 150
     }

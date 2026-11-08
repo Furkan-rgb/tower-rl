@@ -3368,6 +3368,44 @@ first arm's flags read the same, 1,704 of 1,704 against 0 of 1,728.
   still does not press `Pause` again when a hold slips (`#129`). The script floors on
   the new digest are not measured here.
 
+## Floors on `ws2914c` at `saving-orders` and `filling-orders` (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-08. Board `#147`, `#136`. Measurement only, no learner.
+
+**Question.** What do the floors read on `bff836b8…`? At `saving-orders`, does the new
+build move the script's floor of 101.73 on `b8b8cd45…`? It should not, because the
+script buys no Free Upgrade row. At `filling-orders`, what do the script and `random`
+reach, the first play of that cadence on the game?
+
+**Protocol.** `scripted_stage.sh`'s settings with `TOWER_BRIDGE_BUILD_DIR` on
+`ws2914c-render-interval-16-nodelay`: 7 actors, 1 episode each, Workshop 10,
+`--upgrade-availability all`, `--frame-game-ms 100`, one stage at a time, in this order:
+
+1. `build-defense-absolute` at `saving-orders`, three rounds, 21 episodes.
+2. `build-defense-absolute` at `filling-orders`, three rounds, 21 episodes.
+3. `random` at `filling-orders`, two rounds, 14 episodes.
+4. `random` at `saving-orders`, two rounds, 14 episodes.
+
+Every valid episode of a round is pooled. A round that loses instances is not
+repeated, and the count is reported as it fell.
+
+**Read.**
+
+- The IQM and range of each arm, and the IQM difference against its `b8b8cd45…`
+  counterpart at `saving-orders` by `M3-P019`'s stratified bootstrap.
+- At `filling-orders`: decisions and purchases an episode, the share of orders filled,
+  and the share of orders ended by a fall in health.
+- Invalid episodes by reason, `mask_legal_rejected`, and failed bring-ups.
+
+**What it decides.** Nothing about a learner. A `saving-orders` script floor whose IQM
+difference against 101.73 has its interval wholly beyond ±3 waves means the build
+changed play the script should not see, and stops `#148`'s pre-registration until that is explained.
+The `filling-orders` floors are the floors `#136` needs. They come before any learner
+plays that cadence.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 ## Workshop scan: how far the script goes at Workshop 20, 40 and 79 (measurement only, written before its device episodes)
 
 **Date:** 2026-11-07. Board `#135`.

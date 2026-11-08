@@ -4268,8 +4268,14 @@
       "id": 165,
       "title": "Board audit: 2026-11-08 (after #146)",
       "body": "Audit due: exit #146 closed.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-08 09:40",
+          "text": "Applied in 09b0ef0: setup.md ws2914c builds; solution.md 9.2c and traceability row cite the parity entry; dated pointers in experiments.md's game-path review; comments on #142, #144, #150, #157, #163, #65. #145's 09:34 comment committed."
+        }
+      ],
+      "closed_at": "2026-11-08T08:40:00.814406Z"
     }
   ],
   "milestones": [

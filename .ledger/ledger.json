@@ -3974,7 +3974,7 @@
       "id": 152,
       "title": "The developer decides whether runs open every in-run row (--upgrade-availability all), where the account offers 6",
       "body": "48 rows are opened where the account offers 6 (docs/experiments.md). It bears on 'minimal Workshop levels' and on whether the learner plays the game a human can. The decision is the developer's.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:52",
@@ -3983,9 +3983,14 @@
         {
           "at": "2026-11-08 05:22",
           "text": "Audit #161: under 'image' the six in-run rows are Damage, Attack Speed, Crit Chance, Crit Factor, Health and Health Regen: no Defense %, Defense Absolute, Thorns, Orbs, Knockback or Lifesteal. Neither turtle nor blender exists there, so the decision is whether any guide build is playable, not only how minimal the Workshop is."
+        },
+        {
+          "at": "2026-11-08 07:22",
+          "text": "Developer decided 2026-11-08: every upgrade (--upgrade-availability all); the learner figures out which rows to buy. Recorded in docs/task.md 7.2 (43047ac)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-08T06:22:45.309894Z"
     },
     {
       "id": 153,

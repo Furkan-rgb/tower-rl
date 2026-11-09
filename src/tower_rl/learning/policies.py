@@ -592,6 +592,34 @@ def _block_is_enough(features: StateFeatures) -> bool:
     return block >= BLOCK_MARGIN * hit
 
 
+#: The in-run row whose levels are each wave's chance to skip the enemies'
+#: attack scaling: it slows the damage that ends every Defense Absolute game.
+ENEMY_ATTACK_SKIP = "Enemy Attack Level Skip"
+
+
+@dataclass
+class SkipTurtlePolicy(LateGameBuildPolicy):
+    """The turtle on the block's margin, with Enemy Attack Level Skip for the rest (`#173`).
+
+    Before `LATE_GAME_WAVE` it plays the shared opening. From then, while Defense
+    Absolute blocks less than `BLOCK_MARGIN` normal hits it buys Defense Absolute,
+    and otherwise `ENEMY_ATTACK_SKIP`; either is saved for when it cannot pay. Once
+    one of the two is no longer sold, every purchase goes to the other.
+    """
+
+    build: str = field(default="defense-absolute", init=False)
+    row_names: ClassVar[tuple[str, ...]] = (*EARLY_GAME_ROWS, ENEMY_ATTACK_SKIP)
+
+    def _late_game(self, features: StateFeatures) -> int:
+        assert self.rows is not None
+        defense, skip = self.rows[DEFENSE_ABSOLUTE], self.rows[ENEMY_ATTACK_SKIP]
+        short = row_offered(features, defense) and not _block_is_enough(features)
+        index = defense if short or not row_offered(features, skip) else skip
+        if not row_offered(features, index):
+            return 0
+        return index if features.mask[index] else 0
+
+
 def _took_damage_on_a_normal_wave(features: StateFeatures) -> bool:
     """Below full health on a wave without a boss or mini-boss."""
     scalar = features.scalars

@@ -3696,6 +3696,49 @@ uniform level. Neither measures the rows ADR 0012 leaves out: Workshop Orbs, the
 Enemy Level Skips, Recovery, Death Defy and the Wall. Nor do they measure Labs or a
 learner.
 
+## The turtle with Enemy Attack Level Skip at Workshop 10 and 79 (measurement only, written before its device episodes)
+
+**Date:** 2026-11-09. Board `#173`.
+
+**Question.** Does buying Enemy Attack Level Skip in the run move the wall? Every
+Defense Absolute game ends when the wave's damage outgrows the block. The skip's
+in-run row is described as "On Wave End: Chance to skip Enemy Attack scaling". In
+`M3-P023`'s replay it sells to level 699 from about 240–341 cash, and no script has
+ever bought it. The developer chose to test the rows ADR 0012 leaves out, the skips
+first. Because this one is an in-run row, it needs no Workshop at all.
+
+**The arm, `build-turtle-skip`** (`SkipTurtlePolicy`).
+
+- **Before wave 30:** the shared opening.
+- **From wave 30:** Defense Absolute while the block stops fewer than 1.5 normal
+  hits, as `build-turtle-blender-margin` does; otherwise Enemy Attack Level Skip.
+- **Saving:** either row is saved for when the arm cannot pay.
+- **When one row stops being sold:** every purchase goes to the other.
+
+**Protocol.**
+
+- Two stages, in this order: `--workshop-level 10`, then `--workshop-level 79`.
+- Each stage: 4 actors × 1 episode, `filling-orders`, `--upgrade-availability all`,
+  `ws2914c-render-interval-16-nodelay` (`bff836b8…`), `--frame-game-ms 100`.
+- Read-only clones, offline, no screenshots and no input, no coins and no permanent
+  progression.
+
+**Read.**
+
+- Each episode's final wave, against the Defense Absolute script on the same build
+  and cadence at Workshop 10 (IQM 101.82) and the scan's 483 at Workshop 79.
+- The skip's final level and the waves it was bought in.
+- `wave_base_damage` is not in the record. The skip's effect is therefore read only
+  through the final wave and the block's level at death.
+
+**What it decides.**
+
+- **Final waves well above both references:** the skip is the lever. Enemy Health
+  Level Skip and the split between the block and the skip are measured next.
+- **Within 5 waves at Workshop 10 and within 20 at Workshop 79:** the skip does not
+  move the wall as bought here. Workshop Orbs, Recovery, Death Defy and the Wall come
+  next.
+
 ## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
 
 **Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the

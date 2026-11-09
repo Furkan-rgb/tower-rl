@@ -27,6 +27,7 @@ from tower_rl.learning.policies import (
     CheapestFirstPolicy,
     LateGameBuildPolicy,
     MarginTurtleBlenderPolicy,
+    SkipTurtlePolicy,
     TurtleBlenderPolicy,
     TurtlePolicy,
     WaitOnlyPolicy,
@@ -59,6 +60,7 @@ LABELS = tuple(
         ("defense", 8, "Orb Speed"),
         ("defense", 9, "Orbs"),
         ("utility", 0, "Cash Bonus"),
+        ("utility", 11, "Enemy Attack Level Skip"),
     )
 )
 ROWS = {label.name: action_index(upgrade_action(label.family, label.index)) for label in LABELS}
@@ -536,6 +538,44 @@ def test_a_row_priced_at_zero_is_not_on_sale_even_when_it_reads_unmaxed() -> Non
     assert policy.act(state, None)[0] == ROWS["Health"]
 
 
+# -- the turtle with Enemy Attack Level Skip --------------------------------------
+
+
+def _skip_turtle() -> SkipTurtlePolicy:
+    policy = SkipTurtlePolicy()
+    policy.bind_row_names(LABELS)
+    policy.initial_state()
+    return policy
+
+
+def _skip_state(block: float, *, skip_price: float = 100.0, cash: float = 1e9) -> StateFeatures:
+    """A `_guarded` state (a hit of 500) with the skip priced at `skip_price`."""
+    state = _guarded(block, cash=cash)
+    priced = _at(cash, {**EVERYTHING, "Enemy Attack Level Skip": skip_price})
+    return StateFeatures(scalars=state.scalars, rows=priced.rows, mask=priced.mask)
+
+
+def test_the_skip_turtle_buys_defense_absolute_while_the_block_is_short() -> None:
+    assert _skip_turtle().act(_skip_state(700.0), None)[0] == ROWS["Defense Absolute"]
+
+
+def test_the_skip_turtle_buys_the_attack_skip_once_the_block_is_enough() -> None:
+    policy = _skip_turtle()
+    bought = [policy.act(_skip_state(800.0), None)[0] for _ in range(5)]
+    assert bought == [ROWS["Enemy Attack Level Skip"]] * 5
+
+
+def test_the_skip_turtle_buys_defense_absolute_once_the_skip_is_not_sold() -> None:
+    # Priced at 0: at its cap, or not on sale.
+    state = _skip_state(800.0, skip_price=0.0)
+    assert _skip_turtle().act(state, None)[0] == ROWS["Defense Absolute"]
+
+
+def test_the_skip_turtle_saves_for_the_skip_rather_than_buying_defense_absolute() -> None:
+    state = _skip_state(800.0, skip_price=500.0, cash=200.0)
+    assert _skip_turtle().act(state, None)[0] == 0
+
+
 # -- row names -------------------------------------------------------------------
 
 
@@ -569,5 +609,6 @@ def test_the_name_binding_protocol_covers_the_turtle_and_the_builds() -> None:
     assert isinstance(BlenderBuildPolicy(), BindsRowNames)
     assert isinstance(TurtleBlenderPolicy(), BindsRowNames)
     assert isinstance(MarginTurtleBlenderPolicy(), BindsRowNames)
+    assert isinstance(SkipTurtlePolicy(), BindsRowNames)
     assert not isinstance(CheapestFirstPolicy(), BindsRowNames)
     assert not isinstance(WaitOnlyPolicy(), BindsRowNames)

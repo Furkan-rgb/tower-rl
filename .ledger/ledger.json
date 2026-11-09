@@ -1,5 +1,5 @@
 {
-  "next_id": 172,
+  "next_id": 173,
   "items": [
     {
       "id": 1,
@@ -3867,6 +3867,10 @@
         {
           "at": "2026-11-09 04:28",
           "text": "Audit #170: the device gate (after M3-P023) is cleared. #168 comes first."
+        },
+        {
+          "at": "2026-11-09 12:19",
+          "text": "From #171 (d400408): at Workshop 79 the blender's rows (Orbs 4, Orb Speed 38, Knockback Force 40, Knockback Chance 80) all reach their in-run caps by wave 191, and the margin blender ends 40 waves before Defense Absolute. At Workshop 10 #122's arm was also worse. The premise that turtle into blender beats the turtle on this profile is now doubtful; held for the developer's choice in #172."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4471,13 +4475,30 @@
       "id": 171,
       "title": "The lowest Workshop level at which a scripted player reaches wave 999 on Tier 1 is measured on the device, or bounded by a sweep of levels",
       "body": "Developer, 2026-11-09: settle first which minimal Workshop level wave 999 needs. Sweep ADR 0012's profile (11 rows raised to one level) with the existing floor script, then refine near the threshold with #145's turtle-into-blender script. A script's result bounds the needed level from above: a learner may need less. If no level near 10 reaches 999, task.md 1.1's Workshop 10 benchmark is the developer's to revisit. M3-P023's timing: 16.8 game-s per decision in 1.38 s wall, about 12x real time per emulator, so a wave-999 episode is roughly an hour of one emulator.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 11:34",
           "text": "Correction to the body: the uniform-level sweep with the Defense Absolute script exists (#135, experiments.md 'Workshop scan'): 102 at 10, 171 at 20, 282 at 40, 483 at 79, the uniform ceiling. '#155' traced the 483 wall to base damage outgrowing the block. So the open part is the blender, measured top-down: build-turtle-blender-margin (c8274d1) at Workshop 79, 4 actors x 1 episode, filling-orders, bff836b8, pre-registered in experiments.md. Stage launched 2026-11-09, records state/records/margin-blender/ws79."
+        },
+        {
+          "at": "2026-11-09 11:57",
+          "text": "Run 1 (ws79, 4/4 valid, 20 min): final waves 482-483, Defense Absolute 299, the DA wall again, so no blender was measured. From wave 30 the arm bought Orbs 1, then WAITed every wave to 175 with up to 241k cash: Defense %, Thorns and Attack Speed at their caps read unmaxed at price 0, and row_offered took them as on sale and cheapest. Fixed in 55fc8df (row_offered requires a price, as run_state does). Run 2 on the fixed arm launched, records state/records/margin-blender/ws79-r2."
+        },
+        {
+          "at": "2026-11-09 12:19",
+          "text": "Bounded: no uniform level of ADR 0012's profile gives the scripts a route to wave 999. Defense Absolute ends at 483 at the ceiling (79); the margin blender at 79 ends at 440-445, its rows capped in-run by wave 191 (d400408; fix 55fc8df). Rows outside the profile (Workshop Orbs, Enemy Level Skips, Recovery, Death Defy, Wall) and Labs are unmeasured: the developer's decision, #172."
         }
       ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-09T11:19:33.433394Z"
+    },
+    {
+      "id": 172,
+      "title": "The developer chooses the route to wave 999 now that no uniform level of ADR 0012's profile reaches it with the scripts: more Workshop rows, Labs, or a changed goal",
+      "body": "From #171 (d400408): Defense Absolute walls at 483 at the uniform ceiling 79, the margin blender at 440-445 with every blender row capped in-run by wave 191. Options: (a) measure the rows ADR 0012 leaves out (Enemy Attack/Health Level Skip, Workshop Orbs, Recovery, Death Defy, Wall) and single rows above 79; (b) Labs, which the bridge does not touch; (c) change docs/task.md 1.1's target. ADR 0012 and task.md change only on the developer's decision.",
+      "status": "Next",
+      "comments": [],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],

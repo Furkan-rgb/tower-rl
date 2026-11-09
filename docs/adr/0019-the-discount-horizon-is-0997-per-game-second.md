@@ -5,7 +5,9 @@
 discount is a task parameter, expressed per game-second, held identical across
 learners, with the survival reward scaled so its maximum return stays V_REF.
 Neither learner's code default changes: the flag stays required and the run
-sets it.
+sets it. Superseded in value for runs at the order cadences by ADR 0020 item 3
+(0.997 per wave, about 0.99991416 per game-second), which the developer accepted on
+2026-11-09.
 
 ## Context
 

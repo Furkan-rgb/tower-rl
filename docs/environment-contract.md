@@ -334,7 +334,10 @@ turns, an upgrade becomes newly affordable, health moves by
 `health_change_fraction`, or the quiet budget `max_quiet_game_ms` is spent. The
 *decision* cadence says which of those stops the policy is asked about.
 
-**The contract is choice points.** A decision is asked for only at a state whose
+**Choice points decide which stops can be decisions.** Since ADR 0020 was accepted
+on 2026-11-09, learning runs and their floors are played at `filling-orders`, below.
+`choice-points` remains the code default and the cadence of the runs recorded before
+then. A decision is asked for only at a state whose
 legal set contains at least one purchase (`RunState.is_choice_point`, read off
 the action mask so legality and decision-worthiness cannot drift apart). A stop
 whose only legal action is `WAIT` is not a decision — the policy has exactly one
@@ -361,10 +364,10 @@ in every per-episode row and in the session records around them, and in
 and a cross-cadence evaluation (`policies.checkpoint_policy`) by name; a
 checkpoint whose identity names no cadence is read as `every-slice`.
 
-**`standing-orders` is one decision a wave, on trial.**
+**`standing-orders` is one decision a wave, a recorded control.**
 `DecisionCadence.STANDING_ORDERS`, selected by `--decision-cadence
-standing-orders`, is proposed in [ADR
-0020](adr/0020-one-decision-a-wave-by-standing-order.md) and is not the contract.
+standing-orders`, was [ADR
+0020](adr/0020-one-decision-a-wave-by-standing-order.md)'s first proposal.
 The policy is asked at a wave's first choice point, over the same legal set. Its
 answer stands until the wave turns: at each cadence stop in that wave the ordered
 row is bought if it is affordable, and otherwise the world advances. `WAIT` buys
@@ -376,9 +379,9 @@ so `purchases` can exceed `decisions`. A rejected or unconfirmed purchase inside
 order ends the episode exactly as a decided one does, and the transition keeps the
 span that led to it.
 
-**`saving-orders` is `standing-orders` over every row on sale, on trial.**
+**`saving-orders` is `standing-orders` over every row on sale, a recorded control.**
 `DecisionCadence.SAVING_ORDERS`, selected by `--decision-cadence saving-orders`, is
-ADR 0020 as amended after `M3-P021`, and is not the contract. The legal set is
+ADR 0020 as amended after `M3-P021`. The legal set is
 `WAIT` and every row the run still sells: unlocked, priced and not maxed, whatever
 the cash says. A row's `available` flag and `affordability` still say what the cash
 reaches, and the environment buys on those. An order for a row out of reach buys
@@ -387,9 +390,10 @@ the wave that can pay. An order the wave could not pay for ends with outcome
 `WAITED`, and the next wave's turn asks again. A wave folds into the decision
 before it only if nothing at all is on sale.
 
-**`filling-orders` buys one level and stands until filled, on trial.**
-`DecisionCadence.FILLING_ORDERS`, selected by `--decision-cadence filling-orders`
-(`#136`), is not the contract. The legal set is `saving-orders`' set. An order buys the
+**`filling-orders` buys one level and stands until filled; it is the cadence learning
+runs are played at.** `DecisionCadence.FILLING_ORDERS`, selected by
+`--decision-cadence filling-orders` (`#136`), is ADR 0020 as the developer accepted it
+on 2026-11-09. The code default is still `choice-points`, so every run passes the flag. The legal set is `saving-orders`' set. An order buys the
 row's next level the moment the cash reaches its price, and buys nothing else until
 then, across as many waves as that takes. The transition ends there with outcome
 `EXECUTED`, and the policy is asked at once, so cash left over stays spendable and two

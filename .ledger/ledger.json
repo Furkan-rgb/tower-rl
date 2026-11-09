@@ -1,5 +1,5 @@
 {
-  "next_id": 180,
+  "next_id": 181,
   "items": [
     {
       "id": 1,
@@ -4469,7 +4469,7 @@
       "id": 167,
       "title": "The developer accepts, amends to filling-orders, or rejects ADR 0020 on M3-P022's and M3-P023's results",
       "body": "Replaces #144 (audit #166). Evidence: M3-P022 outcome (5a18a2f), the filling-orders floors (7712a66), M3-P023 (pre-registered d7a2c58, #148). ADR 0020 item 2 names saving-orders and keeps filling-orders only as the spike beside it (ADR 0020 Revisit if), so accepting filling-orders needs the ADR amended first.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-08 10:32",
@@ -4704,6 +4704,14 @@
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T12:49:57.856842Z"
+    },
+    {
+      "id": 180,
+      "title": "filling-orders is the default decision cadence in code (environment, CLI and run identity), as ADR 0020's acceptance makes it the cadence of learning runs",
+      "body": "ADR 0020 accepted 2026-11-09 (#167). The defaults are still CHOICE_POINTS at run_environment.py:622, run_identity.py:102 and 121, and run_episodes.py:334; runs pass the flag. A record or checkpoint that names no cadence must still read as before.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],
   "milestones": [

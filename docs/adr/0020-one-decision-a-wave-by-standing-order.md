@@ -1,13 +1,15 @@
 # ADR 0020 — One decision a wave, by standing order
 
-**Status:** Proposed, 2026-11-06. Item 2 amended 2026-11-07 on `M3-P021`'s result:
-it first kept the mask at affordability, and that form is recorded under Options
-rejected. Item 5 amended 2026-11-07 on the review of the training setup: the world
-model learns at 128. The ceiling cost amended 2026-11-08 on the wave-483 trace: the
-script's wall is its build's, not shown to be the account's. Board `#144`, `#134`. Nothing here is the contract: `choice-points` stays
-the default and ADR 0009 and ADR 0019 stand. The pilots `M3-P021` and `M3-P022`
-(`docs/experiments.md`) are the spikes whose output is this decision, and the
-developer accepts or rejects it.
+**Status:** Accepted by the developer on 2026-11-09, amended to `filling-orders`:
+items 1–4 as written below, with `filling-orders` as the cadence. Item 5 stays
+Proposed until the cause of `M3-P023`'s learner failures is found (`#169`). Board
+`#167`. The earlier amendments came from the pilots: item 2 on `M3-P021`'s result
+(2026-11-07; its first form, the affordability mask, is under Options rejected),
+item 5 on the review of the training setup (2026-11-07), and the ceiling cost on
+the wave-483 trace (2026-11-08). The pilots `M3-P021`, `M3-P022` and `M3-P023`
+(`docs/experiments.md`) are the spikes whose output this decision is. ADR 0009's
+choice points still define which stops can be decisions. Item 3 supersedes ADR
+0019's value for runs at the order cadences.
 
 ## Context
 
@@ -33,7 +35,18 @@ game-second and it lost to 0.997 (ADR 0019). Imagination stops after 15 decision
 which is about 28 game-seconds here. At wave 1000 about 94% of an episode's
 decisions would sit more than sixty waves from death, where the odds barely move.
 
-## Decision (proposed)
+## Decision
+
+**As accepted, 2026-11-09: the cadence is `filling-orders`.** An order buys the
+row's next level the moment the cash reaches its price, and buys nothing else until
+then, across as many waves as that takes. It ends early if health falls by
+`health_change_fraction` or the row leaves sale. The legal set is item 2's, every
+row on sale, so decisions follow purchases: several a wave while levels are cheap,
+fewer than one while saving (`docs/environment-contract.md`, "Decision cadence").
+The developer chose it over `saving-orders` because the script's bar in
+`docs/task.md` §1.1, 101.82, is measured at it. `standing-orders` and `saving-orders`
+stay selectable as recorded controls. Items 1 and 2 below are the proposal as the
+pilots tested it.
 
 1. **One decision a wave.** A third `DecisionCadence`, `standing-orders`. The
    policy is asked at a wave's first choice point, over the unchanged action mask,
@@ -86,15 +99,15 @@ death, e^9 at five hundred and about e^2 at a thousand, at a return scale of abo
 - **This lifts no ceiling by itself.** The script's end near wave 102 at Workshop 10 is
   `build-defense-absolute`'s own wall: base damage after Defense % passes the flat
   block (`docs/experiments.md`, "The wall at wave 483"). It is not shown to be the
-  account's ceiling. Whether Workshop 10 allows wave 1000 at all is open
-  (`docs/task.md` §1.1), and a build that does not rest on the block is `#145`.
+  account's ceiling. At Workshop 79 a blender, which does not rest on the block,
+  ended 40 waves before it, its rows capped in-run by wave 191 (`docs/experiments.md`,
+  "Turtle into blender on the block's margin at Workshop 79"). The target is now to
+  beat the script at Workshop 10 (`docs/task.md` §1.1, 2026-11-09).
 
 ## Revisit if
 
 - `M3-P021` does not beat its floors, or beats them only at `choice-points`'
   known level.
 - The scripted floor at `standing-orders` falls well below `choice-points`'.
-- Wave 1000 needs more than one purchase row a wave. The review in
-  `docs/experiments.md` found this limit real for saving as well as buying: an order
-  here spends all it can, and a save must be chosen again each wave. `filling-orders`
-  (`#136`, `docs/environment-contract.md`) is the spike beside this decision.
+- A learner at `filling-orders` cannot beat the script for a reason the order
+  itself causes, such as a save that the health rule keeps ending early.

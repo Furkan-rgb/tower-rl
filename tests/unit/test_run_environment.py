@@ -560,6 +560,24 @@ def test_a_waves_upgrade_costs_snapshot_every_rows_price_at_wave_entry() -> None
     assert summary.waves[0].upgrade_costs == pytest.approx(expected)
 
 
+def test_a_waves_readings_are_the_base_damage_and_block_it_began_with() -> None:
+    """A skip is read against the fixed base-damage schedule, so each wave keeps
+    the base damage, the block and Defense % its first state carried (`#175`),
+    in the player's units: `FakeRunPort` reports base damage 1.176 * 1.18**(wave-1).
+    """
+    environment, _ = _environment()
+    state = environment.reset()
+    first = next(row for row in state.rows if row.action == upgrade_action("attack", 0))
+
+    environment.step(first.action)
+
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+
+    readings = summary.waves[0].readings
+    assert set(readings) == {"currentWaveBaseDamage", "defenseAbs", "defenseRel"}
+    assert readings["currentWaveBaseDamage"] == pytest.approx(1.176 * 1.18 ** (state.wave - 1))
+
+
 def test_the_episode_summary_carries_what_it_ended_holding() -> None:
     """`final_upgrade_levels` and `final_cash` describe the build at the end.
 

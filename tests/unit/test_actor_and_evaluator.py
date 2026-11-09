@@ -501,6 +501,7 @@ def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
         wave=2, completed=True, game_ms=30_000.0, decisions=9, advances=14,
         health_fraction=0.8, cash_log=4.1, upgrades_bought=("attack:0", "defense:1"),
         upgrade_costs={"attack:0": 12.5, "attack:1": 18.75},
+        readings={"currentWaveBaseDamage": 2424.0, "defenseAbs": 6625.0, "defenseRel": 49.5},
     )
 
     record = episode_record(0, _summary(waves=(wave,)))
@@ -516,6 +517,7 @@ def test_the_episode_record_carries_the_wave_rows_the_analysis_reads() -> None:
             "cash_log": 4.1,
             "upgrades_bought": ["attack:0", "defense:1"],
             "upgrade_costs": {"attack:0": 12.5, "attack:1": 18.75},
+            "readings": {"currentWaveBaseDamage": 2424.0, "defenseAbs": 6625.0, "defenseRel": 49.5},
         }
     ]
 

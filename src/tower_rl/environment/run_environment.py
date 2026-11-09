@@ -402,6 +402,10 @@ class _DeathBoundaryUnresolved(RunPortError):
         self.reason = reason
 
 
+#: The live readings a wave's record keeps from its first state (`WaveRecord.readings`).
+WAVE_READINGS: tuple[str, ...] = ("currentWaveBaseDamage", "defenseAbs", "defenseRel")
+
+
 @dataclass
 class _WaveTally:
     """One wave index's share of an episode, accumulated while it is current."""
@@ -422,6 +426,8 @@ class _WaveTally:
     upgrades_bought: list[str] = field(default_factory=list)
     #: Every row's raw cost the instant this wave began, keyed the same way.
     upgrade_costs: dict[str, float] = field(default_factory=dict)
+    #: `WAVE_READINGS` the instant this wave began, in the player's units.
+    readings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -503,6 +509,7 @@ class _EpisodeTally:
         """Open the accumulator for the wave `state` is in, closing the previous."""
         if self.waves:
             self.waves[-1].completed = True
+        hud = hud_readings(state)
         self.waves.append(
             _WaveTally(
                 wave=state.wave,
@@ -511,6 +518,7 @@ class _EpisodeTally:
                 upgrade_costs={
                     str(row.action): round(math.expm1(row.cost_log), 3) for row in state.rows
                 },
+                readings={name: hud[name] for name in WAVE_READINGS},
             )
         )
 
@@ -925,6 +933,7 @@ class InstrumentedRunEnvironment:
                     cash_log=wave.cash_log,
                     upgrades_bought=tuple(wave.upgrades_bought),
                     upgrade_costs=dict(wave.upgrade_costs),
+                    readings=dict(wave.readings),
                 )
                 for wave in self._tally.waves
             ),

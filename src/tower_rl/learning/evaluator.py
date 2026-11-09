@@ -358,6 +358,10 @@ def episode_record(index: int, summary: EpisodeSummary) -> dict[str, Any]:
                 # row, above level 8 included (`#80`). Absent from any record
                 # written before this field existed.
                 "upgrade_costs": dict(wave.upgrade_costs),
+                # The base damage, block and Defense % the instant this wave
+                # began (`#175`). Absent from any record written before this
+                # field existed.
+                "readings": dict(wave.readings),
             }
             for wave in summary.waves
         ],

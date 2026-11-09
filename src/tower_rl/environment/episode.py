@@ -242,6 +242,11 @@ class WaveRecord:
     #: on offer would have cost that wave, which is what a cost curve above
     #: level 8 has to be read against.
     upgrade_costs: Mapping[str, float] = field(default_factory=dict)
+    #: The base damage, the block and Defense % the instant this wave began, in
+    #: the player's units and keyed by the game's field names: what a hit costs
+    #: the tower against the game's fixed damage schedule, which an Enemy Level
+    #: Skip is meant to slow (`#175`).
+    readings: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

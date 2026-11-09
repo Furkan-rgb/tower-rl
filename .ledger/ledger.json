@@ -4584,7 +4584,7 @@
       "id": 175,
       "title": "Episode records carry each wave's base damage, block and Defense %, so a skip's effect is read against the fixed base-damage schedule",
       "body": "Audit #174: #173's pre-registration (27c08b3) can read the skip only through final wave and the block at death. #145's clause (d) asked for the margin each wave; it is lost with #145's retirement.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [],
       "parent": 173
     },

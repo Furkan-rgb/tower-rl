@@ -1,12 +1,12 @@
 # ADR 0020 — One decision a wave, by standing order
 
 **Status:** Accepted by the developer on 2026-11-09, amended to `filling-orders`:
-items 1–4 as written below, with `filling-orders` as the cadence. Item 5 stays
-Proposed until the cause of `M3-P023`'s learner failures is found (`#169`). Board
-`#167`. The earlier amendments came from the pilots: item 2 on `M3-P021`'s result
-(2026-11-07; its first form, the affordability mask, is under Options rejected),
-item 5 on the review of the training setup (2026-11-07), and the ceiling cost on
-the wave-483 trace (2026-11-08). The pilots `M3-P021`, `M3-P022` and `M3-P023`
+items 1–4 as written below, with `filling-orders` as the cadence. Board `#167`. Item
+5 accepted the same day, amended to batches of 64 × 64 on the cause of `M3-P023`'s
+learner failures (`#169`, `#182`). The earlier amendments came from the pilots: item
+2 on `M3-P021`'s result (2026-11-07; its first form, the affordability mask, is
+under Options rejected), item 5 on the review of the training setup (2026-11-07),
+and the ceiling cost on the wave-483 trace (2026-11-08). The pilots `M3-P021`, `M3-P022` and `M3-P023`
 (`docs/experiments.md`) are the spikes whose output this decision is. ADR 0009's
 choice points still define which stops can be decisions. Item 3 supersedes ADR
 0019's value for runs at the order cadences.
@@ -61,16 +61,23 @@ pilots tested it.
    per game-second. That gives DreamerV3 its stock horizon of 333 of its own steps,
    here 333 waves. The discount stays a task parameter per game-second (ADR 0013).
 4. **The reward is unchanged**: `(1−d)·V_REF` with `d = γ_s^Δt`.
-5. **Train ratio 2048.** A wave-long decision yields about 11,000 decisions an hour
-   against the learner's ceiling of about 42,000 updates an hour, so 512 would use
-   about 13% of it. ADR 0018 requires a deviation to name what forces it, and this
-   cadence does: decisions arrive about eight times slower while the update
-   ceiling is unchanged. 2048 is 2 updates a decision, about half the ceiling.
-   The world model learns at 128 of those, from one update in sixteen
+5. **Train ratio 2048, in batches of 64 × 64.** A wave-long decision yields about
+   11,000 decisions an hour against the learner's ceiling of about 42,000 updates
+   of 16 × 64 an hour, so 512 would use about 13% of it. ADR 0018 requires a
+   deviation to name what forces it, and this cadence does: decisions arrive about
+   eight times slower while the update ceiling is unchanged. 2048 replays 2,048
+   steps a decision, about half the ceiling. They are replayed as half an update a
+   decision of 64 sequences, four times DreamerV3's 16, because at 16 × 64 the
+   actor's two updates a decision moved its top choice on 0.77 of fixed states per
+   2,500 decisions in `M3-P023`, on value differences below its own noise. Offline,
+   on that run's replay, 64 × 64 moved it on 0.22 against 0.55 at 16 × 64, at about
+   the same cost (`docs/experiments.md`, "Why `M3-P023`'s learner failed"). The
+   world model learns at 128 of those steps, from one update in sixteen
    (`--world-model-ratio 128`, `docs/solution.md` §9.4c), because at 2048 it
    memorised `M3-P022`'s episodes: a purchase earned no honest credit in
    imagination, and on the same data the world model memorises from ratio 256
-   (`docs/experiments.md`, "Review of the training setup").
+   (`docs/experiments.md`, "Review of the training setup"). At 128 it is not the
+   cause of the actor's movement (the same entry).
 
 On paper, the odds a +1-wave advantage earns rise to e^30 at a hundred waves from
 death, e^9 at five hundred and about e^2 at a thousand, at a return scale of about

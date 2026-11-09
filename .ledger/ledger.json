@@ -4748,14 +4748,23 @@
       "id": 180,
       "title": "filling-orders is the default decision cadence in code (environment, CLI and run identity), as ADR 0020's acceptance makes it the cadence of learning runs",
       "body": "ADR 0020 accepted 2026-11-09 (#167). The defaults are still CHOICE_POINTS at run_environment.py:622, run_identity.py:102 and 121, and run_episodes.py:334; runs pass the flag. A record or checkpoint that names no cadence must still read as before.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 13:57",
           "text": "Audit #181, scope: also run_episodes.py:335-339 help ('choice-points is the contract', filling-orders 'on trial'), run_environment.py:70 and 620-621, and the docs that say the default is still choice-points (environment-contract.md:338-339, 396; workstation-handoff.md:35; architecture.md:119). Keep episode.py:353 and checkpoint.py:102, which read records and checkpoints that name no cadence."
+        },
+        {
+          "at": "2026-11-09 21:03",
+          "text": "filling-orders is the default in run_environment.py, run_identity.py and run_episodes.py (help reworded), docs updated (environment-contract, handoff, architecture); episode.py:353 and checkpoint.py:102 kept. Unit suite passes in three groups (5cd? see commit). e61a777."
+        },
+        {
+          "at": "2026-11-09 21:03",
+          "text": "Correction to the close comment: the commit is e61a777; the unit suite passed in three groups (1,022 + 289 + 448 tests, the cadence-dependent failures fixed and rerun)."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T20:03:43.184670Z"
     },
     {
       "id": 181,

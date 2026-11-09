@@ -32,7 +32,7 @@ context rather than as current truth. Open work is on the board, milestone
   environment forces otherwise (ADR 0018). R2D2 is built and not in use for this goal.
 - **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change. The
   developer accepted it for DreamerV3 on 2026-11-08 (`docs/task.md` §7.5).
-- **The cadence** is `filling-orders`: the developer accepted ADR 0020 with it on 2026-11-09, item 5 (the training ratio) still Proposed (`#182`). It is the code default.
+- **The cadence** is `filling-orders`: the developer accepted ADR 0020 with it on 2026-11-09. It is the code default. Item 5 was accepted the same day as train ratio 2048 in batches of 64 × 64, with the world model at 128 (`#182`).
   `saving-orders` is what `M3-P022` ran: IQM 86.94 on its final evaluation, against
   `M3-P021`'s 48.75 and the script's 101.73 (`docs/experiments.md`, "`M3-P022`:
   outcome"). `filling-orders` buys one level and stands until filled. Its floors on

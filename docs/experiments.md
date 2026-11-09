@@ -3651,6 +3651,51 @@ other rows, or Labs.
 
 It trains nothing, and a script's wave bounds what a level allows from below.
 
+**Outcome (2026-11-09, appended after the stages; the pre-registration above is
+unedited).**
+
+*Run 1 measured no blender.* One stage of 20 minutes, 4 of 4 valid, records
+`state/records/margin-blender/ws79/`. Final waves were 482, 483, 483 and 482, with
+Defense Absolute at 299: the scan's wall. From wave 30 the arm bought Orbs 1, then
+nothing until wave 175, at one `WAIT` a wave, holding up to 241,000 cash while Orb
+Speed cost 15.
+
+- **The cause.** Defense %, Thorn Damage and Attack Speed were at their caps and
+  read unmaxed at price 0. `row_offered` counted them as on sale, so the cheapest
+  survival row was one the arm could not order, and it waited.
+- **The fix.** 55fc8df makes `row_offered` require a price, as `run_state`'s
+  on-sale rule does. From wave 175 the block fell below 1.5 hits, and the arm bought
+  only Defense Absolute.
+
+*Run 2, on the fixed arm, under the same protocol.* One stage of 20 minutes, 4 of 4
+valid, records `state/records/margin-blender/ws79-r2/`.
+
+| Game | Final wave | Orbs capped (level 4) | Orb Speed capped | Knockback Force capped | Knockback Chance capped |
+|---|---|---|---|---|---|
+| 1 | 440 | wave 56 | 121 | 104 | 188 |
+| 2 | 441 | 56 | 121 | 103 | 188 |
+| 3 | 445 | 56 | 121 | 103 | 188 |
+| 4 | 442 | 56 | 123 | 105 | 191 |
+
+- **The verdict, by the pre-registered rule: below 483.** This blender does not
+  pass the wall at Workshop 79. It ends 38–43 waves before the Defense Absolute
+  script.
+- **Why.** Every blender row reaches its in-run cap by wave 191: Orbs 4, Orb Speed
+  38, Knockback Force 40, Knockback Chance 80. After that the blender has nothing
+  left to buy.
+- **What it cost.** Defense Absolute took 68–69% of the spend from wave 30, and
+  Health about 17%. The block ended at 263–266 against the script's 299–300, so
+  the same damage-against-block wall came about 40 waves sooner. Health fell from
+  above 0.6 to death over the last 4–5 waves, as at the scan's wall.
+
+**What this settles.** On ADR 0012's profile at its uniform ceiling, with every
+in-run row on sale, the best script measured ends at wave 483, and the blender ends
+earlier. The blender's rows are capped in-run at levels that make no difference
+past wave 200. These scripts give no route to wave 999 on this profile at any
+uniform level. Neither measures the rows ADR 0012 leaves out: Workshop Orbs, the
+Enemy Level Skips, Recovery, Death Defy and the Wall. Nor do they measure Labs or a
+learner.
+
 ## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
 
 **Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the

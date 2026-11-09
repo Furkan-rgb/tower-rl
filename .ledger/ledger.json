@@ -1,5 +1,5 @@
 {
-  "next_id": 191,
+  "next_id": 193,
   "items": [
     {
       "id": 1,
@@ -4150,6 +4150,10 @@
         {
           "at": "2026-11-09 21:41",
           "text": "Audit #188: the five ready rows can be collected now (no device). The learner row cites the read b54d8ef makes (dreamer_replay.py:75, :190) and closes on #189. #157 unparented: it is not one of the six pointers."
+        },
+        {
+          "at": "2026-11-09 21:49",
+          "text": "Audit #190: collect the five ready rows into solution.md 16 now (docs only): reward and legality (experiments.md 'Review of the training setup'), action semantics ('Floors on ws2914c'), observation ('The kill count carried into wave 1', 'Review of the training setup'), evaluation isolation (present). The learner row follows #189."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4327,6 +4331,10 @@
         {
           "at": "2026-11-09 21:24",
           "text": "Re-ordered after #178's run (2026-11-09): the rename changes no result, the run needs a frozen checkout for ~30 h (state/ is bound to it, project_state.py), and landing it first would delay the run. The load-time alias covers M3-P024's checkpoints as it does M3-P023's."
+        },
+        {
+          "at": "2026-11-09 21:49",
+          "text": "Audit #190: doc labels can change during the run (solution.md 9.2b and 16, README.md:23, M3-P024's outcome entry calling period means and sets A/B the sampled policy); the code rename and load-time alias wait until M3-P024 ends."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4381,6 +4389,10 @@
         {
           "at": "2026-11-09 21:41",
           "text": "Audit #188: to Backlog. UNCHARGED_ROUND_TIME already fails a slipped transition by name; 0 slips in M3-P023's 1,082 episodes and none in #173's stages. Not one of task.md 1.1's six elements."
+        },
+        {
+          "at": "2026-11-09 21:49",
+          "text": "Audit #190: not needed for M3's done-condition (not one of task.md 1.1's six elements); after M3-P024 at the earliest, since bridge source changes alter bff836b8's build identity and the check needs the devices."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4839,6 +4851,10 @@
         {
           "at": "2026-11-09 21:41",
           "text": "Audit #188, scope additions: 9.4c's step-time paragraph (~1825-1831, '\u224823 ms per decision') was measured at 16x64; 9.2c ~1176-1182; the R2D2 table rows at 9.4 ~1582 and ~1584 (0.997 as ADR 0019's value, a step as a choice-point decision); 9.4e ~1910-1938 (worked figures at 0.999). The warm-up row (9.4c) and the arm rule (9.2b) were fixed with M3-P024's commit."
+        },
+        {
+          "at": "2026-11-09 21:49",
+          "text": "Audit #190, lines after c41dbf8: 7.3 822-826; 9.2c 1181-1187; 9.4c 1708, 1766; R2D2 rows 1587/1589; step time 1828-1836; 9.4d 1861-1865; 9.4e 1939-1944. Docs only: during the run."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4847,7 +4863,7 @@
       "id": 184,
       "title": "train.py's help, errors and usage examples, r2d2.py's docstrings, README.md and setup.md name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and ADR 0019's 0.997 per game-second only for choice-points runs",
       "body": "Replaces #119 (audit #181): train.py:18,33,65,92,906,1158; r2d2.py:54-55,110-111; README.md:75; setup.md:661-662.",
-      "status": "Next",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 21:00",
@@ -4856,9 +4872,14 @@
         {
           "at": "2026-11-09 21:41",
           "text": "Audit #188: line numbers moved after 8655db2: train.py 906 -> 924, 1158 -> 1176. README.md:75 passes no cadence flag, so since e61a777 it launches a filling-orders run at 0.997: a live hazard; give it the accepted discount. setup.md:660-662 passes --decision-cadence choice-points, which the title already allows at 0.997; leave it or make it a filling-orders example."
+        },
+        {
+          "at": "2026-11-09 21:49",
+          "text": "Retired, replaced by #191 (README, setup.md: docs, during the run) and #192 (train.py, r2d2.py: code, after M3-P024), per audit #190."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T20:49:28.990618Z"
     },
     {
       "id": 185,
@@ -4929,6 +4950,10 @@
         {
           "at": "2026-11-09 21:48",
           "text": "First launch (20:42Z, from c41dbf8) failed at bring-up on all 4 instances before any episode: open_environment read arguments.workshop_extra_row, which train.py never declares (c46f9ee). Fixed by passing extra rows explicitly; test with train.py's and spectate.py's own arguments. Amendment in M3-P024's entry; relaunching from the fix commit."
+        },
+        {
+          "at": "2026-11-09 21:49",
+          "text": "During this run the checkout is frozen for src/ and scripts/: #157's code rename, #192 and #159 wait until it ends. Docs-only items (#150, #183, #191, #157's doc labels) may land."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4937,8 +4962,30 @@
       "id": 190,
       "title": "Board audit: 2026-11-09 (after #142)",
       "body": "Audit due: exit #142 closed. Audit #188 ran an hour earlier; this one checks what changed since.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 21:49",
+          "text": "Applied: #184 retired into #191 (docs, now) and #192 (code, after the run); comments on #150, #157, #159, #183, #189. ADR 0016:104's 'simulation' left for the developer (accepted ADR text). No stale simulation paths elsewhere."
+        }
+      ],
+      "closed_at": "2026-11-09T20:49:29.296497Z"
+    },
+    {
+      "id": 191,
+      "title": "README.md and docs/setup.md name 0.99991416 per game-second (ADR 0020 item 3) as the discount of a filling-orders learning run, and 0.997 (ADR 0019) only beside --decision-cadence choice-points",
+      "body": "Docs half of #184 (audit #190), safe during M3-P024. README.md:75 passes no cadence flag, so since e61a777 its example launches a filling-orders run at 0.997. setup.md:660-662 passes choice-points, which the rule allows.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 192,
+      "title": "train.py's help, errors and usage examples and r2d2.py's docstrings name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and 0.997 (ADR 0019) only for choice-points runs",
+      "body": "Code half of #184 (audit #190): train.py:18,33,65,92,924,1176; r2d2.py:54-55,110-111. Lands after M3-P024 ends: the run imports train.py from this checkout.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],
   "milestones": [

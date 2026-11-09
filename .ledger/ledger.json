@@ -4097,7 +4097,7 @@
       "id": 150,
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
-      "status": "In progress",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -4347,6 +4347,10 @@
         {
           "at": "2026-11-09 22:14",
           "text": "Doc half landed (3bd2c75): solution.md 9.2b defines near-greedy under DreamerV3 as the sampled policy (every actor); README's summary fixed. Remaining: the code labels (training.py, metrics keys, select_checkpoint.py greedy_final_wave_*, checkpoint field with load-time alias) after M3-P024's set B."
+        },
+        {
+          "at": "2026-11-09 22:19",
+          "text": "Audit #194: correction to 22:14: the doc half also needed solution.md 16's evaluation row, which said exploration-free/epsilon 0; relabelled 'no exploration noise' in 7e12231. Code half after set B."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4405,6 +4409,10 @@
         {
           "at": "2026-11-09 21:49",
           "text": "Audit #190: not needed for M3's done-condition (not one of task.md 1.1's six elements); after M3-P024 at the earliest, since bridge source changes alter bff836b8's build identity and the check needs the devices."
+        },
+        {
+          "at": "2026-11-09 22:19",
+          "text": "Audit #194: 0 UNCHARGED_ROUND_TIME and 0 WORLD_NOT_HELD in M3-P024's first 122 episodes. It holds M3 open (32/37) for work the done-condition does not need; whether to take it off M3 is the developer's call (no M4 exists)."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -5019,6 +5027,10 @@
         {
           "at": "2026-11-09 22:10",
           "text": "Audit #193: r2d2.py:110's 'published 0.997 per step' is R2D2's paper value and stays; train.py:1304 and value_learning.py:22-30 (V_REF at 0.997) are reference math, not help text."
+        },
+        {
+          "at": "2026-11-09 22:19",
+          "text": "Audit #194: the done-check must catch 0.999 (ADR 0013, superseded) as well as 0.997: train.py:18,33,65,92 and r2d2.py:54-55,111 carry 0.999; train.py:924,1176 name 0.997 as the protocol's value."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -5040,8 +5052,14 @@
       "id": 194,
       "title": "Board audit: 2026-11-09 (after #183)",
       "body": "Audit due: exit #183 closed. Audit #193 ran within the hour.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 22:19",
+          "text": "Applied (7e12231): solution.md 16 rows for action semantics, observation and evaluation say only what their entries found; 9.4d's stale --discount default removed. Comments on #157, #192, #159."
+        }
+      ],
+      "closed_at": "2026-11-09T21:19:27.133930Z"
     }
   ],
   "milestones": [

@@ -4526,7 +4526,7 @@
       "id": 169,
       "title": "The causes of M3-P023's two learner failures are found and recorded in docs/experiments.md: the prior's distance on unseen episodes rising to 2.13x trained, and the actor's preferences moving within about 1,000 decisions",
       "body": "Replaces #148, whose pilot ran and failed (2a66c1e). Serves the learner row of docs/task.md 1.1. Offline first, from M3-P023's checkpoints and replay; a run only inside a new pre-registration. Second failure on the learner row after M3-P022: root cause before any further fix (lead-playbook).",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-09 10:54",

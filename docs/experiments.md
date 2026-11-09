@@ -4389,6 +4389,92 @@ collection did not play. Since the actor moves this fast, one checkpoint stands 
 the run's policy only loosely. Wave 999 is not in reach on this evidence. The result
 goes to `#167` (ADR 0020) beside `M3-P022`'s.
 
+## Why `M3-P023`'s learner failed: the trained read and the moving actor (`#169`, analysis, no device)
+
+**Date:** 2026-11-09. Board `#169`. Read offline from `M3-P023`'s and `M3-P022`'s
+checkpoints and replay. The scripts are in the session scratchpad (`p023/`: `age.py`,
+`noise.py`, `drift.py`, `split.py`, `gap.py`), not committed. The fixed states are
+the first 48 decisions of the run's last 32 episodes in replay, 1,536 states. Each
+checkpoint reads them through its own posterior with mode latents, so two
+checkpoints differ only in their weights.
+
+**The prior's distance: most of the gap is how often replay has shown an episode.**
+Under d0100073, `prior_kl` by when the episode was collected, relative to the
+checkpoint:
+
+| Collected | −30,000 to −20,000 | −10,000 to −5,000 | −2,500 to 0 | 0 to +2,500 | +5,000 to +10,000 | +20,000 to +30,000 |
+|---|---|---|---|---|---|---|
+| `prior_kl` (nats) | 5.80 | 6.95 | 9.08 | 10.77 | 11.95 | 12.30 |
+| `death_rank` | 0.995 | 0.991 | 0.987 | 0.975 | 0.967 | 0.978 |
+
+d0120104 reads alike: 5.84 for the oldest window and 10.97 for the farthest. The
+read rises by 3.3 nats across episodes the model has trained on, from the oldest to
+the last 2,500 decisions before the checkpoint. Crossing the checkpoint adds 1.7
+nats, and the next 30,000 decisions add 1.5 more. So "trained" in the
+pre-registered ratio is mostly episodes replay has shown many times. The ratio reads
+memorisation as well as how well the model reaches new episodes. Against the 2,500
+decisions just before the checkpoint, the unseen read is 1.19 times trained at
+d0100073 (10.77 / 9.08). At d0120104 it is 1.72 times (15.88 / 9.25, 14 episodes).
+
+**Imagination is not noisier than its signal.** From 480 fixed starts with 16
+imagined rollouts each, the advantage (R − V) / S varies across rollouts by 0.010–0.014
+in `M3-P023`, against 0.006 in `M3-P022`. Its mean size is 0.025–0.033 against
+0.008–0.011. The spread over the mean size is alike, 0.5–0.6 against 0.6–0.8. That
+hypothesis for the drift is not supported.
+
+**The actor moves on its own updates, not on the world model's.** From 50,000
+decisions on, between checkpoints 2,500 decisions apart:
+
+| | `M3-P023` (41 pairs) | `M3-P022` (35 pairs) |
+|---|---|---|
+| Top choice changes, both weights new | median 0.78 (0.61–0.88) | median 0.21 (0.05–0.68) |
+| New actor, old features | 0.77 (0.62–0.89) | 0.20 (0.05–0.55) |
+| Old actor, new features | 0.15 (0.08–0.22) | 0.09 (0.01–0.50) |
+| Features' relative change | 0.19 (0.17–0.22) | 0.36 (0.27–0.57) |
+| Policy entropy on these states | 0.35–0.74 nats | 0.01–0.26 nats |
+
+At ratio 128 the world model's features move about half as far as in `M3-P022`. Fed
+to the old actor, they change its choice on 15% of states. The new actor changes it
+on 77% of states on the old features. Both runs give the actor the same 2 updates a
+decision (train ratio 2048).
+
+**What the actor follows is smaller than how far it moves.** For each legal action,
+one imagined step gives Q = reward + continue × critic, over 4 prior samples, in units
+of the return scale S. On each run's last three checkpoints:
+
+| | `M3-P023` | `M3-P022` |
+|---|---|---|
+| Best two actions' Q apart, median | 0.0030–0.0040 S | 0.0035–0.0048 S |
+| An action's centred Q moves between checkpoints, median | 0.0085–0.0110 S | 0.0051–0.0059 S |
+| The Q-best action changes between checkpoints | 74–92% of states | 46–55% |
+| The actor's top choice is the Q-best | 28–31% | 20–33% |
+
+In both runs the learner cannot rank its best two purchases. Their difference is a
+third of how far its own estimate moves in 2,500 decisions, or less. The actor does
+not follow even this one-step ranking on most states. The entropy bonus of 3e-4 is
+too small to hold the policy spread over choices this close. At a gap of 0.003 S its
+log-odds would be about 10. In `M3-P023` the estimate moves 1.7 times as far as in
+`M3-P022`. The actor, at 0.35–0.74 nats, changes its choice about as often as the
+estimate's best action changes (77% against 74–92%). `M3-P022`'s actor changed its choice less often than its own estimate did (20%
+against 46–55%) because it was nearly deterministic. That steadiness held a choice the
+estimate did not support.
+
+**What this settles.**
+
+- **The first failure.** On new episodes the world model at ratio 128 reads 1.19–1.72
+  times what it reads on its most recent trained ones. The pre-registered ratio
+  failed because the trained side keeps falling as replay repeats old episodes. A
+  bound read against recently collected trained episodes separates the two.
+- **The second failure.** The actor's own updates cause it, on purchase values the
+  learner cannot tell apart. The world model's schedule does not. At
+  `filling-orders` a decision is one level of one row, and its value is within the
+  learner's noise of the next-best row's.
+- **ADR 0020 item 5 (`#182`).** The world model at ratio 128 is not implicated in
+  the drift. It cut the prior's unseen-to-trained ratio from `M3-P022`'s 12.5 to 2.13.
+  The drift traces to the actor's step under train ratio 2048 on a value signal below
+  its noise, so item 5's actor and critic rate, not its world-model rate, is what this
+  evidence questions.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

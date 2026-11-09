@@ -1,5 +1,5 @@
 {
-  "next_id": 174,
+  "next_id": 177,
   "items": [
     {
       "id": 1,
@@ -3771,6 +3771,10 @@
         {
           "at": "2026-11-09 04:28",
           "text": "Audit #170: the gate (M3-P023 running) is gone; nothing runs on the devices. Checkpoints store asdict payloads with no tower_rl.simulation class (checkpoint.py:340-341), so #169's offline reads of M3-P023 are unaffected. Land before the next device stage (#168/#145, #159)."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Audit #174: three stages have run since #170's 'before the next device stage'. Rename in a gap between #173's stages, or after #173."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3834,7 +3838,7 @@
       "id": 145,
       "title": "A turtle-into-blender script on the guides' in-run order is measured at Workshop 10, with Enemy Attack Level Skip's effect read above level 1",
       "body": "Replaces #138. The guides define Blender on maxed Workshop and Labs, so 'guide-faithful' cannot be checked at Workshop 10. The script follows their in-run order: cash, Free Upgrades, then Health, Defense %, Knockback, Orbs and Orb Speed, Thorns, Attack Speed, the Recovery rows, with Skips from the late guide. A benchmark only, handed to no learner. Needs #136's floors first, so it runs after M3-P022.",
-      "status": "Next",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -3871,9 +3875,14 @@
         {
           "at": "2026-11-09 12:19",
           "text": "From #171 (d400408): at Workshop 79 the blender's rows (Orbs 4, Orb Speed 38, Knockback Force 40, Knockback Chance 80) all reach their in-run caps by wave 191, and the margin blender ends 40 waves before Defense Absolute. At Workshop 10 #122's arm was also worse. The premise that turtle into blender beats the turtle on this profile is now doubtful; held for the developer's choice in #172."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Retired (audit #174). The margin blender at Workshop 79 ended at 440-445 against Defense Absolute's 483, its blender rows capped in-run by wave 191 (d400408); #122's Workshop 10 arm was also worse. The developer chose the left-out rows instead (#172); the Skip read is #173's first arm (27c08b3)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-09T11:28:07.131893Z"
     },
     {
       "id": 146,
@@ -4091,6 +4100,10 @@
         {
           "at": "2026-11-09 04:28",
           "text": "Audit #170 map: learner row re-pointed from #148 (retired, Fail on prior_kl, 2a66c1e) to #169; action semantics to #167. Reward, legality, observation, evaluation isolation as in audit #166's map; solution.md 16 still holds only the evaluation-isolation row."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Audit #174: the learner row waits on #169, which the developer paused for #171/#173; M3 cannot close on it until #169 resumes."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4256,6 +4269,10 @@
         {
           "at": "2026-11-09 04:28",
           "text": "Audit #170: #169 reads M3-P023's checkpoints offline, which carry best_period_near_greedy_mean, so the load-time alias is required for any rename."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Audit #174: host-only and no running stage imports train.py, so it can land while #173's stages run."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
@@ -4299,6 +4316,10 @@
         {
           "at": "2026-11-09 04:28",
           "text": "Audit #170: M3-P023 had UNCHARGED_ROUND_TIME 0 of 1,082 episodes on bff836b8 at 100 ms (2a66c1e), against the ~1 in 105 this card cites; three lifecycle presses were refused stale_or_duplicate (two start_round, one speed_max). Device gap is open."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Audit #174: the device check waits for #173's stages; read their records for UNCHARGED_ROUND_TIME as further bff836b8 / 100 ms samples."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4429,6 +4450,10 @@
         {
           "at": "2026-11-09 04:28",
           "text": "Audit #170: items 1-4 (cadence, mask, discount, reward) can be decided on the floors and the two final evaluations. Item 5's world-model ratio 128 is improved on but not verified by M3-P023 (prior_kl 2.13x trained, against M3-P022's 12.5x at 2048); it can wait on #169. The ADR header still cites retired #144; fix with the amendment."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Audit #174: with the amendment, also re-point ADR 0020 line 90 (#145 as 'a build that does not rest on the block') to d400408, and line 7's retired #144."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4437,9 +4462,15 @@
       "id": 168,
       "title": "Each enemy type's damage relative to the wave's base damage is measured at Workshop 10, or cited from the game's data",
       "body": "Sub-item of #145 (audit #166). The W10 filling trace shows health falling while Defense Absolute exceeds base damage after Defense % by 4-17% (#145, 09:34), so the turtle-into-blender switch on the margin needs these multipliers first.",
-      "status": "Next",
-      "comments": [],
-      "parent": 145
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Retired with #145 (audit #174): its only use was #145's margin switch, which both margin arms replace with BLOCK_MARGIN = 1.5 (27c08b3, policies.py). Re-create under #173 if the block/skip split needs the multipliers."
+        }
+      ],
+      "parent": 145,
+      "closed_at": "2026-11-09T11:28:07.204104Z"
     },
     {
       "id": 169,
@@ -4454,6 +4485,10 @@
         {
           "at": "2026-11-09 11:02",
           "text": "Paused 2026-11-09: the developer asked to settle the minimal Workshop level for wave 999 first (#171). Findings so far are in the comments above; the experiments.md entry is still owed."
+        },
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Audit #174 correction: 'd100073' is checkpoint-d0100073.pt (decision 100,073), not a commit. The age, noise, drift and gap scripts and outputs are in the session scratchpad (p023/); the experiments.md entry names them, as earlier scratchpad-sourced entries do."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4516,7 +4551,46 @@
       "title": "A script reaches wave 999 with the rows ADR 0012 leaves out (Enemy Level Skips first), at a measured minimal Workshop level, or each of those rows is shown not to get it there",
       "body": "From #172 (developer, 2026-11-09). First: build-turtle-skip (block at 1.5 hits, rest to in-run Enemy Attack Level Skip, which sells to level 699) at Workshop 10 and 79. Then Enemy Health Level Skip, Workshop Orbs, Recovery, Death Defy, Wall as results direct. Measurement only: ADR 0012 changes only if a result is adopted.",
       "status": "In progress",
+      "comments": [
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Stage 1 launched 2026-11-09 (state/launch/skip-turtle.sh): build-turtle-skip, 4 actors x 1 episode, filling-orders, bff836b8, Workshop 10 then 79. Records state/records/skip-turtle/ws10 and ws79."
+        }
+      ],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 174,
+      "title": "Board audit: 2026-11-09 (after #171, #172)",
+      "body": "",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Applied: retired #145 and #168 (premise undercut by d400408; Skip read moved to #173); comments on #142, #150, #157, #159, #167, #169 (d100073 is a checkpoint, not a commit), #173; added #175 (per-wave base damage in records, under #173) and #176 (the developer's benchmark/profile decision, blocked on #173). #58 left for the developer's scope call."
+        }
+      ],
+      "closed_at": "2026-11-09T11:28:16.452141Z"
+    },
+    {
+      "id": 175,
+      "title": "Episode records carry each wave's base damage, block and Defense %, so a skip's effect is read against the fixed base-damage schedule",
+      "body": "Audit #174: #173's pre-registration (27c08b3) can read the skip only through final wave and the block at death. #145's clause (d) asked for the margin each wave; it is lost with #145's retirement.",
+      "status": "Next",
       "comments": [],
+      "parent": 173
+    },
+    {
+      "id": 176,
+      "title": "The developer decides docs/task.md 1.1's Workshop benchmark and ADR 0012's profile on #171's and #173's results",
+      "body": "Audit #174: task.md 1.1 allows raising the Workshop 10 benchmark only on measured evidence that the level cannot reach the target; #171 supplies that for the 11-row profile. Options if #173 fails: Labs, or a changed target (#172 b, c). Blocked on #173.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-09 12:28",
+          "text": "Blocked on #173's result."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],

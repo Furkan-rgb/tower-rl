@@ -341,7 +341,7 @@ UNCHARGED_ROUND_TIME = "UNCHARGED_ROUND_TIME"
 UNCHARGED_ROUND_TIME_FRAMES = 3.0
 
 #: The live feature the game carries across a round start (`_own_kills`).
-KILLS = "enemies_killed"
+_KILLS = "enemies_killed"
 #: A wave-1 kill count below the count carried into it, which the device never read.
 KILLS_BELOW_CARRIED = "wave 1's kill count fell below the count carried into it"
 
@@ -731,7 +731,7 @@ class InstrumentedRunEnvironment:
         # The round has only just started, so what the first state reads is that
         # carried count, and nothing of this episode's own.
         if state.wave == 1:
-            self._carried_kills = state.live[KILLS]
+            self._carried_kills = state.live[_KILLS]
             state = self._own_kills(state)
         # The setup is read off the first observation, after any unlock, and
         # the Workshop read above: what the game held, not what was asked for.
@@ -1386,14 +1386,14 @@ class InstrumentedRunEnvironment:
         """
         if not self._carried_kills or state.wave != 1:
             return state
-        own = state.live[KILLS] - self._carried_kills
+        own = state.live[_KILLS] - self._carried_kills
         if own < 0.0:
             return replace(
                 state,
                 valid=False,
                 invalid_reasons=state.invalid_reasons + (KILLS_BELOW_CARRIED,),
             )
-        return replace(state, live={**state.live, KILLS: own})
+        return replace(state, live={**state.live, _KILLS: own})
 
     def _read_state(self) -> RunState | None:
         with self.profile.span(BRIDGE_ROUND_TRIP):

@@ -81,6 +81,7 @@ from tower_rl.environment.run_environment import (
     DEATH_BOUNDARY_TRANSIENT,
     GAME_TIME_DEFLATED,
     GAME_TIME_INFLATED,
+    KILLS_BELOW_CARRIED,
     MASK_LEGAL_PURCHASE_REJECTED,
     STALLED_REASON_PREFIX,
     UNCHARGED_ROUND_TIME,
@@ -135,6 +136,7 @@ INVALID_REASONS: Mapping[str, str] = {
     "out_of_range": OUT_OF_RANGE_REASON,
     "inventory_too_wide": INVENTORY_TOO_WIDE,
     "death_boundary_transient": DEATH_BOUNDARY_TRANSIENT,
+    "kills_below_carried": KILLS_BELOW_CARRIED,
 }
 
 

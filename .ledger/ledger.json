@@ -1,5 +1,5 @@
 {
-  "next_id": 193,
+  "next_id": 194,
   "items": [
     {
       "id": 1,
@@ -4097,7 +4097,7 @@
       "id": 150,
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -4335,6 +4335,10 @@
         {
           "at": "2026-11-09 21:49",
           "text": "Audit #190: doc labels can change during the run (solution.md 9.2b and 16, README.md:23, M3-P024's outcome entry calling period means and sets A/B the sampled policy); the code rename and load-time alias wait until M3-P024 ends."
+        },
+        {
+          "at": "2026-11-09 22:10",
+          "text": "Audit #193: the doc labels (README.md:23, solution.md 9.2b ~1114 and 16 ~2634) may land during the run; the code rename and the load-time alias wait until set B's read ends, since m3-p024-select.sh runs select_checkpoint.py."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4855,6 +4859,10 @@
         {
           "at": "2026-11-09 21:49",
           "text": "Audit #190, lines after c41dbf8: 7.3 822-826; 9.2c 1181-1187; 9.4c 1708, 1766; R2D2 rows 1587/1589; step time 1828-1836; 9.4d 1861-1865; 9.4e 1939-1944. Docs only: during the run."
+        },
+        {
+          "at": "2026-11-09 22:10",
+          "text": "Audit #193: the title names 7.3, 9.4c and 9.4d; the scope (comments #188, #190) also covers 9.2c 1181-1187, the 9.4 R2D2 rows 1587/1589, 9.4e 1939-1944 and 9.4c's step-time paragraph 1828-1836 (measured at 16x64). The done-condition is read with that scope."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4954,6 +4962,10 @@
         {
           "at": "2026-11-09 21:49",
           "text": "During this run the checkout is frozen for src/ and scripts/: #157's code rename, #192 and #159 wait until it ends. Docs-only items (#150, #183, #191, #157's doc labels) may land."
+        },
+        {
+          "at": "2026-11-09 22:10",
+          "text": "Relaunched 20:49:01Z as m3-p024-dreamerv3-ws10-v2914-20261109T204901Z from 2bd751e (the amendment's commit). At 5,453 decisions: 0 invalid, learner at 64x64 keeping up (busy 34%, debt 3/256). The src/ and scripts/ freeze holds until set B's read ends: m3-p024-select.sh runs run_actors.py, select_checkpoint.py and src/ from this checkout."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4990,8 +5002,26 @@
       "title": "train.py's help, errors and usage examples and r2d2.py's docstrings name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and 0.997 (ADR 0019) only for choice-points runs",
       "body": "Code half of #184 (audit #190): train.py:18,33,65,92,924,1176; r2d2.py:54-55,110-111. Lands after M3-P024 ends: the run imports train.py from this checkout.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-09 22:10",
+          "text": "Audit #193: r2d2.py:110's 'published 0.997 per step' is R2D2's paper value and stays; train.py:1304 and value_learning.py:22-30 (V_REF at 0.997) are reference math, not help text."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 193,
+      "title": "Board audit: 2026-11-09 (after #191)",
+      "body": "Audit due: exit #191 closed. Audit #190 ran within the hour; this checks what changed since.",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 22:10",
+          "text": "Applied as comments: #189 (relaunch name, source 2bd751e, freeze until set B ends), #192, #183 (scope beyond the title), #157 (doc half during the run, code after set B). #159's milestone is the developer's call. #191 confirmed correctly closed."
+        }
+      ],
+      "closed_at": "2026-11-09T21:10:17.262302Z"
     }
   ],
   "milestones": [

@@ -1903,18 +1903,16 @@ there (§9.4e, ADR 0013); the Huber loss stays and no non-linear value
 rescaling (Pohlen et al. 2018) is added, because R2D2 needed that rescaling
 for unclipped rewards in the thousands, not for returns of this size.
 
-Unset, the discount is `--discount` per decision (0.99), with targets identical
-to the bit to those before the flag existed; the two flags are refused
-together. Under `--backbone dreamerv3` the flag is required, and d is carried
-by its continue target (§9.4c). The flag is recorded in the resolved config, and a
+The flag is required under both backbones: the discount is a task parameter
+with no code default, and the retired per-decision `--discount` is refused.
+Under `--backbone dreamerv3` d is carried by its continue target (§9.4c). The flag is recorded in the resolved config, and a
 resume under a different discount than its checkpoint's is refused. Within a
 multi-advance span a wave reward is booked at the span's end rather than when
 it occurred, which understates it by at most 1 − γ_s^(span seconds) - about
 1.7% at 0.999 (5% at 0.997) on the longest early WAIT spans (about 17 s) and
 nothing on purchase spans - and
 the bias is accepted rather than measured, because an exact measure needs
-per-advance events on `RunTransition`. Per decision stays the default pending
-the M3-P003 comparison.
+per-advance events on `RunTransition`.
 
 ### 9.4e Survival-time reward (R2D2 and DreamerV3)
 
@@ -2653,9 +2651,9 @@ Maintain a live matrix in the repository. Initial mapping:
 | Trustworthy `best` | Evaluator + promoter | multi-episode promotion tests/reports |
 | Setup element: reward (`task.md` 1.1) | `value_learning.game_time_discounts` / `survival_rewards`: `(1−d)·V_REF`, `d = γ_s^Δt` | `docs/experiments.md`, "Review of the training setup" ("Reward: correct, kept": aligned from the game clock to the λ-return, terminal step kept, nothing else earns reward); accepted for DreamerV3 in `task.md` 7.5 (796a0e0) |
 | Setup element: legality (`task.md` 1.1) | `RunStateBuilder` builds `RunState.action_mask` from the bridge's rows and posted prices | `docs/experiments.md`, "Review of the training setup" (0 `mask_legal_rejected` in 1,017 episodes and about 131,000 purchases), "The stale price behind `mask_legal_rejected`" (the cause of the earlier rejections, fixed), "Floors on `ws2914c`" (0 in 70 episodes on `bff836b8…`) and `M3-P023`'s Result (0 in 1,082) |
-| Setup element: action semantics (`task.md` 1.1) | `InstrumentedRunEnvironment` at `FILLING_ORDERS` (`_order_stands`) + the bridge's purchase on a named row | `docs/experiments.md`, "Bridge `ws2914c` on the device" (free levels land only on named rows, prices refreshed at the wave's turn), "What a decision sees at `filling-orders`" (a traced game of the order mechanics) and "Floors on `ws2914c`" (the script and `random` at `filling-orders`: 101.82 and 22.50) |
-| Setup element: observation (`task.md` 1.1) | `RunStateBuilder` and `features.encode_state` (`observation-v2`, ADR 0010), the carried kill count subtracted (`_carried_kills`) | `docs/experiments.md`, "Review of the game path" (every valid episode a real death, each episode fresh, rows read from the game's labels), "The kill count carried into wave 1" (the one leak, corrected exactly, c01ffcf) and "What a decision sees at `filling-orders`" (what a decision is shown inside a wave) |
-| Setup element: evaluation isolation (`task.md` 1.1); evaluation exploration-free and isolated from replay and training | `evaluator.evaluate` (`replay=None`, epsilon 0) + `TrainingRun._learner_still` / `_refuse_evaluation_during_collection` | `tests/unit/test_dreamer.py` (`test_an_evaluation_adds_nothing_to_replay_and_takes_no_optimisation_step`), `tests/unit/test_actor_and_evaluator.py` (`test_evaluation_never_explores_even_if_configured_to`), `M3-P022`'s records in `docs/experiments.md` ("Evaluation isolation") |
+| Setup element: action semantics (`task.md` 1.1) | `InstrumentedRunEnvironment` at `FILLING_ORDERS` (`_order_stands`) + the bridge's purchase on a named row | `docs/experiments.md`, "Bridge `ws2914c` on the device" (free levels land only on named rows, and a free level reprices its row by the next decision in 17 of 18 on `bff836b8…`), "What a decision sees at `filling-orders`" (a traced game of the order mechanics) and "Floors on `ws2914c`" (the script and `random` at `filling-orders`: 101.82 and 22.50) |
+| Setup element: observation (`task.md` 1.1) | `RunStateBuilder` and `features.encode_state` (`observation-v2`, ADR 0010), the carried kill count subtracted (`_carried_kills`) | `docs/experiments.md`, "Review of the game path" (as audited from the records: every valid episode a real death, each episode fresh, rows read from the game's labels), "The kill count carried into wave 1" (the carried count measured and subtracted exactly, c01ffcf) and "What a decision sees at `filling-orders`" (what a decision is shown inside a wave) |
+| Setup element: evaluation isolation (`task.md` 1.1); evaluation adds no exploration noise and is isolated from replay and training | `evaluator.evaluate` (`replay=None`; epsilon 0 for R2D2, DreamerV3 sampling its own policy, §9.4c) + `TrainingRun._learner_still` / `_refuse_evaluation_during_collection` | `tests/unit/test_dreamer.py` (`test_an_evaluation_adds_nothing_to_replay_and_takes_no_optimisation_step`), `tests/unit/test_actor_and_evaluator.py` (`test_evaluation_never_explores_even_if_configured_to`), `M3-P022`'s records in `docs/experiments.md` ("Evaluation isolation") |
 | Setup element: learner (`task.md` 1.1), learning shown on unseen data | `DreamerBackbone.read_episode` + `DreamerReplay.trained_episode` (a death 10 to 29 episodes older, b54d8ef) | Pending: `M3-P024`'s episode reads (`docs/experiments.md`, `M3-P024`, Secondary). `M3-P023`'s failed, read in "Why `M3-P023`'s learner failed" |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |
 | Diagnostics and documentation | Telemetry + docs | failure injection and clean setup rehearsal |

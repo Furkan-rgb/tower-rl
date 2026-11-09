@@ -1,5 +1,5 @@
 {
-  "next_id": 194,
+  "next_id": 195,
   "items": [
     {
       "id": 1,
@@ -4097,7 +4097,7 @@
       "id": 150,
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -5035,6 +5035,13 @@
         }
       ],
       "closed_at": "2026-11-09T21:10:17.262302Z"
+    },
+    {
+      "id": 194,
+      "title": "Board audit: 2026-11-09 (after #183)",
+      "body": "Audit due: exit #183 closed. Audit #193 ran within the hour.",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

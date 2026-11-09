@@ -4607,7 +4607,7 @@
       "id": 176,
       "title": "The developer decides docs/task.md 1.1's Workshop benchmark and ADR 0012's profile on #171's and #173's results",
       "body": "Audit #174: task.md 1.1 allows raising the Workshop 10 benchmark only on measured evidence that the level cannot reach the target; #171 supplies that for the 11-row profile. Options if #173 fails: Labs, or a changed target (#172 b, c). Blocked on #173.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 12:28",
@@ -4616,9 +4616,14 @@
         {
           "at": "2026-11-09 13:41",
           "text": "Unblocked: #173 closed (bba3da2). Best measured at Workshop 79 with every held row: 512. Options: (a) per-row Workshop above 79, Defense Absolute first, to find the level 999 needs; (b) Labs; (c) change task.md 1.1's target."
+        },
+        {
+          "at": "2026-11-09 13:44",
+          "text": "Developer, 2026-11-09: change the goal; target = a learned policy beating the best script at Workshop 10 (IQM, 95% interval of the difference above zero; bar 101.82). task.md 1.1, the handoff and M3's title updated in 87be6b7."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T12:44:22.342667Z"
     }
   ],
   "milestones": [

@@ -1,5 +1,5 @@
 {
-  "next_id": 171,
+  "next_id": 172,
   "items": [
     {
       "id": 1,
@@ -4442,7 +4442,16 @@
       "title": "The causes of M3-P023's two learner failures are found and recorded in docs/experiments.md: the prior's distance on unseen episodes rising to 2.13x trained, and the actor's preferences moving within about 1,000 decisions",
       "body": "Replaces #148, whose pilot ran and failed (2a66c1e). Serves the learner row of docs/task.md 1.1. Offline first, from M3-P023's checkpoints and replay; a run only inside a new pre-registration. Second failure on the learner row after M3-P022: root cause before any further fix (lead-playbook).",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-09 10:54",
+          "text": "Age test (d100073): the prior's distance is 5.8 nats on episodes collected 20-30k decisions before the checkpoint, 9.1 in the last 2.5k before, 10.8 in the first 2.5k after, 12.3 at 20-30k after; death_rank 0.96-0.997 in every window. Most of the unseen/trained gap is the model fitting episodes replay has trained on many times; the policy reaching new states adds about 1.5 nats.\nNoise test (480 fixed starts x 16 imagined rollouts, advantage (R-V)/S): spread across rollouts 0.010-0.014 in M3-P023 against 0.006 in M3-P022, but the mean |advantage| is 0.025-0.033 against 0.008-0.011, so spread/|mean| is alike (0.5-0.6 against 0.6-0.8). Imagination at ratio 128 is not noisier relative to its signal: that hypothesis for the drift is not supported.\nStill open: why the top choice flips on 58-88% of fixed states between checkpoints 2,500 decisions apart. Next: world-model representation drift against actor-only drift."
+        },
+        {
+          "at": "2026-11-09 11:02",
+          "text": "Paused 2026-11-09: the developer asked to settle the minimal Workshop level for wave 999 first (#171). Findings so far are in the comments above; the experiments.md entry is still owed."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     },
     {
@@ -4457,6 +4466,14 @@
         }
       ],
       "closed_at": "2026-11-09T03:28:48.373308Z"
+    },
+    {
+      "id": 171,
+      "title": "The lowest Workshop level at which a scripted player reaches wave 999 on Tier 1 is measured on the device, or bounded by a sweep of levels",
+      "body": "Developer, 2026-11-09: settle first which minimal Workshop level wave 999 needs. Sweep ADR 0012's profile (11 rows raised to one level) with the existing floor script, then refine near the threshold with #145's turtle-into-blender script. A script's result bounds the needed level from above: a learner may need less. If no level near 10 reaches 999, task.md 1.1's Workshop 10 benchmark is the developer's to revisit. M3-P023's timing: 16.8 game-s per decision in 1.38 s wall, about 12x real time per emulator, so a wave-999 episode is roughly an hour of one emulator.",
+      "status": "In progress",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],
   "milestones": [

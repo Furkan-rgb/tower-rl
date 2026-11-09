@@ -505,6 +505,10 @@ class TurtleBlenderPolicy(LateGameBuildPolicy):
             self._switched = _took_damage_on_a_normal_wave(features)
         if not self._switched:
             return super()._late_game(features)
+        return self._blend(features)
+
+    def _blend(self, features: StateFeatures) -> int:
+        """The side furthest below its share of the spend: the blender or survival."""
         offered = {BLENDER: self._blender_row(features), SURVIVAL: self._survival_row(features)}
         sides = [side for side, index in offered.items() if index is not None]
         if not sides:
@@ -546,6 +550,41 @@ class TurtleBlenderPolicy(LateGameBuildPolicy):
     def _index(self, name: str) -> int:
         assert self.rows is not None
         return self.rows[name]
+
+
+#: How many normal hits the block must stop before the turtle lets the blender
+#: have the cash. A hit is the wave's base damage after Defense %, which the game
+#: takes before the block (`docs/experiments.md`, "The wall at wave 483"). Some
+#: enemy type hits 4-17 % above base at Workshop 10 (`#145`), so 1.5 leaves room.
+BLOCK_MARGIN = 1.5
+
+
+@dataclass
+class MarginTurtleBlenderPolicy(TurtleBlenderPolicy):
+    """Turtle into blender, switched both ways on the block's margin (`#171`).
+
+    Before `LATE_GAME_WAVE` it plays the shared opening. From then, while Defense
+    Absolute blocks less than `BLOCK_MARGIN` normal hits it buys Defense
+    Absolute, saving for it when it cannot pay. While the block is enough, every
+    purchase goes to the blender and survival exactly as after
+    `TurtleBlenderPolicy`'s switch. So the turtle is never frozen: once the
+    wave's damage catches the block up, Defense Absolute is bought again.
+    """
+
+    def _late_game(self, features: StateFeatures) -> int:
+        defense = self._index(DEFENSE_ABSOLUTE)
+        if row_offered(features, defense) and not _block_is_enough(features):
+            return defense if features.mask[defense] else 0
+        return self._blend(features)
+
+
+def _block_is_enough(features: StateFeatures) -> bool:
+    """Whether Defense Absolute stops `BLOCK_MARGIN` hits of the wave's base damage."""
+    scalar = features.scalars
+    block = math.expm1(scalar[SCALAR_FEATURES.index("defense_absolute_log")])
+    base = math.expm1(scalar[SCALAR_FEATURES.index("wave_base_damage_log")])
+    hit = base * (1.0 - scalar[SCALAR_FEATURES.index("defense_relative_fraction")])
+    return block >= BLOCK_MARGIN * hit
 
 
 def _took_damage_on_a_normal_wave(features: StateFeatures) -> bool:

@@ -3598,6 +3598,59 @@ health and regeneration, lifesteal, or killing enemies before they reach the tow
 which is what the blender does. This is a reading of one script's play. It is not a
 measurement of turtle into blender, which is `#145`.
 
+## Turtle into blender on the block's margin at Workshop 79 (measurement only, written before its device episodes)
+
+**Date:** 2026-11-09. Board `#171`.
+
+**Question.** Does a blender get past the wall that ends the Defense Absolute script
+at Workshop 79? The developer asked to settle first which Workshop level wave 999
+needs. The Workshop scan above ends that script at wave 483 at the top uniform level,
+and the trace shows why: base damage outgrows the block. Getting past that takes
+killing enemies before they reach the tower, which is the blender's job. So the top
+level is measured first. If the blender cannot approach 999 there, a lower level is
+unlikely to with these scripts, and the next question is the developer's: which
+other rows, or Labs.
+
+**The arm, `build-turtle-blender-margin`** (`MarginTurtleBlenderPolicy`).
+
+- **Before wave 30:** the shared opening, as every build plays it.
+- **From wave 30, the turtle:** whenever Defense Absolute blocks less than 1.5
+  normal hits, it buys Defense Absolute, saving for it when it cannot pay. A hit is
+  base damage × (1 − Defense %). The 1.5 covers the 4–17% some enemy type hits
+  above base (`#145`, 2026-11-08).
+- **Otherwise, the blender:** `build-turtle-blender`'s spending after its switch.
+  Three quarters of the spend goes to the blender: Orbs, interleaved by spend with
+  the cheapest of Orb Speed, Knockback Chance, Knockback Force and Attack Speed.
+  The rest goes to survival: Health, Defense %, and Thorns to 50%.
+- **The one change from `#122`'s arm:** the turtle is never frozen. When damage
+  catches the block up, Defense Absolute is bought again.
+
+**Protocol.**
+
+- `filling-orders`, `--workshop-level 79`, `--upgrade-availability all`.
+- Bridge `ws2914c-render-interval-16-nodelay` (`bff836b8…`), `--frame-game-ms 100`.
+- 4 actors × 1 episode, by `state/launch/scripted_stage.sh`.
+- Read-only clones, offline, no screenshots and no input, no coins and no permanent
+  progression.
+
+**Read.**
+
+- Each episode's final wave.
+- From the records' final levels: Defense Absolute, Orbs, Orb Speed, the Knockback
+  rows, Attack Speed, Health, Defense % and Thorn Damage.
+- The reference is the scan's 483, played at `saving-orders` on `b8b8cd45…`. The
+  cadence and build differ, so a result within 20 waves of 483 is read as no change.
+
+**What it decides.**
+
+- **Near 999:** Workshop 40 and 20 are measured next, on the same arm.
+- **Well past 483, short of 999:** the arm helps. The guides' order (cash rows,
+  Lifesteal, Recovery) is added before any lower level is measured.
+- **Within 20 waves of 483, or below:** this blender does not pass the wall at 79.
+  That goes to the developer with the options.
+
+It trains nothing, and a script's wave bounds what a level allows from below.
+
 ## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
 
 **Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the

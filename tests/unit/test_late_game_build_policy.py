@@ -16,6 +16,7 @@ from tower_rl.environment.features import (
 )
 from tower_rl.environment.run_actions import action_index, upgrade_action
 from tower_rl.learning.policies import (
+    BLOCK_MARGIN,
     EARLY_GAME_ROWS,
     LATE_GAME_BUILDS,
     LATE_GAME_WAVE,
@@ -25,6 +26,7 @@ from tower_rl.learning.policies import (
     BlenderBuildPolicy,
     CheapestFirstPolicy,
     LateGameBuildPolicy,
+    MarginTurtleBlenderPolicy,
     TurtleBlenderPolicy,
     TurtlePolicy,
     WaitOnlyPolicy,
@@ -475,6 +477,55 @@ def test_an_owed_row_that_cannot_be_afforded_is_saved_for() -> None:
     assert policy.act(_at(250.0, prices, health=0.5), None)[0] == 0
 
 
+# -- turtle into blender on the block's margin ------------------------------------
+
+
+def _margin_blender() -> MarginTurtleBlenderPolicy:
+    policy = MarginTurtleBlenderPolicy()
+    policy.bind_row_names(LABELS)
+    policy.initial_state()
+    return policy
+
+
+def _guarded(
+    block: float, *, base: float = 1000.0, defense_percent: float = 50.0, cash: float = 1e9
+) -> StateFeatures:
+    """An `_at` state, everything priced at 100, with that block, base damage and Defense %."""
+    state = _at(cash, EVERYTHING)
+    scalars = list(state.scalars)
+    scalars[SCALAR_FEATURES.index("defense_absolute_log")] = math.log1p(block)
+    scalars[SCALAR_FEATURES.index("wave_base_damage_log")] = math.log1p(base)
+    scalars[SCALAR_FEATURES.index("defense_relative_fraction")] = defense_percent / 100.0
+    return StateFeatures(scalars=tuple(scalars), rows=state.rows, mask=state.mask)
+
+
+def test_a_block_short_of_the_margin_buys_defense_absolute_at_full_health() -> None:
+    # A hit is 1,000 after 50 % Defense, half the 2,000 base; the margin needs 1,500.
+    short = _guarded(1499.0, base=2000.0)
+    assert _margin_blender().act(short, None)[0] == ROWS["Defense Absolute"]
+
+
+def test_a_block_past_the_margin_spends_as_turtle_blender_does_after_its_switch() -> None:
+    policy, switched = _margin_blender(), _turtle_blender()
+    enough = _guarded(BLOCK_MARGIN * 500.0 + 1.0)
+    bought = [policy.act(enough, None)[0] for _ in range(20)]
+    # The turtle-blender's switch decision is its first purchase after it.
+    after = [switched.act(_at(1e9, EVERYTHING, health=0.5), None)[0]]
+    after += [switched.act(enough, None)[0] for _ in range(19)]
+    assert bought == after
+    assert ROWS["Defense Absolute"] not in bought
+
+
+def test_the_turtle_is_never_frozen_when_damage_catches_the_block_up() -> None:
+    policy = _margin_blender()
+    assert policy.act(_guarded(2000.0), None)[0] != ROWS["Defense Absolute"]
+    assert policy.act(_guarded(2000.0, base=4000.0), None)[0] == ROWS["Defense Absolute"]
+
+
+def test_a_short_block_saves_for_defense_absolute_rather_than_blending() -> None:
+    assert _margin_blender().act(_guarded(0.0, cash=50.0), None)[0] == 0
+
+
 # -- row names -------------------------------------------------------------------
 
 
@@ -507,5 +558,6 @@ def test_the_name_binding_protocol_covers_the_turtle_and_the_builds() -> None:
     assert isinstance(LateGameBuildPolicy("thorns"), BindsRowNames)
     assert isinstance(BlenderBuildPolicy(), BindsRowNames)
     assert isinstance(TurtleBlenderPolicy(), BindsRowNames)
+    assert isinstance(MarginTurtleBlenderPolicy(), BindsRowNames)
     assert not isinstance(CheapestFirstPolicy(), BindsRowNames)
     assert not isinstance(WaitOnlyPolicy(), BindsRowNames)

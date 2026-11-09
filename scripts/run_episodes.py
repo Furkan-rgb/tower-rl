@@ -74,6 +74,7 @@ from tower_rl.learning.policies import (  # noqa: E402
     BlenderBuildPolicy,
     CheapestFirstPolicy,
     LateGameBuildPolicy,
+    MarginTurtleBlenderPolicy,
     Policy,
     RandomPolicy,
     TurtleBlenderPolicy,
@@ -105,6 +106,7 @@ POLICIES: dict[str, Callable[[], Policy]] = {
     },
     "build-blender": BlenderBuildPolicy,
     "build-turtle-blender": TurtleBlenderPolicy,
+    "build-turtle-blender-margin": MarginTurtleBlenderPolicy,
 }
 
 #: How a checkpoint is named as an arm, beside the names above.

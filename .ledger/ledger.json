@@ -1,5 +1,5 @@
 {
-  "next_id": 186,
+  "next_id": 187,
   "items": [
     {
       "id": 1,
@@ -4137,6 +4137,10 @@
         {
           "at": "2026-11-09 13:57",
           "text": "Audit #181: #167 is closed (aac02a1), so five rows are ready: reward, legality, action semantics (experiments.md 'Floors on ws2914c', mask_legal_rejected 0; the traced filling-orders game), observation, evaluation isolation. Collect them into solution.md 16 now; only the learner row waits, on #178."
+        },
+        {
+          "at": "2026-11-09 21:00",
+          "text": "Audit #185: the learner row must cite the read #186 makes (trained side from episodes collected just before the read), not the current one at dreamer_replay.py:185-199."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4718,6 +4722,10 @@
         {
           "at": "2026-11-09 20:30",
           "text": "From #169 (6464684): read prior_kl's unseen side against trained episodes collected just before the checkpoint, not all trained ones (the trained side falls as replay repeats episodes: 1.19-1.72x against recent, 2.13x against all). The actor's top choice moves on 77% of fixed states per 2,500 decisions, so one checkpoint is a loose sample of the run's policy; the pre-registration should say how the evaluated weights are chosen with that in view."
+        },
+        {
+          "at": "2026-11-09 21:00",
+          "text": "Audit #185: blocked on #182 (item 5) and #186 (trained side of the episode reads drawn from recent episodes), no longer on #169. The pre-registration also says how the evaluated weights are chosen given the drift, and whether the entropy bonus (3e-4, too small for near-tied purchases per #169's entry) changes."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4779,6 +4787,10 @@
         {
           "at": "2026-11-09 20:48",
           "text": "Offline test (docs/experiments.md, #169 entry, 'How far one update moves the actor'): two copies of M3-P023's resume point on its final replay, no new data. Top choice changed from the start on 0.23/0.29/0.35/0.55 of fixed states after 625/1,250/2,500/5,000 updates; between the copies 0.21-0.28 at every count (batch sampling alone). So a quarter of the train ratio (512) halves the movement per decision; a quarter of states stay decided by the draw at any ratio."
+        },
+        {
+          "at": "2026-11-09 21:00",
+          "text": "Offline batch test (experiments.md, #169 entry): train ratio 2048 replayed as 64x64 batches (0.5 updates a decision) moves the top choice on 0.22 of fixed states per 2,500 decisions against 0.55 at 16x64; copies disagree on 0.10-0.16 against 0.21-0.28. Audit #185: also flag to the developer that #169's finding (a one-level purchase's value is within the learner's noise) bears on ADR 0020's third Revisit-if."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4796,15 +4808,35 @@
       "title": "train.py's help, errors and usage examples, r2d2.py's docstrings, README.md and setup.md name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and ADR 0019's 0.997 per game-second only for choice-points runs",
       "body": "Replaces #119 (audit #181): train.py:18,33,65,92,906,1158; r2d2.py:54-55,110-111; README.md:75; setup.md:661-662.",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-09 21:00",
+          "text": "Audit #185: the setup.md line is 660, not 661."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 185,
       "title": "Board audit: 2026-11-09 (after #169)",
       "body": "Audit due: exit #169 closed.",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 21:00",
+          "text": "Applied: #186 created under #178 (episode reads from recent trained episodes) and #178 re-pointed to #182 and #186; comments on #150, #182, #184. #142, #157, #159, #180, #183 ok. Ledger to be committed with #180's commit."
+        }
+      ],
+      "closed_at": "2026-11-09T20:00:51.056144Z"
+    },
+    {
+      "id": 186,
+      "title": "The trained side of the DreamerV3 episode reads is drawn from episodes collected just before the read, and docs/solution.md 9.4c says so",
+      "body": "From #169 (6464684): the trained prior_kl falls as replay repeats old episodes, so the unseen/trained ratio against all trained deaths at least 50 episodes old (dreamer_replay.py:185-199, TRAINED_EPISODE_AGE=50 at :75; training.py:1406-1424) reads memorisation too. Against the 2,500 decisions before the checkpoint M3-P023 read 1.19-1.72x. Also solution.md 9.4c 'Episode reads' (~1788-1807) and the ratio row at :1749. Found by audit #185. Blocks #178.",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "parent": 178
     }
   ],
   "milestones": [

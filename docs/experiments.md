@@ -4479,6 +4479,23 @@ quarter of the states at every count. That much is the batch sampling alone. Bey
 it, the movement grows with the number of updates: 1,250 updates, train ratio 512 at
 this cadence, move 0.29 against 0.55.
 
+The same test with batches of 64 sequences instead of 16 (`updates_batch.py`), so
+1,250 updates replay what 5,000 did. That is train ratio 2048 at half an update a
+decision:
+
+| Updates of 64 × 64 | From the start | From the start, old features | Between the two copies |
+|---|---|---|---|
+| 156 | 0.22 | 0.20 | 0.10 |
+| 312 | 0.22 | 0.21 | 0.12 |
+| 625 | 0.25 | 0.22 | 0.11 |
+| 1,250 | 0.22 | 0.20 | 0.16 |
+
+At the run's data rate the larger batch moves the top choice on 0.22 of the states
+per 2,500 decisions, against 0.55 at 16 × 64. Two copies disagree on 0.10–0.16,
+against 0.21–0.28. After the first 156 updates the top choice barely moves further.
+It costs about the same per decision: the 1,250 updates took about 230 s
+for the two copies after compiling, and 5,000 at 16 × 64 about 280 s in all.
+
 **What this settles.**
 
 - **The first failure.** On new episodes the world model at ratio 128 reads 1.19–1.72
@@ -4494,7 +4511,9 @@ this cadence, move 0.29 against 0.55.
   The drift traces to the actor's step under train ratio 2048 on a value signal below
   its noise, so item 5's actor and critic rate, not its world-model rate, is what this
   evidence questions. Offline, a quarter of the train ratio halves the movement per
-  decision. A quarter of the states stay decided by the batches drawn at any ratio.
+  decision, and a quarter of the states stay decided by the batches drawn. The same
+  ratio in batches four times larger cuts the movement to 0.22 and halves what the
+  draw decides.
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

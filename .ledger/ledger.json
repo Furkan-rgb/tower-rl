@@ -1,5 +1,5 @@
 {
-  "next_id": 190,
+  "next_id": 191,
   "items": [
     {
       "id": 1,
@@ -4925,9 +4925,20 @@
         {
           "at": "2026-11-09 21:43",
           "text": "Launched 2026-11-09 20:42 UTC as m3-p024-dreamerv3-ws10-v2914-20261109T204255Z from c41dbf8 (state/launch/m3-p024.sh: 4 actors, --batch-size 64 --train-ratio 2048 --world-model-ratio 128, budget 300,000). Watcher state/launch/m3-p024-watch.sh running; sets A/B by state/launch/m3-p024-select.sh after the stage ends."
+        },
+        {
+          "at": "2026-11-09 21:48",
+          "text": "First launch (20:42Z, from c41dbf8) failed at bring-up on all 4 instances before any episode: open_environment read arguments.workshop_extra_row, which train.py never declares (c46f9ee). Fixed by passing extra rows explicitly; test with train.py's and spectate.py's own arguments. Amendment in M3-P024's entry; relaunching from the fix commit."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 190,
+      "title": "Board audit: 2026-11-09 (after #142)",
+      "body": "Audit due: exit #142 closed. Audit #188 ran an hour earlier; this one checks what changed since.",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

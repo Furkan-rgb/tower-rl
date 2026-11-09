@@ -482,15 +482,23 @@ def refuse_an_unconfined_workshop_write(
 
 
 def open_environment(
-    serial: str, port: int, expected: BridgeCompatibility, arguments: argparse.Namespace
+    serial: str,
+    port: int,
+    expected: BridgeCompatibility,
+    arguments: argparse.Namespace,
+    *,
+    workshop_extra_rows: Sequence[str] = (),
 ) -> tuple[InstrumentedBridgeClient, InstrumentedRunAdapter, InstrumentedRunEnvironment]:
     """Connect the bridge and build the adapter and environment on top of it.
 
     The wiring every collection entry point (`run_episodes.py`, `train.py`,
     `spectate.py`) needs identically: the same client timeouts, then the
     adapter, then the environment built from this invocation's cadence,
-    upgrade-availability and Workshop arguments. A Workshop level above 0 is
-    refused before anything connects unless `serial` runs `-read-only`. The
+    upgrade-availability and Workshop arguments. Extra Workshop rows are a
+    measurement's, which only `run_episodes.py` takes, so they are passed in
+    rather than read from a namespace the others never fill. A Workshop level
+    above 0 is refused before anything connects unless `serial` runs
+    `-read-only`. The
     caller keeps its own connect-time side effects (printing the handshake,
     reading slot labels, wrapping the result) and its own `release()`/`close()`
     in `finally`.
@@ -513,7 +521,7 @@ def open_environment(
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
         workshop_level=workshop_level_from(arguments),
-        workshop_extra_rows=tuple(arguments.workshop_extra_row),
+        workshop_extra_rows=tuple(workshop_extra_rows),
     )
     return client, adapter, environment
 
@@ -598,7 +606,11 @@ def main() -> int:
     expected = compatibility(bridge_build_directory())
 
     client, adapter, environment = open_environment(
-        arguments.serial, arguments.port, expected, arguments
+        arguments.serial,
+        arguments.port,
+        expected,
+        arguments,
+        workshop_extra_rows=arguments.workshop_extra_row,
     )
     handshake = client.handshake
     print(

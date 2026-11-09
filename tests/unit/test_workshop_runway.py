@@ -340,3 +340,44 @@ def test_the_adapter_writes_in_one_round_trip_and_reports_every_row() -> None:
     finally:
         client.close()
         peer.close()
+
+
+@pytest.mark.parametrize("entry", ["train", "spectate"])
+def test_every_entry_point_opens_its_environment_without_extra_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entry: str
+) -> None:
+    """`open_environment` serves train.py and spectate.py too, which take no extra rows.
+
+    M3-P024's first launch lost its whole bring-up to the opener reading an
+    extra-row argument only `run_episodes.py` declares.
+    """
+
+    class Client:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def connect(self) -> None:
+            pass
+
+    monkeypatch.setattr(run_episodes, "InstrumentedBridgeClient", Client)
+    monkeypatch.setattr(run_episodes, "InstrumentedRunAdapter", lambda client: FakeRunPort())
+    if entry == "train":
+        import train
+
+        arguments = train.parse_arguments(
+            [
+                "--budget-decisions", "10", "--run-dir", str(tmp_path),
+                "--backbone", "dreamerv3", "--discount-per-game-second", "0.999",
+            ]
+        )
+    else:
+        import spectate
+
+        arguments = spectate.parse_arguments([])
+    expected = argparse.Namespace(profile_id="fake-profile-v1")
+
+    _, _, environment = run_episodes.open_environment(
+        "emulator-5556", 47652, expected, arguments  # type: ignore[arg-type]
+    )
+
+    assert environment.workshop_extra_rows == ()

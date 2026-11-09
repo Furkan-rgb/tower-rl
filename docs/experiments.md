@@ -4618,6 +4618,16 @@ that is about 70 minutes, plus about 25 for train.py's 8.
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+### Amendment before any device episode (2026-11-09)
+
+The first launch (`m3-p024-dreamerv3-ws10-v2914-20261109T204255Z`, from c41dbf8)
+failed at bring-up on all four instances before any episode. The opener `train.py`
+shares with `run_episodes.py` read an extra-Workshop-row argument that only
+`run_episodes.py` declares (c46f9ee). The fix passes extra rows into the opener
+explicitly, and a test opens it with `train.py`'s and `spectate.py`'s own arguments.
+The run is relaunched from the commit that adds this amendment, which is its source.
+Nothing else changes.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

@@ -1,5 +1,5 @@
 {
-  "next_id": 169,
+  "next_id": 171,
   "items": [
     {
       "id": 1,
@@ -3949,7 +3949,7 @@
       "id": 148,
       "title": "A pilot with the world model at ratio 128 reads unseen and trained deaths alike, and imagined WAIT never outlives recorded play",
       "body": "Serves the learner row of the verification table (docs/task.md 1.1). Offline evidence: docs/experiments.md, Review of the training setup. Read from learner_dreamer_unseen_* and learner_dreamer_trained_* (death_rank, prior_kl, plan_gap). Runs only inside a pre-registration made once the other rows are verified.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 23:51",
@@ -4006,9 +4006,18 @@
         {
           "at": "2026-11-09 02:45",
           "text": "M3-P023 ran its 150,000 decisions (15.6 h, 4 actors, 0 invalid of 1,084; plateau and kill bars not hit). Curve: period mean 35 \u2192 87.39 best (period 20), 84.50 at the end; script floor 101.82.\nPrimary, at the last period end (150,085): death_rank 0.958 unseen against 0.997 trained (passes), plan_gap \u22120.249 / \u22120.219 (passes; it passed at every period from 55k), prior_kl 11.05 against 5.19, ratio 2.13 > 2 (fails from period 22 on). By the pre-registered rule: Fail, on prior_kl alone. M3-P022 read 12.5\u00d7 there.\nFinal evaluation lost: one start's speed_max press came back stale_or_duplicate after ~37 min, and evaluate() raised away the episodes it had played. Fixing evaluate() to retry as training does, then rerunning the 30 episodes on latest.pt."
+        },
+        {
+          "at": "2026-11-09 04:23",
+          "text": "Final evaluation rerun after 1d6c78e on latest.pt, 3 instances x 10 via run_actors: 30/30 valid, IQM 84.81 [68.88, 92.81], -17.01 [-32.90, -8.88] against the script, +62.31 against random. Bimodal: 9 of 30 ended at waves 31-43 on an opening (Defense %, Cash Bonus) the late collection did not play. Offline from stored latents the final weights give the actions taken a median 0.02-0.39; the actor's preferences move within about 1,000 decisions. Recorded 2a66c1e."
+        },
+        {
+          "at": "2026-11-09 04:23",
+          "text": "Retired, not met: M3-P023 ran and failed its pre-registered rule on prior_kl (2.13x trained at the last period end; death_rank and plan_gap held). Recorded in docs/experiments.md, 2a66c1e. Replaced by #169 (root cause first)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-09T03:23:34.289430Z"
     },
     {
       "id": 149,
@@ -4373,11 +4382,15 @@
       "id": 167,
       "title": "The developer accepts, amends to filling-orders, or rejects ADR 0020 on M3-P022's and M3-P023's results",
       "body": "Replaces #144 (audit #166). Evidence: M3-P022 outcome (5a18a2f), the filling-orders floors (7712a66), M3-P023 (pre-registered d7a2c58, #148). ADR 0020 item 2 names saving-orders and keeps filling-orders only as the spike beside it (ADR 0020 Revisit if), so accepting filling-orders needs the ADR amended first.",
-      "status": "Blocked",
+      "status": "Next",
       "comments": [
         {
           "at": "2026-11-08 10:32",
           "text": "Blocked on #148 (M3-P023's result)."
+        },
+        {
+          "at": "2026-11-09 04:23",
+          "text": "Unblocked: M3-P023's result is in (2a66c1e). filling-orders final evaluation IQM 84.81 [68.88, 92.81] against M3-P022's saving-orders 86.94 [84.25, 89.00]; both below the script (~102), n=1 each, eight changes between them. Waiting on the developer."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4389,6 +4402,21 @@
       "status": "Next",
       "comments": [],
       "parent": 145
+    },
+    {
+      "id": 169,
+      "title": "The causes of M3-P023's two learner failures are found and recorded in docs/experiments.md: the prior's distance on unseen episodes rising to 2.13x trained, and the actor's preferences moving within about 1,000 decisions",
+      "body": "Replaces #148, whose pilot ran and failed (2a66c1e). Serves the learner row of docs/task.md 1.1. Offline first, from M3-P023's checkpoints and replay; a run only inside a new pre-registration. Second failure on the learner row after M3-P022: root cause before any further fix (lead-playbook).",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+    },
+    {
+      "id": 170,
+      "title": "Board audit: 2026-11-09",
+      "body": "",
+      "status": "Next",
+      "comments": []
     }
   ],
   "milestones": [

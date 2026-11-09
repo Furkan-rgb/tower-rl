@@ -4515,6 +4515,109 @@ for the two copies after compiling, and 5,000 at 16 × 64 about 280 s in all.
   ratio in batches four times larger cuts the movement to 0.22 and halves what the
   draw decides.
 
+## M3-P024: DreamerV3 in batches of 64 × 64 against the script at Workshop 10 (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-09. Board `#189`. The source is the commit that adds this entry.
+
+**Question.** This is `docs/task.md` §1.1's target. Does a learned policy's final-wave
+IQM beat the best script's at Workshop 10, with the 95% stratified bootstrap interval
+of the difference above zero? The script is `build-defense-absolute` at
+`filling-orders` on `bff836b8…`: IQM 101.82 [101.18, 102.36], n = 21 ("Floors on
+`ws2914c`", records `state/records/p2914c-floors/`). Second, the learner row of §1.1:
+does the world model read deaths it has not trained on as it reads the ones it trained
+on most recently?
+
+**What changes from `M3-P023`.** Three things, each with its evidence:
+
+1. Batches of 64 × 64 at train ratio 2048, half an update a decision, with the world
+   model still at ratio 128. This is ADR 0020 item 5 as accepted (6826b22), through
+   `--batch-size 64` (8655db2).
+2. The trained side of the episode reads is a death 10 to 29 episodes older than the
+   read, not any death at least 50 older (b54d8ef). Both changes come from "Why
+   `M3-P023`'s learner failed".
+3. The reported weights are chosen by the two-stage protocol instead of being the
+   final ones. In `M3-P023` the actor's top choice moved on 0.77 of fixed states per
+   2,500 decisions (same entry), so one checkpoint stood for the run only loosely.
+
+`filling-orders` is now the code default (e61a777), and the run still passes the
+flag. Everything else is `M3-P023`'s launch.
+
+**Launch.** Budget 300,000 decisions. Checkpoints every 2,500 and selection periods of
+5,000. Plateau patience 12 periods at 1.0. Kill bars `30000:15000:35`,
+`60000:45000:60` and `90000:75000:65`, 11 to 14 waves under what `M3-P023` read at
+the same bars (46.74, 73.64 and 76.31). Train ratio 2048, batch 64, world-model
+ratio 128. `γ_s` 0.99991416 and the survival-time reward. 4 actors, seed 0,
+`--frame-game-ms 100`, `--upgrade-availability all`, `--workshop-level 10`, bridge
+`bff836b8…`. train.py's own evaluation of the final weights is cut to 8 episodes and
+is a readout.
+
+**Primary outcome: the reported weights against the script.**
+
+- **Set A, selection.** The checkpoints at the ends of the five selection periods with
+  the highest period means, from period 2 on, ties to the earlier. Each plays 12
+  episodes (4 instances × 3) through `run_actors.py`, and `select_checkpoint.py` picks
+  the highest final-wave IQM.
+- **Set B, report.** The chosen checkpoint plays 32 fresh episodes (4 × 8) into an
+  empty directory, on the same build, cadence and frame budget.
+- **The read.** Set B's final-wave IQM minus the script's, by
+  `stratified_bootstrap_difference` as the floors were read: strata by instance, the
+  script's three rounds pooled by instance, seed 0, 10,000 resamples. The script
+  pools to 101.82 on 21 episodes. The commands are in
+  `state/launch/m3-p024-select.sh`, machine-local.
+- **Pass** if the interval's lower end is above zero, and **Fail** otherwise. A pass
+  meets the target's result. The verified setup also needs the learner row below and
+  the other five rows (`#150`).
+
+**Secondary: the episode reads,** with `M3-P023`'s bounds on the new trained side.
+They are read at every period end from 30,000 decisions on, each a mean over the last
+100 read episodes.
+
+- **Alike:** `death_rank` unseen within 0.10 of trained, and `prior_kl` unseen at most
+  twice trained.
+- **`WAIT` never outlives the recorded play:** `plan_gap` at most +0.05 on both sets.
+- **Pass** if all hold at every period end from 30,000 decisions. **Fail** if any
+  fails at the last period end. In between, the entry reports which periods failed,
+  and the developer decides.
+
+**Readouts (not gates).**
+
+- The curve, and the decisions and wall time at which the period mean first reaches
+  60, 80 and 100.
+- The actor's movement: the share of fixed states whose top choice changes between
+  checkpoints 2,500 decisions apart (`split.py`), against `M3-P023`'s median 0.78.
+- train.py's 8 episodes on the final weights, against set B.
+- Policy entropy on unseen states, read offline as `M3-P023`'s was.
+- Orders filled, Defense Absolute's share of spend through wave 50, invalid episodes by
+  reason, and decisions and updates an hour.
+
+**Stop rules.** `M3-P023`'s, with the watcher `state/launch/m3-p024-watch.sh`. The
+plateau rule and the kill bars stop the run themselves. The watcher reports the first
+of the following, and the Lead stops the run with SIGINT:
+
+- a `Traceback`, or an actor failed or withdrawn;
+- invalid episodes above 5% after 20;
+- cgroup memory above 85 GiB, under the scope's 88 GiB throttle;
+- an invalid episode whose first reason is `WORLD_NOT_HELD`, `WORKSHOP_REVERTED` or
+  `UPGRADE_SETUP_DRIFT`.
+
+**Expected wall time.** At `M3-P023`'s 10,141 decisions an hour, the full budget takes
+about 30 hours. The plateau rule can stop it from 65,000 decisions, about 6.5 hours.
+Sets A and B are 92 episodes on 4 instances. At `M3-P022`'s 2.9 minutes an episode
+that is about 70 minutes, plus about 25 for train.py's 8.
+
+**Known confounds, in advance.**
+
+- n = 1, one seed, and the three changes are confounded with each other.
+- Set A selects among five checkpoints on 12 episodes each, so its winner is partly
+  luck. Set B is fresh, so the reported interval does not carry that luck.
+- The entropy bonus stays at 3e-4. "Why `M3-P023`'s learner failed" found it too small
+  to hold the policy over near-tied purchases. It is not changed here, so the batch's
+  effect on the movement can be read alone.
+- The host is shared, as for `M3-P023`. Every count is in decisions.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

@@ -1,5 +1,5 @@
 {
-  "next_id": 188,
+  "next_id": 190,
   "items": [
     {
       "id": 1,
@@ -3759,7 +3759,7 @@
       "id": 142,
       "title": "The device package has a name that does not claim a simulator",
       "body": "src/tower_rl/simulation holds the adapter to the real game, in a public repo whose claim is that no simulator is used, and docs/task.md section 6 forbids one. Rename once no run is live: a lazy import in a running stage must not break. The import contract and docs/architecture.md move with it.",
-      "status": "Next",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3800,9 +3800,14 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: no stage is live; land in this gap, before #178's pre-registration commit."
+        },
+        {
+          "at": "2026-11-09 21:42",
+          "text": "fe0b13c: tower_rl.simulation -> tower_rl.device, tests/unit/device; import contract and docs moved. Full unit suite 1,317 passed. tower_bridge.cpp comments left (build identity); experiments.md history left."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T20:42:33.190007Z"
     },
     {
       "id": 143,
@@ -4141,6 +4146,10 @@
         {
           "at": "2026-11-09 21:00",
           "text": "Audit #185: the learner row must cite the read #186 makes (trained side from episodes collected just before the read), not the current one at dreamer_replay.py:185-199."
+        },
+        {
+          "at": "2026-11-09 21:41",
+          "text": "Audit #188: the five ready rows can be collected now (no device). The learner row cites the read b54d8ef makes (dreamer_replay.py:75, :190) and closes on #189. #157 unparented: it is not one of the six pointers."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4314,10 +4323,13 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: land before #178, with the load-time alias, since #169 reads M3-P023's checkpoints."
+        },
+        {
+          "at": "2026-11-09 21:24",
+          "text": "Re-ordered after #178's run (2026-11-09): the rename changes no result, the run needs a frozen checkout for ~30 h (state/ is bound to it, project_state.py), and landing it first would delay the run. The load-time alias covers M3-P024's checkpoints as it does M3-P023's."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
-      "parent": 150
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 158,
@@ -4336,7 +4348,7 @@
       "id": 159,
       "title": "The bridge reads the world's hold and presses Pause again when it slipped, after a device check of whether Pause toggles",
       "body": "Split from #147's third clause (audit #158). ADR 0016 section 2 EnsureHeld. The game-path review rated the unread hold Medium, confirmed: hidden round-clock time 263.6 s in M3-P021, 1.1 s in M3-P022, and UNCHARGED_ROUND_TIME now fails such a transition by name. #129 (hold across a host disconnect) stays beside #127/#128.",
-      "status": "Next",
+      "status": "Backlog",
       "comments": [
         {
           "at": "2026-11-08 07:27",
@@ -4365,6 +4377,10 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: does not block #178 (0 slips in 1,082 M3-P023 episodes; none in #173's stages). Device check fits the current gap."
+        },
+        {
+          "at": "2026-11-09 21:41",
+          "text": "Audit #188: to Backlog. UNCHARGED_ROUND_TIME already fails a slipped transition by name; 0 slips in M3-P023's 1,082 episodes and none in #173's stages. Not one of task.md 1.1's six elements."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4709,7 +4725,7 @@
       "id": 178,
       "title": "A DreamerV3 run pre-registered on #169's cause and #167's cadence reports its final-wave IQM minus the script's 101.82 at filling-orders on bff836b8, with the 95% interval, and its unseen-data reads for the learner row",
       "body": "Audit #177: the new goal (87be6b7) has no run item. The pre-registration fixes beforehand which weights are evaluated (M3-P023's actor moved within ~1,000 decisions; 9 of 30 evaluation episodes died at waves 31-43). Blocked on #169; #142 and #157 land before it; #167 and #150 gate whether it counts; #159 does not block.",
-      "status": "Blocked",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 13:49",
@@ -4726,9 +4742,14 @@
         {
           "at": "2026-11-09 21:00",
           "text": "Audit #185: blocked on #182 (item 5) and #186 (trained side of the episode reads drawn from recent episodes), no longer on #169. The pre-registration also says how the evaluated weights are chosen given the drift, and whether the entropy bonus (3e-4, too small for near-tied purchases per #169's entry) changes."
+        },
+        {
+          "at": "2026-11-09 21:41",
+          "text": "Retired, replaced by #189 (audit #188): the next run selects among five period-end checkpoints on set A and reports the choice on a fresh set B, which this title does not name. Its blockers are closed (#169 6464684, #182 6826b22, #187 8655db2, #186 b54d8ef)."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T20:41:48.458055Z"
     },
     {
       "id": 179,
@@ -4814,7 +4835,12 @@
       "title": "docs/solution.md 7.3, 9.4c and 9.4d name the accepted cadence (filling-orders, ADR 0020) and its discount, 0.99991416 per game-second; choice points and ADR 0019's 0.997 per game-second are named only as what earlier runs used",
       "body": "Audit #181: solution.md:828-832, 1703, 1761, 1851-1856 predate ADR 0020's acceptance (aac02a1).",
       "status": "Next",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-09 21:41",
+          "text": "Audit #188, scope additions: 9.4c's step-time paragraph (~1825-1831, '\u224823 ms per decision') was measured at 16x64; 9.2c ~1176-1182; the R2D2 table rows at 9.4 ~1582 and ~1584 (0.997 as ADR 0019's value, a step as a choice-point decision); 9.4e ~1910-1938 (worked figures at 0.999). The warm-up row (9.4c) and the arm rule (9.2b) were fixed with M3-P024's commit."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
@@ -4826,6 +4852,10 @@
         {
           "at": "2026-11-09 21:00",
           "text": "Audit #185: the setup.md line is 660, not 661."
+        },
+        {
+          "at": "2026-11-09 21:41",
+          "text": "Audit #188: line numbers moved after 8655db2: train.py 906 -> 924, 1158 -> 1176. README.md:75 passes no cadence flag, so since e61a777 it launches a filling-orders run at 0.997: a live hazard; give it the accepted discount. setup.md:660-662 passes --decision-cadence choice-points, which the title already allows at 0.997; leave it or make it a filling-orders example."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4872,6 +4902,27 @@
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "parent": 178,
       "closed_at": "2026-11-09T20:17:20.609812Z"
+    },
+    {
+      "id": 188,
+      "title": "Board audit: 2026-11-09 (after #180, #182)",
+      "body": "Audit due: exits #180 and #182 closed.",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 21:41",
+          "text": "Applied: #178 retired and replaced by #189 (two-stage selection named); comments on #183 (scope additions), #184 (line numbers, README:75 hazard), #150 (collect rows now); #157 unparented from #150; #159 to Backlog. solution.md 9.2b arm rule and 9.4c warm-up row fixed in M3-P024's commit. #142 ok (in progress)."
+        }
+      ],
+      "closed_at": "2026-11-09T20:41:56.695284Z"
+    },
+    {
+      "id": 189,
+      "title": "M3-P024, pre-registered on #169's cause, filling-orders and ADR 0020 item 5 (64x64, ratio 2048), picks one checkpoint on evaluation set A and reports it on a fresh set B: final-wave IQM minus the script's 101.82 on bff836b8 with the 95% interval, and the unseen-data reads (trained side 10-29 episodes old) for the learner row",
+      "body": "Replaces #178 (audit #188): the run now selects among five period-end checkpoints on set A and reports the choice on set B. Pre-registration in docs/experiments.md 'M3-P024'. Gated on #142 landing before the checkout freezes for the run.",
+      "status": "In progress",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],
   "milestones": [

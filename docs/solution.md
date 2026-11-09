@@ -1114,10 +1114,15 @@ run resumes from.
 the near-greedy actors' valid episodes in that period. The arm is the
 checkpoint at the close of the period with the highest such mean, counting only
 periods from the second on that have a mean at all, with a tie going to the
-earlier period. This is the only arm rule, and it is applied by hand from the
-summary's `selection_periods`; no code selects the arm. A kill-bar stop does
-not change which checkpoint is the arm; the pre-registration decides whether a
-killed run's arm is evaluated.
+earlier period. Runs before `M3-P024` took that checkpoint as the arm, by hand
+from the summary's `selection_periods`. In `M3-P023` the actor's top choice
+moved on most states between checkpoints (`docs/experiments.md`, "Why
+`M3-P023`'s learner failed"), so one period's checkpoint stood for the run only
+loosely. From `M3-P024` the five periods with the highest means name the
+candidates, and the two-stage protocol chooses among them:
+`scripts/select_checkpoint.py` on a selection set A, then a fresh set B reports
+the choice. A kill-bar stop does not change which checkpoints are candidates;
+the pre-registration decides whether a killed run is evaluated.
 
 ### 9.2c Decision moments must not depend on speed
 
@@ -1747,7 +1752,7 @@ one-hot (2 KB) exactly. The capacity of 5e6 items therefore binds only past
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`), an item at every step (`replay.py` `add` 77-118) | **64 × 64 at the order cadences** (`--batch-size 64`); 16 × 64 is the default. The warm-up is one batch of items either way | ADR 0020 item 5: at 16 × 64 the actor's two updates a decision moved its top choice on 0.77 of fixed states per 2,500 decisions in `M3-P023`, on value differences below its noise; offline, 64 × 64 moved it on 0.22 against 0.55 at the same replayed steps (docs/experiments.md, "Why `M3-P023`'s learner failed") |
 | train ratio | 512 (configs.yaml `crafter` preset: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`; Table 2's vector-observation 12M row, dv3.txt 869-870) | **2048 at the order cadences** (`--train-ratio 2048`): 2048/(64·64) = 0.5 gradient steps per decision; 512 is the default | ADR 0020 item 5: a decision arrives about eight times slower than at choice points, and 512 would use about 13% of the learner |
 | world model's ratio | one optimizer over every module (`agent.py` 76), stepped once per update (`train` 137-139), so the world model learns at the train ratio | **`world_model_ratio`, optional**: the world model learns from one update in `train_ratio / world_model_ratio`, the actor and critic from every one; unset, the official single ratio | At one decision a wave an episode is about 66 steps against a 64-step window, and on `M3-P021`'s data the world model memorises from ratio 256: imagined `WAIT` outlives the recorded play on trained states, and the prior sits 2 to 4 times further from the posterior on unseen ones. At 128 neither shows in that review, and an actor and critic at 2048 over a world model at 128 opened no gap of their own (`docs/experiments.md`, "Review of the training setup"). Over `M3-P023`'s 150,000 decisions at 128, imagined `WAIT` stays below the recorded play from 55,000 decisions on, but the prior's distance on unseen episodes passes twice trained from 110,000 (`docs/experiments.md`, `M3-P023`, Result). Against the trained episodes collected just before, it reads 1.19–1.72 times: the rest is how often replay showed the older ones (`docs/experiments.md`, "Why `M3-P023`'s learner failed"). |
-| warm-up | trains once `len(replay) >= batch_size * batch_length` items (`embodied/run/train.py` 71) | same: 1,024 items | — |
+| warm-up | trains once `len(replay) >= batch_size * batch_length` items (`embodied/run/train.py` 71) | same: one batch of items, 1,024 at 16 × 64 and 4,096 at 64 × 64 | — |
 | replay | uniform, `replay.size` 5e6 items, FIFO (`replay.py` `_insert`/`_remove` 171-191), online queue first (`add` 114-118, `_sample` 158-160) | same | — |
 | replay insertion | step by step as the driver steps | **a whole episode at its end** | ADR 0014 and ADR 0017: a counted episode is in replay whole or not at all, which the resume pair and the learner's debt are built on. |
 | inadmissible transitions | none | **the stream is cut at the first**, keeping the observation it left from | The environment's admissibility contract (docs/environment-contract.md): what an inadmissible transition led to may not be a valid observation. |

@@ -1,5 +1,5 @@
 {
-  "next_id": 177,
+  "next_id": 180,
   "items": [
     {
       "id": 1,
@@ -1458,6 +1458,10 @@
         {
           "at": "2026-11-07 23:51",
           "text": "Audit 2026-11-07: stale and unplaced. Last activity 2026-10-25 (the withdrawn M3-P020 start); M3-P021 and M3-P022 ran on their own cards. Whether the learner comparison is still wanted, and under which goal, is a scope question for the developer."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: premise stale (M2-P003, stacked-dqn, BBF); task.md 1.1 Outcome A (three learners) still stands. Held for the developer's scope call: retire and replace with an EfficientZero V2 Outcome A item, or drop it from Outcome A."
         }
       ]
     },
@@ -1606,6 +1610,10 @@
         {
           "at": "2026-11-08 09:39",
           "text": "Audit #165: the '(default build)' in this title is stale: since bdea332 evaluation plays on the render-interval build (solution.md 6.3)."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: '(default build)' in the title is stale (evaluation uses the render-interval build since bdea332). More relevant now: M3-P023's actor moves within ~1,000 decisions, so #178's weight choice needs a checkpoint ladder; Outcome B needs the curve."
         }
       ]
     },
@@ -3299,6 +3307,10 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166: train.py:18,33 still show 0.999 in examples, and train.py:911 says the protocol discount is 0.997 per game-second (ADR 0019) while runs use ADR 0020's 0.99991416."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: runs use 0.99991416 per game-second (ADR 0020 item 3, Proposed), not 0.997; re-title once #167 decides the discount."
         }
       ]
     },
@@ -3435,6 +3447,10 @@
         {
           "at": "2026-11-08 03:02",
           "text": "Audit 2026-11-08: re-parented under #147. Its fix is ADR 0016 \u00a72 (EnsureHeld: read the hold, re-press Pause if it slipped), which needs a device check of whether Pause toggles first. Title is narrower than P4."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: the earlier comment says re-parented under #147, but its parent is None and #147 is closed."
         }
       ]
     },
@@ -3775,6 +3791,10 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Audit #174: three stages have run since #170's 'before the next device stage'. Rename in a gap between #173's stages, or after #173."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: no stage is live; land in this gap, before #178's pre-registration commit."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4104,6 +4124,10 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Audit #174: the learner row waits on #169, which the developer paused for #171/#173; M3 cannot close on it until #169 resumes."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: the six elements stand under the new goal. Collect the four ready rows (reward, legality, observation, evaluation isolation) into solution.md 16 now; the learner row closes on #178's unseen-data reads, action semantics on #167."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4273,6 +4297,10 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Audit #174: host-only and no running stage imports train.py, so it can land while #173's stages run."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: land before #178, with the load-time alias, since #169 reads M3-P023's checkpoints."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
@@ -4320,6 +4348,10 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Audit #174: the device check waits for #173's stages; read their records for UNCHARGED_ROUND_TIME as further bff836b8 / 100 ms samples."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: does not block #178 (0 slips in 1,082 M3-P023 episodes; none in #173's stages). Device check fits the current gap."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4454,6 +4486,10 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Audit #174: with the amendment, also re-point ADR 0020 line 90 (#145 as 'a build that does not rest on the block') to d400408, and line 7's retired #144."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: the amendment must also rewrite ADR 0020 lines 89-90 and 97, which still name wave 1000 and retired #145, for the 2026-11-09 goal. Items 1-4 can be decided now; item 5 (world-model ratio 128) waits on #169."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4489,6 +4525,10 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Audit #174 correction: 'd100073' is checkpoint-d0100073.pt (decision 100,073), not a commit. The age, noise, drift and gap scripts and outputs are in the session scratchpad (p023/); the experiments.md entry names them, as earlier scratchpad-sourced entries do."
+        },
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Audit #177: unpaused. #171/#173 are closed and the goal is now to beat the script at Workshop 10 (87be6b7); the second clause (top choice flipping on 58-88% of fixed states) is the open part and blocks the next learner run (#178)."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4624,6 +4664,40 @@
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T12:44:22.342667Z"
+    },
+    {
+      "id": 177,
+      "title": "Board audit: 2026-11-09 (after #173, #176, the goal change)",
+      "body": "",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Applied: task.md 6 no longer names wave 999 (my miss in 87be6b7); comments on #169 (unpaused), #167, #150, #157, #142, #159, #58 (held for the developer), #65, #119, #129; added #178 (the next learner run against 101.82, blocked on #169). M3's description still cites the 2026-11-07 decision: the ledger has no verb to edit it."
+        }
+      ],
+      "closed_at": "2026-11-09T12:49:24.789381Z"
+    },
+    {
+      "id": 178,
+      "title": "A DreamerV3 run pre-registered on #169's cause and #167's cadence reports its final-wave IQM minus the script's 101.82 at filling-orders on bff836b8, with the 95% interval, and its unseen-data reads for the learner row",
+      "body": "Audit #177: the new goal (87be6b7) has no run item. The pre-registration fixes beforehand which weights are evaluated (M3-P023's actor moved within ~1,000 decisions; 9 of 30 evaluation episodes died at waves 31-43). Blocked on #169; #142 and #157 land before it; #167 and #150 gate whether it counts; #159 does not block.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Blocked on #169."
+        }
+      ],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 179,
+      "title": "docs/task.md section 6 names the 2026-11-09 target (beat the best script at Workshop 10), not wave 999",
+      "body": "Audit #177: 87be6b7 missed task.md 6's sentence naming wave 999.",
+      "status": "In progress",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],
   "milestones": [

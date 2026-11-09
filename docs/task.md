@@ -271,7 +271,7 @@ unless ADR 0006 explicitly defines the bounded training-only exception:
 - arbitrary free-form screen-coordinate actions learned by the agent;
 - support for tiers other than Tier 1;
 - mobile-device deployment or unattended remote/cloud deployment;
-- guaranteeing that any specific wave is attainable, because attainable performance depends on the supplied account state and game version. Wave 999 is the project's target (§1.1), and whether it can be reached at minimal Workshop levels is an open question.
+- guaranteeing that any specific wave is attainable, because attainable performance depends on the supplied account state and game version. The project's target (§1.1) is relative: beating the best script at Workshop 10, which a stronger script raises.
 
 Use only the APK and account/save material the user is authorized to possess. Keep the experiment local and isolated from competitive or transactional features.
 

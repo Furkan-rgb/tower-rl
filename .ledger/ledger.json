@@ -4097,7 +4097,7 @@
       "id": 150,
       "title": "Each of the six setup elements in docs/task.md 1.1 (reward, legality, action semantics, observation, evaluation isolation, learner) cites a docs/experiments.md entry that verifies it",
       "body": "The goal's 'correct setup' clause, as a checkable list. #148 is the learner element's live check. Found missing by board audit #149.",
-      "status": "In progress",
+      "status": "Blocked",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -4154,6 +4154,10 @@
         {
           "at": "2026-11-09 21:49",
           "text": "Audit #190: collect the five ready rows into solution.md 16 now (docs only): reward and legality (experiments.md 'Review of the training setup'), action semantics ('Floors on ws2914c'), observation ('The kill count carried into wave 1', 'Review of the training setup'), evaluation isolation (present). The learner row follows #189."
+        },
+        {
+          "at": "2026-11-09 22:11",
+          "text": "e5391e6: solution.md 16 has the six setup-element rows; five cite their verifying entries, the learner row is pending M3-P024's episode reads (#189). Closes when #189's reads land."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"

@@ -3739,6 +3739,39 @@ first. Because this one is an in-run row, it needs no Workshop at all.
   move the wall as bought here. Workshop Orbs, Recovery, Death Defy and the Wall come
   next.
 
+**Outcome (2026-11-09, appended after the stages; the pre-registration above is
+unedited).** Both stages ran in order, 4 of 4 valid each, with no invalid reason.
+Records are in `state/records/skip-turtle/ws10/` and `ws79/`.
+
+| Workshop | Final waves | Skip level | Skip bought in waves | Defense Absolute | Reference |
+|---|---|---|---|---|---|
+| 10 | 91, 94, 98, 103 | 5–6 | 31 to 45–56 | 62–67 | IQM 101.82 |
+| 79 | 434, 435, 435, 435 | 40 | 30 to 281–291 | 258–259 | 483 |
+
+- **At Workshop 10 the arm barely tested the skip.** The block stopped 1.5 hits
+  only in waves 31–56. After that every purchase was Defense Absolute, and the
+  skip's price had reached 860–1,041. The mean, 96.5, is 5.3 below the reference.
+- **At Workshop 79 it bought 40 levels and ended 48 waves below 483.** The skip's
+  price rose from 240 to 67,414. The cash it took came out of the block, which
+  ended about 40 levels short of the script's 299–300.
+- **The verdict, by the pre-registered rule: the skip does not move the wall as
+  bought here.** At Workshop 79 the arm ends below the reference, not near it.
+
+**One reading across the three Workshop 79 arms.** In every arm the final wave
+follows Defense Absolute's final level, at about 1.2 waves a level:
+
+| Arm | Defense Absolute | Final wave |
+|---|---|---|
+| `build-defense-absolute` (scan) | 299–300 | 483 |
+| `build-turtle-blender-margin` | 263–266 | 440–445 |
+| `build-turtle-skip` | 258–259 | 434–435 |
+
+The line through the first and third rows puts a block of 264 at wave 442, the
+blender's own result. So neither 40 in-run skip levels nor the capped blender
+changed where the block loses, by as much as this resolution can see. The record
+carries no base damage, so whether the skip moved the schedule at all is not
+read here (`#175`).
+
 ## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
 
 **Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the

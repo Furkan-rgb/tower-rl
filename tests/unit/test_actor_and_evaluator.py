@@ -17,6 +17,7 @@ from tower_rl.environment.run_environment import (
     CadenceConfig,
     InstrumentedRunEnvironment,
 )
+from tower_rl.environment.run_port import RunPortError
 from tower_rl.environment.run_state import RunStateBuilder
 from tower_rl.experiment.comparison import bootstrap_difference, cohens_d
 from tower_rl.learning.actor import Actor, ActorConfig, Decision
@@ -138,6 +139,27 @@ def test_a_wholly_failed_arm_still_says_why_every_episode_failed() -> None:
                 damage_per_second=1.0,
                 ambiguous_advance_episodes=frozenset({1, 2, 3}),
             ),
+            CheapestFirstPolicy(),
+            episodes=3,
+            profile_id=PROFILE,
+        )
+
+
+def test_an_episode_the_port_could_not_deliver_is_retried_not_the_evaluation_lost() -> None:
+    """`M3-P023`'s final evaluation lost its played episodes to one refused press."""
+    report = evaluate(
+        _environment(damage_per_second=1.0, refuse_episodes=frozenset({2})),
+        CheapestFirstPolicy(),
+        episodes=3,
+        profile_id=PROFILE,
+    )
+
+    assert report.valid_episodes == 3
+    assert report.failed_episodes == ("fake instance refused to start",)
+    assert to_record(report)["failed_episodes"] == ["fake instance refused to start"]
+    with pytest.raises(RunPortError, match="refused to start"):
+        evaluate(
+            _environment(refuse_to_start=True),
             CheapestFirstPolicy(),
             episodes=3,
             profile_id=PROFILE,

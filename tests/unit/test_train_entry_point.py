@@ -252,12 +252,14 @@ def test_evaluation_runs_without_exploration(tmp_path: Path) -> None:
 def test_an_episode_the_port_refuses_does_not_abort_the_session(tmp_path: Path) -> None:
     report = session(tmp_path, refuse_episodes=frozenset({2, 3}))
 
-    # Episode ordinals are consumed by evaluation episodes too, so one refusal
-    # lands on collection and one on an evaluation. Neither may end the session.
+    # Episode ordinals are consumed by evaluation episodes too, so a refusal
+    # lands on collection or on an evaluation. Neither may end the session, and
+    # an evaluation retries its own rather than being lost (`M3-P023`).
     arm = report["arm"]
-    assert arm["failed_episodes"] >= 1
-    assert len(arm["evaluation_failures"]) >= 1
-    assert arm["failed_episodes"] + len(arm["evaluation_failures"]) == 2
+    retried = sum(len(evaluation["failed_episodes"]) for evaluation in arm["evaluations"])
+    assert retried >= 1
+    assert not arm["evaluation_failures"]
+    assert arm["failed_episodes"] + retried == 2
     # The budget is still spent and the curve still produced.
     assert arm["decisions"] >= 200
     assert arm["learning_curve"]

@@ -15,8 +15,14 @@ from typing import Any
 from tower_rl.environment.decision_time import POLICY_FORWARD
 from tower_rl.environment.episode import EpisodeSummary
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment
+from tower_rl.environment.run_port import RunPortError
 from tower_rl.learning.actor import Actor, ActorConfig
 from tower_rl.learning.policies import Policy, describe
+
+#: Episodes in a row the port may fail to deliver before the evaluation gives
+#: up: a collecting actor's own bound (`TrainingConfig`'s
+#: `max_consecutive_episode_failures`).
+MAX_CONSECUTIVE_FAILED_EPISODES = 5
 
 
 @dataclass(frozen=True)
@@ -100,6 +106,10 @@ class EvaluationReport:
     episodes_not_started_fresh: int = 0
     #: Wall time the policy spent choosing, over every attempted episode.
     total_policy_seconds: float = 0.0
+    #: Why each episode the port could not deliver failed, in order. Such an
+    #: episode was not played to an outcome, so it is retried and not counted
+    #: among the episodes asked for.
+    failed_episodes: tuple[str, ...] = ()
 
     @property
     def invalid_rate(self) -> float:
@@ -163,6 +173,10 @@ def evaluate(
     Evaluation never writes to replay and never explores: epsilon is forced to
     zero here rather than trusted from configuration, because an evaluation that
     quietly explored would overstate nothing and understate everything.
+
+    An episode the port could not deliver is retried, as a collecting actor
+    retries one, so one refused press does not lose the episodes already
+    played (`M3-P023`); `MAX_CONSECUTIVE_FAILED_EPISODES` in a row end it.
     """
     base = actor_config or ActorConfig()
     config = ActorConfig(actor_id=base.actor_id, epsilon=0.0)
@@ -188,9 +202,19 @@ def evaluate(
     advance_wall = 0.0
     cut_short = 0
     speed = 0.0
+    failed: list[str] = []
+    consecutive_failures = 0
     try:
-        for _ in range(episodes):
-            result = actor.run_episode()
+        while len(attempted) < episodes:
+            try:
+                result = actor.run_episode()
+            except RunPortError as failure:
+                failed.append(str(failure))
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILED_EPISODES:
+                    raise
+                continue
+            consecutive_failures = 0
             summary = result.summary
             decisions += summary.decisions
             wall += summary.elapsed_wall_seconds
@@ -246,6 +270,7 @@ def evaluate(
         total_policy_seconds=round(
             actor.profile.snapshot().buckets[POLICY_FORWARD].wall_seconds, 4
         ),
+        failed_episodes=tuple(failed),
     )
 
 
@@ -383,6 +408,7 @@ def to_record(report: EvaluationReport) -> dict[str, Any]:
         "speedup": round(report.speedup, 3),
         "episodes_not_started_fresh": report.episodes_not_started_fresh,
         "total_policy_seconds": report.total_policy_seconds,
+        "failed_episodes": list(report.failed_episodes),
         "episodes": [
             episode_record(index, summary) for index, summary in enumerate(report.episodes)
         ],

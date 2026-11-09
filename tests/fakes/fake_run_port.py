@@ -45,6 +45,7 @@ class FakeWorkshopRow:
     index: int
     name: str
     after: int
+    max_level: int
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,8 @@ class FakeRunPort:
         default_factory=lambda: dict(FAKE_WORKSHOP_NAMES)
     )
     workshop_max_level: int = 99
+    #: Rows whose Workshop ceiling is not `workshop_max_level`, by name.
+    workshop_ceilings: dict[str, int] = field(default_factory=dict)
     #: Set to have every round start put the Workshop levels back to 0, the
     #: shape of a game that reloads them at the start from what it saved.
     workshop_reverts_at_round_start: bool = False
@@ -372,7 +375,7 @@ class FakeRunPort:
         for name in rows:
             if name not in where:
                 raise RunPortError(f"rejected: workshop_row_unknown:{name}")
-            if level > self.workshop_max_level:
+            if level > self._workshop_ceiling(name):
                 raise RunPortError(f"rejected: workshop_level_above_max:{name}")
         for name in rows:
             self.workshop_levels_held[where[name]] = level
@@ -388,10 +391,19 @@ class FakeRunPort:
 
     def _workshop_rows(self) -> tuple[FakeWorkshopRow, ...]:
         return tuple(
-            FakeWorkshopRow(family, index, name, self.workshop_levels_held[(family, index)])
+            FakeWorkshopRow(
+                family,
+                index,
+                name,
+                self.workshop_levels_held[(family, index)],
+                self._workshop_ceiling(name),
+            )
             for family, names in self.workshop_names.items()
             for index, name in enumerate(names)
         )
+
+    def _workshop_ceiling(self, name: str) -> int:
+        return self.workshop_ceilings.get(name, self.workshop_max_level)
 
     def read_state(self) -> FakeRunReading | None:
         self.reads += 1

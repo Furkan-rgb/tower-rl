@@ -114,6 +114,11 @@ class WorkshopRowLike(Protocol):
     @property
     def after(self) -> int: ...
 
+    @property
+    def max_level(self) -> int:
+        """The highest Workshop level the game lets this row hold."""
+        ...
+
 
 class RunPortError(RuntimeError):
     """The port could not complete a request; the caller classifies the episode."""

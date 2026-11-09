@@ -70,6 +70,7 @@ from run_episodes import (  # noqa: E402
     add_cadence_arguments,
     add_evaluation_name_argument,
     add_upgrade_availability_argument,
+    add_workshop_extra_row_argument,
     add_workshop_level_argument,
     checkpoint_evaluation_directory,
     refuse_an_unused_evaluation_name,
@@ -407,6 +408,11 @@ def collect_episodes(
             "--decision-cadence", str(arguments.decision_cadence),
             "--upgrade-availability", str(arguments.upgrade_availability),
             "--workshop-level", str(arguments.workshop_level),
+            *(
+                option
+                for name in arguments.workshop_extra_row
+                for option in ("--workshop-extra-row", name)
+            ),
             "--output", str(output),
         ],
         capture_output=True,
@@ -478,6 +484,7 @@ def main() -> int:
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
     add_workshop_level_argument(parser)
+    add_workshop_extra_row_argument(parser)
     parser.add_argument(
         "--output-directory",
         type=Path,

@@ -208,6 +208,14 @@ is read from the tower stats every observation carries (`damage`,
 `attackSpeed`, `thornDamage`, `defenseAbs`, tower max health, ...), compared at
 wave 1 against N = 0.
 
+For a measurement of the rows the profile holds at 0 (`#173`), `run_episodes.py`
+and `run_actors.py` take `--workshop-extra-row NAME`, which can be repeated. Each named
+row is raised beside the profile to N, or to its own Workshop ceiling where that is
+lower. The ceiling is read from the bridge's report of the profile's write. The same
+two checks apply to every row written, and the record's `workshop_rows` names the
+extra rows after the profile's. Training takes no such option; it plays the profile
+alone.
+
 `validate_transition(previous, current)` rejects a non-advancing source sequence
 or capture time, a profile identity or schema version that changed inside an
 episode, backward wave movement while both states are active, and any upgrade

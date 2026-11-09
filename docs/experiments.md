@@ -3772,6 +3772,52 @@ changed where the block loses, by as much as this resolution can see. The record
 carries no base damage, so whether the skip moved the schedule at all is not
 read here (`#175`).
 
+## ADR 0012's held Workshop rows at Workshop 79 (measurement only, written before its device episodes)
+
+**Date:** 2026-11-09. Board `#173`.
+
+**Question.** Do the Workshop rows ADR 0012 holds at 0 move the wall that ends
+every Workshop 79 game? The developer chose to test them, the Enemy Level Skips
+first. The in-run skip moved nothing at 40 levels (entry above). The Workshop rows
+are a separate lever, and ADR 0012 holds them at 0 because they "remove the
+enemies' scaling" or are extra lives.
+
+**The tool.** `--workshop-extra-row NAME` raises a row beside the profile, to the
+level or to its own ceiling where that is lower. Each wave's record now carries
+`currentWaveBaseDamage`, `defenseAbs` and `defenseRel` (`#175`, 95d6d23). So a skip
+is read against the base-damage schedule that "The wall at wave 483" traced on the
+same game: 2,424 at wave 200, 12,400 at 351, 26,790 at 450 and 32,600 at 480.
+
+**Protocol.** `build-defense-absolute`, `filling-orders`, `--workshop-level 79`,
+`--upgrade-availability all`, `bff836b8…`, `--frame-game-ms 100`. Each stage is 4
+actors × 1 episode, under the usual safety: read-only clones, offline, no
+screenshots and no input, no coins and no permanent progression. The two stages run
+in this order:
+
+- **A, the skips:** extra rows Enemy Attack Level Skip and Enemy Health Level Skip.
+- **B, every held row:** A's two, plus Orbs, Death Defy, Wall Health, Wall Rebuild,
+  Recovery Amount, Max Recovery and Package Chance. Interest is left out: it is
+  worth $0 here (ADR 0012).
+
+**Read.**
+
+- Each episode's final wave, against 483.
+- The levels each extra row was written to, from the record's `upgrade_setup`.
+- Base damage at waves 200, 351, 450 and 480, against the traced schedule. Any
+  value below it is the skip at work.
+- Defense Absolute's level at death.
+
+**What it decides.**
+
+- **A reaches 999:** the lowest Workshop level that still does is measured next,
+  with the skips.
+- **A moves the schedule but not to 999:** B says how much the extra lives add.
+- **B short of 999:** no uniform Workshop level up to the ceiling, with every row,
+  gives this script wave 999. The route goes to the developer (`#176`): Labs, a
+  learner, or the target.
+- **The schedule unmoved in A:** the Workshop skips do not slow the damage, whatever
+  their level.
+
 ## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
 
 **Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the

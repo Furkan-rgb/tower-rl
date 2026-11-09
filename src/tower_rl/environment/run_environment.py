@@ -628,6 +628,10 @@ class InstrumentedRunEnvironment:
     #: default, writes nothing and is baseline v1; above it, the profile's rows
     #: are set to this level before every round.
     workshop_level: int = WORKSHOP_OFF
+    #: Rows outside the profile raised beside it, for a measurement of the rows
+    #: ADR 0012 holds at 0 (`#173`): each to `workshop_level`, or to its own
+    #: Workshop ceiling where that is lower. Empty, the default, is the profile.
+    workshop_extra_rows: tuple[str, ...] = ()
     #: Where this instance's decision time goes. One profile per instance,
     #: mutated only by the actor thread that drives it (see
     #: `environment/decision_time.py`); a run publishes snapshots of it.
@@ -671,6 +675,8 @@ class InstrumentedRunEnvironment:
     #: The Workshop rows the game read back once this episode's round started;
     #: None when no Workshop profile is written, and so nothing was read.
     _workshop_read: tuple[WorkshopRowLike, ...] | None = field(default=None, init=False)
+    #: The level each written Workshop row must hold, set by the write.
+    _workshop_targets: dict[str, int] = field(default_factory=dict, init=False)
     #: The setup the current episode is played on, as the game read it back.
     _setup: UpgradeSetup | None = field(default=None, init=False)
     #: Why this episode's setup is not the run's, when it is not.
@@ -682,7 +688,12 @@ class InstrumentedRunEnvironment:
 
     def __post_init__(self) -> None:
         # A negative level is refused here, not at the first round start.
-        workshop_rows(self.workshop_level)
+        profile = workshop_rows(self.workshop_level)
+        if self.workshop_extra_rows and not profile:
+            raise ValueError("extra Workshop rows need a Workshop level above 0")
+        named = (*profile, *self.workshop_extra_rows)
+        if len(set(named)) != len(named):
+            raise ValueError(f"a Workshop row is named twice: {named}")
         self.builder = replace(
             self.builder,
             offers_rows_out_of_reach=self.decision_cadence
@@ -896,7 +907,7 @@ class InstrumentedRunEnvironment:
             profile_id=state.profile_id,
             upgrade_availability=str(self.upgrade_availability),
             workshop_level=self.workshop_level,
-            workshop_rows=workshop_rows(self.workshop_level),
+            workshop_rows=(*workshop_rows(self.workshop_level), *self.workshop_extra_rows),
             upgrade_setup=self._setup,
             upgrade_setup_drifted=self._setup_drift is not None,
             decision_cadence=str(self.decision_cadence),
@@ -1536,9 +1547,17 @@ class InstrumentedRunEnvironment:
         rows = workshop_rows(self.workshop_level)
         try:
             reported = self.port.set_workshop_levels(self.workshop_level, rows)
+            targets = dict.fromkeys(rows, self.workshop_level)
+            if self.workshop_extra_rows:
+                extra = self._extra_row_levels(reported)
+                for level in sorted(set(extra.values())):
+                    named = [name for name, target in extra.items() if target == level]
+                    reported = self.port.set_workshop_levels(level, named)
+                targets |= extra
         except RunPortError as failure:
             raise RunPortError(f"{WORKSHOP_NOT_APPLIED}: {failure}") from failure
-        short = self._rows_not_at_level(reported, rows)
+        self._workshop_targets = targets
+        short = self._rows_not_at_level(reported)
         if short:
             raise RunPortError(
                 f"{WORKSHOP_NOT_APPLIED}: the game read back other levels: {', '.join(short)}"
@@ -1551,28 +1570,35 @@ class InstrumentedRunEnvironment:
         the observation, and a read is a round trip of its own. A read that
         fails is a boundary that would not open, as a failed write is.
         """
-        rows = workshop_rows(self.workshop_level)
         try:
             reported = self.port.workshop_levels()
         except RunPortError as failure:
             raise RunPortError(f"{WORKSHOP_NOT_APPLIED}: {failure}") from failure
         self._workshop_read = tuple(reported)
-        moved = self._rows_not_at_level(reported, rows)
+        moved = self._rows_not_at_level(reported)
         if moved:
             self._workshop_reverted = (
                 f"{WORKSHOP_REVERTED}: {len(moved)} Workshop rows moved at the round "
                 f"start, from {moved[0]}"
             )
 
-    def _rows_not_at_level(
-        self, reported: Sequence[WorkshopRowLike], rows: Sequence[str]
-    ) -> list[str]:
-        """The profile's rows that do not stand at its level, as `name level` strings."""
+    def _extra_row_levels(self, reported: Sequence[WorkshopRowLike]) -> dict[str, int]:
+        """Each extra row's level: the profile's, or the row's ceiling where lower."""
+        ceilings = {row.name: row.max_level for row in reported}
+        unknown = [name for name in self.workshop_extra_rows if name not in ceilings]
+        if unknown:
+            raise RunPortError(f"rejected: workshop_row_unknown:{unknown[0]}")
+        return {
+            name: min(self.workshop_level, ceilings[name]) for name in self.workshop_extra_rows
+        }
+
+    def _rows_not_at_level(self, reported: Sequence[WorkshopRowLike]) -> list[str]:
+        """The written rows that do not stand at their level, as `name level` strings."""
         standing = {row.name: row.after for row in reported}
         return [
             f"{name} {standing.get(name, 'absent')}"
-            for name in rows
-            if standing.get(name) != self.workshop_level
+            for name, level in self._workshop_targets.items()
+            if standing.get(name) != level
         ]
 
     def _workshop_held(self, state: RunState) -> RunState:

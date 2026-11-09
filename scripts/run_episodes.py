@@ -254,6 +254,7 @@ def actor_record(
     upgrade_availability: UpgradeAvailability,
     workshop_level: int,
     wall_seconds: float,
+    workshop_extra_rows: Sequence[str] = (),
     labels: Sequence[UpgradeSlotLabel] = (),
     upgrade_setup: UpgradeSetup | None = None,
 ) -> dict[str, Any]:
@@ -279,7 +280,7 @@ def actor_record(
     # And on which Workshop setup: baseline v1's bare account at 0, the runway
     # profile's rows at this level otherwise (ADR 0012).
     record["workshop_level"] = workshop_level
-    record["workshop_rows"] = list(workshop_rows(workshop_level))
+    record["workshop_rows"] = [*workshop_rows(workshop_level), *workshop_extra_rows]
     # What the game actually held for these episodes, as it read it back, once
     # for the file: each episode below carries only the digest, and one that
     # drifted from this setup carries its own.
@@ -384,6 +385,22 @@ def add_workshop_level_argument(parser: argparse.ArgumentParser) -> None:
         help="set the Workshop runway profile's rows to this level before every "
         "round, on the disposable instance only; 0 (the default) writes nothing "
         "(ADR 0012)",
+    )
+
+
+def add_workshop_extra_row_argument(parser: argparse.ArgumentParser) -> None:
+    """A row outside the runway profile, raised beside it for a measurement (`#173`).
+
+    Only the measuring scripts take it: training plays the profile alone.
+    """
+    parser.add_argument(
+        "--workshop-extra-row",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="also raise this Workshop row, by its in-run name, to --workshop-level or "
+        "its own ceiling where lower; repeat for several (a measurement of the rows "
+        "ADR 0012 holds at 0)",
     )
 
 
@@ -494,6 +511,7 @@ def open_environment(
         decision_cadence=decision_cadence_from(arguments),
         upgrade_availability=upgrade_availability_from(arguments),
         workshop_level=workshop_level_from(arguments),
+        workshop_extra_rows=tuple(arguments.workshop_extra_row),
     )
     return client, adapter, environment
 
@@ -541,6 +559,7 @@ def main() -> int:
     add_cadence_arguments(parser)
     add_upgrade_availability_argument(parser)
     add_workshop_level_argument(parser)
+    add_workshop_extra_row_argument(parser)
     parser.add_argument(
         "--list-workshop-rows",
         action="store_true",
@@ -628,6 +647,7 @@ def main() -> int:
         upgrade_availability=upgrade_availability_from(arguments),
         workshop_level=workshop_level_from(arguments),
         wall_seconds=time.monotonic() - started,
+        workshop_extra_rows=tuple(arguments.workshop_extra_row),
         labels=labels,
         upgrade_setup=environment.setup_reference.first,
     )

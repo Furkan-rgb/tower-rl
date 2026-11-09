@@ -53,7 +53,7 @@ from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter
 
 
 def _environment(
-    level: int, **port_kwargs: object
+    level: int, extra_rows: tuple[str, ...] = (), **port_kwargs: object
 ) -> tuple[InstrumentedRunEnvironment, FakeRunPort]:
     port = FakeRunPort(**port_kwargs)  # type: ignore[arg-type]
     environment = InstrumentedRunEnvironment(
@@ -63,6 +63,7 @@ def _environment(
         decision_cadence=DecisionCadence.CHOICE_POINTS,
         upgrade_availability=UpgradeAvailability.IMAGE,
         workshop_level=level,
+        workshop_extra_rows=extra_rows,
     )
     return environment, port
 
@@ -128,6 +129,54 @@ def test_a_level_above_a_rows_maximum_refuses_the_episode() -> None:
 
     with pytest.raises(RunPortError, match="workshop_level_above_max"):
         environment.reset()
+
+
+def test_an_extra_row_is_raised_to_the_level_or_its_own_ceiling_where_lower() -> None:
+    environment, port = _environment(
+        5, ("Orbs", "Death Defy"), workshop_ceilings={"Death Defy": 2}
+    )
+
+    state = environment.reset()
+
+    assert port.workshop_commands[:3] == [
+        ("set", 5, WORKSHOP_RUNWAY_ROWS),
+        ("set", 2, ("Death Defy",)),
+        ("set", 5, ("Orbs",)),
+    ]
+    assert state.valid
+    held = {row.name: row.after for row in port.workshop_levels()}
+    assert held["Orbs"] == 5 and held["Death Defy"] == 2 and held["Interest / Wave"] == 0
+    summary = environment.summarize(TerminationOutcome.OPERATOR_STOP)
+    assert summary.workshop_rows == (*WORKSHOP_RUNWAY_ROWS, "Orbs", "Death Defy")
+
+
+def test_an_extra_row_the_round_start_put_back_invalidates_the_episode() -> None:
+    environment, _ = _environment(5, ("Orbs",), workshop_reverts_at_round_start=True)
+
+    state = environment.reset()
+
+    assert not state.valid
+    assert any(reason.startswith(WORKSHOP_REVERTED) for reason in state.invalid_reasons)
+
+
+def test_an_extra_row_the_game_does_not_have_refuses_the_episode() -> None:
+    environment, port = _environment(5, ("Wall Health",))
+
+    with pytest.raises(RunPortError, match="workshop_row_unknown:Wall Health"):
+        environment.reset()
+
+    assert ("begin", 0, ()) not in port.workshop_commands
+
+
+@pytest.mark.parametrize(
+    ("level", "extra"),
+    [(WORKSHOP_OFF, ("Orbs",)), (5, ("Defense Absolute",)), (5, ("Orbs", "Orbs"))],
+)
+def test_extra_rows_need_a_level_and_may_not_repeat_a_row(
+    level: int, extra: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValueError):
+        _environment(level, extra)
 
 
 def test_the_episode_record_and_the_arm_say_which_profile_they_played() -> None:

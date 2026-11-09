@@ -4847,7 +4847,7 @@
       "id": 186,
       "title": "The trained side of the DreamerV3 episode reads is drawn from episodes collected just before the read, and docs/solution.md 9.4c says so",
       "body": "From #169 (6464684): the trained prior_kl falls as replay repeats old episodes, so the unseen/trained ratio against all trained deaths at least 50 episodes old (dreamer_replay.py:185-199, TRAINED_EPISODE_AGE=50 at :75; training.py:1406-1424) reads memorisation too. Against the 2,500 decisions before the checkpoint M3-P023 read 1.19-1.72x. Also solution.md 9.4c 'Episode reads' (~1788-1807) and the ratio row at :1749. Found by audit #185. Blocks #178.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "parent": 178

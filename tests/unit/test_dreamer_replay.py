@@ -13,6 +13,7 @@ from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.learning.dreamer_replay import (
     TRAINED_EPISODE_AGE,
+    TRAINED_EPISODE_WINDOW,
     DreamerReplay,
     EpisodeSteps,
     episode_steps,
@@ -64,6 +65,18 @@ def test_a_trained_episode_is_old_and_ended_in_a_death() -> None:
     assert replay.trained_episode() is None  # the death is one episode too new
     replay.add("a", METADATA, _episode(0, 3))
     assert replay.trained_episode() is died
+
+
+def test_a_trained_episode_is_no_older_than_its_window() -> None:
+    """A death replay has shown for longer than the window is not the trained read."""
+    replay = DreamerReplay(capacity=4096, length=3, seed=0)
+    died = replace(_episode(0, 3), terminal=numpy.array([False, False, True]))
+    assert replay.add("a", METADATA, died)
+    for _ in range(TRAINED_EPISODE_AGE + TRAINED_EPISODE_WINDOW - 1):
+        replay.add("a", METADATA, _episode(0, 3))
+    assert replay.trained_episode() is died  # the oldest episode the window holds
+    replay.add("a", METADATA, _episode(0, 3))
+    assert replay.trained_episode() is None
 
 
 def test_every_step_starts_an_item_once_its_window_is_complete() -> None:

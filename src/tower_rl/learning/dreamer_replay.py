@@ -72,7 +72,12 @@ DREAMER_REPLAY_CAPACITY = 5_000_000
 #: `configs.yaml` `replay_context`.
 DREAMER_REPLAY_CONTEXT = 1
 #: How many episodes newer than it an episode needs to read as trained on.
-TRAINED_EPISODE_AGE = 50
+TRAINED_EPISODE_AGE = 10
+#: How many episodes past that age the trained read draws from. Older ones
+#: replay has shown many times more, and a model that has memorised them reads
+#: them better than any new episode (docs/experiments.md, "Why `M3-P023`'s
+#: learner failed").
+TRAINED_EPISODE_WINDOW = 20
 #: The layout of a saved step replay. 1 and 2 were the window buffer's,
 #: which this buffer refuses: a DreamerV3 run saved before stored latents
 #: cannot continue under them.
@@ -183,16 +188,18 @@ class DreamerReplay:
         return sum(len(episode.steps) for episode in self._episodes.values())
 
     def trained_episode(self) -> EpisodeSteps | None:
-        """An episode that ended in a death, at least `TRAINED_EPISODE_AGE` episodes old.
+        """A death among the `TRAINED_EPISODE_WINDOW` episodes `TRAINED_EPISODE_AGE` old and more.
 
         Older than the actors' own recent episodes, so updates have had time to
-        reach it. It draws from the sampler's stream, which a dump keeps.
+        reach it, and no older, so it was played by a policy near the one
+        playing now and replayed about as little as training allows. It draws
+        from the sampler's stream, which a dump keeps.
         """
         newest = self._next_episode - TRAINED_EPISODE_AGE
         numbers = [
             number
             for number, episode in self._episodes.items()
-            if number < newest and episode.steps.terminal[-1]
+            if newest - TRAINED_EPISODE_WINDOW <= number < newest and episode.steps.terminal[-1]
         ]
         if not numbers:
             return None

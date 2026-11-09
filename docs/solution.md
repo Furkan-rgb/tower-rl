@@ -819,17 +819,22 @@ when something actionable has changed:
 - a maximum game-time slice elapses, as a backstop so a quiet run still steps.
 
 Those conditions stop an *advance*. Whether the policy is asked at that stop
-is a separate question: under the choice-point cadence the environment asks
-only where the mask offers a purchase, and plays the quiet backstop slices
-through itself, so the backstop bounds how long the world runs unobserved
-rather than producing a decision ([ADR
-0009](adr/0009-decisions-at-choice-points.md)).
+is a separate question, the decision cadence (`docs/environment-contract.md`,
+"Decision cadence"). Learning runs play at `filling-orders` ([ADR
+0020](adr/0020-one-decision-a-wave-by-standing-order.md)): an order names the next
+level of a row on sale and stands until the cash reaches its price, and the policy
+is asked again at once. Runs before ADR 0020 played at choice points, where the
+environment asks only where the mask offers a purchase ([ADR
+0009](adr/0009-decisions-at-choice-points.md)). Under either, the environment plays
+the quiet backstop slices through itself, so the backstop bounds how long the
+world runs unobserved rather than producing a decision.
 
-Per-wave decisions were considered and rejected: with ample cash a player buys
+Per-wave decisions were first rejected here: with ample cash a player buys
 several upgrades inside one wave, and a per-wave cadence would cap the agent at
-one purchase per wave or force an unnatural bundle action. Triggering after each
-purchase produces exactly the burst of decisions a cash-rich moment deserves,
-and leaves quiet stretches cheap.
+one purchase per wave or force an unnatural bundle action. ADR 0020 took standing
+orders instead, and `filling-orders` keeps several purchases a wave: each order
+buys one level, and the next decision follows at once, so a cash-rich moment
+still gets its burst of decisions and a quiet stretch stays cheap.
 
 Event triggering is also the largest available sample-efficiency win, and it
 costs no real experience. At a one-second cadence an episode is several hundred
@@ -1178,9 +1183,11 @@ after each one whether a decision condition has appeared, and returns as soon as
 one has or the budget is spent — with the observation, the reason it stopped, and
 what it cost in `frames`, `game_ms`, `round_ms` and `wall_micros`.
 
-One decision spans one or more of those advances: under the choice-point
-cadence the environment advances again, taking `WAIT` itself, until the
-settled observation offers a purchase or the run ends, and the transition it
+One decision spans one or more of those advances: under `filling-orders`, the
+default, the environment advances again until the order is filled or ends, or
+after `WAIT` until the wave turns; under the choice-point cadence of the runs
+before ADR 0020 it advances, taking `WAIT` itself, until the settled observation
+offers a purchase. Either way the run's end stops it, and the transition it
 returns covers the whole span — reward is the wave progress across it,
 `game_ms` its measured game time, `advances` how many it took, and `events`
 every cadence condition the span met ([ADR
@@ -1584,9 +1591,9 @@ manifest records every `R2D2Config` value as `r2d2_<field>`.
 |---|---|---|---|
 | Torso | Acme `DeepAtariTorso`: ResNet, then `MLP([512], activate_final)` (atari.py) | Shared row encoder over the 60 upgrade rows and the scalars, flattened, then Linear 512 and ReLU | Forced: the observation is a vector and 60 rows, not an image. The LayerNorm belongs to the ResNet, so it is not kept |
 | Action mask | None: every action is always valid | Advantages centred over valid actions, invalid actions -inf in Q, greedy, double-Q argmax and exploration over valid actions, value 0 with none valid | Forced: the game offers only some upgrades at a choice point (environment-contract.md) |
-| Discount | 0.997 per step (P Table 2) | 0.997 ** game-seconds per transition, times (1 - done) | Forced: decisions span unequal game time, and a purchase spans none (ADR 0013; the value is ADR 0019's) |
+| Discount | 0.997 per step (P Table 2) | γ_s ** game-seconds per transition, times (1 - done): 0.997 at choice points (ADR 0019), 0.99991416 at the order cadences (ADR 0020 item 3) | Forced: decisions span unequal game time, and a purchase spans none (ADR 0013) |
 | Reward | The game score, unclipped (Acme `clip_rewards=False`, config.py 37); the paper rescales the value target with h(x) = sign(x)(sqrt(|x| + 1) - 1) + eps x (section 2.3), it does not clip; `tanh` of the reward is fed to the LSTM | Survival reward (1 - gamma**t) * V_REF, learned through h(x) and fed to the LSTM as `tanh` of it | Forced: the task rewards survival, not score (ADR 0013). The rescaling and the LSTM input are the reference's |
-| A step | An Atari frame-stack step | A choice-point decision | Forced: the agent decides only at choice points (ADR 0009); n, burn-in, trace and target period count decisions |
+| A step | An Atari frame-stack step | A decision at the run's cadence: a choice point before ADR 0020, an order at `filling-orders` | Forced: the agent decides only at its cadence's stops (ADR 0009, ADR 0020); n, burn-in, trace and target period count decisions |
 | Actors | 256 (P Table 2) | 7 or 8 | Forced: one emulator each on one host. Exploration follows the Ape-X ladder over the actors that exist (0.4 ** (1 + 7 i / (N - 1))) |
 | Insertion | Items stream in as the episode runs (structured.py) | An episode's items are inserted when it ends | Forced: a counted episode must be in replay whole or not at all, for ADR 0014's resume pair and ADR 0017's debt |
 | Rate limiter | `SampleToInsertRatio(samples_per_insert 4, error_buffer 50,000 * 4 * 0.1 = 20,000 samples)` (Acme builder.py 173-181, config.py 41-43) | ADR 0017's learner thread, credited per item: 5 steps per item, bound 125 items. The same formula at the forced values: 1,250 * 320 * 0.1 = 40,000 samples = 625 steps | Same mechanism; values forced below |
@@ -1705,7 +1712,7 @@ is accepted. A flag that contradicts one is refused. The manifest records
 every `DreamerConfig` value as `dreamer_<field>` and records the network key
 as None. `checkpoint_policy` rebuilds the policy from the `dreamer_*` keys.
 
-**The discount and the reward are the task's** (ADR 0013, the value ADR 0019's), not DreamerV3's.
+**The discount and the reward are the task's** (ADR 0013; the value is ADR 0020 item 3's 0.99991416 per game-second at the order cadences, ADR 0019's 0.997 at choice points), not DreamerV3's.
 `--discount-per-game-second` is required: there is no per-step discount to
 fall back on, and `--discount` is refused. `--survival-time-reward` means what
 it means for R2D2 (§9.4e). Both are `DreamerConfig` fields and are also
@@ -1763,7 +1770,7 @@ one-hot (2 KB) exactly. The capacity of 5e6 items therefore binds only past
 | action mask | none | **the mask is an observation key**, a boolean per action, which the official code treats as discrete with 2 classes (`elements/space.py` 15-16, 42-43): encoded one-hot (`nets.py` 488-493) and decoded by a 2-class categorical head per action (`rssm.py` 299-300), its loss summed over actions. Acting samples under the true mask; imagination under the decoded mask (its argmax, WAIT always valid); the actor's entropy is over the valid actions. | Invalid actions must never be chosen (docs/environment-contract.md); in imagination the true mask is unknown, so the model's belief of it is used. A checkpoint from before the one-hot encoding records no `dreamer_mask_one_hot` and still acts with its 0/1 input and binary head (`DreamerConfig.mask_one_hot`). |
 | vector inputs | symlogged into the encoder (`rssm.py` 218, `nn.DictConcat(..., squish=nn.symlog)`) and decoded by `symlog_mse` (299) | **a feature the environment already log-scales passes as it is**; the rest are symlogged, input and reconstruction target alike | The environment reports every magnitude, price and affordability as `log1p` of a non-negative value, which is `symlog` of it, so this is the official compression of the raw quantity, applied once. Symlogged again, a tenfold change at magnitudes from 10³ to 10¹⁵ moved the input by 0.29 to 0.065 rather than 2.30, and the reconstruction loss weighed it that little (`#154`). A checkpoint from before records no `dreamer_symlog_once` and still symlogs every feature (`DreamerConfig.symlog_once`). |
 | acting parameters | the policy call after each train step swaps in the new parameters and keeps the carry (`embodied/jax/agent.py` 243-247, 279-282) | same: parameters as of the last completed step, loaded before each decision; the latent carried across (§6.10) | — |
-| discount | `horizon: 333`, (1 − is_terminal)·(1 − 1/333) by `contdisc`; the replay-value return discounts by that constant | **per transition, d = γ_s^Δt**: continue target (1 − terminal)·d, 1 for a purchase; imagination discounts only by the predicted continue, as the official code does; the replay-value return by each stored d | ADR 0013 (value ADR 0019): the discount is a task parameter per game-second, identical across learners; a purchase spans no game time. The official `contdisc` mechanism with Δt-dependent d. |
+| discount | `horizon: 333`, (1 − is_terminal)·(1 − 1/333) by `contdisc`; the replay-value return discounts by that constant | **per transition, d = γ_s^Δt**: continue target (1 − terminal)·d, 1 for a purchase; imagination discounts only by the predicted continue, as the official code does; the replay-value return by each stored d | ADR 0013 (value ADR 0020 item 3 at the order cadences, ADR 0019 at choice points): the discount is a task parameter per game-second, identical across learners; a purchase spans no game time. The official `contdisc` mechanism with Δt-dependent d. |
 | continue head's input | the posterior feature, `self.con(self.feat2tensor(repfeat))` (`agent.py` 177); imagination applies the head to prior samples (206) | **`deter` with a prior sample of the same step**, the sample detached | The observation a death ends on names it: across `M3-P021`'s 1,015 deaths it has an all-zero mask, health exactly 0 and no row on offer. A head trained on the posterior reads that code, not the dynamics: `M3-P022`'s read every death there, and from the prior it ranked unseen deaths at 0.43 to 0.80 AUC (`docs/experiments.md`, "Review of the training setup"). |
 | imagination's first continue | the head on the start state, a replayed posterior (`agent.py` 196, 206) | **replay's continue target for that start**, (1 − terminal)·d | Forced by the row above: the head is not trained on posteriors, and read 0.51 to 0.55 hazard at a death posterior where the official one reads about 1, so a death start would weigh half (`docs/experiments.md`). |
 | optimizer | LaProp, lr 4e-5, β1 0.9, β2 0.999, ε 1e-20, AGC 0.3 (floor 1e-3), linear warm-up 1,000 from 0 | same | — |
@@ -1833,7 +1840,11 @@ updates: 101 ms per update before (141 ms when first measured), 29.5 ms after
 batch took 16.7 ms when first measured and is unchanged. At 0.5 updates per
 decision that is ≈23 ms per decision, ≈6.4 h of learner time over 1M
 decisions on an idle host; fleet load inflated the old step time ≈1.7×
-(`docs/experiments.md`, "DreamerV3 learner step time").
+(`docs/experiments.md`, "DreamerV3 learner step time"). These are 16 × 64 figures.
+At ADR 0020 item 5's 64 × 64, half an update a decision replays four times the
+steps. Offline on `M3-P023`'s replay, 1,250 such updates took about 230 s for two
+copies against about 280 s for 5,000 of 16 × 64, so the learner time a decision
+is about the same (`docs/experiments.md`, "Why `M3-P023`'s learner failed").
 
 ### 9.4d Discounting by game time (R2D2 and DreamerV3)
 
@@ -1858,13 +1869,17 @@ semi-MDP (Bradtke & Duff 1995; Sutton, Precup & Singh
 - the value-fit correlation uses the same d·r and d, so it measures the return
   the target is trained towards.
 
-The chosen value is γ_s = 0.997 per game-second: a horizon of 1/(1 − γ_s) ≈
-333 game-seconds, about 9.5 waves of 35 s. It is not a code default: the run's
-command line passes `--discount-per-game-second 0.997`. It is the protocol's
+The value of learning runs at the order cadences is γ_s = 0.99991416 per
+game-second (ADR 0020 item 3): a horizon of 1/(1 − γ_s) ≈ 11,650 game-seconds, 333
+waves of 35 s. Runs at choice points used ADR 0019's 0.997, a horizon of about 333
+game-seconds, about 9.5 waves. Neither is a code default: the run's command line
+passes `--discount-per-game-second`. It is the protocol's
 discount horizon, held identical across learners as a task parameter rather
 than chosen per algorithm; see
+[ADR 0020](adr/0020-one-decision-a-wave-by-standing-order.md) item 3 for the order
+cadences' value,
 [ADR 0019](adr/0019-the-discount-horizon-is-0997-per-game-second.md) for the
-evidence and its caveats, and
+choice-point value's evidence and its caveats, and
 [ADR 0013](adr/0013-discount-horizon-is-a-task-parameter.md) for the
 task-parameter rule. `M3-P003` to `M3-P009` used 0.997, chosen as the smallest
 round horizon covering the 8–10 waves to the next boss wall, on the ground that
@@ -1941,7 +1956,8 @@ from the start of a wave, a death at 5 s is worth 0.143 and a death at 30 s is
 worth 0.844. Under the wave reward both are worth the same. An immortal policy
 is worth V_max = 1/(β · 35) = 28.56, against 28.06 under the wave reward, and
 the longest span (about 17 s) earns 0.482. (At the earlier 0.997: 0.142, 0.820,
-9.51 against 9.02, and 0.474.) Scaled, every one of the 0.999 figures is
+9.51 against 9.02, and 0.474. At ADR 0020's 0.99991416: 0.143, 0.856, 332.83
+against 332.33, and 0.485.) Scaled, every one of the 0.999 figures is
 multiplied by V_REF / 28.56 ≈ 0.333, and the immortal policy is worth V_REF at
 any γ_s.
 

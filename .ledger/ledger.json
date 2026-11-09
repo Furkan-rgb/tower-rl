@@ -4854,7 +4854,7 @@
       "id": 183,
       "title": "docs/solution.md 7.3, 9.4c and 9.4d name the accepted cadence (filling-orders, ADR 0020) and its discount, 0.99991416 per game-second; choice points and ADR 0019's 0.997 per game-second are named only as what earlier runs used",
       "body": "Audit #181: solution.md:828-832, 1703, 1761, 1851-1856 predate ADR 0020's acceptance (aac02a1).",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-09 21:41",

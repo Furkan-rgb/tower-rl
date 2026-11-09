@@ -365,6 +365,7 @@ def build_arm(
         backbone: Backbone = DreamerBackbone(
             config=DreamerConfig(
                 seed=arguments.seed,
+                batch_size=arguments.batch_size,
                 train_ratio=arguments.train_ratio,
                 world_model_ratio=arguments.world_model_ratio,
                 discount_per_game_second=arguments.discount_per_game_second,
@@ -734,14 +735,13 @@ def run_manifest(
     }
 
 
-#: Replay items before DreamerV3's first update: the official loop trains once
-#: replay holds one batch of steps' worth of items (16 x 64 = 1,024;
-#: `embodied/run/train.py` 71). An item is a step with a whole window after it.
-DREAMER_WARMUP_ITEMS = 16 * 64
+def dreamer_loop_settings(train_ratio: float, batch_size: int | None) -> dict[str, object]:
+    """The training-loop settings DreamerV3 fixes, by argument name (solution.md 9.4c).
 
-def dreamer_loop_settings(train_ratio: float) -> dict[str, object]:
-    """The training-loop settings DreamerV3 fixes, by argument name (solution.md 9.4c)."""
-    config = DreamerConfig(train_ratio=train_ratio)
+    A batch left out is the published one.
+    """
+    published = DreamerConfig(train_ratio=train_ratio)
+    config = DreamerConfig(train_ratio=train_ratio, batch_size=batch_size or published.batch_size)
     return {
         # The window trained on; replay adds the context step before it.
         "sequence_length": config.batch_length,
@@ -750,7 +750,11 @@ def dreamer_loop_settings(train_ratio: float) -> dict[str, object]:
         "replay_capacity": DREAMER_REPLAY_CAPACITY,
         "batch_size": config.batch_size,
         "gradient_steps_per_decision": config.gradient_steps_per_decision,
-        "warmup_sequences": DREAMER_WARMUP_ITEMS,
+        # Replay items before the first update: the official loop trains once
+        # replay holds one batch of steps' worth of items (16 x 64 = 1,024 at
+        # its batch; `embodied/run/train.py` 71). An item is a step with a
+        # whole window after it.
+        "warmup_sequences": config.batch_size * config.batch_length,
         # It samples its own policy and adds no exploration noise.
         "exploration": "uniform",
         "epsilon_start": 0.0,
@@ -797,7 +801,12 @@ def settle_fixed_settings(
     one the backbone does not read, is refused rather than silently overridden.
     """
     fixed, unread, name, source = (
-        (dreamer_loop_settings(arguments.train_ratio), (), "DreamerV3", "docs/solution.md 9.4c")
+        (
+            dreamer_loop_settings(arguments.train_ratio, arguments.batch_size),
+            (),
+            "DreamerV3",
+            "docs/solution.md 9.4c",
+        )
         if arguments.backbone == DREAMERV3
         else (r2d2_loop_settings(), R2D2_UNREAD_FLAGS, "R2D2", "ADR 0018")
     )
@@ -866,7 +875,16 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "R2D2's sequences) and refuses a value that contradicts it"
         ),
     )
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=(
+            "DreamerV3's sequences per update, from which it fixes "
+            "--gradient-steps-per-decision and --warmup-sequences. 16 is the "
+            "published value; ADR 0020 item 5 trains on 64. R2D2 fixes its own"
+        ),
+    )
     parser.add_argument(
         "--gradient-steps-per-decision",
         type=float,

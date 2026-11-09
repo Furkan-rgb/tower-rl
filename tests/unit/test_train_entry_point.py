@@ -317,7 +317,6 @@ def dreamer_session(run_dir: Path, *flags: str) -> dict[str, Any]:
         patch.setattr(
             train, "DreamerConfig", lambda **given: DreamerConfig(**{**SMALL_DREAMER, **given})
         )
-        patch.setattr(train, "DREAMER_WARMUP_ITEMS", 2)
         patch.setattr(train, "DREAMER_REPLAY_CAPACITY", 64)
         parsed = dreamer_arguments(
             run_dir,
@@ -364,7 +363,6 @@ def test_a_flag_that_repeats_a_dreamerv3_value_is_accepted(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("flag", "value"),
     [
-        ("--batch-size", "8"),
         ("--sequence-length", "80"),
         ("--burn-in", "7"),
         ("--gradient-steps-per-decision", "1.0"),
@@ -385,6 +383,27 @@ def test_a_dreamerv3_train_ratio_sets_the_gradient_steps_it_fixes(tmp_path: Path
     arguments = dreamer_arguments(tmp_path, "--train-ratio", "2048")
 
     assert arguments.gradient_steps_per_decision == 2.0
+
+
+def test_a_dreamerv3_batch_sets_the_gradient_steps_and_warm_up_it_fixes(tmp_path: Path) -> None:
+    """ADR 0020 item 5: the same replayed steps a decision, in batches of 64."""
+    arguments = dreamer_arguments(tmp_path, "--train-ratio", "2048", "--batch-size", "64")
+
+    assert arguments.batch_size == 64
+    assert arguments.gradient_steps_per_decision == 0.5
+    assert arguments.warmup_sequences == 64 * 64
+    with pytest.raises(SystemExit, match="contradicts DreamerV3"):
+        dreamer_arguments(tmp_path, "--batch-size", "64", "--gradient-steps-per-decision", "2")
+
+
+def test_a_dreamerv3_session_trains_at_the_batch_it_was_given_and_records_it(
+    tmp_path: Path,
+) -> None:
+    arm = dreamer_session(tmp_path, "--batch-size", "3")["arm"]
+
+    assert arm["optimisation_steps"] > 0
+    resolved = arm["resolved_config"]
+    assert resolved["dreamer_batch_size"] == resolved["batch_size"] == 3
 
 
 def test_a_dreamerv3_world_model_ratio_is_read_and_fixes_nothing_else(tmp_path: Path) -> None:

@@ -4854,7 +4854,7 @@
       "id": 183,
       "title": "docs/solution.md 7.3, 9.4c and 9.4d name the accepted cadence (filling-orders, ADR 0020) and its discount, 0.99991416 per game-second; choice points and ADR 0019's 0.997 per game-second are named only as what earlier runs used",
       "body": "Audit #181: solution.md:828-832, 1703, 1761, 1851-1856 predate ADR 0020's acceptance (aac02a1).",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 21:41",
@@ -4867,9 +4867,14 @@
         {
           "at": "2026-11-09 22:10",
           "text": "Audit #193: the title names 7.3, 9.4c and 9.4d; the scope (comments #188, #190) also covers 9.2c 1181-1187, the 9.4 R2D2 rows 1587/1589, 9.4e 1939-1944 and 9.4c's step-time paragraph 1828-1836 (measured at 16x64). The done-condition is read with that scope."
+        },
+        {
+          "at": "2026-11-09 22:13",
+          "text": "9f89634: 7.3, 9.2c, the 9.4 R2D2 rows, 9.4c (discount text, table row, step time), 9.4d (value, links) and 9.4e (worked figures at 0.99991416) name filling-orders and 0.99991416 as current; choice points and 0.997 as earlier runs'."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T21:13:30.090692Z"
     },
     {
       "id": 184,

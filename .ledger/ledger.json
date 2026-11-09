@@ -1,5 +1,5 @@
 {
-  "next_id": 181,
+  "next_id": 185,
   "items": [
     {
       "id": 1,
@@ -3298,7 +3298,7 @@
       "id": 119,
       "title": "Comments, help text and usage examples in train.py, r2d2.py and dreamer.py name 0.997 per ADR 0019, not 0.999, as the protocol discount (test fixtures may keep 0.999 where the value is arbitrary)",
       "body": "",
-      "status": "Backlog",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -3311,8 +3311,13 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: runs use 0.99991416 per game-second (ADR 0020 item 3, Proposed), not 0.997; re-title once #167 decides the discount."
+        },
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Retired (audit #181): replaced by #184, which names the discount ADR 0020 item 3 accepted (aac02a1) rather than ADR 0019's."
         }
-      ]
+      ],
+      "closed_at": "2026-11-09T12:57:18.654907Z"
     },
     {
       "id": 120,
@@ -4128,6 +4133,10 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: the six elements stand under the new goal. Collect the four ready rows (reward, legality, observation, evaluation isolation) into solution.md 16 now; the learner row closes on #178's unseen-data reads, action semantics on #167."
+        },
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Audit #181: #167 is closed (aac02a1), so five rows are ready: reward, legality, action semantics (experiments.md 'Floors on ws2914c', mask_legal_rejected 0; the traced filling-orders game), observation, evaluation isolation. Collect them into solution.md 16 now; only the learner row waits, on #178."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4534,6 +4543,10 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: unpaused. #171/#173 are closed and the goal is now to beat the script at Workshop 10 (87be6b7); the second clause (top choice flipping on 58-88% of fixed states) is the open part and blocks the next learner run (#178)."
+        },
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Audit #181: ADR 0020 item 5 (ratio 2048, world model at 128) stays Proposed until this card; the experiments.md entry must say what the cause means for item 5 (#182)."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4692,6 +4705,10 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Blocked on #169."
+        },
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Audit #181, blockers restated: blocked on #169, then on the item-5 decision (#182). #142, #157 and #180 land before the pre-registration commit. #150's five other rows must be cited before the result counts; #150's learner row closes on this card's own reads, so #150 does not gate it."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4714,6 +4731,53 @@
       "id": 180,
       "title": "filling-orders is the default decision cadence in code (environment, CLI and run identity), as ADR 0020's acceptance makes it the cadence of learning runs",
       "body": "ADR 0020 accepted 2026-11-09 (#167). The defaults are still CHOICE_POINTS at run_environment.py:622, run_identity.py:102 and 121, and run_episodes.py:334; runs pass the flag. A record or checkpoint that names no cadence must still read as before.",
+      "status": "Next",
+      "comments": [
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Audit #181, scope: also run_episodes.py:335-339 help ('choice-points is the contract', filling-orders 'on trial'), run_environment.py:70 and 620-621, and the docs that say the default is still choice-points (environment-contract.md:338-339, 396; workstation-handoff.md:35; architecture.md:119). Keep episode.py:353 and checkpoint.py:102, which read records and checkpoints that name no cadence."
+        }
+      ],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 181,
+      "title": "Board audit: 2026-11-09 (after #167, #179)",
+      "body": "",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Applied: comments on #150 (five rows ready), #169 (item 5), #178 (blockers restated), #180 (scope widened); added #182 (item-5 decision, blocked on #169), #183 (solution.md 7.3/9.4c/9.4d), #184 (help and docs discount, replaces #119, retired)."
+        }
+      ],
+      "closed_at": "2026-11-09T12:57:18.711134Z"
+    },
+    {
+      "id": 182,
+      "title": "The developer accepts, amends or rejects ADR 0020 item 5 (train ratio 2048, world model at 128) on #169's cause",
+      "body": "Audit #181: item 5 stays Proposed until #169 (ADR 0020 status, aac02a1) and no card held the decision. Blocks #178.",
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-09 13:57",
+          "text": "Blocked on #169."
+        }
+      ],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 183,
+      "title": "docs/solution.md 7.3, 9.4c and 9.4d name the accepted cadence (filling-orders, ADR 0020) and its discount, 0.99991416 per game-second; choice points and ADR 0019's 0.997 per game-second are named only as what earlier runs used",
+      "body": "Audit #181: solution.md:828-832, 1703, 1761, 1851-1856 predate ADR 0020's acceptance (aac02a1).",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 184,
+      "title": "train.py's help, errors and usage examples, r2d2.py's docstrings, README.md and setup.md name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and ADR 0019's 0.997 per game-second only for choice-points runs",
+      "body": "Replaces #119 (audit #181): train.py:18,33,65,92,906,1158; r2d2.py:54-55,110-111; README.md:75; setup.md:661-662.",
       "status": "Next",
       "comments": [],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"

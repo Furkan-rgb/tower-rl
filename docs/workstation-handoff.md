@@ -1,6 +1,6 @@
 # Tower-RL — Workstation Handoff
 
-## START HERE — current state, 2026-11-08
+## START HERE — current state, 2026-11-09
 
 This section is the one place that says where the project actually is. Everything
 below it is historical and dated; read this first and treat older sections as
@@ -30,7 +30,15 @@ context rather than as current truth. Open work is on the board, milestone
   `M3-P021`'s 48.75 and the script's 101.73 (`docs/experiments.md`, "`M3-P022`:
   outcome"). `filling-orders` buys one level and stands until filled. Its floors on
   `bff836b8…` are the script's 101.82 and `random`'s 22.50 (`docs/experiments.md`,
-  "Floors on `ws2914c`"). No learner has played it.
+  "Floors on `ws2914c`"). `M3-P023` played it: IQM 84.81 [68.88, 92.81] on its final
+  evaluation, 17 waves below the script (`docs/experiments.md`, `M3-P023`, Result).
+- **The learner row of §1.1 is not verified.** On `M3-P023`, with the world model at
+  ratio 128, unseen deaths read as trained ones do and imagined `WAIT` stays below
+  recorded play, but the prior's distance on unseen episodes ends 2.13 times trained,
+  past the bound of two. The actor's preferences move within about 1,000 decisions,
+  so one checkpoint stands for a run's policy only loosely (same entry).
+- **Evaluation retries an episode the port could not deliver** (1d6c78e), as a
+  collecting actor does. `M3-P023`'s first final evaluation was lost without it.
 - **The best script and `M3-P022`'s learner both rest on Defense Absolute.** A flat
   block falls behind base damage, which grows about as the cube of the wave, so that
   build hits a wall at every Workshop level the scan measured (`docs/experiments.md`,

@@ -4012,6 +4012,123 @@ hours.
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+### Result (2026-11-09)
+
+Run `m3-p023-dreamerv3-ws10-v2914-20261108T095419Z`, source 0e4da6a, MLflow run
+`c089d6fe…`. The run spent its 150,000 decisions: 150,797 decisions and 1,084 episodes
+in 14.9 hours of collection, 15.6 hours with bring-up and the lost evaluation. Neither
+the plateau rule (10 periods without improvement at the end, of 12) nor a kill bar
+stopped it, and the watcher reported no stop rule. Its resolved config records
+`dreamer_symlog_once` true, `dreamer_world_model_ratio` 128 and `filling-orders`.
+
+**Primary: Fail, on `prior_kl` alone.** Each read is the logged mean over the last
+100 read episodes, at the period's end.
+
+| Period end (decisions) | `death_rank` unseen / trained | `prior_kl` unseen / trained (ratio) | `plan_gap` unseen / trained |
+|---|---|---|---|
+| 30,017 | 0.945 / 0.990 | 9.58 / 7.35 (1.30) | +0.015 / +0.125 |
+| 50,025 | 0.939 / 0.990 | 9.12 / 6.76 (1.35) | +0.007 / +0.090 |
+| 55,029 | 0.940 / 0.990 | 9.63 / 6.73 (1.43) | −0.130 / −0.049 |
+| 100,073 | 0.982 / 0.996 | 9.83 / 5.64 (1.74) | −0.169 / −0.152 |
+| 105,008 | 0.975 / 0.997 | 10.76 / 5.59 (1.93) | −0.210 / −0.139 |
+| 110,018 | 0.965 / 0.994 | 10.95 / 5.45 (2.01) | −0.206 / −0.176 |
+| 150,085 | 0.958 / 0.997 | 11.05 / 5.19 (2.13) | −0.249 / −0.219 |
+
+- **`death_rank` is alike at every period end** from 30,000 decisions: unseen is
+  within 0.056 of trained (at 45,023), and 0.94–0.98 against 0.5 for no warning. So the
+  reads do not agree because both are poor. `M3-P022` read 0.659 against 1.0.
+- **`prior_kl` passes to 105,008 and fails from 110,018 on,** at 2.01–2.32 times
+  trained. The ratio rises because trained falls, from 7.35 to 5.19, while unseen
+  stays at 9–12 nats. The model fits what replay holds better than what it has not
+  seen, more slowly than `M3-P022`'s 16.3 against 1.3 (12.5 times) at d70018.
+- **`plan_gap` fails from 30,017 to 50,025** (trained +0.090 to +0.192) **and passes
+  at every period end from 55,029 on,** below zero on both sets. Imagined `WAIT`
+  outlived recorded play early in training, then stopped.
+- By the rule, `prior_kl` fails at the last period end, so the outcome is Fail. The
+  other two hold at the last period end.
+
+**Secondary: the final evaluation.** train.py's evaluation on the final weights was
+lost: after about 37 minutes one start's `speed_max` press came back
+`stale_or_duplicate`, and `evaluate()` raised the episodes it had played away with it.
+1d6c78e makes an evaluation retry such an episode, as a collecting actor does. The 30
+episodes were then played on the same weights (`latest.pt`, d150797), build
+(`bff836b8…`) and frame budget, by `run_actors.py`, 3 instances × 10 episodes, records
+`<run>/evaluations/final-latest-d0150797/`. This is how the floors were measured, and
+it is the one change from the pre-registration: 3 instances, not one.
+
+30 of 30 episodes were valid, none failed to start, and every instance reported, in 31
+minutes 47 seconds (57.1 valid episodes an hour). Differences are
+`stratified_bootstrap_difference` (strata by instance, seed 0, 10,000 resamples).
+
+| Arm on `bff836b8…`, `filling-orders` | n | IQM [95% CI] | Mean, SD | Median, range |
+|---|---|---|---|---|
+| `M3-P023`, final weights | 30 | 84.81 [68.88, 92.81] | 75.87, 27.27 | 90.5, 31–99 |
+
+- **Against the script (101.82): −17.01 [−32.90, −8.88].** Against `random` (22.50):
+  +62.31 [+45.94, +70.56]. Both intervals exclude zero by more than the stage-to-stage
+  variation of about one wave.
+- **The episodes fall in two groups.** 9 of 30 ended at waves 31–43 and 21 at 84–99.
+  The three instances had 1, 3 and 5 of the 9. Collection had left that early death
+  behind: below wave 50 were 45–76 of every 100 episodes through episode 300, 6 of the
+  last 200, 1 of the last 100, and none of the last 40.
+- **The final weights open differently from the late collection.** By wave 10 the
+  evaluation bought 0.0 levels of Defense Absolute, 2.4 of Defense % and 4.8 of Cash
+  Bonus, in both groups alike. The last 100 collected episodes bought 2.7, 0.2 and 0.5.
+  The two groups bought alike through wave 30, so the early deaths are not a different
+  build. They fall from near full health inside one wave.
+- **Why, read offline from replay.** Replay stores the latent each acting copy
+  reached. The final weights recompute it to within 0.015 (largest absolute
+  difference, first step), so the weights and the stored steps line up. From those
+  latents, on the first 10 decisions of the last 50 episodes, the final weights put
+  0.030 of their mass on Defense Absolute, which those episodes took 157 times in 500;
+  d0150085, 712 decisions earlier, puts 0.003 on it and d0147514 puts 0.354. Over the
+  last 30 decisions of the last four episodes, played within about 1,300 decisions of
+  the end, the final weights give the action taken a median probability of 0.017 to
+  0.388, and their most likely action is the one taken in 0–60% of them. The actor's
+  preferences move within about 1,000 decisions (2,000 actor updates). A period's mean
+  pools about 10,000 of them; the final weights are one. I found no difference between
+  the evaluation's path and collection's: same cadence, rows, Workshop setup digest
+  and build, and an opening that matches what the final weights prefer offline.
+- Decisions an episode 198 and purchases 158; orders filled, by the floors' count,
+  80.4%.
+
+**Readouts.**
+
+- **Curve.** The period mean was 35.34 at 5,055 decisions and 61.60 at 10,043 (1.4 h),
+  first above 80 at 70,027 (85.50, 6.8 h), and best 87.39 at 100,073. It never reached
+  100. The last ten periods read 74.5–88.3. The kill bars read 46.74, 73.64 and 76.31
+  against 21.
+- **Entropy,** read offline (`masked_policy_log_probs` on the posterior, under each
+  checkpoint's weights). On the 50 episodes replay took after each checkpoint: 0.532
+  nats at d10043 (3,565 states) and 0.599 at d40119 (5,994 states). On the last 50
+  episodes, which the final weights had trained on only lightly, 0.828 (10,226 states).
+  Every state offered 49 actions (ln 49 = 3.89). `M3-P021` read 0.27–0.32 and
+  `M3-P022` 0.08.
+- **Rows with no order** in the last 8,000 decisions: none of the 48 rows on offer,
+  against nine in `M3-P022` (`#140`). `WAIT` was 66 of them, and 0.77% of all
+  decisions.
+- **Orders filled:** 128,405 purchases on 149,715 decisions not counting each
+  episode's last, 85.8%, against the script's 91.2%.
+- **Defense Absolute's share of spend through wave 50:** 39.4% over every episode,
+  37.7% over the last 200. The last 200 ended at mean levels of 55.4 Defense Absolute,
+  25.8 Thorn Damage, 23.9 Defense % and 17.2 Health.
+- **Invalid episodes:** 0 of 1,082 played, so `mask_legal_rejected` is 0 and
+  `UNCHARGED_ROUND_TIME` is 0, against about one in 105 on this build before (`#159`).
+  Two starts failed, both `start_round: stale_or_duplicate`, and the lost evaluation
+  was a third lifecycle press refused the same way.
+- **Rates:** 10,141 decisions an hour on 4 actors, about 2.2 times the 4,600 expected,
+  and 20,115 updates an hour (299,096 in all, about 18,700 of them world-model updates).
+
+**What this settles.** At ratio 128 the world model warns of an unseen death as it
+does of a trained one, and imagined waiting stops outliving play after 55,000
+decisions. The posterior and prior still drift apart more on unseen episodes than on
+trained ones, past the pre-registered bound from 110,000 decisions on. The learner
+row of `docs/task.md` §1.1 is not verified. The final weights are 17 waves below the
+script, and a third of their episodes end at waves 31–43 on an opening the late
+collection did not play. Since the actor moves this fast, one checkpoint stands for
+the run's policy only loosely. Wave 999 is not in reach on this evidence. The result
+goes to `#167` (ADR 0020) beside `M3-P022`'s.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

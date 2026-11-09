@@ -1746,7 +1746,7 @@ one-hot (2 KB) exactly. The capacity of 5e6 items therefore binds only past
 | model size | `size12m`: deter 2048, hidden 256, classes 16, units 256 (configs.yaml `size12m`) | same; 10.1M parameters | — |
 | batch | 16 × 64 (configs.yaml `batch_size`, `batch_length`), an item at every step (`replay.py` `add` 77-118) | same | — |
 | train ratio | 512 (configs.yaml `crafter` preset: `run: {steps: 1.1e6, envs: 1, train_ratio: 512}`; Table 2's vector-observation 12M row, dv3.txt 869-870) | same: 512/(16·64) = 0.5 gradient steps per decision | — |
-| world model's ratio | one optimizer over every module (`agent.py` 76), stepped once per update (`train` 137-139), so the world model learns at the train ratio | **`world_model_ratio`, optional**: the world model learns from one update in `train_ratio / world_model_ratio`, the actor and critic from every one; unset, the official single ratio | At one decision a wave an episode is about 66 steps against a 64-step window, and on `M3-P021`'s data the world model memorises from ratio 256: imagined `WAIT` outlives the recorded play on trained states, and the prior sits 2 to 4 times further from the posterior on unseen ones. At 128 neither shows, and an actor and critic at 2048 over a world model at 128 opened no gap of their own (`docs/experiments.md`, "Review of the training setup"). |
+| world model's ratio | one optimizer over every module (`agent.py` 76), stepped once per update (`train` 137-139), so the world model learns at the train ratio | **`world_model_ratio`, optional**: the world model learns from one update in `train_ratio / world_model_ratio`, the actor and critic from every one; unset, the official single ratio | At one decision a wave an episode is about 66 steps against a 64-step window, and on `M3-P021`'s data the world model memorises from ratio 256: imagined `WAIT` outlives the recorded play on trained states, and the prior sits 2 to 4 times further from the posterior on unseen ones. At 128 neither shows in that review, and an actor and critic at 2048 over a world model at 128 opened no gap of their own (`docs/experiments.md`, "Review of the training setup"). Over `M3-P023`'s 150,000 decisions at 128, imagined `WAIT` stays below the recorded play from 55,000 decisions on, but the prior's distance on unseen episodes passes twice trained from 110,000 (`docs/experiments.md`, `M3-P023`, Result). |
 | warm-up | trains once `len(replay) >= batch_size * batch_length` items (`embodied/run/train.py` 71) | same: 1,024 items | — |
 | replay | uniform, `replay.size` 5e6 items, FIFO (`replay.py` `_insert`/`_remove` 171-191), online queue first (`add` 114-118, `_sample` 158-160) | same | — |
 | replay insertion | step by step as the driver steps | **a whole episode at its end** | ADR 0014 and ADR 0017: a counted episode is in replay whole or not at all, which the resume pair and the learner's debt are built on. |
@@ -1802,7 +1802,9 @@ a mean over the last hundred episodes:
   model reading above 0 credits doing less than was done.
 
 The gap between the two sets is the read. On `M3-P022`'s weights at d70018 they are
-0.659 unseen and 1.0 trained, 16.3 and 1.3 nats, and −0.06 and +0.49.
+0.659 unseen and 1.0 trained, 16.3 and 1.3 nats, and −0.06 and +0.49. On `M3-P023`'s,
+with the world model at ratio 128, at d150085 they are 0.958 and 0.997, 11.05 and 5.19
+nats, and −0.25 and −0.22 (`docs/experiments.md`, `M3-P023`, Result).
 
 **Step time.** At batch 16 the learner was bound by launching kernels, not by
 arithmetic: an update launched about 14,800 kernels, and the GPU was busy for

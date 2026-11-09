@@ -3244,7 +3244,12 @@
       "title": "A full pytest run leaves under 1 GB in its basetemp (one run left 38 GB in tmpfs /tmp and hit the quota)",
       "body": "",
       "status": "Next",
-      "comments": []
+      "comments": [
+        {
+          "at": "2026-11-09 04:28",
+          "text": "e695f30 sets tmp_path_retention_policy = failed (pyproject.toml), after a run's leftovers filled /tmp (~48 GB). Not yet measured on a full run: one partial run left 710 MB with one failed test kept."
+        }
+      ]
     },
     {
       "id": 116,
@@ -3653,7 +3658,7 @@
       "id": 140,
       "title": "The policy keeps trying rows it has not bought: a two-phase plan can be discovered",
       "body": "Entropy falls under 0.32 nats of about 3.7 and whole rows go unordered, and the reference code applies no actor unimix, so a floor is a deviation ADR 0018 requires forced. Done when a floor or scale is chosen on measured evidence, recorded with what forces it, and absent from evaluation. Evidence: docs/experiments.md, 'Review of the training setup'.",
-      "status": "Blocked",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3674,9 +3679,14 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166: no entropy series is logged (dreamer.py diagnostics are dt, continue, mask); M3-P023 reads it offline from its 10k, 40k and final checkpoints on unseen states."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Retired: the floor is not forced. On M3-P023 (2a66c1e) unseen-state entropy read 0.532, 0.599 and 0.828 nats at d10043, d40119 and the final weights, and none of the 48 rows on offer went unordered in the last 8,000 decisions (M3-P022: nine). ADR 0018 forces no deviation; M3-P023's actor problem is the opposite, fast-moving preferences (#169)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-09T03:28:40.703036Z"
     },
     {
       "id": 141,
@@ -3728,7 +3738,7 @@
       "id": 142,
       "title": "The device package has a name that does not claim a simulator",
       "body": "src/tower_rl/simulation holds the adapter to the real game, in a public repo whose claim is that no simulator is used, and docs/task.md section 6 forbids one. Rename once no run is live: a lazy import in a running stage must not break. The import contract and docs/architecture.md move with it.",
-      "status": "Blocked",
+      "status": "Next",
       "comments": [
         {
           "at": "2026-11-07 16:34",
@@ -3757,6 +3767,10 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166: the rename waits for M3-P023 to end; the pilot is pinned to main at its pre-registration's commit."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Audit #170: the gate (M3-P023 running) is gone; nothing runs on the devices. Checkpoints store asdict payloads with no tower_rl.simulation class (checkpoint.py:340-341), so #169's offline reads of M3-P023 are unaffected. Land before the next device stage (#168/#145, #159)."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -3849,6 +3863,10 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166, the body as it will be pre-registered: (a) turtle phase = cash rows, then Defense Absolute with Thorns at 11/21/34/51%; (b) blender order cash, Free Upgrades (Utility, Defense, Attack), Health, Defense %, Knockback, Orbs + Orb Speed, Thorns, Attack Speed, Lifesteal, Recovery rows; (c) switch on the margin against the strongest enemy type's damage, which #168 measures first; (d) Skip effect read as a departure from the fixed base-damage schedule, margin recorded each wave. Devices: after M3-P023."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Audit #170: the device gate (after M3-P023) is cleared. #168 comes first."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4065,6 +4083,10 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166 map: reward (Review of the training setup + task.md 7.5), legality (same entry), action semantics (#167 after M3-P023; floors 7712a66), observation (kill count c01ffcf entry; symlog-once 59b5108 has no experiments.md entry yet), evaluation isolation (630b121), learner (#148). The six pointers are to be collected as rows in solution.md 16."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Audit #170 map: learner row re-pointed from #148 (retired, Fail on prior_kl, 2a66c1e) to #169; action semantics to #167. Reward, legality, observation, evaluation isolation as in audit #166's map; solution.md 16 still holds only the evaluation-isolation row."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4226,6 +4248,10 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166: M3-P023 starts before this lands, so its checkpoints carry best_period_near_greedy_mean; the rename needs a load-time alias."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Audit #170: #169 reads M3-P023's checkpoints offline, which carry best_period_near_greedy_mean, so the load-time alias is required for any rename."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
@@ -4265,6 +4291,10 @@
         {
           "at": "2026-11-08 10:32",
           "text": "Audit #166 rates on bff836b8 at 100 ms: about 1 in 105 episodes across all records (carry trace 1/14, parity A 0/21, floors 0/~70); default build at 16.667 ms 2/21. Device check needs a gap after M3-P023."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Audit #170: M3-P023 had UNCHARGED_ROUND_TIME 0 of 1,082 episodes on bff836b8 at 100 ms (2a66c1e), against the ~1 in 105 this card cites; three lifecycle presses were refused stale_or_duplicate (two start_round, one speed_max). Device gap is open."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4391,6 +4421,10 @@
         {
           "at": "2026-11-09 04:23",
           "text": "Unblocked: M3-P023's result is in (2a66c1e). filling-orders final evaluation IQM 84.81 [68.88, 92.81] against M3-P022's saving-orders 86.94 [84.25, 89.00]; both below the script (~102), n=1 each, eight changes between them. Waiting on the developer."
+        },
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Audit #170: items 1-4 (cadence, mask, discount, reward) can be decided on the floors and the two final evaluations. Item 5's world-model ratio 128 is improved on but not verified by M3-P023 (prior_kl 2.13x trained, against M3-P022's 12.5x at 2048); it can wait on #169. The ADR header still cites retired #144; fix with the amendment."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4415,8 +4449,14 @@
       "id": 170,
       "title": "Board audit: 2026-11-09",
       "body": "",
-      "status": "Next",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 04:28",
+          "text": "Applied: retired #140 (no floor forced, 2a66c1e); #142 and #159 back to Next with gates cleared; comments re-pointing #150's learner row to #169 and action semantics to #167, #145 (#168 first), #157 (alias required), #167 (item 5 can wait on #169), #115 (retention set in e695f30, unmeasured). Not applied: #168 comment (no new information); the 13 unplaced items await the developer's scope decision."
+        }
+      ],
+      "closed_at": "2026-11-09T03:28:48.373308Z"
     }
   ],
   "milestones": [

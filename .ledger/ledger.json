@@ -4002,6 +4002,10 @@
         {
           "at": "2026-11-08 10:54",
           "text": "M3-P023 launched 2026-11-08 10:54 local at 0e4da6a: run m3-p023-dreamerv3-ws10-v2914-20261108T095419Z, 4 actors, bridge bff836b8. Watcher running (state/launch/m3-p023-watch.sh)."
+        },
+        {
+          "at": "2026-11-09 02:45",
+          "text": "M3-P023 ran its 150,000 decisions (15.6 h, 4 actors, 0 invalid of 1,084; plateau and kill bars not hit). Curve: period mean 35 \u2192 87.39 best (period 20), 84.50 at the end; script floor 101.82.\nPrimary, at the last period end (150,085): death_rank 0.958 unseen against 0.997 trained (passes), plan_gap \u22120.249 / \u22120.219 (passes; it passed at every period from 55k), prior_kl 11.05 against 5.19, ratio 2.13 > 2 (fails from period 22 on). By the pre-registered rule: Fail, on prior_kl alone. M3-P022 read 12.5\u00d7 there.\nFinal evaluation lost: one start's speed_max press came back stale_or_duplicate after ~37 min, and evaluate() raised away the episodes it had played. Fixing evaluate() to retry as training does, then rerunning the 30 episodes on latest.pt."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

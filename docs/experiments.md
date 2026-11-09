@@ -4459,6 +4459,26 @@ estimate's best action changes (77% against 74–92%). `M3-P022`'s actor changed
 against 46–55%) because it was nearly deterministic. That steadiness held a choice the
 estimate did not support.
 
+**How far one update moves the actor, offline (`#182`).** Two copies of `M3-P023`'s
+resume point (`latest.pt`, d150797, weights and optimizer) trained on the run's final
+replay as the run did, with the world model on one update in 16. Each copy had its
+own sampling stream, and no new data came in (`updates.py`, 280 s on the GPU). Each
+row gives the share of the fixed states whose top choice changed:
+
+| Updates | From the start | From the start, old features | Between the two copies |
+|---|---|---|---|
+| 625 | 0.23 | 0.20 | 0.26 |
+| 1,250 | 0.29 | 0.26 | 0.21 |
+| 2,500 | 0.35 | 0.31 | 0.27 |
+| 5,000 | 0.55 | 0.53 | 0.28 |
+
+The run took 5,000 updates per 2,500 decisions (train ratio 2048) and moved 0.77
+online. On replay alone the same 5,000 updates move 0.55, so most of the movement is
+the updates themselves, not new episodes. Two copies trained alike disagree on about a
+quarter of the states at every count. That much is the batch sampling alone. Beyond
+it, the movement grows with the number of updates: 1,250 updates, train ratio 512 at
+this cadence, move 0.29 against 0.55.
+
 **What this settles.**
 
 - **The first failure.** On new episodes the world model at ratio 128 reads 1.19–1.72
@@ -4473,7 +4493,8 @@ estimate did not support.
   the drift. It cut the prior's unseen-to-trained ratio from `M3-P022`'s 12.5 to 2.13.
   The drift traces to the actor's step under train ratio 2048 on a value signal below
   its noise, so item 5's actor and critic rate, not its world-model rate, is what this
-  evidence questions.
+  evidence questions. Offline, a quarter of the train ratio halves the movement per
+  decision. A quarter of the states stay decided by the batches drawn at any ratio.
 
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 

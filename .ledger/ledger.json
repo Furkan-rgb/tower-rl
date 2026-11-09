@@ -1,5 +1,5 @@
 {
-  "next_id": 185,
+  "next_id": 186,
   "items": [
     {
       "id": 1,
@@ -4526,7 +4526,7 @@
       "id": 169,
       "title": "The causes of M3-P023's two learner failures are found and recorded in docs/experiments.md: the prior's distance on unseen episodes rising to 2.13x trained, and the actor's preferences moving within about 1,000 decisions",
       "body": "Replaces #148, whose pilot ran and failed (2a66c1e). Serves the learner row of docs/task.md 1.1. Offline first, from M3-P023's checkpoints and replay; a run only inside a new pre-registration. Second failure on the learner row after M3-P022: root cause before any further fix (lead-playbook).",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 10:54",
@@ -4547,9 +4547,14 @@
         {
           "at": "2026-11-09 13:57",
           "text": "Audit #181: ADR 0020 item 5 (ratio 2048, world model at 128) stays Proposed until this card; the experiments.md entry must say what the cause means for item 5 (#182)."
+        },
+        {
+          "at": "2026-11-09 20:30",
+          "text": "Recorded in docs/experiments.md 'Why M3-P023's learner failed' (6464684). Failure 1: the trained prior_kl falls as replay repeats old episodes; against the 2,500 decisions before the checkpoint the unseen read is 1.19-1.72x. Failure 2: the actor's own updates flip its top choice on 77% of fixed states (the world model's features 15%); the best two purchases' one-step values are a third of how far the estimate moves in 2,500 decisions."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T19:30:28.992396Z"
     },
     {
       "id": 170,
@@ -4709,6 +4714,10 @@
         {
           "at": "2026-11-09 13:57",
           "text": "Audit #181, blockers restated: blocked on #169, then on the item-5 decision (#182). #142, #157 and #180 land before the pre-registration commit. #150's five other rows must be cited before the result counts; #150's learner row closes on this card's own reads, so #150 does not gate it."
+        },
+        {
+          "at": "2026-11-09 20:30",
+          "text": "From #169 (6464684): read prior_kl's unseen side against trained episodes collected just before the checkpoint, not all trained ones (the trained side falls as replay repeats episodes: 1.19-1.72x against recent, 2.13x against all). The actor's top choice moves on 77% of fixed states per 2,500 decisions, so one checkpoint is a loose sample of the run's policy; the pre-registration should say how the evaluated weights are chosen with that in view."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4731,7 +4740,7 @@
       "id": 180,
       "title": "filling-orders is the default decision cadence in code (environment, CLI and run identity), as ADR 0020's acceptance makes it the cadence of learning runs",
       "body": "ADR 0020 accepted 2026-11-09 (#167). The defaults are still CHOICE_POINTS at run_environment.py:622, run_identity.py:102 and 121, and run_episodes.py:334; runs pass the flag. A record or checkpoint that names no cadence must still read as before.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-09 13:57",
@@ -4757,11 +4766,19 @@
       "id": 182,
       "title": "The developer accepts, amends or rejects ADR 0020 item 5 (train ratio 2048, world model at 128) on #169's cause",
       "body": "Audit #181: item 5 stays Proposed until #169 (ADR 0020 status, aac02a1) and no card held the decision. Blocks #178.",
-      "status": "Blocked",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-09 13:57",
           "text": "Blocked on #169."
+        },
+        {
+          "at": "2026-11-09 20:30",
+          "text": "Unblocked by #169 (6464684): the world model at 128 is not implicated in the drift (features move half as far as M3-P022's; old actor on new features flips 15%) and cut unseen/trained prior_kl from 12.5x to 2.13x. What the evidence questions is the actor/critic rate under train ratio 2048: the actor's own updates flip 77% of fixed states per 2,500 decisions on values below its noise."
+        },
+        {
+          "at": "2026-11-09 20:48",
+          "text": "Offline test (docs/experiments.md, #169 entry, 'How far one update moves the actor'): two copies of M3-P023's resume point on its final replay, no new data. Top choice changed from the start on 0.23/0.29/0.35/0.55 of fixed states after 625/1,250/2,500/5,000 updates; between the copies 0.21-0.28 at every count (batch sampling alone). So a quarter of the train ratio (512) halves the movement per decision; a quarter of states stay decided by the draw at any ratio."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4781,6 +4798,13 @@
       "status": "Next",
       "comments": [],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 185,
+      "title": "Board audit: 2026-11-09 (after #169)",
+      "body": "Audit due: exit #169 closed.",
+      "status": "In progress",
+      "comments": []
     }
   ],
   "milestones": [

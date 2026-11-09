@@ -3466,7 +3466,7 @@
           "text": "Retired, replaced by #144. M3-P021 was measured in 736147c and gave neither result, so 'on M3-P021's result' can no longer come true. Found by board audit #143."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-07T15:34:38.605848Z"
     },
     {
@@ -3530,7 +3530,7 @@
           "text": "M3-P022 (5a18a2f): the learner saves for the row it wants. Defense Absolute 59.3% of spend through wave 50 [58.6, 60.0], +27.1 pts over M3-P021; it names DA on 55.7% of decisions 31-50 (M3-P021 ~23%), and every unfilled order was a save for a row out of reach. Same-wave saving only; saving across waves is #136. Final IQM 86.94, 14.79 below the script."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T01:45:24.952327Z"
     },
     {
@@ -3577,7 +3577,7 @@
           "text": "Done: code and unit conditions ab4aa63, floors on bff836b8 in 7712a66. Script at filling-orders IQM 101.82 [101.18, 102.36], +1.27 [+0.45, +2.00] over saving-orders on the same build; random 22.50. 70/70 valid, mask_legal_rejected 0. A learner at filling-orders is measured against these."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T03:46:18.059090Z"
     },
     {
@@ -3623,7 +3623,7 @@
           "text": "Done: both measured on episodes no update has touched, offline (docs/experiments.md, Review of the training setup) and in every run's log (ef91f03).\nFound memorisation in cont and the critic. Fixes: cont on a prior sample, imagination starts weighed by replay (6bfa8b8); world model at its own ratio (19030ba).\nOffline: honest plan ordering at world model 128; actor-critic to 2048 adds no gap. Live check is its own card."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-07T22:46:36.050916Z"
     },
     {
@@ -3637,7 +3637,7 @@
           "text": "Retired, replaced by #145. 'Guide-faithful' cannot be checked at Workshop 10, since the guides define Blender on maxed Workshop and Labs. Found by board audit #143."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-07T15:34:38.727989Z"
     },
     {
@@ -3651,7 +3651,7 @@
           "text": "Explained: an instance plays the lower curve through the first episode that reaches wave 40, then the higher one for the rest of its boot. 0 exceptions in 2,064 episodes across M3-P021 and M3-P022. The earlier failed check used stream_start as a file position; positions are cumulative episode lengths. docs/experiments.md, 'Review of the training setup'."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-07T15:22:37.905094Z"
     },
     {
@@ -3685,7 +3685,7 @@
           "text": "Retired: the floor is not forced. On M3-P023 (2a66c1e) unseen-state entropy read 0.532, 0.599 and 0.828 nats at d10043, d40119 and the final weights, and none of the 48 rows on offer went unordered in the last 8,000 decisions (M3-P022: nine). ADR 0018 forces no deviation; M3-P023's actor problem is the opposite, fast-moving preferences (#169)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T03:28:40.703036Z"
     },
     {
@@ -3731,7 +3731,7 @@
           "text": "Retired, replaced by #163 (audit #162). The filling-orders trace (091366f) cut the zero rates to 36.2/34.7/34.7% and re-asks on a 0.05 health fall, so the wave summary is needed only at saving-orders; if #148's pre-registration picks saving-orders it gets its own card. The carry-over defect is #163."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T06:27:14.364682Z"
     },
     {
@@ -3777,7 +3777,7 @@
           "text": "Audit #174: three stages have run since #170's 'before the next device stage'. Rename in a gap between #173's stages, or after #173."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 143,
@@ -3831,7 +3831,7 @@
           "text": "Retired, replaced by #167 (audit #166): the title named only evidence already recorded (5a18a2f, 7712a66) and not M3-P023, which the decision now waits on."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T09:32:09.451046Z"
     },
     {
@@ -3881,7 +3881,7 @@
           "text": "Retired (audit #174). The margin blender at Workshop 79 ended at 440-445 against Defense Absolute's 483, its blender rows capped in-run by wave 191 (d400408); #122's Workshop 10 arm was also worse. The developer chose the left-out rows instead (#172); the Skip read is #173's first arm (27c08b3)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T11:28:07.131893Z"
     },
     {
@@ -3931,7 +3931,7 @@
           "text": "bdea332: parity holds, D minus A -0.91 [-1.45, -0.27] inside +/-3; same-config stages differ by +0.91 [+0.18, +1.55]. Evaluation plays on the training build at 100 ms (solution.md 6.3). Default build at 16.667 ms lost 2/21 to UNCHARGED_ROUND_TIME."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T08:32:21.995350Z"
     },
     {
@@ -3973,7 +3973,7 @@
           "text": "Correction 46e331e: re-read with each episode paired to its nearest trace, bff836b8 puts 0 of 18 free levels on empty slots and leaves 1 of 18 stale prices (a wave turn, repriced at the next decision); b8b8cd45 9 of 26 and 11 of 17. The verdict holds."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T03:46:18.119266Z"
     },
     {
@@ -4047,7 +4047,7 @@
           "text": "Retired, not met: M3-P023 ran and failed its pre-registered rule on prior_kl (2.13x trained at the last period end; death_rank and plan_gap held). Recorded in docs/experiments.md, 2a66c1e. Replaced by #169 (root cause first)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T03:23:34.289430Z"
     },
     {
@@ -4106,7 +4106,7 @@
           "text": "Audit #174: the learner row waits on #169, which the developer paused for #171/#173; M3 cannot close on it until #169 resumes."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 151,
@@ -4127,7 +4127,7 @@
           "text": "Developer accepted 2026-11-08: DreamerV3 keeps --survival-time-reward. 796a0e0 extends docs/task.md 7.5's acceptance to --backbone dreamerv3, same bound and clock-driven condition."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T06:20:26.333070Z"
     },
     {
@@ -4149,7 +4149,7 @@
           "text": "Developer decided 2026-11-08: every upgrade (--upgrade-availability all); the learner figures out which rows to buy. Recorded in docs/task.md 7.2 (43047ac)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T06:22:45.309894Z"
     },
     {
@@ -4187,7 +4187,7 @@
           "text": "d7a2c58: M3-P023's pre-registration adopts 533d282's rule (patience 12 periods at 1.0; WORKSHOP_* stops only on played episodes)."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "parent": 148,
       "closed_at": "2026-11-08T09:17:06.635227Z"
     },
@@ -4202,7 +4202,7 @@
           "text": "Compressed once (59b5108): DreamerV3's encoder input and decoder target skip symlog on the features the environment already log1p's (every _log scalar, cost_log, affordability), which equals the official symlog of the raw value. Tests cover each feature and the old-checkpoint path (symlog_once False). docs/solution.md 9.4c row 'vector inputs'."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T02:35:32.412664Z"
     },
     {
@@ -4224,7 +4224,7 @@
           "text": "Explained in ab98c09: base damage after Defense % (49.5%) first exceeds Defense Absolute on wave 483 in 6 of 7 traced games; the 7th died at 482, 167 short. Damage grows ~0.77%/wave against the block's ~0.24%; the schedule is fixed and the script's block differs by at most one level, so every game crosses on the same wave. Block-first order would cross at 343 and is contradicted."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T04:13:32.901305Z"
     },
     {
@@ -4275,7 +4275,7 @@
           "text": "Audit #174: host-only and no running stage imports train.py, so it can land while #173's stages run."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "parent": 150
     },
     {
@@ -4322,7 +4322,7 @@
           "text": "Audit #174: the device check waits for #173's stages; read their records for UNCHARGED_ROUND_TIME as further bff836b8 / 100 ms samples."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 160,
@@ -4390,7 +4390,7 @@
           "text": "c01ffcf: environment subtracts the count carried into wave 1 (read off the first state) from every wave-1 state. Trace: 7/7 second episodes carried 29-120, wave 1 counts on top, wave 2 resets. Test fails without the fix."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-08T09:03:20.269424Z"
     },
     {
@@ -4456,7 +4456,7 @@
           "text": "Audit #174: with the amendment, also re-point ADR 0020 line 90 (#145 as 'a build that does not rest on the block') to d400408, and line 7's retired #144."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 168,
@@ -4491,7 +4491,7 @@
           "text": "Audit #174 correction: 'd100073' is checkpoint-d0100073.pt (decision 100,073), not a commit. The age, noise, drift and gap scripts and outputs are in the session scratchpad (p023/); the experiments.md entry names them, as earlier scratchpad-sourced entries do."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
       "id": 170,
@@ -4525,7 +4525,7 @@
           "text": "Bounded: no uniform level of ADR 0012's profile gives the scripts a route to wave 999. Defense Absolute ends at 483 at the ceiling (79); the margin blender at 79 ends at 440-445, its rows capped in-run by wave 191 (d400408; fix 55fc8df). Rows outside the profile (Workshop Orbs, Enemy Level Skips, Recovery, Death Defy, Wall) and Labs are unmeasured: the developer's decision, #172."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T11:19:33.433394Z"
     },
     {
@@ -4543,7 +4543,7 @@
           "text": "Decided by the developer 2026-11-09: test the rows ADR 0012 leaves out, the Enemy Level Skips first, then Workshop Orbs, Recovery, Death Defy and Wall, to find the smallest setup at which a script reaches wave 999. The measurement is #173."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T11:22:41.864284Z"
     },
     {
@@ -4573,7 +4573,7 @@
           "text": "Shown not to get there at uniform levels (bba3da2): every row ADR 0012 holds, at 79 or its ceiling, with build-defense-absolute, ends at 510-512; the Workshop skips alone 506-508 (base damage -9 to -15%); in-run skip and blender arms below 483. Defense Absolute above 79 is unmeasured. Decision: #176."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "closed_at": "2026-11-09T12:41:18.281885Z"
     },
     {
@@ -4607,7 +4607,7 @@
       "id": 176,
       "title": "The developer decides docs/task.md 1.1's Workshop benchmark and ADR 0012's profile on #171's and #173's results",
       "body": "Audit #174: task.md 1.1 allows raising the Workshop 10 benchmark only on measured evidence that the level cannot reach the target; #171 supplies that for the 11-row profile. Options if #173 fails: Labs, or a changed target (#172 b, c). Blocked on #173.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-09 12:28",
@@ -4618,7 +4618,7 @@
           "text": "Unblocked: #173 closed (bba3da2). Best measured at Workshop 79 with every held row: 512. Options: (a) per-row Workshop above 79, Defense Absolute first, to find the level 999 needs; (b) Labs; (c) change task.md 1.1's target."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],
   "milestones": [
@@ -4631,7 +4631,7 @@
       "description": "Running and comparing backbones"
     },
     {
-      "title": "M3 A learned policy reaches wave 999 on a verified setup",
+      "title": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
       "description": "Serves: docs/task.md 1.1 (developer decision 2026-11-07), ADR-0020. Learned, at minimal Workshop levels, with every part of the setup evidenced and learning shown on data the learner has not trained on."
     }
   ]

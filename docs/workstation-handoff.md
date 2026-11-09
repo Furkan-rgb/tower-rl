@@ -5,12 +5,19 @@
 This section is the one place that says where the project actually is. Everything
 below it is historical and dated; read this first and treat older sections as
 context rather than as current truth. Open work is on the board, milestone
-`M3 A learned policy reaches wave 999 on a verified setup`.
+`M3 A learned policy beats the best script at Workshop 10 on a verified setup`.
 
-- **The goal** is in `docs/task.md` §1.1: a learned policy reaches wave 999 of Tier 1,
-  at minimal Workshop levels, on a setup whose parts are evidenced, with learning
-  shown on data the learner has not trained on. Workshop 10 is the benchmark. Scripts
-  are benchmarks only and hand the learner nothing.
+- **The goal** is in `docs/task.md` §1.1, as the developer set it on 2026-11-09: a
+  learned policy whose final-wave IQM beats the best scripted policy's at Workshop 10,
+  with the 95% interval of the difference above zero. The setup's parts must be
+  evidenced, and learning shown on data the learner has not trained on. The bar today
+  is the script's 101.82 at `filling-orders`. Scripts are benchmarks only and hand the
+  learner nothing.
+- **Wave 999 was the target until 2026-11-09 and is out of reach.** At the uniform
+  Workshop ceiling of 79, the scripts ended at 483 with Defense Absolute alone, 440–445
+  with the blender, 434–435 with the in-run attack skip, and 506–512 with every row ADR
+  0012 holds at 0 (`docs/experiments.md`, the three Workshop 79 entries after "The wall
+  at wave 483").
 - **The game** is The Tower 29.14 on the rooted clone AVD `tower_rl_instrumented_api36`,
   read-only instances on even ports from 5556, offline. `emulator-5554` is the master
   and is never touched. Bridge build: `state/bridge/builds/ws2914c-render-interval-16-nodelay`,
@@ -42,8 +49,8 @@ context rather than as current truth. Open work is on the board, milestone
 - **The best script and `M3-P022`'s learner both rest on Defense Absolute.** A flat
   block falls behind base damage, which grows about as the cube of the wave, so that
   build hits a wall at every Workshop level the scan measured (`docs/experiments.md`,
-  "The wall at wave 483"). Turtle into blender, which does not rest on the block, is
-  `#145`.
+  "The wall at wave 483"). At Workshop 79 the blender's rows reach their in-run caps
+  by wave 191, and every arm's final wave follows its Defense Absolute level.
 - **The last full reading of the setup** is `docs/experiments.md`, "Review of the
   training setup". It says what is verified and what is not, and supersedes the
   older sections below where they differ.

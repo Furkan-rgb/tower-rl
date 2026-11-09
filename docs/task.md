@@ -36,8 +36,8 @@ beating weak baselines alone; the three-learner comparison and the curve
 carry the evidence. A human reference recorded on the same fixed account
 state may be added later as a separate decision. Attainable waves are
 bounded by the fixed permanent account state. The developer's decision of
-2026-11-07 below sets the target above that bound's known reach; it does not
-promise that the target is attainable (§6).
+2026-11-09 below sets the target at the best script's reach on that state, so
+reaching it is learning beyond the strongest known strategy (§6).
 
 **Outcome C, results reporting.** `README.md` presents a comparison table.
 Per learner it gives mean, median, and maximum final wave with 95%
@@ -55,8 +55,22 @@ scaling). Every claim carries its `docs/experiments.md` evidence pointer.
 This end goal does not relax any V1 gate, safety boundary, or non-goal in
 this document.
 
-**Developer decision, 2026-11-07: the target is final wave 999.** The project's
-formal goal is a learned policy that reaches wave 999 of Tier 1, on these terms:
+**Developer decision, 2026-11-09: the target is to beat the best script at
+Workshop 10.** The project's formal goal is a learned policy whose final-wave IQM
+exceeds the best scripted policy's at Workshop 10 of Tier 1, with the 95% stratified
+bootstrap interval of the difference above zero. Both are played on the same build,
+cadence and frame budget. The bar today is `build-defense-absolute` at
+`filling-orders`, IQM 101.82 [101.18, 102.36] (`docs/experiments.md`, "Floors on
+`ws2914c`"). A script measured later at Workshop 10 that does better raises it.
+
+This replaces the decision of 2026-11-07, whose target was final wave 999. That
+target was set above the known reach, and the measurements since put it out of
+reach of any Workshop setup the scripts were given. At the uniform ceiling of 79,
+with every Workshop row the profile holds at 0 added, the best script ended at wave
+510–512 (`docs/experiments.md`, "ADR 0012's held Workshop rows at Workshop 79").
+Every game ended when enemy damage passed the block, at every level measured.
+
+The terms are unchanged:
 
 - **By actual learning.** The policy chooses every purchase in the run. No scripted
   build, imitation of a script, reward shaping toward a row, or plan built into the

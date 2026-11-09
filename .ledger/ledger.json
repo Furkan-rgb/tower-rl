@@ -4555,6 +4555,14 @@
         {
           "at": "2026-11-09 12:28",
           "text": "Stage 1 launched 2026-11-09 (state/launch/skip-turtle.sh): build-turtle-skip, 4 actors x 1 episode, filling-orders, bff836b8, Workshop 10 then 79. Records state/records/skip-turtle/ws10 and ws79."
+        },
+        {
+          "at": "2026-11-09 12:50",
+          "text": "Stage 1 (ac0..., records skip-turtle/ws10, ws79): build-turtle-skip ended 91-103 at Workshop 10 (5-6 skip levels) and 434-435 at 79 (40 levels, block 258-259 against 299). Across the three Workshop 79 arms the final wave follows Defense Absolute's level alone, ~1.2 waves a level. Next: the Workshop skip rows (ADR 0012's held rows) at their ceilings, with per-wave base damage in the record (#175)."
+        },
+        {
+          "at": "2026-11-09 12:50",
+          "text": "Correction to the last comment: the outcome is recorded in 35119fc (no stage id is meant by 'ac0...')."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

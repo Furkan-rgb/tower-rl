@@ -4550,7 +4550,7 @@
       "id": 173,
       "title": "A script reaches wave 999 with the rows ADR 0012 leaves out (Enemy Level Skips first), at a measured minimal Workshop level, or each of those rows is shown not to get it there",
       "body": "From #172 (developer, 2026-11-09). First: build-turtle-skip (block at 1.5 hits, rest to in-run Enemy Attack Level Skip, which sells to level 699) at Workshop 10 and 79. Then Enemy Health Level Skip, Workshop Orbs, Recovery, Death Defy, Wall as results direct. Measurement only: ADR 0012 changes only if a result is adopted.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 12:28",
@@ -4567,9 +4567,14 @@
         {
           "at": "2026-11-09 13:18",
           "text": "Stage A (held-rows/skips, c46f9ee): both Workshop Enemy Level Skips at 79 (ceiling >= 79), build-defense-absolute: final waves 506-508 against 483, DA 305-306. Base damage 9-15% under the traced schedule (2,072 v 2,424 at 200; 29,278 v 32,600 at 480), identical in all 4 games. Stage B (every held row) running."
+        },
+        {
+          "at": "2026-11-09 13:41",
+          "text": "Shown not to get there at uniform levels (bba3da2): every row ADR 0012 holds, at 79 or its ceiling, with build-defense-absolute, ends at 510-512; the Workshop skips alone 506-508 (base damage -9 to -15%); in-run skip and blender arms below 483. Defense Absolute above 79 is unmeasured. Decision: #176."
         }
       ],
-      "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
+      "milestone": "M3 A learned policy reaches wave 999 on a verified setup",
+      "closed_at": "2026-11-09T12:41:18.281885Z"
     },
     {
       "id": 174,
@@ -4602,11 +4607,15 @@
       "id": 176,
       "title": "The developer decides docs/task.md 1.1's Workshop benchmark and ADR 0012's profile on #171's and #173's results",
       "body": "Audit #174: task.md 1.1 allows raising the Workshop 10 benchmark only on measured evidence that the level cannot reach the target; #171 supplies that for the 11-row profile. Options if #173 fails: Labs, or a changed target (#172 b, c). Blocked on #173.",
-      "status": "Blocked",
+      "status": "Next",
       "comments": [
         {
           "at": "2026-11-09 12:28",
           "text": "Blocked on #173's result."
+        },
+        {
+          "at": "2026-11-09 13:41",
+          "text": "Unblocked: #173 closed (bba3da2). Best measured at Workshop 79 with every held row: 512. Options: (a) per-row Workshop above 79, Defense Absolute first, to find the level 999 needs; (b) Labs; (c) change task.md 1.1's target."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"

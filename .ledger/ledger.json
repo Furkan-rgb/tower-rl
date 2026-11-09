@@ -4695,9 +4695,15 @@
       "id": 179,
       "title": "docs/task.md section 6 names the 2026-11-09 target (beat the best script at Workshop 10), not wave 999",
       "body": "Audit #177: 87be6b7 missed task.md 6's sentence naming wave 999.",
-      "status": "In progress",
-      "comments": [],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 13:49",
+          "text": "Fixed in 00490af: task.md 6 now says the target is relative (beat the best script at Workshop 10)."
+        }
+      ],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T12:49:57.856842Z"
     }
   ],
   "milestones": [

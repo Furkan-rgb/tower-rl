@@ -4856,10 +4856,16 @@
       "id": 187,
       "title": "train.py can train DreamerV3 in batches of 64 x 64 (ADR 0020 item 5), the run's resolved config records the batch, and docs/solution.md 9.4c's batch row names it",
       "body": "ADR 0020 item 5 as accepted 2026-11-09 (6826b22, #182). DreamerConfig.batch_size is fixed at 16 (dreamer.py:137) and learn() refuses any other (dreamer.py:675-679); train.py has no flag for it. gradient_steps_per_decision and world_model_every already follow from train_ratio over batch_size x batch_length. Blocks #178.",
-      "status": "In progress",
-      "comments": [],
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 21:17",
+          "text": "8655db2: --batch-size sets DreamerV3's batch (default 16); gradient steps and warm-up follow; resolved config records dreamer_batch_size (test_a_dreamerv3_session_trains_at_the_batch_it_was_given_and_records_it, fails without the change). solution.md 9.4c batch and train-ratio rows updated. test_train_entry_point + test_run_identity: 146 passed."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
-      "parent": 178
+      "parent": 178,
+      "closed_at": "2026-11-09T20:17:20.609812Z"
     }
   ],
   "milestones": [

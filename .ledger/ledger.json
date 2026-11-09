@@ -4469,7 +4469,7 @@
       "id": 167,
       "title": "The developer accepts, amends to filling-orders, or rejects ADR 0020 on M3-P022's and M3-P023's results",
       "body": "Replaces #144 (audit #166). Evidence: M3-P022 outcome (5a18a2f), the filling-orders floors (7712a66), M3-P023 (pre-registered d7a2c58, #148). ADR 0020 item 2 names saving-orders and keeps filling-orders only as the spike beside it (ADR 0020 Revisit if), so accepting filling-orders needs the ADR amended first.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 10:32",
@@ -4490,9 +4490,14 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: the amendment must also rewrite ADR 0020 lines 89-90 and 97, which still name wave 1000 and retired #145, for the 2026-11-09 goal. Items 1-4 can be decided now; item 5 (world-model ratio 128) waits on #169."
+        },
+        {
+          "at": "2026-11-09 13:52",
+          "text": "Developer, 2026-11-09: accepted, amended to filling-orders; items 1-4 accepted, item 5 (ratio 2048 / world model 128) Proposed until #169. Recorded in aac02a1 (ADR 0020, ADR 0019's status, environment-contract, handoff). Code default follow-up: #180."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-09T12:52:08.547584Z"
     },
     {
       "id": 168,

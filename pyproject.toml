@@ -34,6 +34,10 @@ testpaths = ["tests/unit"]
 addopts = "-ra"
 timeout = 120
 timeout_method = "thread"
+# A full run writes several GB of checkpoints and replay under the user's
+# /tmp, a quota'd tmpfs; pytest keeps three runs, which filled it. Keep only
+# a failed test's directory, which is the one worth reading.
+tmp_path_retention_policy = "failed"
 
 [tool.ruff]
 target-version = "py312"

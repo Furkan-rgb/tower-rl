@@ -4921,7 +4921,12 @@
       "title": "M3-P024, pre-registered on #169's cause, filling-orders and ADR 0020 item 5 (64x64, ratio 2048), picks one checkpoint on evaluation set A and reports it on a fresh set B: final-wave IQM minus the script's 101.82 on bff836b8 with the 95% interval, and the unseen-data reads (trained side 10-29 episodes old) for the learner row",
       "body": "Replaces #178 (audit #188): the run now selects among five period-end checkpoints on set A and reports the choice on set B. Pre-registration in docs/experiments.md 'M3-P024'. Gated on #142 landing before the checkout freezes for the run.",
       "status": "In progress",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-09 21:43",
+          "text": "Launched 2026-11-09 20:42 UTC as m3-p024-dreamerv3-ws10-v2914-20261109T204255Z from c41dbf8 (state/launch/m3-p024.sh: 4 actors, --batch-size 64 --train-ratio 2048 --world-model-ratio 128, budget 300,000). Watcher state/launch/m3-p024-watch.sh running; sets A/B by state/launch/m3-p024-select.sh after the stage ends."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],

@@ -56,10 +56,15 @@ def row_feature(features: StateFeatures, action: int, feature: str) -> float:
 def row_offered(features: StateFeatures, action: int) -> bool:
     """Whether the row behind action index `action` can be bought at all this run.
 
-    Unlocked and not maxed; whether it is affordable now is the mask's business.
+    Unlocked, priced and not maxed, as `run_state` puts a row on sale; whether it
+    is affordable now is the mask's business. A row at its cap can read unmaxed
+    at price 0 (Workshop 79, `#171`): read as on sale, it was the cheapest row,
+    and a script that ordered it waited every wave.
     """
-    return bool(row_feature(features, action, "unlocked")) and not row_feature(
-        features, action, "maxed"
+    return (
+        bool(row_feature(features, action, "unlocked"))
+        and not row_feature(features, action, "maxed")
+        and row_feature(features, action, "cost_log") > 0.0
     )
 
 

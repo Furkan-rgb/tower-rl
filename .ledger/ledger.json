@@ -4472,7 +4472,12 @@
       "title": "The lowest Workshop level at which a scripted player reaches wave 999 on Tier 1 is measured on the device, or bounded by a sweep of levels",
       "body": "Developer, 2026-11-09: settle first which minimal Workshop level wave 999 needs. Sweep ADR 0012's profile (11 rows raised to one level) with the existing floor script, then refine near the threshold with #145's turtle-into-blender script. A script's result bounds the needed level from above: a learner may need less. If no level near 10 reaches 999, task.md 1.1's Workshop 10 benchmark is the developer's to revisit. M3-P023's timing: 16.8 game-s per decision in 1.38 s wall, about 12x real time per emulator, so a wave-999 episode is roughly an hour of one emulator.",
       "status": "In progress",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-09 11:34",
+          "text": "Correction to the body: the uniform-level sweep with the Defense Absolute script exists (#135, experiments.md 'Workshop scan'): 102 at 10, 171 at 20, 282 at 40, 483 at 79, the uniform ceiling. '#155' traced the 483 wall to base damage outgrowing the block. So the open part is the blender, measured top-down: build-turtle-blender-margin (c8274d1) at Workshop 79, 4 actors x 1 episode, filling-orders, bff836b8, pre-registered in experiments.md. Stage launched 2026-11-09, records state/records/margin-blender/ws79."
+        }
+      ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
     }
   ],

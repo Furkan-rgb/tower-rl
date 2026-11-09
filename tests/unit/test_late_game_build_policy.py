@@ -526,6 +526,16 @@ def test_a_short_block_saves_for_defense_absolute_rather_than_blending() -> None
     assert _margin_blender().act(_guarded(0.0, cash=50.0), None)[0] == 0
 
 
+def test_a_row_priced_at_zero_is_not_on_sale_even_when_it_reads_unmaxed() -> None:
+    # At its cap Defense % read unmaxed at price 0: it must not pass for the
+    # cheapest survival row, which held the arm on WAIT for 145 waves (#171).
+    policy = _turtle_blender()
+    policy.act(_at(1e9, EVERYTHING, health=0.5), None)  # the switch, to the blender
+    prices = {**EVERYTHING, "Defense %": 0.0, "Thorn Damage": 0.0}
+    state = _at(1e9, prices, thorns=THORNS_BOSS_PERCENT - 1)
+    assert policy.act(state, None)[0] == ROWS["Health"]
+
+
 # -- row names -------------------------------------------------------------------
 
 

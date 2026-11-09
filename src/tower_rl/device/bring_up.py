@@ -52,8 +52,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from tower_rl.simulation.bridge import bridge_build_directory, compatibility
-from tower_rl.simulation.instance import (
+from tower_rl.device.bridge import bridge_build_directory, compatibility
+from tower_rl.device.instance import (
     BRIDGE_DEVICE_PORT,
     GUEST_FRAME_RATE_HZ,
     PACKAGE,
@@ -63,7 +63,7 @@ from tower_rl.simulation.instance import (
     kill_emulator,
     launch_emulator,
 )
-from tower_rl.simulation.instrumented_bridge import (
+from tower_rl.device.instrumented_bridge import (
     BridgeCompatibility,
     BridgeObservation,
     BridgeRunUnavailable,

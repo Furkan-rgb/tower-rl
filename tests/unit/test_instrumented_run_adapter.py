@@ -4,8 +4,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from tower_rl.environment.run_port import RunPortError
-from tower_rl.simulation.instrumented_bridge import (
+from tower_rl.device.instrumented_bridge import (
     BridgeCommandResult,
     BridgeDisconnectedError,
     BridgeObservation,
@@ -14,11 +13,12 @@ from tower_rl.simulation.instrumented_bridge import (
     CommandOutcome,
     UpgradeInventoryEntry,
 )
-from tower_rl.simulation.instrumented_run_adapter import (
+from tower_rl.device.instrumented_run_adapter import (
     GAME_SPEED,
     InstrumentedRunAdapter,
     PinNotHeld,
 )
+from tower_rl.environment.run_port import RunPortError
 
 
 def _observation(sequence: int = 1, *, terminal: bool = False, speed: float = 64.0):

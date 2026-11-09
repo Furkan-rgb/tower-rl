@@ -31,6 +31,7 @@ import train
 from fakes.fake_run_port import FakeRunPort
 from fakes.recording_tracker import RecordingTracker
 
+from tower_rl.device.instance import CloneInstance
 from tower_rl.environment.episode import TerminationOutcome
 from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, StateFeatures
 from tower_rl.environment.run_actions import RUN_ACTIONS
@@ -67,7 +68,6 @@ from tower_rl.learning.replay import (
 )
 from tower_rl.learning.training import TrainingRun
 from tower_rl.learning.value_learning import V_REF
-from tower_rl.simulation.instance import CloneInstance
 
 PROFILE = "fake-profile-v1"
 

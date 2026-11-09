@@ -9,10 +9,7 @@ from contextlib import suppress
 
 import pytest
 
-from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
-from tower_rl.environment.run_state import LIVE_WIRE_NAMES, RunStateBuilder
-from tower_rl.learning.evaluator import evaluate
-from tower_rl.simulation.instrumented_bridge import (
+from tower_rl.device.instrumented_bridge import (
     ADVANCE_WALL_CEILING_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
     PAUSE_SETTLE_SECONDS,
@@ -34,7 +31,10 @@ from tower_rl.simulation.instrumented_bridge import (
     encode_frame,
     read_frame,
 )
-from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter
+from tower_rl.device.instrumented_run_adapter import InstrumentedRunAdapter
+from tower_rl.environment.run_environment import CadenceConfig, InstrumentedRunEnvironment
+from tower_rl.environment.run_state import LIVE_WIRE_NAMES, RunStateBuilder
+from tower_rl.learning.evaluator import evaluate
 
 EXPECTED = BridgeCompatibility(
     package_version="29.0.3",

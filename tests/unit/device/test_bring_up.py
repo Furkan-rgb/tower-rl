@@ -15,16 +15,16 @@ from typing import Any
 
 import pytest
 
-from tower_rl.simulation import bring_up, frame_rate, instance
-from tower_rl.simulation.bridge import BRIDGE_SCRIPT
-from tower_rl.simulation.bring_up import (
+from tower_rl.device import bring_up, frame_rate, instance
+from tower_rl.device.bridge import BRIDGE_SCRIPT
+from tower_rl.device.bring_up import (
     launch_game_at_home,
     restore,
     save_snapshot,
     start,
 )
-from tower_rl.simulation.instance import CloneError, CloneInstance
-from tower_rl.simulation.instrumented_bridge import (
+from tower_rl.device.instance import CloneError, CloneInstance
+from tower_rl.device.instrumented_bridge import (
     BridgeDisconnectedError,
     BridgeObservation,
     BridgeRunUnavailable,
@@ -189,7 +189,7 @@ def install(
 
     No screen-reading route is installed at all, because none exists: readiness
     is the bridge's own reading, and `test_no_screen_reading.py` holds the
-    simulation to never reaching for one.
+    device package to never reaching for one.
     """
     patch_adb(monkeypatch, clone.adb)
     monkeypatch.setattr(instance, "find_android_tool", lambda name: Path(name))

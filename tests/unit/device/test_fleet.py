@@ -19,10 +19,10 @@ from dataclasses import dataclass
 
 import pytest
 
+from tower_rl.device import fleet
+from tower_rl.device.fleet import bring_up_fleet, tear_down_fleet
+from tower_rl.device.instance import CloneInstance
 from tower_rl.environment.run_port import RunPortError
-from tower_rl.simulation import fleet
-from tower_rl.simulation.fleet import bring_up_fleet, tear_down_fleet
-from tower_rl.simulation.instance import CloneInstance
 
 
 @dataclass(frozen=True)

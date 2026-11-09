@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import time
 
-from tower_rl.simulation.instance import (
+from tower_rl.device.instance import (
     GUEST_FRAME_RATE_HZ,
     PACKAGE,
     CloneError,

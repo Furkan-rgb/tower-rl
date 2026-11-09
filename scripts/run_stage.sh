@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # It does not bring the fleet up. The fleet runners own their own bring-up and
 # their own teardown (`bring_up_fleet`/`tear_down_fleet` in
-# `src/tower_rl/simulation/fleet.py`; `scripts/train.py` and
+# `src/tower_rl/device/fleet.py`; `scripts/train.py` and
 # `scripts/run_actors.py` call them), so a wrapper that launched emulators would
 # collide with the stage command rather than serve it. What is missing there is
 # the abort path: a killed or crashed runner leaves emulators running with the
@@ -289,7 +289,7 @@ log_stage_failure_logcat() {
 #: summary rather than requiring a second pass through per-instance log files
 #: after the fact. The path matches how `bring_up` names the file it captures
 #: each instance's own stdout/stderr into (`EMULATOR_LOG_DIRECTORY` in
-#: `src/tower_rl/simulation/instance.py`): `state/logs`, whatever
+#: `src/tower_rl/device/instance.py`): `state/logs`, whatever
 #: `--log-directory` moved this script's own log to. `|| true` throughout:
 #: teardown must never abort on this, a past review finding.
 log_emulator_crash_lines() {

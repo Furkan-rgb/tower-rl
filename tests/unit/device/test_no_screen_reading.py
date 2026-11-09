@@ -35,8 +35,8 @@ FORBIDDEN = ("screencap", "screenshot", "uiautomator", "input tap")
 
 
 def scanned_files() -> list[Path]:
-    """Everything that can reach an instance: the simulation, and the runners."""
-    return sorted((ROOT / "src" / "tower_rl" / "simulation").rglob("*.py")) + sorted(
+    """Everything that can reach an instance: the device package, and the runners."""
+    return sorted((ROOT / "src" / "tower_rl" / "device").rglob("*.py")) + sorted(
         (ROOT / "scripts").glob("*.py")
     )
 

@@ -236,7 +236,7 @@ measured, not what to do next.
   `main_unavailable`/`no_initialized_run` reasons, verified again on device
   (`M1B-E024`). The screenshot classifier that was the previous oracle has
   been removed outright (#16): it had no caller left, and a static guard
-  under `tests/unit/simulation/` now holds every module that can reach an
+  under `tests/unit/device/` now holds every module that can reach an
   instance to reading no pixel and tapping no coordinate.
 - **MLflow experiment tracking** is wired behind a port and on by default;
   run with `uv run --extra tracking` to have it record.
@@ -289,7 +289,7 @@ measured, not what to do next.
    wave and unattended stability (see "Done: `-gpu host` is the mandatory
    training renderer" below). The emulator refuses to snapshot a Vulkan app
    under host GPU, so bring-up never attempts a save or restore there;
-   `prepare_pinned_snapshot` and `bring_up` in `src/tower_rl/simulation/` check
+   `prepare_pinned_snapshot` and `bring_up` in `src/tower_rl/device/` check
    the renderer against `SNAPSHOT_CAPABLE_RENDERER` by name. Host bring-up is
    cold every time, by design, and says so in its log
    (`renderer 'host' cannot snapshot a Vulkan app`).
@@ -833,7 +833,7 @@ from the backup if anything but the intended package changed.
 ADR 0006 now defines the separate instrumented-training and official-evaluation
 profiles. The first production bridge slice lives under `native/tower_bridge/`
 with its strict host client in
-`src/tower_rl/simulation/instrumented_bridge.py`. A live 29.0.3 run passed
+`src/tower_rl/device/instrumented_bridge.py`. A live 29.0.3 run passed
 the exact compatibility handshake and returned both active and terminal
 observations with all 60 in-run upgrades (20 Attack, 20 Defense, 20 Utility).
 Startup observations fail closed until `Main.Instance` and run scalar state are

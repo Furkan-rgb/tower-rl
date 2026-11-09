@@ -15,7 +15,7 @@ There is deliberately no environment-variable override. One location is the
 whole point of the decision, and a test that needs its own directory is given
 one explicitly (`tmp_path`) rather than by reaching past the resolver.
 
-This module lives in `environment` because that is the root package: simulation,
+This module lives in `environment` because that is the root package: device,
 experiment and the scripts all may import it, and the location of the project's
 state is a fact none of them should each spell out for itself.
 """

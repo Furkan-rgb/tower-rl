@@ -2,7 +2,7 @@
 
 The rule is one-directional. `tower_rl.environment` is the root: what a run is,
 what it is driven through, and what a decision costs - it may know nothing else
-in the package. Simulation, learning and the experiment observing them build on
+in the package. Device, learning and the experiment observing them build on
 it in that order, so an experiment may know about the environment, the learner
 and the ports they are driven through, and nothing about how a device is
 reached or how a run is started.
@@ -38,20 +38,20 @@ FORBIDDEN_TO_ENVIRONMENT = ("tower_rl",)
 FORBIDDEN_TO_LEARNING = ("tower_rl",)
 ALLOWED_TO_LEARNING = ("tower_rl.environment",)
 
-#: What `tower_rl.simulation` may not reach for: everything in the package except
+#: What `tower_rl.device` may not reach for: everything in the package except
 #: the environment. Stated as an allowance for the same reason learning's is —
-#: the rule decided is "simulation imports only the environment", so a package
+#: the rule decided is "device imports only the environment", so a package
 #: added later is forbidden by default rather than by somebody remembering it.
 #: This is what keeps host checks and the learner out of the one place that
 #: reaches a device: `find_android_tool` moved down here from `doctor` because
 #: of this rule, rather than the rule being widened to let it stay.
-FORBIDDEN_TO_SIMULATION = ("tower_rl",)
-ALLOWED_TO_SIMULATION = ("tower_rl.environment",)
+FORBIDDEN_TO_DEVICE = ("tower_rl",)
+ALLOWED_TO_DEVICE = ("tower_rl.environment",)
 
 #: What `tower_rl.experiment` may not reach for. Device adapters and host checks
-#: are the simulation side, and a script is where a run is composed: an
+#: are the device side, and a script is where a run is composed: an
 #: experiment that imported either could not be run from anywhere else.
-FORBIDDEN_TO_EXPERIMENT = ("tower_rl.simulation", "tower_rl.doctor")
+FORBIDDEN_TO_EXPERIMENT = ("tower_rl.device", "tower_rl.doctor")
 
 #: What a test may not reach for: nothing in `tower_rl`. A test may exercise any
 #: package, and `fakes` is the suite's own - `conftest.py` puts `tests/` on the
@@ -232,15 +232,15 @@ def test_learning_reads_back_from_nothing_that_observes_or_drives_it() -> None:
     assert offences(PACKAGES / "learning", FORBIDDEN_TO_LEARNING, allowed=ALLOWED_TO_LEARNING) == []
 
 
-def test_simulation_knows_how_to_reach_a_device_and_nothing_about_the_run_on_it() -> None:
+def test_the_device_package_knows_how_to_reach_a_device_and_nothing_about_the_run_on_it() -> None:
     """Everything device-facing lives here, and it knows only the environment.
 
     Not the learner, not the experiment observing it, and not a script: the
-    adapter here is a `RunPort`, so a run can be driven without the simulation
-    ever learning what is driving it.
+    adapter here is a `RunPort`, so a run can be driven without the device
+    package ever learning what is driving it.
     """
     assert (
-        offences(PACKAGES / "simulation", FORBIDDEN_TO_SIMULATION, allowed=ALLOWED_TO_SIMULATION)
+        offences(PACKAGES / "device", FORBIDDEN_TO_DEVICE, allowed=ALLOWED_TO_DEVICE)
         == []
     )
 
@@ -287,7 +287,7 @@ def test_the_walker_sees_every_spelling_an_import_can_take(tmp_path: Path) -> No
     own package both reach a module, and both were once invisible here.
     """
     source = (
-        "import tower_rl.simulation.adb\n"
+        "import tower_rl.device.adb\n"
         "from tower_rl.experiment import metrics\n"
         "from tower_rl import doctor\n"
         "from ..doctor import find\n"
@@ -301,7 +301,7 @@ def test_the_walker_sees_every_spelling_an_import_can_take(tmp_path: Path) -> No
     path.write_text(source)
     names = imported_modules(path, tmp_path)
 
-    assert "tower_rl.simulation.adb" in names
+    assert "tower_rl.device.adb" in names
     assert "tower_rl.experiment.metrics" in names
     assert "tower_rl.doctor" in names, "the `from tower_rl import doctor` form"
     assert "tower_rl.doctor.find" in names, "a relative import climbing out of the package"

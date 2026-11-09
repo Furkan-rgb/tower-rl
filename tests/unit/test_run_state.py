@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tower_rl.device.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
 from tower_rl.environment.features import LOG_SCALED_SCALARS
 from tower_rl.environment.run_actions import (
     ACTION_SCHEMA_VERSION,
@@ -28,7 +29,6 @@ from tower_rl.environment.run_state import (
     RunStateBuilder,
     validate_transition,
 )
-from tower_rl.simulation.instrumented_bridge import BridgeObservation, UpgradeInventoryEntry
 
 BUILDER = RunStateBuilder(profile_id="tower-play-29.0.3-rooted-v1")
 

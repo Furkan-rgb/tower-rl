@@ -50,6 +50,16 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 import torch  # noqa: E402
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
+from tower_rl.device.bridge import bridge_build_directory, compatibility  # noqa: E402
+from tower_rl.device.instrumented_bridge import (  # noqa: E402
+    MAX_WORKSHOP_LEVEL,
+    BridgeCompatibility,
+    InstrumentedBridgeClient,
+    UpgradeSlotLabel,
+)
+from tower_rl.device.instrumented_run_adapter import (  # noqa: E402
+    InstrumentedRunAdapter,
+)
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import (  # noqa: E402
     CadenceConfig,
@@ -82,16 +92,6 @@ from tower_rl.learning.policies import (  # noqa: E402
     TurtlePolicy,
     WaitOnlyPolicy,
     checkpoint_policy,
-)
-from tower_rl.simulation.bridge import bridge_build_directory, compatibility  # noqa: E402
-from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
-    MAX_WORKSHOP_LEVEL,
-    BridgeCompatibility,
-    InstrumentedBridgeClient,
-    UpgradeSlotLabel,
-)
-from tower_rl.simulation.instrumented_run_adapter import (  # noqa: E402
-    InstrumentedRunAdapter,
 )
 
 torch.set_num_threads(1)

@@ -20,6 +20,7 @@ import run_episodes
 import torch
 from fakes.fake_run_port import FakeRunPort
 
+from tower_rl.device.instrumented_bridge import UpgradeSlotLabel
 from tower_rl.environment.features import StateFeatures
 from tower_rl.environment.project_state import state_directory
 from tower_rl.environment.run_environment import (
@@ -46,7 +47,6 @@ from tower_rl.learning.policies import (
     checkpoint_policy,
 )
 from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
-from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel
 
 PROFILE = "fake-profile-v1"
 

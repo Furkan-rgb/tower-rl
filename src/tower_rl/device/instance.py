@@ -1,6 +1,6 @@
 """One emulator instance of the clone: its identity, and its process.
 
-The lowest layer of the simulation. Everything else here addresses an instance
+The lowest layer of the device package. Everything else here addresses an instance
 through `CloneInstance` and speaks to it through `adb`, so instance identity —
 index, AVD, console port, adb serial, forwarded bridge port — is derived in one
 place rather than restated by every caller, and the canonical evaluation AVD is
@@ -18,8 +18,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from tower_rl.device.android_sdk import find_android_tool
 from tower_rl.environment.project_state import state_directory
-from tower_rl.simulation.android_sdk import find_android_tool
 
 PACKAGE = "com.TechTreeGames.TheTower"
 #: The disposable rooted clone. The canonical evaluation AVD is never touched.

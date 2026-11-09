@@ -643,7 +643,7 @@ What a decision costs and what it may conclude is
 and the port it drives an instance through is
 [`src/tower_rl/environment/run_port.py`](../src/tower_rl/environment/run_port.py);
 the adapter behind that port is
-[`src/tower_rl/simulation/instrumented_run_adapter.py`](../src/tower_rl/simulation/instrumented_run_adapter.py).
+[`src/tower_rl/device/instrumented_run_adapter.py`](../src/tower_rl/device/instrumented_run_adapter.py).
 None of these modules contain a game clone, private API, or learned coordinate
 action.
 

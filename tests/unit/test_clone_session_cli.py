@@ -17,8 +17,8 @@ from __future__ import annotations
 import clone_session
 import pytest
 
-from tower_rl.simulation.bridge import ActorFailure
-from tower_rl.simulation.instance import CloneError
+from tower_rl.device.bridge import ActorFailure
+from tower_rl.device.instance import CloneError
 
 
 @pytest.mark.parametrize(

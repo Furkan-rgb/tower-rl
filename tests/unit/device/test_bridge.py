@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from tower_rl.simulation import bridge
-from tower_rl.simulation.bridge import ActorFailure, run_bridge
-from tower_rl.simulation.instance import CloneError, CloneInstance
+from tower_rl.device import bridge
+from tower_rl.device.bridge import ActorFailure, run_bridge
+from tower_rl.device.instance import CloneError, CloneInstance
 
 
 def bridge_output(

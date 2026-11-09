@@ -3,7 +3,7 @@
 Each of them used to read `/tmp/tower-bridge-live.latest` itself, so the rule
 about where a bridge lives was written three times in three scripts and a
 dangling pointer surfaced as whatever `compatibility` happened to raise on a
-missing directory. It is one function in the simulation package now
+missing directory. It is one function in the device package now
 (`bridge_build_directory`), and these tests hold the scripts to it.
 
 Nothing here starts an emulator: the scripts are stopped at the first thing they
@@ -35,7 +35,7 @@ POINTER = "/tmp/tower-bridge-live.latest"
     ],
     ids=["run_episodes", "train"],
 )
-def test_the_build_directory_comes_from_the_simulation_function(
+def test_the_build_directory_comes_from_the_device_function(
     module: Any, argv: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Patching the one function moves every runner's idea of where the bridge is."""

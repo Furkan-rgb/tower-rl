@@ -20,12 +20,12 @@ from pathlib import Path
 
 import pytest
 
+from tower_rl.device import bridge, instance
 from tower_rl.environment.project_state import (
     _resolve_checkout_root,
     repository_root,
     state_directory,
 )
-from tower_rl.simulation import bridge, instance
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCRIPTS = REPOSITORY / "scripts"

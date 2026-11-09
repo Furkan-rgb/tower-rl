@@ -35,7 +35,7 @@ Task state is not prose. It lives on the GitHub board (see Board discipline belo
 
 ## Module rule
 
-`src/tower_rl/` is four packages in one direction — `environment` is the root, `simulation` and `learning` each import only it and never each other, `experiment` imports `environment` and `learning`, and `scripts/` is the composition root — stated in full in [`docs/architecture.md`](docs/architecture.md) section 1 and enforced by `tests/unit/test_import_contracts.py`. To change a rule, change the constant there and say why beside it; a rule relaxed to make one import compile is the failure that test exists to expose.
+`src/tower_rl/` is four packages in one direction — `environment` is the root, `device` and `learning` each import only it and never each other, `experiment` imports `environment` and `learning`, and `scripts/` is the composition root — stated in full in [`docs/architecture.md`](docs/architecture.md) section 1 and enforced by `tests/unit/test_import_contracts.py`. To change a rule, change the constant there and say why beside it; a rule relaxed to make one import compile is the failure that test exists to expose.
 
 ## Execution rules
 

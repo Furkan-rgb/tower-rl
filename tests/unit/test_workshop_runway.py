@@ -18,6 +18,14 @@ import run_episodes
 from fakes.fake_run_port import FakeRunPort
 from test_instrumented_bridge import _connected_client, _observation
 
+from tower_rl.device.instrumented_bridge import (
+    BridgeProtocolError,
+    decode_command,
+    decode_workshop_state,
+    encode_frame,
+    read_frame,
+)
+from tower_rl.device.instrumented_run_adapter import InstrumentedRunAdapter
 from tower_rl.environment.episode import TerminationOutcome
 from tower_rl.environment.run_actions import WAIT
 from tower_rl.environment.run_environment import (
@@ -42,14 +50,6 @@ from tower_rl.experiment.run_identity import (
 )
 from tower_rl.learning.checkpoint import identity_hash
 from tower_rl.learning.evaluator import episode_record
-from tower_rl.simulation.instrumented_bridge import (
-    BridgeProtocolError,
-    decode_command,
-    decode_workshop_state,
-    encode_frame,
-    read_frame,
-)
-from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter
 
 
 def _environment(

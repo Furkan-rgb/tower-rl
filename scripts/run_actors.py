@@ -77,31 +77,31 @@ from run_episodes import (  # noqa: E402
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
-from tower_rl.environment.project_state import state_directory  # noqa: E402
-from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
-from tower_rl.experiment.throughput import throughput  # noqa: E402
-from tower_rl.simulation.bridge import (  # noqa: E402
+from tower_rl.device.bridge import (  # noqa: E402
     ActorFailure,
     artifact_digest,
     bridge_build_directory,
     deploy_bridge,
 )
-from tower_rl.simulation.bring_up import (  # noqa: E402
+from tower_rl.device.bring_up import (  # noqa: E402
     bring_up,
     require_game_activity,
     require_offline,
 )
-from tower_rl.simulation.fleet import (  # noqa: E402
+from tower_rl.device.fleet import (  # noqa: E402
     prepare_pinned_snapshot,
     stagger_bring_up,
     tear_down_instance,
 )
-from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
-from tower_rl.simulation.instance import (  # noqa: E402
+from tower_rl.device.frame_rate import raise_frame_rate  # noqa: E402
+from tower_rl.device.instance import (  # noqa: E402
     GUEST_FRAME_RATE_HZ,
     MAX_GUEST_FRAME_RATE_HZ,
     CloneInstance,
 )
+from tower_rl.environment.project_state import state_directory  # noqa: E402
+from tower_rl.environment.run_environment import BRIDGE_EVENT_DIVERGENCE  # noqa: E402
+from tower_rl.experiment.throughput import throughput  # noqa: E402
 
 #: A rejected command the bridge reports by name; the environment carries the
 #: name through into the episode's termination detail.

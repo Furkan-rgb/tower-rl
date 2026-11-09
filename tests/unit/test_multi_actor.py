@@ -1,11 +1,11 @@
-"""What the fleet runner composes out of the simulation, and what it measures.
+"""What the fleet runner composes out of the device package, and what it measures.
 
 No emulator, no adb, no bridge: every lifecycle step is injected, so what is
 under test is the script's own plumbing — how it sequences and tears down the
 actors it drives, what the aggregate says about them, and what happens to the
 other actors when one dies. Instance identity, snapshot preparation and the
-bridge call itself belong to the simulation and are tested under
-`tests/unit/simulation/`.
+bridge call itself belong to the device package and are tested under
+`tests/unit/device/`.
 """
 
 from __future__ import annotations
@@ -29,18 +29,18 @@ from run_actors import (
     run_fleet,
 )
 
+from tower_rl.device import fleet
+from tower_rl.device.fleet import stagger_bring_up
+from tower_rl.device.instance import (
+    GUEST_FRAME_RATE_HZ,
+    CloneError,
+    CloneInstance,
+)
 from tower_rl.environment.episode import EpisodeSummary, TerminationOutcome
 from tower_rl.learning.evaluator import (
     EvaluationReport,
     WaveDistribution,
     to_record,
-)
-from tower_rl.simulation import fleet
-from tower_rl.simulation.fleet import stagger_bring_up
-from tower_rl.simulation.instance import (
-    GUEST_FRAME_RATE_HZ,
-    CloneError,
-    CloneInstance,
 )
 
 

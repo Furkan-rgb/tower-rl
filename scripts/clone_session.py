@@ -91,8 +91,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tower_rl.simulation.bridge import ActorFailure, deploy_bridge  # noqa: E402
-from tower_rl.simulation.bring_up import (  # noqa: E402
+from tower_rl.device.bridge import ActorFailure, deploy_bridge  # noqa: E402
+from tower_rl.device.bring_up import (  # noqa: E402
     bridge_key,
     bring_up,
     game_pid,
@@ -105,8 +105,8 @@ from tower_rl.simulation.bring_up import (  # noqa: E402
     start,
     why_not_ready,
 )
-from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
-from tower_rl.simulation.instance import (  # noqa: E402
+from tower_rl.device.frame_rate import raise_frame_rate  # noqa: E402
+from tower_rl.device.instance import (  # noqa: E402
     CLONE_AVD,
     CloneError,
     CloneInstance,

@@ -207,7 +207,7 @@ class CadenceConfig:
 DEATH_BOUNDARY_TRANSIENT = "negative health in an active run"
 
 #: The smallest advance the wire protocol will carry, mirroring
-#: `MIN_ADVANCE_BUDGET_GAME_MS` in `simulation/instrumented_bridge.py`. The
+#: `MIN_ADVANCE_BUDGET_GAME_MS` in `device/instrumented_bridge.py`. The
 #: death-boundary recovery asks for one frame of game time, or for this floor
 #: when a frame is worth less than the protocol allows.
 MIN_ADVANCE_GAME_MS = 10
@@ -348,7 +348,7 @@ KILLS_BELOW_CARRIED = "wave 1's kill count fell below the count carried into it"
 
 #: The game time each advance asks for while a run left live by the previous
 #: episode is being retired: the most the wire protocol carries
-#: (`MAX_ADVANCE_BUDGET_GAME_MS` in `simulation/instrumented_bridge.py`), since
+#: (`MAX_ADVANCE_BUDGET_GAME_MS` in `device/instrumented_bridge.py`), since
 #: nothing is decided between these advances and each round trip only costs
 #: wall time.
 RETIREMENT_ADVANCE_GAME_MS = 10_000

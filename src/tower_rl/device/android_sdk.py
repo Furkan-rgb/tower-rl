@@ -1,9 +1,9 @@
 """Where adb and the emulator are on this host.
 
 Tool discovery, not a host diagnostic: `doctor` reports on an SDK, but every
-step that reaches an instance has to find the binary first, and the simulation
-may not read back from the module that checks the host. So the two functions
-that answer "where is it" live at the bottom of the simulation and `doctor`
+step that reaches an instance has to find the binary first, and the device
+package may not read back from the module that checks the host. So the two functions
+that answer "where is it" live at the bottom of the device package and `doctor`
 reads them from here.
 """
 

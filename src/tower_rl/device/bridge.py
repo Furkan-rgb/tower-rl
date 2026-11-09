@@ -16,9 +16,9 @@ import re
 import subprocess
 from pathlib import Path
 
+from tower_rl.device.instance import PACKAGE, CloneError, CloneInstance, adb
+from tower_rl.device.instrumented_bridge import BridgeCompatibility
 from tower_rl.environment.project_state import state_directory
-from tower_rl.simulation.instance import PACKAGE, CloneError, CloneInstance, adb
-from tower_rl.simulation.instrumented_bridge import BridgeCompatibility
 
 #: The script that owns bridge deployment. It is a shell script beside the
 #: entry points rather than package data because it is also run by hand, and

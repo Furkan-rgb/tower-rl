@@ -18,6 +18,8 @@ import pytest
 import spectate
 from fakes.fake_run_port import FakeRunPort
 
+from tower_rl.device.instance import CloneInstance
+from tower_rl.device.instrumented_bridge import UpgradeSlotLabel
 from tower_rl.environment.episode import (
     DecisionView,
     EpisodeSummary,
@@ -32,8 +34,6 @@ from tower_rl.environment.run_state import (
     RunStateBuilder,
 )
 from tower_rl.learning.policies import Policy, RandomPolicy
-from tower_rl.simulation.instance import CloneInstance
-from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 

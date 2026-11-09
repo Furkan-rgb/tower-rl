@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from tower_rl.simulation.instance import (
+from tower_rl.device.instance import (
     CANONICAL_AVD,
     CLONE_AVD,
     CloneError,

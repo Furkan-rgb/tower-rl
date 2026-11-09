@@ -162,13 +162,13 @@ Tower-RL/
 │   └── adr/
 ├── src/tower_rl/
 │   ├── environment/         # what a run is: actions, state, features, episode, port, decision cost
-│   ├── simulation/          # reaching one instance: SDK, instance, bring-up, frame rate, bridge, adapter, fleet
+│   ├── device/              # reaching one instance: SDK, instance, bring-up, frame rate, bridge, adapter, fleet
 │   ├── learning/            # policies, network, backbone, replay, actor, learner, training run, evaluator, checkpoint
 │   ├── experiment/          # run identity, metrics, tracking, reports, comparison, wave statistics
 │   ├── doctor.py            # host and package checks
 │   └── xapk.py
 ├── tests/
-│   ├── unit/                # including unit/simulation/
+│   ├── unit/                # including unit/device/
 │   └── fakes/
 ├── scripts/                 # composition roots; the twelve entry points listed in section 11
 └── state/                   # ignored; bridge, runs, records, recordings, logs, mlflow.db
@@ -1335,7 +1335,7 @@ proportion to the speed gained — measured at 4.8 decisions per wave at 64x
 against 12.2 at 1x (`M1B-E012`). Any throughput bought that way is paid for in
 the thing the agent is actually learning from.
 
-`simulation/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0` and
+`device/instrumented_run_adapter.py` encodes this: `GAME_SPEED = 1.0` and
 `_pin_game_speed` puts the game back to 1x and fails explicitly if the game
 refuses. Speed is no longer a parameter anywhere — not in the adapter, not in the
 cadence, not on any runner's command line — so there is nothing left to set it to.

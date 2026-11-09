@@ -141,6 +141,32 @@ from run_episodes import (  # noqa: E402
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
+from tower_rl.device.bridge import (  # noqa: E402
+    bridge_build_directory,
+    compatibility,
+    deploy_bridge,
+)
+from tower_rl.device.bring_up import (  # noqa: E402
+    bring_up,
+    require_game_activity,
+    require_offline,
+)
+from tower_rl.device.fleet import (  # noqa: E402
+    bring_up_fleet,
+    prepare_pinned_snapshot,
+    tear_down_fleet,
+)
+from tower_rl.device.frame_rate import raise_frame_rate  # noqa: E402
+from tower_rl.device.instance import (  # noqa: E402
+    GUEST_FRAME_RATE_HZ,
+    MAX_GUEST_FRAME_RATE_HZ,
+    CloneInstance,
+)
+from tower_rl.device.instrumented_bridge import (  # noqa: E402
+    BridgeCompatibility,
+    InstrumentedBridgeClient,
+)
+from tower_rl.device.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.environment.run_environment import InstrumentedRunEnvironment  # noqa: E402
 from tower_rl.environment.run_port import RunPortError  # noqa: E402
@@ -242,32 +268,6 @@ from tower_rl.learning.training import (  # noqa: E402
     TrainingRun,
 )
 from tower_rl.learning.value_learning import V_REF, WAVE_SECONDS  # noqa: E402
-from tower_rl.simulation.bridge import (  # noqa: E402
-    bridge_build_directory,
-    compatibility,
-    deploy_bridge,
-)
-from tower_rl.simulation.bring_up import (  # noqa: E402
-    bring_up,
-    require_game_activity,
-    require_offline,
-)
-from tower_rl.simulation.fleet import (  # noqa: E402
-    bring_up_fleet,
-    prepare_pinned_snapshot,
-    tear_down_fleet,
-)
-from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
-from tower_rl.simulation.instance import (  # noqa: E402
-    GUEST_FRAME_RATE_HZ,
-    MAX_GUEST_FRAME_RATE_HZ,
-    CloneInstance,
-)
-from tower_rl.simulation.instrumented_bridge import (  # noqa: E402
-    BridgeCompatibility,
-    InstrumentedBridgeClient,
-)
-from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter  # noqa: E402
 
 #: What `--backbone` chooses from. There is no default: the backbone is the arm.
 BACKBONES = (DREAMERV3, R2D2)

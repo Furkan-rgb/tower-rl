@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from tower_rl.simulation.android_sdk import find_android_tool, sdk_roots
+from tower_rl.device.android_sdk import find_android_tool, sdk_roots
 from tower_rl.xapk import XapkInspectionError, inspect_xapk
 
 #: The tools a training host needs discoverable on `PATH` or under a standard

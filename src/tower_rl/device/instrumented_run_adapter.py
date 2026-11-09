@@ -13,8 +13,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from tower_rl.environment.run_port import RunPortError
-from tower_rl.simulation.instrumented_bridge import (
+from tower_rl.device.instrumented_bridge import (
     PROTOCOL_VERSION,
     BridgeCommandResult,
     BridgeCompatibilityError,
@@ -28,6 +27,7 @@ from tower_rl.simulation.instrumented_bridge import (
     WorkshopReport,
     WorkshopRow,
 )
+from tower_rl.environment.run_port import RunPortError
 
 #: The game's own speed multiplier, pinned at 1x. It is not a speed-up mechanism
 #: for this project: a faster game clock makes every rendered frame worth more

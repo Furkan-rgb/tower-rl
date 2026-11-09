@@ -18,7 +18,7 @@ Four packages, one direction:
 scripts/            composition only; imports packages, and no package imports it
   experiment/       may import environment and learning
   learning/         may import environment
-  simulation/       may import environment
+  device/           may import environment
 environment/        the root; imports nothing else in tower_rl
 ```
 
@@ -27,13 +27,13 @@ state, the episode, the port a run is driven through, and what a decision costs.
 It is the one package that can be reasoned about without a device, a learner or
 an experiment.
 
-`simulation` and `learning` are siblings and must not know about each other. The
-join between them is `environment.run_port.RunPort`: `simulation` supplies an
+`device` and `learning` are siblings and must not know about each other. The
+join between them is `environment.run_port.RunPort`: `device` supplies an
 adapter that satisfies it, `learning` drives an `InstrumentedRunEnvironment`
 that consumes it, and neither imports the other. That is what lets a learner run
 against a fake port in a unit test, and what keeps host and emulator detail out
 of everything that is not device-facing (`find_android_tool` moved down into
-`simulation` because of this rule rather than the rule being widened to let it
+`device` because of this rule rather than the rule being widened to let it
 stay in `doctor`).
 
 `experiment` observes both and drives neither device nor script.
@@ -51,7 +51,7 @@ reports each import that crosses a boundary it may not. It reads from the source
 rather than from a runtime import graph, so a module nobody imports is still
 held to the rule.
 
-Each rule is one constant plus one `offences(...)` call. Learning, simulation
+Each rule is one constant plus one `offences(...)` call. Learning, device
 and the tests are stated as *allowances* ("only the environment") rather than as
 lists of forbidden neighbours, so a package added later is forbidden by default
 instead of by somebody remembering to name it.
@@ -110,7 +110,7 @@ Owns the decision problem, and nothing about how a device is reached.
 - `project_state.py` — `repository_root` and `state_directory`: the git-ignored
   `<repo>/state/` every artifact this project writes lives under, resolved from
   the package's own location rather than the cwd. It is here because this is the
-  root package, so simulation (bridge builds), experiment (the MLflow store) and
+  root package, so device (bridge builds), experiment (the MLflow store) and
   the scripts (runs, records, recordings) may all import it and none of them
   spells the location out for itself.
 
@@ -133,7 +133,7 @@ is filled or ends (ADR 0020; `docs/environment-contract.md`, "Decision cadence")
 one `InstrumentedRunEnvironment` instance and leaves it only as an immutable
 `EpisodeSummary`. Everything else here is a frozen dataclass.
 
-## 3. `simulation` — reaching one instance
+## 3. `device` — reaching one instance
 
 Owns emulator lifecycle, the wire protocol, and the adapter behind `RunPort`. It
 knows nothing about the run being driven on it.
@@ -388,8 +388,8 @@ none is part of a run:
 - `doctor.py` — read-only host, package and Android-device diagnostics, returning
   `CheckResult` rows with a `pass`/`warn`/`fail` status: host and SDK inventory,
   Android tools, the XAPK when one is given, and the device when a serial is
-  given. It reads the SDK through `simulation.android_sdk` and the archive
-  through `xapk`, so it sits *above* `simulation`; that is why `experiment` is
+  given. It reads the SDK through `device.android_sdk` and the archive
+  through `xapk`, so it sits *above* `device`; that is why `experiment` is
   forbidden to import it. `scripts/doctor.py` is its one entry point — both the
   XAPK and the serial are optional there — and `tests/unit/test_doctor.py` is
   its other caller; nothing in a run imports it.
@@ -405,14 +405,14 @@ none is part of a run:
 `scripts/run_actors.py` measures throughput with scripted policies.
 
 1. `main` builds N `CloneInstance` values and, unless `--cold`, calls
-   `simulation.fleet.prepare_pinned_snapshot` once on a writable instance — a
+   `device.fleet.prepare_pinned_snapshot` once on a writable instance — a
    `-read-only` actor cannot save a snapshot.
-2. `simulation.fleet.stagger_bring_up` wraps `collect_episodes` so instance
+2. `device.fleet.stagger_bring_up` wraps `collect_episodes` so instance
    *k*'s bring-up starts only once instance *k-1* has signalled ready. The
    signal fires in a `finally`, so a failed bring-up releases the next actor as
    surely as a successful one.
 3. `run_fleet` submits one `run_actor` per instance to a thread pool. Each calls
-   `collect_episodes`: `simulation.bring_up.bring_up`, then `require_offline`,
+   `collect_episodes`: `device.bring_up.bring_up`, then `require_offline`,
    `require_game_activity` and `raise_frame_rate` on its own instance — there is
    no fleet-wide rendezvous, so a ready instance starts collecting while its
    peers still boot (`M1B-E047`).
@@ -435,9 +435,9 @@ none is part of a run:
      the operator already has running, addressed by `--serial` and `--port`, and
      leaves it running afterwards — exactly as it worked before there were
      fleets.
-   - `--actors N` calls `simulation.fleet.prepare_pinned_snapshot` first, because
+   - `--actors N` calls `device.fleet.prepare_pinned_snapshot` first, because
      a `-read-only` fleet cannot save one, then
-     `simulation.fleet.bring_up_fleet` over `open_instance`, which brings each
+     `device.fleet.bring_up_fleet` over `open_instance`, which brings each
      instance up in sequence and connects it. Training starts only once the
      fleet is up, so the stagger needs no gate. Each instance is appended to
      `started` *before* its bring-up is attempted, so one that fails partway is

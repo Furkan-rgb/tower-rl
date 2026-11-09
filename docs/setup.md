@@ -304,7 +304,7 @@ leaves it unset and takes the installed one.
 ## 3. Android tooling and the AVDs
 
 The workstation's SDK lives at `~/.local/share/android-sdk`, which is one of the
-roots `tower_rl.simulation.android_sdk.sdk_roots` searches, so an unattended run
+roots `tower_rl.device.android_sdk.sdk_roots` searches, so an unattended run
 finds `adb` and `emulator` without a shell exporting anything. `ANDROID_HOME` or
 `ANDROID_SDK_ROOT` overrides the search. The packages are:
 
@@ -329,7 +329,7 @@ export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
 Two AVDs exist, and nothing in the project confuses them:
 
 - **`tower_rl_api36_play_x86_64`** — the canonical, account-bearing AVD
-  (`CANONICAL_AVD` in `src/tower_rl/simulation/instance.py`), on
+  (`CANONICAL_AVD` in `src/tower_rl/device/instance.py`), on
   `emulator-5554`. It holds the Play sign-in and the golden snapshot, and
   `CloneInstance` and `run_episodes.py` refuse to touch it. Create it once, with
   the defaults `scripts/create_avd.sh` carries:
@@ -423,7 +423,7 @@ The cost is that it cannot snapshot. The emulator refuses to save a snapshot of
 a Vulkan app under `-gpu host` (`KO: Snapshot save is skipped. Reason:
 UNSUPPORTED_VK_APP`), so under `-gpu host` every instance takes the cold
 bring-up path by name: `prepare_pinned_snapshot` in
-`src/tower_rl/simulation/fleet.py` checks the renderer against
+`src/tower_rl/device/fleet.py` checks the renderer against
 `SNAPSHOT_CAPABLE_RENDERER` (`lavapipe`), prints `renderer 'host' cannot
 snapshot; nothing to pin`, and pins nothing.
 
@@ -449,7 +449,7 @@ against the running serial.
 
 The M0 `probe` command and the visual profile it validated no longer exist. The
 environment is read through the instrumented bridge instead
-(`src/tower_rl/simulation/instrumented_bridge.py`), and no part of the RL loop
+(`src/tower_rl/device/instrumented_bridge.py`), and no part of the RL loop
 reads a pixel. To bring one instance up and inspect it:
 
 ```text

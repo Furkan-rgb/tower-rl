@@ -93,6 +93,21 @@ from run_episodes import (  # noqa: E402
     workshop_level_from,
 )
 
+from tower_rl.device.android_sdk import find_android_tool  # noqa: E402
+from tower_rl.device.bridge import (  # noqa: E402
+    bridge_build_directory,
+    compatibility,
+    deploy_bridge,
+)
+from tower_rl.device.bring_up import (  # noqa: E402
+    bring_up,
+    require_game_activity,
+    require_offline,
+)
+from tower_rl.device.fleet import tear_down_instance  # noqa: E402
+from tower_rl.device.frame_rate import raise_frame_rate  # noqa: E402
+from tower_rl.device.instance import CloneInstance, adb  # noqa: E402
+from tower_rl.device.instrumented_bridge import UpgradeSlotLabel  # noqa: E402
 from tower_rl.environment.episode import (  # noqa: E402
     DecisionView,
     EpisodeSummary,
@@ -103,21 +118,6 @@ from tower_rl.environment.run_state import NO_ENEMY_DISTANCE  # noqa: E402
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.evaluator import episode_record  # noqa: E402
 from tower_rl.learning.policies import Policy  # noqa: E402
-from tower_rl.simulation.android_sdk import find_android_tool  # noqa: E402
-from tower_rl.simulation.bridge import (  # noqa: E402
-    bridge_build_directory,
-    compatibility,
-    deploy_bridge,
-)
-from tower_rl.simulation.bring_up import (  # noqa: E402
-    bring_up,
-    require_game_activity,
-    require_offline,
-)
-from tower_rl.simulation.fleet import tear_down_instance  # noqa: E402
-from tower_rl.simulation.frame_rate import raise_frame_rate  # noqa: E402
-from tower_rl.simulation.instance import CloneInstance, adb  # noqa: E402
-from tower_rl.simulation.instrumented_bridge import UpgradeSlotLabel  # noqa: E402
 
 #: The rate a spectated instance runs at. 60 Hz is the guest's stock rate, which
 #: is real time: one game second per wall second. The fleet's 120 exists to buy
@@ -581,7 +581,7 @@ def host_is_free() -> None:
 
 
 class RunGuestCommand(Protocol):
-    """How a command reaches the guest: `simulation.instance.adb`'s shape."""
+    """How a command reaches the guest: `device.instance.adb`'s shape."""
 
     def __call__(self, instance: CloneInstance, *args: str, timeout: float = 30.0) -> str: ...
 

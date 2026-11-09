@@ -22,17 +22,17 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 
-from tower_rl.simulation.bridge import deploy_bridge, run_bridge
-from tower_rl.simulation.bring_up import (
+from tower_rl.device.bridge import deploy_bridge, run_bridge
+from tower_rl.device.bring_up import (
     SNAPSHOT_CAPABLE_RENDERER,
     bridge_key,
     bring_up,
     keyed_snapshot_name,
     snapshot_exists,
 )
-from tower_rl.simulation.instance import CloneInstance, kill_emulator
-from tower_rl.simulation.instrumented_bridge import InstrumentedBridgeClient
-from tower_rl.simulation.instrumented_run_adapter import InstrumentedRunAdapter
+from tower_rl.device.instance import CloneInstance, kill_emulator
+from tower_rl.device.instrumented_bridge import InstrumentedBridgeClient
+from tower_rl.device.instrumented_run_adapter import InstrumentedRunAdapter
 
 #: A backstop against a readiness signal that never arrives, not the
 #: sequencing mechanism itself, and measured from the previous instance's own

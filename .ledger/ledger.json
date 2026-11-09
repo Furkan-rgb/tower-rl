@@ -4298,7 +4298,7 @@
       "id": 157,
       "title": "DreamerV3's period means and final evaluation are labelled as its sampled policy, not near-greedy, greedy or exploration-free",
       "body": "The log, run_folder.py, select_checkpoint.py and their tests call DreamerV3's collection 'near-greedy' and its evaluation 'greedy'/'exploration-free'; it samples the same policy in both (docs/solution.md 9.4c; docs/experiments.md 'M3-P022: outcome' and the game-path review). Found by audit #156.",
-      "status": "In progress",
+      "status": "Next",
       "comments": [
         {
           "at": "2026-11-08 05:35",
@@ -4343,6 +4343,10 @@
         {
           "at": "2026-11-09 22:10",
           "text": "Audit #193: the doc labels (README.md:23, solution.md 9.2b ~1114 and 16 ~2634) may land during the run; the code rename and the load-time alias wait until set B's read ends, since m3-p024-select.sh runs select_checkpoint.py."
+        },
+        {
+          "at": "2026-11-09 22:14",
+          "text": "Doc half landed (3bd2c75): solution.md 9.2b defines near-greedy under DreamerV3 as the sampled policy (every actor); README's summary fixed. Remaining: the code labels (training.py, metrics keys, select_checkpoint.py greedy_final_wave_*, checkpoint field with load-time alias) after M3-P024's set B."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"

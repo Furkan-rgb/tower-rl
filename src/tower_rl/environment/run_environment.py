@@ -67,10 +67,11 @@ class DecisionCadence(StrEnum):
     either way.
     """
 
-    #: The contract. A decision is asked for only at a choice point - a state
-    #: whose legal set contains at least one purchase. A slice whose only legal
-    #: action is WAIT is answered by the environment and advanced through, and
-    #: its reward and game time accrue to the surrounding decision.
+    #: A decision is asked for only at a choice point - a state whose legal set
+    #: contains at least one purchase. A slice whose only legal action is WAIT
+    #: is answered by the environment and advanced through, and its reward and
+    #: game time accrue to the surrounding decision. The cadence of the runs
+    #: before ADR 0020.
     CHOICE_POINTS = "choice-points"
     #: Run 1's protocol: every cadence slice is a decision, including the 68%
     #: of them that offered nothing but WAIT (M2-E004). Kept for one purpose -
@@ -617,9 +618,10 @@ class InstrumentedRunEnvironment:
     port: RunPort
     builder: RunStateBuilder
     cadence: CadenceConfig = field(default_factory=CadenceConfig)
-    #: Which cadence stops the policy is asked about. `CHOICE_POINTS` is the
-    #: contract; `EVERY_SLICE` exists to reproduce run 1 (ADR 0009).
-    decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS
+    #: Which cadence stops the policy is asked about. `FILLING_ORDERS` is the
+    #: cadence learning runs are played at (ADR 0020); `EVERY_SLICE` exists to
+    #: reproduce run 1 (ADR 0009).
+    decision_cadence: DecisionCadence = DecisionCadence.FILLING_ORDERS
     #: Which upgrade rows this environment plays with (ADR 0011). `IMAGE` is
     #: what the profile image offers and is what every baseline so far was
     #: measured under; `ALL` reopens every real row at each round start.

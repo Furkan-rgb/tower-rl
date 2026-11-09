@@ -115,7 +115,7 @@ Owns the decision problem, and nothing about how a device is reached.
   spells the location out for itself.
 
 **Stepping.** One `step` executes the semantic action and then advances the
-world until the policy has something to choose again: under the default
+world until the policy has something to choose again: under
 `DecisionCadence.CHOICE_POINTS` it keeps advancing while the settled observation
 offers only `WAIT` (`RunState.is_choice_point`), and stops at the first choice
 point, at the end of the run, or at the first thing that makes the transition
@@ -126,7 +126,8 @@ withheld is the decision, never an advance's accounting; the transition that
 comes back carries the span's `advances`, its measured `game_ms`, its events and
 the wave progress across all of it. `DecisionCadence.EVERY_SLICE` asks at every
 stop instead, which is what run 1 collected under, and exists to reproduce it
-(ADR 0009).
+(ADR 0009). The default, `DecisionCadence.FILLING_ORDERS`, ends a step when the order
+is filled or ends (ADR 0020; `docs/environment-contract.md`, "Decision cadence").
 
 **State.** The per-episode tally (`_EpisodeTally`, `_WaveTally`) lives inside
 one `InstrumentedRunEnvironment` instance and leaves it only as an immutable

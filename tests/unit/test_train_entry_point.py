@@ -750,7 +750,7 @@ def test_one_dead_instance_does_not_end_a_fleet_run(
     parsed = arguments(
         tmp_path,
         **{
-            "--budget-decisions": "40",
+            "--budget-decisions": "120",
             "--actors": "2",
             "--serial": CloneInstance(index=0).serial,
             "--evaluate-every-episodes": "0",

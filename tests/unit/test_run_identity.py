@@ -164,12 +164,12 @@ def test_the_floors_the_curve_is_read_against_travel_with_the_run() -> None:
     assert params["reference_source"] == REFERENCE_FINAL_WAVES["source"]
 
 
-def test_a_run_1_checkpoint_refuses_to_be_resumed_under_choice_points() -> None:
+def test_a_run_1_checkpoint_refuses_to_be_resumed_under_todays_cadence() -> None:
     """The two cadences pose different decision problems (ADR 0009).
 
-    A checkpoint collected at every slice is not experience a choice-point run
-    can continue, and the refusal names the difference rather than leaving the
-    two to be compared as if they were the same arm.
+    A checkpoint collected at every slice is not experience a run at today's
+    default cadence can continue, and the refusal names the difference rather
+    than leaving the two to be compared as if they were the same arm.
     """
     run_one = checkpoint_identity(
         RunIdentity.started_now(
@@ -187,7 +187,7 @@ def test_a_run_1_checkpoint_refuses_to_be_resumed_under_choice_points() -> None:
 
     assert any("decision_cadence differs" in reason for reason in reasons)
     assert run_one.incompatibilities(run_one) == ()
-    assert today.decision_cadence == DecisionCadence.CHOICE_POINTS
+    assert today.decision_cadence == DecisionCadence.FILLING_ORDERS
 
 
 def test_a_checkpoint_from_the_previous_observation_schema_is_refused_by_name() -> None:
@@ -218,8 +218,8 @@ def test_the_resolved_configuration_says_which_cadence_collected_the_run(
     """
     arm = _arm(tmp_path)
 
-    assert arm.resolved["decision_cadence"] == "choice-points"
-    assert arm.identity.decision_cadence == DecisionCadence.CHOICE_POINTS
+    assert arm.resolved["decision_cadence"] == "filling-orders"
+    assert arm.identity.decision_cadence == DecisionCadence.FILLING_ORDERS
 
 
 def test_an_arm_that_could_buy_every_row_refuses_to_resume_one_that_could_not() -> None:

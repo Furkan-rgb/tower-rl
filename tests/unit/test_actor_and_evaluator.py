@@ -15,6 +15,7 @@ from tower_rl.environment.features import ROW_COUNT, ROW_WIDTH, SCALAR_COUNT, St
 from tower_rl.environment.run_actions import RUN_ACTIONS
 from tower_rl.environment.run_environment import (
     CadenceConfig,
+    DecisionCadence,
     InstrumentedRunEnvironment,
 )
 from tower_rl.environment.run_port import RunPortError
@@ -39,11 +40,14 @@ from tower_rl.learning.replay import ReplayRejected
 PROFILE = "fake-profile-v1"
 
 
-def _environment(**port_kwargs: object) -> InstrumentedRunEnvironment:
+def _environment(
+    decision_cadence: DecisionCadence = DecisionCadence.FILLING_ORDERS, **port_kwargs: object
+) -> InstrumentedRunEnvironment:
     return InstrumentedRunEnvironment(
         port=FakeRunPort(**port_kwargs),  # type: ignore[arg-type]
         builder=RunStateBuilder(profile_id=PROFILE),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
+        decision_cadence=decision_cadence,
     )
 
 
@@ -564,7 +568,9 @@ def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:
     }
     buffer = R2D2Replay(capacity=64, seed=0)
     actor = Actor(
-        environment=_environment(**settings), policy=CheapestFirstPolicy(), replay=buffer
+        environment=_environment(DecisionCadence.CHOICE_POINTS, **settings),
+        policy=CheapestFirstPolicy(),
+        replay=buffer,
     )
 
     result = actor.run_episode()
@@ -574,7 +580,10 @@ def test_an_episode_that_died_before_any_choice_is_scored_not_failed() -> None:
     assert len(buffer) == 0, "there is no decision to learn from"
 
     report = evaluate(
-        _environment(**settings), CheapestFirstPolicy(), episodes=3, profile_id=PROFILE
+        _environment(DecisionCadence.CHOICE_POINTS, **settings),
+        CheapestFirstPolicy(),
+        episodes=3,
+        profile_id=PROFILE,
     )
 
     assert report.valid_episodes == 3 and report.invalid_episodes == 0
@@ -603,7 +612,7 @@ def test_an_r2d2_actor_stores_the_state_it_held_every_40_decisions_and_the_game_
     policy.held, policy.told = [], []
     replay = R2D2Replay(capacity=64, seed=0)
     actor = Actor(
-        environment=_environment(damage_per_second=0.2),
+        environment=_environment(DecisionCadence.CHOICE_POINTS, damage_per_second=0.2),
         policy=policy,
         config=ActorConfig(epsilon=0.3),
         replay=replay,

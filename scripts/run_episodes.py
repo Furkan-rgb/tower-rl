@@ -331,12 +331,14 @@ def add_cadence_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--decision-cadence",
         choices=[cadence.value for cadence in DecisionCadence],
-        default=DecisionCadence.CHOICE_POINTS.value,
-        help="which cadence stops the policy is asked about: choice-points is "
-        "the contract, every-slice reproduces run 1's protocol (ADR 0009), "
-        "standing-orders is one decision a wave, on trial, saving-orders is "
-        "that over every row on sale, on trial (ADR 0020), and filling-orders "
-        "buys one level of a row on sale and stands until filled, on trial",
+        default=DecisionCadence.FILLING_ORDERS.value,
+        help="which cadence stops the policy is asked about: filling-orders, "
+        "the cadence of learning runs (ADR 0020), buys one level of a row on "
+        "sale and stands until filled; choice-points asks at every state "
+        "offering a purchase, as runs before ADR 0020 did; every-slice "
+        "reproduces run 1's protocol (ADR 0009); standing-orders is one "
+        "decision a wave and saving-orders that over every row on sale, both "
+        "recorded controls",
     )
 
 

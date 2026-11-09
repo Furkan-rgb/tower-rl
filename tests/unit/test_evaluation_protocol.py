@@ -720,7 +720,7 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
     for index in range(actors):
         policy, identity = run_episodes.policy_from(
             selector,
-            decision_cadence=DecisionCadence.CHOICE_POINTS,
+            decision_cadence=DecisionCadence.FILLING_ORDERS,
             upgrade_availability=UpgradeAvailability.IMAGE,
             workshop_level=0,
         )
@@ -730,7 +730,7 @@ def play(selector: str, directory: Path, *, actors: int = 2, episodes: int = 2) 
             identity,
             frame_game_ms=100.0,
             max_quiet_game_ms=4000,
-            decision_cadence=DecisionCadence.CHOICE_POINTS,
+            decision_cadence=DecisionCadence.FILLING_ORDERS,
             upgrade_availability=UpgradeAvailability.IMAGE,
             workshop_level=0,
             wall_seconds=60.0,

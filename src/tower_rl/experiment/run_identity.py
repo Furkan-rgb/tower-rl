@@ -99,7 +99,7 @@ class RunIdentity:
     #: Which cadence this run collects under (ADR 0009). A choice the operator
     #: makes, like the arm and the profile, which is why it lives here and not
     #: with the schema versions below.
-    decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS
+    decision_cadence: DecisionCadence = DecisionCadence.FILLING_ORDERS
     #: Which upgrade rows this run plays with (ADR 0011). The same kind of
     #: choice as the cadence - the operator makes it, and it changes what the
     #: episodes mean - so it is named here beside it. The profile id stays the
@@ -118,7 +118,7 @@ class RunIdentity:
         *,
         profile_id: str,
         source_revision: str,
-        decision_cadence: DecisionCadence = DecisionCadence.CHOICE_POINTS,
+        decision_cadence: DecisionCadence = DecisionCadence.FILLING_ORDERS,
         upgrade_availability: UpgradeAvailability = UpgradeAvailability.IMAGE,
         workshop_level: int = WORKSHOP_OFF,
     ) -> RunIdentity:

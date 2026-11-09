@@ -335,8 +335,8 @@ turns, an upgrade becomes newly affordable, health moves by
 *decision* cadence says which of those stops the policy is asked about.
 
 **Choice points decide which stops can be decisions.** Since ADR 0020 was accepted
-on 2026-11-09, learning runs and their floors are played at `filling-orders`, below.
-`choice-points` remains the code default and the cadence of the runs recorded before
+on 2026-11-09, learning runs and their floors are played at `filling-orders`, below,
+which is the code default. `choice-points` is the cadence of the runs recorded before
 then. A decision is asked for only at a state whose
 legal set contains at least one purchase (`RunState.is_choice_point`, read off
 the action mask so legality and decision-worthiness cannot drift apart). A stop
@@ -393,7 +393,7 @@ before it only if nothing at all is on sale.
 **`filling-orders` buys one level and stands until filled; it is the cadence learning
 runs are played at.** `DecisionCadence.FILLING_ORDERS`, selected by
 `--decision-cadence filling-orders` (`#136`), is ADR 0020 as the developer accepted it
-on 2026-11-09. The code default is still `choice-points`, so every run passes the flag. The legal set is `saving-orders`' set. An order buys the
+on 2026-11-09, and the code default. The legal set is `saving-orders`' set. An order buys the
 row's next level the moment the cash reaches its price, and buys nothing else until
 then, across as many waves as that takes. The transition ends there with outcome
 `EXECUTED`, and the policy is asked at once, so cash left over stays spendable and two

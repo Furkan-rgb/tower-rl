@@ -32,7 +32,7 @@ context rather than as current truth. Open work is on the board, milestone
   environment forces otherwise (ADR 0018). R2D2 is built and not in use for this goal.
 - **The reward** is survival, `(1−d)·V_REF` with `d = γ_s^Δt`, and needs no change. The
   developer accepted it for DreamerV3 on 2026-11-08 (`docs/task.md` §7.5).
-- **The cadence** is `filling-orders`: the developer accepted ADR 0020 with it on 2026-11-09, item 5 (the training ratio) still Proposed until `#169`. The code default is still `choice-points`, so runs pass `--decision-cadence filling-orders`.
+- **The cadence** is `filling-orders`: the developer accepted ADR 0020 with it on 2026-11-09, item 5 (the training ratio) still Proposed (`#182`). It is the code default.
   `saving-orders` is what `M3-P022` ran: IQM 86.94 on its final evaluation, against
   `M3-P021`'s 48.75 and the script's 101.73 (`docs/experiments.md`, "`M3-P022`:
   outcome"). `filling-orders` buys one level and stands until filled. Its floors on
@@ -63,12 +63,12 @@ context rather than as current truth. Open work is on the board, milestone
 
 Five things define what a run is, and all five are in force together:
 
-- **A decision is asked for only at a choice point** — an observation whose mask
-  offers at least one purchase. Forced `WAIT` slices are played through by the
-  environment and accrue to the surrounding decision, so one decision spans one
-  or more advances ([ADR 0009](adr/0009-decisions-at-choice-points.md);
-  `--decision-cadence choice-points` is the default, and `every-slice` is kept
-  to reproduce run 1's protocol).
+- **A decision is an order that stands until it is filled** — one level of a row on
+  sale, bought the moment the cash reaches its price
+  ([ADR 0020](adr/0020-one-decision-a-wave-by-standing-order.md); `--decision-cadence filling-orders`
+  is the default). `choice-points`, which asks at every observation offering a
+  purchase ([ADR 0009](adr/0009-decisions-at-choice-points.md)), is what runs
+  before ADR 0020 used, and `every-slice` is kept to reproduce run 1's protocol.
 - **The policy is shown what the player sees**: `observation-v2`, 42 run scalars
   — the four run-level readings plus 38 live `Main` fields — and nine per-slot
   row features with raw `level`/`max_level` and unclipped affordability ([ADR

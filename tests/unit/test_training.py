@@ -19,6 +19,7 @@ from tower_rl.environment.run_environment import (
     GAME_TIME_INFLATED,
     WORLD_NOT_HELD,
     CadenceConfig,
+    DecisionCadence,
     InstrumentedRunEnvironment,
     RetirementFailed,
 )
@@ -1022,6 +1023,7 @@ def test_a_zero_decision_episode_is_collected_as_an_episode_not_a_failure() -> N
         port=DiesBeforeItsFirstChoice(damage_per_second=2.0, start_cash=0.0),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
+        decision_cadence=DecisionCadence.CHOICE_POINTS,
     )
 
     report = training.run()
@@ -1061,6 +1063,7 @@ def test_an_actor_whose_runs_never_reach_a_choice_point_is_withdrawn() -> None:
         ),
         builder=RunStateBuilder(profile_id="fake-profile-v1"),
         cadence=CadenceConfig(max_quiet_game_ms=1000),
+        decision_cadence=DecisionCadence.CHOICE_POINTS,
     )
 
     with pytest.raises(RunPortError, match="ended before a choice point"):

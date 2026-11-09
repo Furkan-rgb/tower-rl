@@ -4298,7 +4298,7 @@
       "id": 157,
       "title": "DreamerV3's period means and final evaluation are labelled as its sampled policy, not near-greedy, greedy or exploration-free",
       "body": "The log, run_folder.py, select_checkpoint.py and their tests call DreamerV3's collection 'near-greedy' and its evaluation 'greedy'/'exploration-free'; it samples the same policy in both (docs/solution.md 9.4c; docs/experiments.md 'M3-P022: outcome' and the game-path review). Found by audit #156.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-08 05:35",

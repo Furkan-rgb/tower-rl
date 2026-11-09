@@ -1116,7 +1116,11 @@ selection-period counters were counted in game time. Format 4 is the first a
 run resumes from.
 
 **The arm rule.** At each period close the run records the mean final wave of
-the near-greedy actors' valid episodes in that period. The arm is the
+the near-greedy actors' valid episodes in that period. Under R2D2 those are the
+actors at the bottom of the epsilon ladder. DreamerV3 adds no exploration noise
+and samples its own policy in collection and evaluation alike (§9.4c), so every
+actor counts, and a period's mean is the sampled policy's; the code's
+`near_greedy` names keep R2D2's word. The arm is the
 checkpoint at the close of the period with the highest such mean, counting only
 periods from the second on that have a mean at all, with a tie going to the
 earlier period. Runs before `M3-P024` took that checkpoint as the arm, by hand

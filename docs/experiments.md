@@ -3818,6 +3818,46 @@ in this order:
 - **The schedule unmoved in A:** the Workshop skips do not slow the damage, whatever
   their level.
 
+**Outcome (2026-11-09, appended after the stages; the pre-registration above is
+unedited).** Both stages ran in order, 22 minutes each, 4 of 4 valid with no invalid
+reason. Records are in `state/records/held-rows/skips/` and `all-held/`.
+
+| Stage | Extra rows as written | Final waves | Defense Absolute |
+|---|---|---|---|
+| reference (scan) | none | 483 | 299–300 |
+| A | Enemy Attack and Health Level Skip 79 | 506, 506, 507, 508 | 305–306 |
+| B | A's, plus Orbs 4, Death Defy 75, Wall Health 79, Wall Rebuild 79, Recovery Amount 79, Max Recovery 79, Package Chance 60 | 510, 510, 511, 512 | 307–308 |
+
+The levels below 79 are those rows' ceilings: Orbs 4, Death Defy 75 and Package
+Chance 60.
+
+**The Workshop skips slow the schedule by 9–15%.** Base damage with them, against the
+traced schedule, in all 8 games alike:
+
+| Wave | Traced | With the skips | Difference |
+|---|---|---|---|
+| 200 | 2,424 | 2,072 | −14.5% |
+| 351 | 12,400 | 11,002 | −11.3% |
+| 450 | 26,790 | 24,321 | −9.2% |
+| 480 | 32,600 | 29,278 | −10.2% |
+
+That bought 23–25 waves. Every other held row together added 3–4 more. Each game
+still ended the same way: health fell from about 0.7 to death over the last 3–4
+waves, with base damage after Defense % (about 17,900–18,300) passing the block
+(18,080–18,237).
+
+**The verdict, by the pre-registered rule: B is short of 999.** No uniform Workshop
+level up to the ceiling of 79 gives this script wave 999, with every row ADR 0012
+holds included. The route goes to the developer (`#176`).
+
+**What it does not settle.** Rows can go above the uniform ceiling of 79, which
+Critical Chance sets. Across every Workshop 79 arm the final wave has followed
+Defense Absolute, so a higher Workshop Defense Absolute is the lever left
+unmeasured. To reach wave 999 the block would have to stop the base damage there.
+If damage keeps growing as fast as the trace measured to wave 480, about the 3.5th
+power of the wave, that is roughly ten times today's block. This is an
+extrapolation, not a measurement.
+
 ## What a decision sees at `filling-orders`: a traced game of the script (measurement only, written after its device episodes)
 
 **Date:** 2026-11-08. Board `#141`. This entry was written after the stage, and the

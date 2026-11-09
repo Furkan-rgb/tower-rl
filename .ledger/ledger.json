@@ -4563,6 +4563,10 @@
         {
           "at": "2026-11-09 12:50",
           "text": "Correction to the last comment: the outcome is recorded in 35119fc (no stage id is meant by 'ac0...')."
+        },
+        {
+          "at": "2026-11-09 13:18",
+          "text": "Stage A (held-rows/skips, c46f9ee): both Workshop Enemy Level Skips at 79 (ceiling >= 79), build-defense-absolute: final waves 506-508 against 483, DA 305-306. Base damage 9-15% under the traced schedule (2,072 v 2,424 at 200; 29,278 v 32,600 at 480), identical in all 4 games. Stage B (every held row) running."
         }
       ],
       "milestone": "M3 A learned policy reaches wave 999 on a verified setup"
@@ -4584,9 +4588,15 @@
       "id": 175,
       "title": "Episode records carry each wave's base damage, block and Defense %, so a skip's effect is read against the fixed base-damage schedule",
       "body": "Audit #174: #173's pre-registration (27c08b3) can read the skip only through final wave and the block at death. #145's clause (d) asked for the margin each wave; it is lost with #145's retirement.",
-      "status": "In progress",
-      "comments": [],
-      "parent": 173
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-09 13:18",
+          "text": "95d6d23: WaveRecord.readings holds currentWaveBaseDamage, defenseAbs, defenseRel from each wave's first state. Verified on device in #173's stage A (state/records/held-rows/skips/): base damage 2,072 at wave 200 against the traced 2,424 with both Workshop skips at 79."
+        }
+      ],
+      "parent": 173,
+      "closed_at": "2026-11-09T12:18:45.818303Z"
     },
     {
       "id": 176,

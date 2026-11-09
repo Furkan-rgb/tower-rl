@@ -4975,7 +4975,7 @@
       "id": 191,
       "title": "README.md and docs/setup.md name 0.99991416 per game-second (ADR 0020 item 3) as the discount of a filling-orders learning run, and 0.997 (ADR 0019) only beside --decision-cadence choice-points",
       "body": "Docs half of #184 (audit #190), safe during M3-P024. README.md:75 passes no cadence flag, so since e61a777 its example launches a filling-orders run at 0.997. setup.md:660-662 passes choice-points, which the rule allows.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },

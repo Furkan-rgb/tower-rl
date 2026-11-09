@@ -70,9 +70,11 @@ uv run python scripts/clone_session.py up \
 uv run python scripts/run_actors.py \
   --actors 4 --episodes 20 --renderer host
 
-# a training run on that fleet
+# a training run on that fleet, at filling-orders (the default) with ADR 0020's
+# discount and learner rate
 uv run --extra tracking python scripts/train.py \
-  --backbone r2d2 --discount-per-game-second 0.997 --survival-time-reward \
+  --backbone dreamerv3 --discount-per-game-second 0.99991416 --survival-time-reward \
+  --train-ratio 2048 --batch-size 64 --world-model-ratio 128 \
   --actors 4 --renderer host --budget-decisions 60000
 ```
 

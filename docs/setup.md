@@ -667,8 +667,11 @@ nohup ./scripts/run_stage.sh --name m2-run2-train-seed1 --instances 7 \
 ```
 
 That is `M2-P002`'s option-B training line for seed 1 with `run_stage.sh` in
-front of it, its budget restated in decisions (`#68`; the game-time flags it
-was run with are gone, and so is `--epsilon-anneal-decisions`, which R2D2 fixes at 0
+front of it, at `choice-points` and ADR 0019's 0.997 per game-second as that run
+was. A learning run now plays at `filling-orders`, the default, and passes
+`--discount-per-game-second 0.99991416` (ADR 0020 item 3). The line is otherwise
+as it was, its budget restated in decisions (`#68`; the game-time flags it was run
+with are gone, and so is `--epsilon-anneal-decisions`, which R2D2 fixes at 0
 with the Ape-X ladder; `--backbone`, the task's discount and its reward are
 required): `--budget-decisions` is the fleet's cumulative
 decisions, `--selection-period-decisions` cuts the axis into the periods the

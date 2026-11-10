@@ -1,5 +1,5 @@
 {
-  "next_id": 195,
+  "next_id": 196,
   "items": [
     {
       "id": 1,
@@ -1289,7 +1289,7 @@
       "id": 58,
       "title": "M3: SOTA arms under the M2 protocol \u2014 DreamerV3, (EfficientZero V2 conditional)",
       "body": "Goal from docs/task.md: multiple RL approaches compared under one identical budgeted protocol. Run 3 (M2-P003, #57) gave the first learned policy clearly above scripted under availability `all` (period-2 near-greedy 12.15 vs scripted-all 6.11), with the training recipe at 2015-DQN settings: replay ratio 0.25, PER \u03b1=0 (built, off), n-step 10 fixed, \u03b3 0.99 fixed, no resets, ~200k-param net.\n\nPrerequisite: stacked-dqn seed 2 under M2-P003 (reproducibility).\n\nArm 1 \u2014 BBF recipe on the existing stacked-dqn backbone (Schwarzer et al. 2023): replay ratio 8 (host is idle; near-free), PER on (\u03b1\u22480.5\u20130.9, \u03b2 anneal), periodic shrink-and-perturb resets, n-step anneal 10\u21923, \u03b3 anneal 0.97\u21920.997, weight decay 0.1, wider net. Config + two small features; one exploratory seed at the M2-P003 budget; every deviation from the paper values cited.\n\nArm 2 \u2014 DreamerV3 (Hafner et al. 2023): model-based world model + actor-critic, vector observations and discrete actions natively; new training loop (PyTorch port). One exploratory seed.\n\nArm 3 (conditional) \u2014 EfficientZero V2: only after measuring the per-decision latency budget on the live game; MCTS per action may not fit.\n\nProtocol: interleaved arms via scripts/compare_arms.py, bootstrap intervals, one seed exploratory, second seed only for arms that beat stacked-dqn. Device time \u2248 6 h per arm-seed at run-3 pace. Nothing starts before #57 lands and the developer approves device time.",
-      "status": "Next",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-09-23 21:15",
@@ -1462,8 +1462,13 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: premise stale (M2-P003, stacked-dqn, BBF); task.md 1.1 Outcome A (three learners) still stands. Held for the developer's scope call: retire and replace with an EfficientZero V2 Outcome A item, or drop it from Outcome A."
+        },
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Retired (audit #195; developer left the calls to the Lead, 2026-11-10): its body cites M2-P003, stacked-dqn (deleted 0a3235d) and BBF, none current. Outcome A's three-backbone comparison (task.md) gets its own card when that goal opens."
         }
-      ]
+      ],
+      "closed_at": "2026-11-10T04:20:21.959020Z"
     },
     {
       "id": 59,
@@ -3244,6 +3249,10 @@
         {
           "at": "2026-10-02 16:32",
           "text": "No longer intermittent: test_one_dead_instance_does_not_end_a_fleet_run fails deterministically alone and on unmodified main (assert dead['withdrawn'] is not None), observed 2026-10-02 during #120."
+        },
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Audit #195: the test budget is 120 since e61a777, not 40. Re-run after M3-P024's freeze; retire if it passes."
         }
       ]
     },
@@ -3447,7 +3456,7 @@
       "id": 129,
       "title": "The bridge holds the game across a host disconnect (ADR 0016 P4), reported as BRIDGE_LOST when it cannot",
       "body": "From #98 / ADR 0016 P4.",
-      "status": "Backlog",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 03:02",
@@ -3456,8 +3465,13 @@
         {
           "at": "2026-11-09 13:49",
           "text": "Audit #177: the earlier comment says re-parented under #147, but its parent is None and #147 is closed."
+        },
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Retired (audit #195): its fix is the same EnsureHeld (ADR 0016 P4) as #159, retired 2026-11-10 for 0 UNCHARGED_ROUND_TIME / WORLD_NOT_HELD in M3-P023's 1,082 and M3-P024's 770 episodes. Reopen both as a new card if a slip or BRIDGE_LOST is ever read."
         }
-      ]
+      ],
+      "closed_at": "2026-11-10T04:20:21.899561Z"
     },
     {
       "id": 130,
@@ -4001,6 +4015,10 @@
         {
           "at": "2026-11-08 05:32",
           "text": "Correction 46e331e: re-read with each episode paired to its nearest trace, bff836b8 puts 0 of 18 free levels on empty slots and leaves 1 of 18 stale prices (a wave turn, repriced at the next decision); b8b8cd45 9 of 26 and 11 of 17. The verdict holds."
+        },
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Audit #195: the title's 'pauses a world that slipped' clause was never built; it moved to #159, retired 2026-11-10 unbuilt (0 slips in ~1,850 episodes)."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
@@ -4158,6 +4176,10 @@
         {
           "at": "2026-11-09 22:11",
           "text": "e5391e6: solution.md 16 has the six setup-element rows; five cite their verifying entries, the learner row is pending M3-P024's episode reads (#189). Closes when #189's reads land."
+        },
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Audit #195: M3-P024's episode reads are in (MLflow 08e56698): death_rank within 0.061 and prior_kl 1.06-1.13x at every period end from 30,008, but trained plan_gap +0.062/+0.061 at 55,028/60,000 against +0.05, a Fail at the last period end. If the result entry confirms it, the learner row needs a new card, not #189."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4372,7 +4394,7 @@
       "id": 159,
       "title": "The bridge reads the world's hold and presses Pause again when it slipped, after a device check of whether Pause toggles",
       "body": "Split from #147's third clause (audit #158). ADR 0016 section 2 EnsureHeld. The game-path review rated the unread hold Medium, confirmed: hidden round-clock time 263.6 s in M3-P021, 1.1 s in M3-P022, and UNCHARGED_ROUND_TIME now fails such a transition by name. #129 (hold across a host disconnect) stays beside #127/#128.",
-      "status": "Backlog",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 07:27",
@@ -4413,9 +4435,14 @@
         {
           "at": "2026-11-09 22:19",
           "text": "Audit #194: 0 UNCHARGED_ROUND_TIME and 0 WORLD_NOT_HELD in M3-P024's first 122 episodes. It holds M3 open (32/37) for work the done-condition does not need; whether to take it off M3 is the developer's call (no M4 exists)."
+        },
+        {
+          "at": "2026-11-10 05:07",
+          "text": "Retired (developer left the call to the Lead, 2026-11-10). 0 UNCHARGED_ROUND_TIME / WORLD_NOT_HELD in M3-P023's 1,082 and M3-P024's 770 episodes on bff836b8; a slip already fails its transition by name and is a run stop rule. Not one of task.md 1.1's six elements, and a bridge change re-identifies bff836b8. Reopen as a new card if a slip is ever read."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T04:07:53.070942Z"
     },
     {
       "id": 160,
@@ -4987,6 +5014,14 @@
         {
           "at": "2026-11-09 22:10",
           "text": "Relaunched 20:49:01Z as m3-p024-dreamerv3-ws10-v2914-20261109T204901Z from 2bd751e (the amendment's commit). At 5,453 decisions: 0 invalid, learner at 64x64 keeping up (busy 34%, debt 3/256). The src/ and scripts/ freeze holds until set B's read ends: m3-p024-select.sh runs run_actors.py, select_checkpoint.py and src/ from this checkout."
+        },
+        {
+          "at": "2026-11-10 05:05",
+          "text": "Training stopped on the 60,000 kill bar (05:01Z, wall 7:15): mean over (45000, 60000] 48.78 over 169 episodes, below 60. Period means: 21.96, 24.95, 55.58, 75.27 (p4, 20,009), 72.06, 55.65, 53.01, 44.58, 45.97, 47.40, 44.36, 58.24. 770 episodes, 1 invalid. Set A/B launched per the pre-registration on period ends 20009 25077 60000 30008 15077."
+        },
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Correction (audit #195): the kill-bar stop was 05:01:43 CET, 04:01Z. train.py's 8-episode readout on the final weights was skipped (final_evaluation_skipped: kill_bar); the result entry says so."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -5060,6 +5095,19 @@
         }
       ],
       "closed_at": "2026-11-09T21:19:27.133930Z"
+    },
+    {
+      "id": 195,
+      "title": "Board audit: 2026-11-10",
+      "body": "",
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-10 05:20",
+          "text": "Applied: #189 time correction and skipped-readout note; #150 provisional learner-row Fail noted; #147 stale clause noted; #129 and #58 retired; #114 re-run after the freeze. Deferred: the follow-on M3 exit is created before #189 closes on a Fail; #65/#73 retitles and #115's measurement wait for later goals or the freeze."
+        }
+      ],
+      "closed_at": "2026-11-10T04:20:28.285803Z"
     }
   ],
   "milestones": [

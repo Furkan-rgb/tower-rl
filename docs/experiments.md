@@ -4880,6 +4880,51 @@ the actor's top choice. It was 0.157 at d70027, 0.131 at d100073, 0.154 at d1050
 - The offline learner read pre-registered for this learner (below) is made only if
   this passes, so it is not made.
 
+## What the learner sees at the wave-100 wall (`#203`, analysis, no device)
+
+**Date:** 2026-11-10. Board `#203`. Read offline from `M3-P023`'s checkpoints and its
+final replay. The script is `margin.py` in the session scratchpad (`p024/`), not
+committed.
+
+**Question.** In `M3-P025`, d115201's top-choice episodes that died at exactly wave
+100 held less Defense Absolute against that wave's base damage of 403 than the ones
+that passed. On late states, does the learner's own value rank buying Defense
+Absolute above Defense %, and does its actor follow?
+
+**Method.** Episodes collected after the checkpoint (unseen by it) that reached wave 90.
+Each is run through the checkpoint's posterior, with mode latents, from its first
+step. At every decision from wave 85 to 99 with both rows on offer: Q(a) = reward +
+continue × critic, one imagined step after a, over 4 prior samples, in units of the
+return scale S. Beside it, the actor's probabilities and the action replay took.
+States are split by margin: Defense Absolute minus the wave's base damage, both
+decoded from the observation's `log1p` features.
+
+| d115201, margin | States | Q(DA) − Q(Def %), median / S | Share favouring DA | Actor P(DA) / P(Def %) |
+|---|---|---|---|---|
+| below 0 | 1,873 | +0.0002 | 0.59 | 0.20 / 0.26 |
+| 0 to 15 | 833 | −0.0019 | 0.39 | 0.27 / 0.47 |
+| 15 to 40 | 320 | +0.0032 | 0.58 | 0.47 / 0.32 |
+| 40 and more | 31 | +0.0139 | 0.77 | 0.69 / 0.14 |
+
+d145014 (199 states) reads the same way: medians −0.0001, −0.0002 and −0.0119 on
+the first three bands.
+
+**What it shows.**
+
+- Where Defense Absolute is about to fall behind, from 0 to 15 above base damage,
+  the learner's one-step value puts Defense Absolute no higher than Defense %. Its
+  actor prefers Defense %, 0.47 to 0.27. The value favours Defense Absolute clearly
+  only with 40 or more in hand, where it matters least.
+- 61% of these late states are already below base damage, and the tower survives
+  them. So the margin alone does not decide a wave: Defense % and the rest reduce
+  what leaks. The wall at wave 100 is the base damage stepping from 374 to 403 in one
+  wave, against about 2% a wave before it.
+- The observation carries the wave as `wave_log` = `log1p(wave)`. Waves 99 and 100
+  differ in it by 0.01, and the step at 100 is visible only through that difference.
+  Whether the learner can resolve it is not measured here.
+- So the shortfall at the wall is in the learner's value, not in an actor that
+  ignores a good one. A run that only steadies the actor would keep this value.
+
 ## `M3-P023`'s learner, read offline with `M3-P024`'s trained side (pre-registered, written before `M3-P025`'s result)
 
 **Date:** 2026-11-10. Board `#200`. The source is the commit that adds this entry.

@@ -5162,8 +5162,14 @@
       "id": 198,
       "title": "Board audit: 2026-11-10 (after #189)",
       "body": "",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-10 07:01",
+          "text": "Applied: #157 replaced by #199 (code labels by play mode); docs half fixed in 5f6e851 (README, setup, architecture, solution 678/2214, ADR 0021 citation); #200 created under #150 and pre-registered in 4f276b9; #192 and #196 commented (launch 05:52Z, result entry to source the departure share, check top_choice and run report_arms --selection)."
+        }
+      ],
+      "closed_at": "2026-11-10T06:01:30.324699Z"
     },
     {
       "id": 199,
@@ -5177,8 +5183,13 @@
       "id": 200,
       "title": "M3-P023's learner is read offline as pre-registered (trained side 10-29 episodes before each period end, unseen the 100 deaths after) against M3-P024's bounds, and the result is in docs/experiments.md",
       "body": "",
-      "status": "In progress",
-      "comments": [],
+      "status": "Blocked",
+      "comments": [
+        {
+          "at": "2026-11-10 07:01",
+          "text": "Pre-registered in 4f276b9, before M3-P025's result. Blocked on #196: the read is made only if M3-P025 passes."
+        }
+      ],
       "parent": 150
     }
   ],

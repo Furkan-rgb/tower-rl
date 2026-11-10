@@ -4933,6 +4933,60 @@ this entry's own rule the read is not made.
 - `read_episode` draws its latents from a generator seeded by the checkpoint's update
   count, so the read repeats exactly, but it is one draw.
 
+## M3-P026: every late `M3-P023` checkpoint on its top choice against the script (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-10. Board `#204`. The source is the commit that adds this entry.
+
+**Question.** `docs/task.md` §1.1's target, on weights that already exist: does any
+`M3-P023` checkpoint, played on its top choice (ADR 0021), beat the script's
+final-wave IQM at Workshop 10, with the 95% interval of the difference above zero?
+The script is `build-defense-absolute`, IQM 101.82 [101.18, 102.36], n = 21.
+
+**Why this, before a new training run.** In `M3-P025` the five candidates' top-choice
+IQMs ran from 82 to 100. The sampled period means that chose them (85.7–88.3) did
+not predict that order. So the run's other late checkpoints are unmeasured on the
+policy the task evaluates. Offline, the one training change at hand, a larger
+entropy bonus, flattened the policy and moved its top choice more, not less
+(`#203`). This screen asks what the existing weights can do before more weights
+are trained.
+
+**Primary outcome.**
+
+- **Set A, selection.** Every numbered `M3-P023` checkpoint from 70,027 decisions,
+  the first period mean above 85, to 150,085: 33 checkpoints, 2,500 decisions
+  apart. Each plays 12 episodes (4 instances × 3) on its top choice. The five that
+  `M3-P025` played this way are not played again: their set A records are reused
+  as they stand, on the same build, cadence, frame budget and protocol.
+  `select_checkpoint.py` picks the highest final-wave IQM over all 33.
+- **Set B, report.** The chosen checkpoint plays 32 fresh episodes (4 × 8) on its top
+  choice. If the choice is d115201, which `M3-P025` already reported, its report
+  pools `M3-P025`'s set B with the new one, 64 episodes, so that a second draw cannot
+  replace the first.
+- **The read.** As `M3-P025`'s: set B's IQM minus the script's, by
+  `stratified_bootstrap_difference`, strata by instance, the script's three rounds
+  pooled by instance, seed 0, 10,000 resamples (`state/launch/m3-p026.sh`).
+- **Pass** if the interval's lower end is above zero, and **Fail** otherwise. A pass
+  meets the target's result. The learner row for `M3-P023`'s learner is then read as
+  pre-registered in "`M3-P023`'s learner, read offline" above, which `#200` retired
+  only because `M3-P025` failed.
+
+**Readout, not a gate.** Set A's IQM by checkpoint along the decision axis.
+
+**Stop rules,** `M3-P025`'s.
+
+**Expected wall time.** 28 new set A runs of about 13 minutes each, then set B at
+about 34 minutes: about 6.7 hours.
+
+**Known confounds, in advance.**
+
+- Selecting the best of 33 on 12 episodes each carries more selection luck than the
+  best of 5 did. Set B is fresh, so the reported interval does not carry it.
+- d115201 is the incumbent: `M3-P025`'s set B read it at 100.69 [99.31, 101.81].
+  The pooling rule keeps its two set Bs together.
+- One training run, one seed. The host is shared.
+
+**Safety,** `M3-P019`'s unchanged.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

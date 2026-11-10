@@ -1,5 +1,5 @@
 {
-  "next_id": 204,
+  "next_id": 205,
   "items": [
     {
       "id": 1,
@@ -5231,7 +5231,7 @@
       "id": 202,
       "title": "Board audit: 2026-11-10 (after #196)",
       "body": "",
-      "status": "Next",
+      "status": "In progress",
       "comments": []
     },
     {
@@ -5246,6 +5246,14 @@
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 204,
+      "title": "M3-P026, pre-registered: every M3-P023 checkpoint from 70,027 decisions (33) on its top choice, 12 episodes each on set A (M3-P025's five reused), the best reported on a fresh set B against the script's 101.82 with the 95% interval",
+      "body": "",
+      "status": "In progress",
+      "comments": [],
+      "parent": 203
     }
   ],
   "milestones": [

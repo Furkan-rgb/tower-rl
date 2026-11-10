@@ -1,5 +1,5 @@
 {
-  "next_id": 202,
+  "next_id": 204,
   "items": [
     {
       "id": 1,
@@ -5217,8 +5217,34 @@
       "id": 201,
       "title": "Evaluation and period labels name whose play they are: period lines and stop messages say sampled for DreamerV3 and near-greedy for R2D2, select_checkpoint's tracked curves are named greedy, top_choice or sampled, and train.py's help and run_folder.py no longer call DreamerV3's sampled evaluation exploration-free or greedy",
       "body": "",
-      "status": "In progress",
-      "comments": [],
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-10 09:26",
+          "text": "d79295f: period lines and kill-bar/plateau messages say 'sampled' for DreamerV3 and 'near-greedy' for R2D2 (collecting_policy); select_checkpoint's tracked curves are greedy_/top_choice_/sampled_final_wave_* (played_as); train.py help and run_folder.py no longer call DreamerV3's sampled evaluation exploration-free or greedy. Tests: test_training_report, test_evaluation_protocol."
+        }
+      ],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T08:26:36.617468Z"
+    },
+    {
+      "id": 202,
+      "title": "Board audit: 2026-11-10 (after #196)",
+      "body": "",
+      "status": "Next",
+      "comments": []
+    },
+    {
+      "id": 203,
+      "title": "A learned policy's final-wave IQM beats build-defense-absolute's 101.82 at Workshop 10 on bff836b8, with the 95% stratified bootstrap interval of the difference above zero, on a pre-registered two-stage evaluation (set A selects, fresh set B reports)",
+      "body": "",
+      "status": "Next",
+      "comments": [
+        {
+          "at": "2026-11-10 09:26",
+          "text": "State 2026-11-10: closest is M3-P025 (3ef9e33), M3-P023 d115201 on its top choice at -1.13 [-2.72, +0.13]; sampled +0.24 [-0.97, +1.62]. The gap is reliability at the wave-100 base-damage step (403) where Defense Absolute falls short, not the ceiling (6/32 passed 103). Offline, a 10x entropy bonus flattened the policy (2.6 nats) and moved its top choice more (0.71 vs 0.45 per 5,000 updates), so it is not the next run."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],

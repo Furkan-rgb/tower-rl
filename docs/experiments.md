@@ -4628,6 +4628,131 @@ explicitly, and a test opens it with `train.py`'s and `spectate.py`'s own argume
 The run is relaunched from the commit that adds this amendment, which is its source.
 Nothing else changes.
 
+### Result (2026-11-10)
+
+Run `m3-p024-dreamerv3-ws10-v2914-20261109T204901Z`, source 2bd751e, MLflow run
+`08e56698…`. **The kill bar at 60,000 decisions stopped it.** The sampled policy's
+mean over (45,000, 60,000] was 48.78 over 169 episodes, below 60. That came to 60,403
+decisions and 770 episodes in 7.2 hours of collection, 7.25 with bring-up. The
+watcher reported no stop rule.
+
+**Primary: Fail, by 25.57 waves.** Every period mean, every set A episode and every
+set B episode is the sampled policy's, which is how DreamerV3 plays (`docs/solution.md`
+9.2b). The training log's `near-greedy` is R2D2's word (`#157`).
+
+- **Set A, selection.** The five period ends with the highest means, from period 2 on,
+  each played 12 episodes on 4 instances (`state/launch/m3-p024-select.sh`). All 60
+  were valid. By final-wave IQM, d15077 78.17 [75.83, 80.00], d20009 76.50
+  [74.67, 76.83], d25077 67.83 [67.00, 68.67], d60000 63.33 [61.17, 66.33] and
+  d30008 57.67 [56.83, 59.33]. `select_checkpoint.py` chose d15077 and said its
+  interval overlaps d20009's.
+- **Set B, report.** d15077 played 32 fresh episodes, 8 on each instance, in 31
+  minutes. All 32 were valid.
+
+| Arm on `bff836b8…`, `filling-orders` | n | IQM [95% CI] | Mean, SD | Median, range |
+|---|---|---|---|---|
+| `M3-P024`, d15077, set B | 32 | 76.25 [75.06, 77.44] | 76.12, 4.06 | 76.5, 67–84 |
+
+- **Against the script (101.82): −25.57 [−26.89, −24.24].** The interval is far below
+  zero, so the outcome is Fail. The reported weights are 8.6 waves below `M3-P023`'s
+  final weights (84.81), though `M3-P023`'s spread was much wider (SD 27.27 against
+  4.06 here).
+- **Set B agrees with set A** (76.25 against 78.17). The selected checkpoint was not a
+  lucky draw. The weights are consistent, and consistently short.
+- **The two best checkpoints play the same build at different rates.** d15077 made
+  102 decisions an episode and d20009 52, and both end at waves 75–78.
+
+**Secondary: Fail, on `plan_gap` alone.** Each read is the logged mean over the last
+100 read episodes, at the period's end. The trained side is now a death 10 to 29
+episodes old.
+
+| Period end (decisions) | `death_rank` unseen / trained | `prior_kl` unseen / trained (ratio) | `plan_gap` unseen / trained |
+|---|---|---|---|
+| 30,008 | 0.899 / 0.908 | 3.72 / 3.52 (1.06) | −0.031 / −0.037 |
+| 35,049 | 0.965 / 0.904 | 4.90 / 4.40 (1.11) | −0.037 / −0.050 |
+| 40,053 | 0.971 / 0.962 | 5.99 / 5.38 (1.11) | −0.008 / +0.008 |
+| 45,032 | 0.968 / 0.954 | 7.22 / 6.39 (1.13) | +0.020 / +0.039 |
+| 50,010 | 0.978 / 0.962 | 9.35 / 8.25 (1.13) | +0.007 / +0.035 |
+| 55,028 | 0.977 / 0.975 | 9.68 / 8.84 (1.10) | +0.014 / +0.062 |
+| 60,000 | 0.972 / 0.968 | 8.74 / 8.21 (1.06) | +0.009 / +0.061 |
+
+- **`death_rank` and `prior_kl` are alike at every period end.** Unseen is within
+  0.061 of trained on `death_rank` (at 35,049), and `prior_kl` unseen is 1.06–1.13
+  times trained, against the bound of 2. With trained read on recent deaths, the
+  world model reads deaths it has not trained on as it reads ones it has.
+- **`plan_gap` fails at 55,028 and 60,000, on the trained side only,** at +0.062 and
+  +0.061 against +0.05. Unseen stays at +0.020 or below. On deaths 10 to 29 episodes
+  old, imagined `WAIT` outlives the recorded purchases by a little more than the
+  bound allows.
+- By the rule, `plan_gap` fails at the last period end, so the outcome is Fail.
+
+**Readouts.**
+
+- **Curve.** Period means 21.96, 24.95, 55.58, **75.27** (20,009 decisions), 72.06,
+  55.65, 53.01, 44.58, 45.97, 47.40, 44.36 and 58.24. The mean first reached 60 at
+  20,009 decisions (2.3 h of collection) and never 80. `M3-P023` read 46.74, 73.64 and
+  76.31 at the three kill bars. This run read 69.32 over (15,000, 30,000], 205
+  episodes, and 48.78 at the second.
+- **The actor fixed on Defense Absolute, then left it.** On the fixed states of
+  `#169` (the first 48 decisions of the run's last 32 episodes, 1,536 states), the
+  top choice changed on none of them between any two checkpoints from 7,543 to 20,009
+  decisions. At 10,036 and 20,009 the top choice is Defense Absolute (`defense:3`) on
+  every state. At 20,009 it holds 0.999 of the mass, at 0.014 nats against ln 49 =
+  3.89. Collection followed: Defense Absolute was 4.7% of actions in (5,000, 10,000],
+  55.1% in (10,000, 20,000], 45.4% in (20,000, 30,000], 32.1% in (30,000, 45,000]
+  and 30.7% after. From 37,542 the top choice spreads, to 0.72 Defense Absolute at
+  37,542, 0.43 at 45,032 and none of the three most common at 60,000 (Thorn Damage
+  0.25, Defense % 0.23, Cash / Wave 0.15). Entropy there is 0.53–1.25 nats. The
+  mean fell as it spread.
+- **The actor's movement** (`split.py`, top choice changed between checkpoints 2,500
+  decisions apart): median 0.23 over the run, against `M3-P023`'s 0.75. It was 0 to
+  0.03 from 10,036 to 35,049, while the policy was fixed, and 0.55–0.67 from 45,032
+  on, of which the actor's own change is 0.51–0.70 and the world model's features
+  0.05–0.24. Offline, `#182` measured 0.22 for 1,250 such updates on fixed replay.
+- **Entropy,** read offline as `M3-P023`'s was, on the 50 episodes replay took after
+  each checkpoint. d15077: 2.153 nats (3,031 states), while its top choice was
+  Defense Absolute on every fixed state. d20009: 0.014 (3,696). d40053: 0.450
+  (4,178). The final weights read 0.479 (5,786 states) on the last 50 episodes, which
+  they had trained on only lightly. Every state offered 49 actions (ln 49 = 3.89).
+  Set A's best checkpoint is therefore the spread one leaning to Defense Absolute,
+  not the fixed one. In the last 8,000 decisions, 24 rows on offer got no order, where
+  `M3-P023` left none.
+- **train.py's 8 episodes on the final weights:** not played, because the kill bar
+  skips them.
+- **Orders filled:** 50,144 purchases on 59,575 decisions not counting each episode's
+  last, 84.2%, against `M3-P023`'s 85.8% and the script's 91.2%. `WAIT` 0 times.
+- **Defense Absolute's share of spend through wave 50:** 48.0% over every episode,
+  31.6% over the last 200. The last 200 ended at mean levels of 33.3 Defense
+  Absolute, 15.5 Defense %, 13.8 Cash Bonus, 13.4 Cash / Wave and 12.5 Health Regen.
+  Their mean final wave was 49.08.
+- **Invalid episodes:** 1 of 770, `bridge_event_divergence` (the bridge and the host
+  disagreed about the decision event), at episode 90. `UNCHARGED_ROUND_TIME` and
+  `WORLD_NOT_HELD` 0. No start failed.
+- **Rates:** 8,424 decisions an hour on 4 actors, and 3,919 updates an hour (28,096
+  in all), half an update a decision less the warm-up.
+
+**What this settles.**
+
+- **The learner found the script's late-game row by itself, and stopped there.** By
+  10,000 decisions, from no prior, it put Defense Absolute first on every fixed
+  state. Its best weights play that at 76 waves, 26 below the script. The script
+  opens across seven rows and turns to Defense Absolute only from wave 30
+  (`LateGameBuildPolicy`, `src/tower_rl/learning/policies.py`). The learner led with
+  Defense Absolute from its first decisions. Once it moved off that choice it played
+  worse, and the run ended before anything brought it back.
+- **ADR 0020 item 5's 64 × 64 did worse than `M3-P023`'s 16 × 64** in this n = 1
+  pair. At the 60,000 bar it read 48.78, where `M3-P023` read 73.64. Its reported
+  weights are 25.57 waves below the script, against `M3-P023`'s final weights at
+  17.01. The movement it was meant to cut was 0 while the policy was fixed and
+  0.55–0.67 per 2,500 decisions after, against the 0.22 measured offline. Fewer and
+  larger updates did not hold the actor on near-tied purchases. They let it lock onto
+  one row and then leave it. Item 5 returns to DreamerV3's published 16 × 64 on this
+  evidence (ADR 0020's status line).
+- **The learner row of `docs/task.md` §1.1 stays unverified.** On unseen deaths, the
+  world model reads `death_rank` and `prior_kl` as it reads trained ones, at every
+  period end. `plan_gap`'s trained side fails the bound by 0.011–0.012 at the last
+  two period ends.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

@@ -3,7 +3,9 @@
 **Status:** Accepted by the developer on 2026-11-09, amended to `filling-orders`:
 items 1–4 as written below, with `filling-orders` as the cadence. Board `#167`. Item
 5 accepted the same day, amended to batches of 64 × 64 on the cause of `M3-P023`'s
-learner failures (`#169`, `#182`). The earlier amendments came from the pilots: item
+learner failures (`#169`, `#182`), and returned to DreamerV3's 16 × 64 on 2026-11-10
+on `M3-P024`'s result, under the developer's delegation of the call ("I leave the
+calls up to you"). The earlier amendments came from the pilots: item
 2 on `M3-P021`'s result (2026-11-07; its first form, the affordability mask, is
 under Options rejected), item 5 on the review of the training setup (2026-11-07),
 and the ceiling cost on the wave-483 trace (2026-11-08). The pilots `M3-P021`, `M3-P022` and `M3-P023`
@@ -61,18 +63,18 @@ pilots tested it.
    per game-second. That gives DreamerV3 its stock horizon of 333 of its own steps,
    here 333 waves. The discount stays a task parameter per game-second (ADR 0013).
 4. **The reward is unchanged**: `(1−d)·V_REF` with `d = γ_s^Δt`.
-5. **Train ratio 2048, in batches of 64 × 64.** A wave-long decision yields about
-   11,000 decisions an hour against the learner's ceiling of about 42,000 updates
-   of 16 × 64 an hour, so 512 would use about 13% of it. ADR 0018 requires a
+5. **Train ratio 2048, in DreamerV3's batches of 16 × 64.** A wave-long decision
+   yields about 11,000 decisions an hour against the learner's ceiling of about
+   42,000 updates of 16 × 64 an hour, so 512 would use about 13% of it. ADR 0018 requires a
    deviation to name what forces it, and this cadence does: decisions arrive about
    eight times slower while the update ceiling is unchanged. 2048 replays 2,048
-   steps a decision, about half the ceiling. They are replayed as half an update a
-   decision of 64 sequences, four times DreamerV3's 16, because at 16 × 64 the
-   actor's two updates a decision moved its top choice on 0.77 of fixed states per
-   2,500 decisions in `M3-P023`, on value differences below its own noise. Offline,
-   on that run's replay, 64 × 64 moved it on 0.22 against 0.55 at 16 × 64, at about
-   the same cost (`docs/experiments.md`, "Why `M3-P023`'s learner failed"). The
-   world model learns at 128 of those steps, from one update in sixteen
+   steps a decision, two updates of 16 × 64, about half the ceiling. For one run,
+   `M3-P024`, the same steps were replayed as half an update a decision of 64
+   sequences, to cut how far the actor's top choice moved between checkpoints in
+   `M3-P023`. It did worse: the actor locked onto one row and then left it, and its
+   reported weights were 25.57 waves below the script against `M3-P023`'s 17.01
+   (`docs/experiments.md`, `M3-P024`'s result). The world model learns at 128 of
+   those steps, from one update in sixteen
    (`--world-model-ratio 128`, `docs/solution.md` §9.4c), because at 2048 it
    memorised `M3-P022`'s episodes: a purchase earned no honest credit in
    imagination, and on the same data the world model memorises from ratio 256

@@ -5032,6 +5032,21 @@ about 34 minutes: about 6.7 hours.
 
 **Safety,** `M3-P019`'s unchanged.
 
+### Amendment during the run (2026-11-10)
+
+At d87550, the eighth new set A, one instance's game never finished starting
+(`CloneError: emulator-5562 never became ready: the game is still starting:
+main_unavailable`). `run_actors.py` exited 1 after the other three had played their 9
+episodes, all valid, and the launch script stopped there under the stop rule, before
+any selection. The first seven new sets stand as played.
+
+The failure was in bring-up, before that instance played any episode, and the
+policy has no part in bring-up. From here, a set whose run exits non-zero is set
+aside whole and played once more into a fresh directory. A second failure stops the
+protocol. The partial d87550 set is kept as `bringup-failed-set-a-d0087550/`, not
+used, and the result names every set aside. Nothing else changes. The run continues
+from d87550 with the source of this amendment.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

@@ -4815,6 +4815,56 @@ set A takes about 13 minutes of play per checkpoint, and sets B and the readout 
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+## `M3-P023`'s learner, read offline with `M3-P024`'s trained side (pre-registered, written before `M3-P025`'s result)
+
+**Date:** 2026-11-10. Board `#200`. The source is the commit that adds this entry.
+Written while `M3-P025`'s set A was playing, before any of its results.
+
+**Question.** This is the learner row of `docs/task.md` §1.1, for the learner whose
+weights `M3-P025` reports. On deaths it has not trained on, does `M3-P023`'s world
+model read as it reads deaths it trained on recently? `M3-P023`'s own pre-registered
+read failed on `prior_kl` from 110,018 decisions. Its trained side was any death at
+least 50 episodes old, and "Why `M3-P023`'s learner failed" found that side kept
+falling as replay repeated old episodes. b54d8ef changed the trained side to a death
+10 to 29 episodes old, and `M3-P024` read its own learner that way. This reads
+`M3-P023`'s learner the same way, offline. `M3-P023`'s original Fail stands beside
+it.
+
+**The read.** At each period-end checkpoint of `M3-P023` from 30,000 decisions, 25 in
+all (30,017 to 150,085), with the checkpoint's own weights, through
+`DreamerBackbone.read_episode` on the episodes in the run's final replay
+(`replay/d0150797`). The checkpoint held episodes 0 to c−1 when it was written.
+
+- **Unseen:** the first 100 episodes from c on that end in a death. No update before
+  the checkpoint saw them.
+- **Trained:** the episodes from c−30 to c−11 that end in a death, at most 20. That
+  is `DreamerReplay.trained_episode`'s window (10 to 29 episodes before the next one)
+  at the checkpoint.
+- Each side's read is its mean over those episodes.
+
+**Bounds, `M3-P024`'s.**
+
+- **Alike:** `death_rank` unseen within 0.10 of trained, and `prior_kl` unseen at most
+  twice trained.
+- **`WAIT` never outlives the recorded play:** `plan_gap` at most +0.05 on both sets.
+- **Pass** if all hold at every period end, and **Fail** if any fails at the last one
+  (150,085). In between, the entry names the period ends that failed.
+
+**When it is read.** Only if `M3-P025` passes. If it fails, no `M3-P023` weights are
+reported and the read answers nothing the goal needs. The entry then says so, and the
+read is not made.
+
+**Known confounds, in advance.**
+
+- `#169` has already read `prior_kl` at d0100073 and d0120104 against the episodes of
+  the 2,500 decisions before each: 1.19 and 1.72 times. So this read is not blind on
+  that number. Its windows here are fixed by episode count, not decisions.
+- Online, each read used the weights of its moment, and each mean pooled 100 reads.
+  Offline, each period end uses one checkpoint, and the trained side has 20 deaths at
+  most, so it is noisier than `M3-P024`'s.
+- `read_episode` draws its latents from a generator seeded by the checkpoint's update
+  count, so the read repeats exactly, but it is one draw.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

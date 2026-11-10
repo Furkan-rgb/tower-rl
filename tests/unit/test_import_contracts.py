@@ -106,6 +106,9 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
             "test_evaluation_protocol",
             # Where every runner finds the bridge it expects to be talking to.
             "test_script_bridge_directory",
+            # The opener run_episodes.py shares, given train.py's own arguments:
+            # M3-P024's first bring-up was lost to the two disagreeing (2bd751e).
+            "test_workshop_runway",
         }
     ),
     "run_actors": frozenset(
@@ -133,7 +136,13 @@ SCRIPT_TESTS: dict[str, frozenset[str]] = {
     # in the entry point, because a panel is composition: a view of the decision
     # stream drawn in a terminal, owning no domain concept of its own. This is
     # the one file that reads them.
-    "spectate": frozenset({"test_spectate"}),
+    "spectate": frozenset(
+        {
+            "test_spectate",
+            # The opener run_episodes.py shares, given spectate.py's own arguments.
+            "test_workshop_runway",
+        }
+    ),
     # Composition of a recording and the decision track beside it: it reads two
     # files and calls ffmpeg, owns no domain concept, and has one test reader.
     "render_recording": frozenset({"test_render_recording"}),

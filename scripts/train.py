@@ -15,7 +15,7 @@ by at most one episode per actor. Game time and wall time are reported beside
 it as statistics.
 
     uv run --extra tracking python scripts/train.py \\
-        --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \\
+        --backbone r2d2 --discount-per-game-second 0.99991416 --survival-time-reward \\
         --budget-decisions 60000
 
 `--actors N` collects on N emulator instances at once, one actor thread each,
@@ -30,7 +30,7 @@ four simultaneous cold boots is the one thing the fleet measurement broke on -
 and tears them all down when the run ends.
 
     uv run --extra tracking python scripts/train.py \\
-        --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \\
+        --backbone r2d2 --discount-per-game-second 0.99991416 --survival-time-reward \\
         --actors 4 --budget-decisions 60000
 
 The decision axis is cut into selection periods (`--selection-period-decisions`,
@@ -62,7 +62,7 @@ into it before launch; by default it is `<backbone>-<UTC start>`.
 
     name=r2d2-$(date -u +%Y%m%dT%H%M%SZ)
     uv run --extra tracking python scripts/train.py \\
-        --run-name "$name" --backbone r2d2 --discount-per-game-second 0.999 \\
+        --run-name "$name" --backbone r2d2 --discount-per-game-second 0.99991416 \\
         --survival-time-reward --budget-decisions 60000
 
 `--resume <checkpoint.pt>` continues a run that has already spent part of its
@@ -89,7 +89,7 @@ anything else - a numbered checkpoint, or a run from before run folders
 parent, and leaves the folder it came from as it was.
 
     uv run --extra tracking python scripts/train.py \\
-        --backbone r2d2 --discount-per-game-second 0.999 --survival-time-reward \\
+        --backbone r2d2 --discount-per-game-second 0.99991416 --survival-time-reward \\
         --resume state/runs/<run name>/checkpoints/latest.pt \\
         --budget-decisions 120000
 
@@ -921,7 +921,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "discount by game time: a transition that spans t game-seconds is "
             "discounted by this ** t, so a purchase costs no discount "
-            "(docs/solution.md 9.4d); the protocol's value is 0.997 (ADR 0019); "
+            "(docs/solution.md 9.4d); the protocol's value is 0.99991416 at the "
+            "order cadences (ADR 0020 item 3) and 0.997 at choice-points (ADR 0019); "
             "required"
         ),
     )
@@ -1173,7 +1174,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         # neither backbone has a per-decision one to fall back on.
         raise SystemExit(
             f"--backbone {arguments.backbone} discounts by game time and needs "
-            "--discount-per-game-second (the protocol's is 0.997, ADR 0019)"
+            "--discount-per-game-second (the protocol's is 0.99991416 at the order "
+            "cadences, ADR 0020 item 3, and 0.997 at choice-points, ADR 0019)"
         )
     if arguments.burn_in >= arguments.sequence_length:
         raise SystemExit(

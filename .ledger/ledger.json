@@ -5075,7 +5075,7 @@
       "id": 192,
       "title": "train.py's help, errors and usage examples and r2d2.py's docstrings name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and 0.997 (ADR 0019) only for choice-points runs",
       "body": "Code half of #184 (audit #190): train.py:18,33,65,92,924,1176; r2d2.py:54-55,110-111. Lands after M3-P024 ends: the run imports train.py from this checkout.",
-      "status": "Next",
+      "status": "In progress",
       "comments": [
         {
           "at": "2026-11-09 22:10",
@@ -5135,14 +5135,19 @@
       "id": 196,
       "title": "M3-P025, pre-registered: M3-P023's five best period checkpoints played on their top choice (ADR 0021) pick one on set A and report it on a fresh set B: final-wave IQM minus the script's 101.82 on bff836b8 with the 95% interval",
       "body": "",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-10 07:00",
           "text": "Launched 05:52Z from 9ed58b9 (state/launch/m3-p025.sh). Result entry to: source the 13-19% departure share per checkpoint (ADR 0021 cites it), confirm set B's records say top_choice true, and run report_arms.py --selection as the cross-check the script skips."
+        },
+        {
+          "at": "2026-11-10 09:14",
+          "text": "3ef9e33: Fail by 1.13. d115201 (chosen on set A at 100.50) on its top choice, set B 32 episodes: IQM 100.69 [99.31, 101.81], minus the script -1.13 [-2.72, +0.13]. Sampled readout 102.06, +0.24 [-0.97, +1.62] vs the script; top minus sampled -1.38 [-3.19, +0.19]. 12/32 died at exactly wave 100 holding less Defense Absolute (median 350 vs 376) against its 403 base damage."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T08:14:55.397873Z"
     },
     {
       "id": 197,
@@ -5183,14 +5188,19 @@
       "id": 200,
       "title": "M3-P023's learner is read offline as pre-registered (trained side 10-29 episodes before each period end, unseen the 100 deaths after) against M3-P024's bounds, and the result is in docs/experiments.md",
       "body": "",
-      "status": "Blocked",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-10 07:01",
           "text": "Pre-registered in 4f276b9, before M3-P025's result. Blocked on #196: the read is made only if M3-P025 passes."
+        },
+        {
+          "at": "2026-11-10 09:14",
+          "text": "Retired by its own pre-registered rule (4f276b9): the read is made only if M3-P025 passes, and M3-P025 failed by 1.13 (3ef9e33). Recorded as not read in docs/experiments.md."
         }
       ],
-      "parent": 150
+      "parent": 150,
+      "closed_at": "2026-11-10T08:14:55.492908Z"
     }
   ],
   "milestones": [

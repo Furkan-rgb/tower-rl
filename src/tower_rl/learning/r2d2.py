@@ -51,8 +51,8 @@ What differs, each forced:
   its episode's last step as rlax's stops at a sequence's end, bootstrapping
   from that step's value: 0 when the run died, since its mask is empty.
 - **The discount and the reward** (ADR 0013): each transition's discount is
-  0.999 ** (its game-seconds), times 1 - done, inside rlax's per-step
-  discounts; the reward is the survival reward (1 - 0.999 ** t) * V_REF,
+  gamma_s ** (its game-seconds), times 1 - done, inside rlax's per-step
+  discounts; the reward is the survival reward (1 - gamma_s ** t) * V_REF,
   learned and fed to the LSTM, in place of the stored wave reward.
 - **"Step" is a decision** (ADR 0009): n, the burn-in, the trace and the
   target period count decisions.
@@ -108,7 +108,8 @@ class R2D2Config:
 
     #: The task, not the algorithm (ADR 0013): discount per game-second, in
     #: place of the published 0.997 per step. Not a code default; the
-    #: protocol's is 0.999, and the run sets it.
+    #: protocol's is 0.99991416 at the order cadences (ADR 0020 item 3) and
+    #: 0.997 at choice-points (ADR 0019), and the run sets it.
     discount_per_game_second: float
     #: P section 2.3, Acme `bootstrap_n`.
     n_step: int = 5

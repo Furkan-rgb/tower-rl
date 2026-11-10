@@ -4180,6 +4180,10 @@
         {
           "at": "2026-11-10 05:20",
           "text": "Audit #195: M3-P024's episode reads are in (MLflow 08e56698): death_rank within 0.061 and prior_kl 1.06-1.13x at every period end from 30,008, but trained plan_gap +0.062/+0.061 at 55,028/60,000 against +0.05, a Fail at the last period end. If the result entry confirms it, the learner row needs a new card, not #189."
+        },
+        {
+          "at": "2026-11-10 06:52",
+          "text": "M3-P024's result (99bfd1b): learner row not verified (plan_gap trained +0.061 at 60,000). Now blocked on M3-P025 (#196): if its top-choice weights pass, the learner row needs a verified read for M3-P023's learner."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4373,6 +4377,10 @@
         {
           "at": "2026-11-09 22:19",
           "text": "Audit #194: correction to 22:14: the doc half also needed solution.md 16's evaluation row, which said exploration-free/epsilon 0; relabelled 'no exploration noise' in 7e12231. Code half after set B."
+        },
+        {
+          "at": "2026-11-10 06:52",
+          "text": "ADR 0021 (ad6238c) narrows this: checkpoints are now evaluated on their top choice via checkpoint-top:, so select_checkpoint's tracked keys should be named for how the set was played (top choice or sampled), not renamed to sampled outright. Period means and train.py's final evaluation still sample and get the sampled label. Code half waits for M3-P025 (#196) to end."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -4997,7 +5005,7 @@
       "id": 189,
       "title": "M3-P024, pre-registered on #169's cause, filling-orders and ADR 0020 item 5 (64x64, ratio 2048), picks one checkpoint on evaluation set A and reports it on a fresh set B: final-wave IQM minus the script's 101.82 on bff836b8 with the 95% interval, and the unseen-data reads (trained side 10-29 episodes old) for the learner row",
       "body": "Replaces #178 (audit #188): the run now selects among five period-end checkpoints on set A and reports the choice on set B. Pre-registration in docs/experiments.md 'M3-P024'. Gated on #142 landing before the checkout freezes for the run.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 21:43",
@@ -5022,9 +5030,14 @@
         {
           "at": "2026-11-10 05:20",
           "text": "Correction (audit #195): the kill-bar stop was 05:01:43 CET, 04:01Z. train.py's 8-episode readout on the final weights was skipped (final_evaluation_skipped: kill_bar); the result entry says so."
+        },
+        {
+          "at": "2026-11-10 06:52",
+          "text": "99bfd1b: Fail. Set B (d15077, 32 episodes, sampled) IQM 76.25 [75.06, 77.44], minus the script -25.57 [-26.89, -24.24]. Kill bar at 60,000 stopped training. Episode reads: death_rank and prior_kl alike at every period end; plan_gap trained +0.061 over +0.05 at the last, so the learner row stays unverified. ADR 0020 item 5 back to 16 x 64. Follow-on exit: #196 (M3-P025)."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T05:52:56.808856Z"
     },
     {
       "id": 190,

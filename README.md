@@ -20,8 +20,8 @@ several `-read-only` instances share.
 
 A fleet of actors collects concurrently, an R2D2 or DreamerV3 learner trains on its
 own replay (R2D2's prioritized sequences, DreamerV3's uniform steps) under a
-decision budget, and runs are checkpointed and evaluated with no exploration noise:
-R2D2 greedily, DreamerV3 sampling its own policy. Multi-actor scaling, renderer
+decision budget, and runs are checkpointed and evaluated exploration-free: R2D2
+greedily, DreamerV3 on its actor's top choice (ADR 0021). Multi-actor scaling, renderer
 equivalence, game-time fidelity and frame-rate limits are all measured; every
 claim above has a dated entry in [docs/experiments.md](docs/experiments.md).
 

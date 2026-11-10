@@ -531,7 +531,8 @@ uv run python scripts/spectate.py --policy checkpoint:<path-to-checkpoint.pt>
 ```
 
 `--policy` takes the same arms every other runner takes: `scripted`, `random`,
-`wait`, or `checkpoint:<path>`.
+`wait`, `checkpoint:<path>`, or `checkpoint-top:<path>` to watch a DreamerV3
+checkpoint play its top choice, as it is evaluated (ADR 0021).
 
 The default session is **one episode**: the agent plays a single run from wave 1
 until the tower dies. `--episodes N` plays N, and `--episodes 0` plays until you

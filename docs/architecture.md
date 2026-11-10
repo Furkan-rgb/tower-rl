@@ -583,7 +583,8 @@ one a candidate that survives the next write. Runs from when the budget was
 game time left `checkpoint-gs<game seconds>.pt`; readers take both, and none
 parses the name: the decisions are read out of the file.
 `run_actors.py --policy checkpoint:<path>` then plays a candidate as an ordinary
-arm: `learning.policies.checkpoint_policy` rebuilds the backbone from the
+arm, and `checkpoint-top:<path>` plays a DreamerV3 one on its top choice (ADR
+0021): `learning.policies.checkpoint_policy` rebuilds the backbone from the
 checkpoint's own resolved config on the CPU, and the episodes go through the
 same actor, evaluator and per-episode records the scripted and random floors go
 through, with the arm's identity written into every actor record.

@@ -13,9 +13,9 @@ exploration (`DreamerBackbone.act`). Every DreamerV3 evaluation so far has playe
 that sample: period means, train.py's final evaluation, and `M3-P024`'s sets A and B
 (`docs/solution.md` 9.2b).
 
-On `M3-P023`'s checkpoints the sample departs from the actor's most likely action on
-13–17% of decisions, read offline on `#169`'s fixed states (`docs/experiments.md`,
-`M3-P024`'s result). That is about 30 of an episode's 200 purchases bought for the
+On five of `M3-P023`'s checkpoints the sample departs from the actor's most likely
+action on 13–19% of decisions, read offline on `#169`'s fixed states
+(`docs/experiments.md`, `M3-P025`'s result). That is about 30 of an episode's 200 purchases bought for the
 draw, not for the choice. R2D2 is already evaluated on its greedy action, at an
 epsilon of 0.
 

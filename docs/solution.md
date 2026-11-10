@@ -675,8 +675,8 @@ The evaluator owns a dedicated device and receives immutable candidate checkpoin
 
 The two-stage screening/promotion budget and the promoter that would compare a
 candidate against an incumbent are **not implemented**; selection is post-hoc —
-a run takes one pre-registered exploration-free evaluation on its final weights
-after its game-time budget is spent, and arms are compared afterwards from their
+a run takes one pre-registered evaluation on its final weights after its budget
+is spent (exploration-free for R2D2; DreamerV3's samples its policy, ADR 0021), and arms are compared afterwards from their
 records (`experiment/comparison.py`, `experiment/wave_statistics.py`). Record
 the Milestone 2 entry here when a promoter lands.
 
@@ -2211,7 +2211,9 @@ Interactive only where evidence/confirmation is inherently needed. Produces a ve
 for the instrumented profile. It trains one arm on the single backbone named by
 the `--backbone` flag (`r2d2` or `dreamerv3`, no default), and running to
 `--budget-decisions`, checkpointing atomically under `state/runs`, and taking
-one exploration-free evaluation on the final weights after the budget is spent.
+one evaluation on the final weights after the budget is spent: greedy for R2D2,
+sampled for DreamerV3, whose checkpoints are evaluated on their top choice
+afterwards (ADR 0021).
 
 Each run is one folder, `state/runs/<run name>/` (`--run-name`, default
 `<backbone>-<UTC start>`), holding its manifest, checkpoints, saved replay, a

@@ -1,5 +1,5 @@
 {
-  "next_id": 198,
+  "next_id": 201,
   "items": [
     {
       "id": 1,
@@ -4324,7 +4324,7 @@
       "id": 157,
       "title": "DreamerV3's period means and final evaluation are labelled as its sampled policy, not near-greedy, greedy or exploration-free",
       "body": "The log, run_folder.py, select_checkpoint.py and their tests call DreamerV3's collection 'near-greedy' and its evaluation 'greedy'/'exploration-free'; it samples the same policy in both (docs/solution.md 9.4c; docs/experiments.md 'M3-P022: outcome' and the game-path review). Found by audit #156.",
-      "status": "Next",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-08 05:35",
@@ -4381,9 +4381,14 @@
         {
           "at": "2026-11-10 06:52",
           "text": "ADR 0021 (ad6238c) narrows this: checkpoints are now evaluated on their top choice via checkpoint-top:, so select_checkpoint's tracked keys should be named for how the set was played (top choice or sampled), not renamed to sampled outright. Period means and train.py's final evaluation still sample and get the sampled label. Code half waits for M3-P025 (#196) to end."
+        },
+        {
+          "at": "2026-11-10 07:00",
+          "text": "Replaced (audit #198): ADR 0021 (ad6238c) left its title stale. The docs half for ADR 0021 landed with the audit's fixes; the code labels are now #199 (named by how a set was played, top choice or sampled)."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T06:00:45.048880Z"
     },
     {
       "id": 158,
@@ -5079,6 +5084,10 @@
         {
           "at": "2026-11-09 22:19",
           "text": "Audit #194: the done-check must catch 0.999 (ADR 0013, superseded) as well as 0.997: train.py:18,33,65,92 and r2d2.py:54-55,111 carry 0.999; train.py:924,1176 name 0.997 as the protocol's value."
+        },
+        {
+          "at": "2026-11-10 07:00",
+          "text": "Audit #198: waits for M3-P025's (#196) freeze, not M3-P024's; r2d2.py is on run_actors' import path."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -5127,7 +5136,12 @@
       "title": "M3-P025, pre-registered: M3-P023's five best period checkpoints played on their top choice (ADR 0021) pick one on set A and report it on a fresh set B: final-wave IQM minus the script's 101.82 on bff836b8 with the 95% interval",
       "body": "",
       "status": "In progress",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-10 07:00",
+          "text": "Launched 05:52Z from 9ed58b9 (state/launch/m3-p025.sh). Result entry to: source the 13-19% departure share per checkpoint (ADR 0021 cites it), confirm set B's records say top_choice true, and run report_arms.py --selection as the cross-check the script skips."
+        }
+      ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     },
     {
@@ -5143,6 +5157,29 @@
       ],
       "parent": 196,
       "closed_at": "2026-11-10T05:51:06.570842Z"
+    },
+    {
+      "id": 198,
+      "title": "Board audit: 2026-11-10 (after #189)",
+      "body": "",
+      "status": "In progress",
+      "comments": []
+    },
+    {
+      "id": 199,
+      "title": "Evaluation labels name how a DreamerV3 set was played: select_checkpoint's tracked keys and run_folder.py say top choice or sampled, period means and train.py's final evaluation say sampled, and checkpoint.py's best_period_near_greedy_mean is renamed behind a load-time alias",
+      "body": "",
+      "status": "Next",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 200,
+      "title": "M3-P023's learner is read offline as pre-registered (trained side 10-29 episodes before each period end, unseen the 100 deaths after) against M3-P024's bounds, and the result is in docs/experiments.md",
+      "body": "",
+      "status": "Next",
+      "comments": [],
+      "parent": 150
     }
   ],
   "milestones": [

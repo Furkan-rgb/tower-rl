@@ -4815,6 +4815,71 @@ set A takes about 13 minutes of play per checkpoint, and sets B and the readout 
 **Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
 screenshots, no input, no coins or permanent progression.
 
+### Result (2026-11-10)
+
+Source 9ed58b9. The seven sets played in 2 hours 18 minutes, starting 05:52Z
+(`state/launch/m3-p025.sh`). Every one of the 124 episodes was valid, and every
+record says `top_choice` as its set was played. `report_arms.py --selection` accepts
+set B as the selected model. The stop rules were not hit.
+
+**Primary: Fail, by 1.13 waves.**
+
+- **Set A, selection,** on the top choice, 12 episodes each. By final-wave IQM:
+  d115201 100.50 [97.50, 104.17], d145014 89.17 [87.33, 90.83], d100073 86.33
+  [75.00, 90.50], d105008 84.67 [66.00, 88.83] and d140104 82.33 [76.00, 87.33].
+  `select_checkpoint.py` chose d115201. Its interval overlapped none of the others.
+- **Set B, report.** d115201 on its top choice, 32 fresh episodes, in 34 minutes.
+
+| Arm on `bff836b8…`, `filling-orders` | n | IQM [95% CI] | Mean, SD | Median, range |
+|---|---|---|---|---|
+| `M3-P023` d115201, top choice, set B | 32 | 100.69 [99.31, 101.81] | 96.28, 16.00 | 100, 41–110 |
+| `M3-P023` d115201, sampled (readout) | 32 | 102.06 [100.94, 103.31] | 100.44, 12.46 | 101, 34–110 |
+| `build-defense-absolute` (the floors) | 21 | 101.82 [101.18, 102.36] | — | 102, 99–103 |
+
+- **Against the script: −1.13 [−2.72, +0.13].** The interval's lower end is below
+  zero, so the outcome is Fail. It is the closest a learned policy has come: 25.57
+  waves short in `M3-P024`, 17.01 for `M3-P023`'s final weights.
+- **The learned policy ends in three places.** 12 of 32 episodes ended at exactly
+  wave 100, from 94–100% health at the start of that wave. 4 ended early, at waves
+  41, 41, 77 and 78. 6 got past wave 103, which no script episode did, and two
+  reached 109 and 110. The script ends at waves 99–103: 3 of 21 at wave 100.
+- d115201 made 233 decisions an episode, against 157–204 for the other four
+  candidates. Orders filled: 87.9%.
+
+**Readout: the same checkpoint sampled.** Top choice minus sampled: −1.38
+[−3.19, +0.19]. Sampled minus the script: +0.24 [−0.97, +1.62], also not separated.
+Sampled play ended at exactly wave 100 in 6 episodes, early once (wave 34), and past
+wave 103 in 12. So the top choice did not play better than the sample on this
+checkpoint, and may have played worse. The interval reaches zero, so ADR 0021's first
+Revisit-if is not met, but it is close.
+
+**The departure share ADR 0021 cites,** read offline on `#169`'s fixed states (the
+first 48 decisions of the run's last 32 episodes): the share of the sample's mass off
+the actor's top choice. It was 0.157 at d70027, 0.131 at d100073, 0.154 at d105008,
+0.190 at d115201, 0.205 at d140104, 0.190 at d145014 and 0.171 at d150085.
+
+**What this settles.**
+
+- `M3-P023`'s learner produced weights that play level with the script at Workshop 10,
+  on fresh episodes and by either way of playing. Neither beats it with an interval
+  above zero. The target is not met.
+- The remaining gap is not in the build's ceiling: 6 of 32 episodes passed the
+  script's best wave. It is in reliability. A wall at wave 100 ended 12 episodes from
+  full health, and 4 collapsed early. A policy that cleared wave 100 as often as the
+  script does would lead it.
+- **What the wall reads, from the wave records** (`readings`, top choice and sampled
+  pooled). At wave 100 an enemy's base damage was 403. The 18 learned episodes that
+  died there held a median of 350 Defense Absolute (326–376) and 15.5% Defense %. The
+  37 that passed held 376 (338–404) and 12.0%. A hit leaks what Defense Absolute does
+  not block. The deaths had bought Defense % where the passes had bought Defense
+  Absolute. The script buys only Defense Absolute from wave 30. Its records predate
+  `readings`, so its own wave-100 levels are not read here.
+- Selection matters at this spread. The five candidates' top-choice IQMs range from
+  82 to 100, and the period means that ranked them (85.7–88.3) did not predict that
+  order.
+- The offline learner read pre-registered for this learner (below) is made only if
+  this passes, so it is not made.
+
 ## `M3-P023`'s learner, read offline with `M3-P024`'s trained side (pre-registered, written before `M3-P025`'s result)
 
 **Date:** 2026-11-10. Board `#200`. The source is the commit that adds this entry.
@@ -4853,6 +4918,9 @@ all (30,017 to 150,085), with the checkpoint's own weights, through
 **When it is read.** Only if `M3-P025` passes. If it fails, no `M3-P023` weights are
 reported and the read answers nothing the goal needs. The entry then says so, and the
 read is not made.
+
+**Not read (2026-11-10).** `M3-P025` failed by 1.13 waves (its result above), so by
+this entry's own rule the read is not made.
 
 **Known confounds, in advance.**
 

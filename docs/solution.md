@@ -1118,9 +1118,10 @@ run resumes from.
 **The arm rule.** At each period close the run records the mean final wave of
 the near-greedy actors' valid episodes in that period. Under R2D2 those are the
 actors at the bottom of the epsilon ladder. DreamerV3 adds no exploration noise
-and samples its own policy in collection and evaluation alike (§9.4c), so every
-actor counts, and a period's mean is the sampled policy's; the code's
-`near_greedy` names keep R2D2's word. The arm is the
+and samples its own policy in collection (§9.4c), so every actor counts, and a
+period's mean is the sampled policy's; the code's `near_greedy` names keep
+R2D2's word. From `M3-P025` its sets A and B play each checkpoint on its top
+choice instead (ADR 0021). The arm is the
 checkpoint at the close of the period with the highest such mean, counting only
 periods from the second on that have a mean at all, with a tie going to the
 earlier period. Runs before `M3-P024` took that checkpoint as the arm, by hand
@@ -1726,11 +1727,14 @@ compares them for either backbone. A checkpoint from before the game-time
 discount records `dreamer_horizon` instead; it is refused as a resume and still
 plays as a policy, which reads no discount.
 
-**Acting and evaluation sample the policy.** The official agent always samples
-its actor, and its exploration is the policy's own entropy. Here,
-"exploration-free" (§6.11, §9.2b) means no *added* exploration noise.
-Epsilon is ignored and is 0. Evaluation samples the same policy the arm
-collected with. Each acting copy draws its latents and its action from its own
+**Acting samples the policy; a checkpoint is evaluated on its top choice.** The
+official agent always samples its actor, and its exploration is the policy's own
+entropy. Epsilon is ignored and is 0. Collection samples. A checkpoint played as
+an arm through `--policy checkpoint-top:<path>` plays the actor's most likely
+valid action instead, the first of a tie (`plays_top_choice`, ADR 0021): that is
+what "exploration-free" (§6.11, §9.2b) means for DreamerV3 from `M3-P025`.
+Evaluations before it, and train.py's own evaluation of its final weights,
+sampled. Each acting copy draws its latents and its action from its own
 `random.Random` stream, reseeded per actor by `acting_copy`.
 
 **Replay layout: the official driver's.** A stored step is an observation,
@@ -2651,7 +2655,7 @@ Maintain a live matrix in the repository. Initial mapping:
 | Setup element: legality (`task.md` 1.1) | `RunStateBuilder` builds `RunState.action_mask` from the bridge's rows and posted prices | `docs/experiments.md`, "Review of the training setup" (0 `mask_legal_rejected` in 1,017 episodes and about 131,000 purchases), "The stale price behind `mask_legal_rejected`" (the cause of the earlier rejections, fixed), "Floors on `ws2914c`" (0 in 70 episodes on `bff836b8…`) and `M3-P023`'s Result (0 in 1,082) |
 | Setup element: action semantics (`task.md` 1.1) | `InstrumentedRunEnvironment` at `FILLING_ORDERS` (`_order_stands`) + the bridge's purchase on a named row | `docs/experiments.md`, "Bridge `ws2914c` on the device" (free levels land only on named rows, and a free level reprices its row by the next decision in 17 of 18 on `bff836b8…`), "What a decision sees at `filling-orders`" (a traced game of the order mechanics) and "Floors on `ws2914c`" (the script and `random` at `filling-orders`: 101.82 and 22.50) |
 | Setup element: observation (`task.md` 1.1) | `RunStateBuilder` and `features.encode_state` (`observation-v2`, ADR 0010), the carried kill count subtracted (`_carried_kills`) | `docs/experiments.md`, "Review of the game path" (as audited from the records: every valid episode a real death, each episode fresh, rows read from the game's labels), "The kill count carried into wave 1" (the carried count measured and subtracted exactly, c01ffcf) and "What a decision sees at `filling-orders`" (what a decision is shown inside a wave) |
-| Setup element: evaluation isolation (`task.md` 1.1); evaluation adds no exploration noise and is isolated from replay and training | `evaluator.evaluate` (`replay=None`; epsilon 0 for R2D2, DreamerV3 sampling its own policy, §9.4c) + `TrainingRun._learner_still` / `_refuse_evaluation_during_collection` | `tests/unit/test_dreamer.py` (`test_an_evaluation_adds_nothing_to_replay_and_takes_no_optimisation_step`), `tests/unit/test_actor_and_evaluator.py` (`test_evaluation_never_explores_even_if_configured_to`), `M3-P022`'s records in `docs/experiments.md` ("Evaluation isolation") |
+| Setup element: evaluation isolation (`task.md` 1.1); evaluation adds no exploration noise and is isolated from replay and training | `evaluator.evaluate` (`replay=None`; epsilon 0 for R2D2, DreamerV3 on its top choice from ADR 0021 and sampling its own policy before it, §9.4c) + `TrainingRun._learner_still` / `_refuse_evaluation_during_collection` | `tests/unit/test_dreamer.py` (`test_an_evaluation_adds_nothing_to_replay_and_takes_no_optimisation_step`), `tests/unit/test_actor_and_evaluator.py` (`test_evaluation_never_explores_even_if_configured_to`), `tests/unit/test_checkpoint_arm.py` (`test_a_dreamerv3_checkpoint_on_its_top_choice_plays_its_most_likely_action`), `M3-P022`'s records in `docs/experiments.md` ("Evaluation isolation") |
 | Setup element: learner (`task.md` 1.1), learning shown on unseen data | `DreamerBackbone.read_episode` + `DreamerReplay.trained_episode` (a death 10 to 29 episodes older, b54d8ef) | Not verified. In `M3-P024` unseen deaths read as trained ones on `death_rank` and `prior_kl` at every period end, and `plan_gap`'s trained side failed its bound at the last two (`docs/experiments.md`, `M3-P024`'s result). `M3-P023`'s failed, read in "Why `M3-P023`'s learner failed" |
 | Visible best-model playback | Watch command | end-to-end visible acceptance run |
 | Diagnostics and documentation | Telemetry + docs | failure injection and clean setup rehearsal |

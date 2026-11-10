@@ -11,7 +11,9 @@ pixel or touches the screen.
 
 `--policy` names the arm: one of the non-learned floors, or `checkpoint:<path>`
 for a checkpoint a training run left behind, which is rebuilt into the backbone
-that wrote it and played greedily. Every record says which it was.
+that wrote it and played as it acts: R2D2 greedily, DreamerV3 by sampling its
+policy. `checkpoint-top:<path>` plays a DreamerV3 checkpoint on its top choice
+(ADR 0021). Every record says which it was.
 
     ./scripts/run_episodes.py --episodes 50 \\
         --policy checkpoint:state/runs/<run name>/checkpoints/checkpoint-d0015000.pt
@@ -113,6 +115,17 @@ POLICIES: dict[str, Callable[[], Policy]] = {
 
 #: How a checkpoint is named as an arm, beside the names above.
 CHECKPOINT_SELECTOR = "checkpoint:"
+#: The same, playing its actor's most likely action rather than a sample of it
+#: (ADR 0021).
+TOP_CHOICE_SELECTOR = "checkpoint-top:"
+
+
+def selected_checkpoint(selector: str) -> tuple[Path, bool] | None:
+    """The checkpoint a selector names and whether it plays its top choice; None otherwise."""
+    for prefix, top_choice in ((CHECKPOINT_SELECTOR, False), (TOP_CHOICE_SELECTOR, True)):
+        if selector.startswith(prefix):
+            return Path(selector[len(prefix) :]).expanduser(), top_choice
+    return None
 
 def policy_from(
     selector: str,
@@ -124,7 +137,8 @@ def policy_from(
 ) -> tuple[Policy, dict[str, object]]:
     """The arm this run plays, and the identity every record of it carries.
 
-    A selector is one of the non-learned floors by name, or `checkpoint:<path>`.
+    A selector is one of the non-learned floors by name, `checkpoint:<path>`, or
+    `checkpoint-top:<path>` for the checkpoint on its top choice.
     The two are the same kind of thing to everything downstream - the actor, the
     evaluator, the per-episode records - which is the point: a checkpoint is
     measured by exactly the protocol its floors are.
@@ -141,12 +155,13 @@ def policy_from(
     """
     if selector in POLICIES:
         return POLICIES[selector](), {"name": selector}
-    if not selector.startswith(CHECKPOINT_SELECTOR):
+    selected = selected_checkpoint(selector)
+    if selected is None:
         raise SystemExit(
-            f"unknown policy {selector!r}; choose from {sorted(POLICIES)} "
-            f"or {CHECKPOINT_SELECTOR}<path>"
+            f"unknown policy {selector!r}; choose from {sorted(POLICIES)}, "
+            f"{CHECKPOINT_SELECTOR}<path> or {TOP_CHOICE_SELECTOR}<path>"
         )
-    path = Path(selector[len(CHECKPOINT_SELECTOR) :]).expanduser()
+    path, top_choice = selected
     try:
         policy, identity = checkpoint_policy(
             path,
@@ -156,6 +171,7 @@ def policy_from(
             # A checkpoint that samples its policy draws from a stream of this
             # instance's own, not one every instance of a fleet shares.
             sampling_seed=sampling_seed,
+            top_choice=top_choice,
         )
     except (CheckpointError, ValueError) as failure:
         raise SystemExit(f"cannot play {path} as an arm: {failure}") from failure
@@ -171,6 +187,8 @@ def policy_from(
         # session's first episode must reproduce; None for a checkpoint written
         # before the setup was recorded.
         "upgrade_setup_digest": identity.upgrade_setup_digest,
+        # Whether it played its top choice or sampled its policy (ADR 0021).
+        "top_choice": top_choice,
     }
 
 
@@ -206,9 +224,10 @@ def checkpoint_evaluation_directory(selector: str, name: str | None) -> Path | N
     never share a directory: a directory is read back as one arm's records, and
     two sets pooled into it would be read as one.
     """
-    if not selector.startswith(CHECKPOINT_SELECTOR):
+    selected = selected_checkpoint(selector)
+    if selected is None:
         return None
-    checkpoint = Path(selector[len(CHECKPOINT_SELECTOR) :]).expanduser()
+    checkpoint, _ = selected
     return evaluation_directory(checkpoint, name or f"{checkpoint.stem}-{utc_stamp()}")
 
 
@@ -216,7 +235,7 @@ def refuse_an_unused_evaluation_name(arguments: argparse.Namespace, *outputs: st
     """`--evaluation-name` names the default directory only; given otherwise, it is refused."""
     if arguments.evaluation_name is None:
         return
-    if not arguments.policy.startswith(CHECKPOINT_SELECTOR):
+    if selected_checkpoint(arguments.policy) is None:
         raise SystemExit("--evaluation-name names an evaluation of a checkpoint policy")
     given = [output for output in outputs if getattr(arguments, output) is not None]
     if given:
@@ -560,8 +579,9 @@ def main() -> int:
         "--policy",
         default="scripted",
         help=(
-            f"one of {sorted(POLICIES)}, or {CHECKPOINT_SELECTOR}<path> to play a "
-            "checkpoint a training run left behind"
+            f"one of {sorted(POLICIES)}, {CHECKPOINT_SELECTOR}<path> to play a "
+            f"checkpoint a training run left behind, or {TOP_CHOICE_SELECTOR}<path> to "
+            "play it on its top choice"
         ),
     )
     parser.add_argument("--serial", default="emulator-5556")

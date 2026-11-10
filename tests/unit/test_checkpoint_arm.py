@@ -38,6 +38,7 @@ from tower_rl.learning.checkpoint import (
     load,
     write_checkpoint,
 )
+from tower_rl.learning.dreamer import DREAMERV3, DreamerBackbone, DreamerConfig
 from tower_rl.learning.evaluator import evaluate
 from tower_rl.learning.network import NetworkConfig
 from tower_rl.learning.policies import (
@@ -195,7 +196,48 @@ def test_a_checkpoint_is_selected_by_path_beside_the_named_floors(tmp_path: Path
         "checkpoint_identity": identity_hash(identity()),
         "run_id": identity().run_id,
         "upgrade_setup_digest": None,
+        "top_choice": False,
     }
+
+
+def test_a_dreamerv3_checkpoint_on_its_top_choice_plays_its_most_likely_action(
+    tmp_path: Path,
+) -> None:
+    """`checkpoint-top:` plays the actor's mode; `checkpoint:` samples it (ADR 0021)."""
+    config = DreamerConfig(
+        deter=16, hidden=8, classes=4, units=8, stoch=4, blocks=2,
+        batch_size=2, batch_length=6, warmup=2, seed=0,
+    )
+    backbone = DreamerBackbone(config=config)
+    with torch.no_grad():
+        # The most likely action, at about a quarter of the mass.
+        backbone.actor[-1].bias.zero_()
+        backbone.actor[-1].bias[2] = 3.0
+    path = tmp_path / "checkpoint-0000300.pt"
+    write_checkpoint(
+        path,
+        identity=replace(identity(), backbone=DREAMERV3, run_id="dreamerv3-20260101-000000-abcdef"),
+        progress=TrainingProgress(environment_decisions=300),
+        backbone_state=backbone.state_dict(),
+        resolved_config={
+            f"dreamer_{name.name}": getattr(config, name.name) for name in fields(DreamerConfig)
+        },
+        replay_provenance={},
+    )
+    played = {
+        "decision_cadence": DecisionCadence.EVERY_SLICE,
+        "upgrade_availability": UpgradeAvailability.IMAGE,
+        "workshop_level": 0,
+    }
+
+    top, top_identity = run_episodes.policy_from(f"checkpoint-top:{path}", **played)
+    sampled, sampled_identity = run_episodes.policy_from(f"checkpoint:{path}", **played)
+
+    assert top_identity["top_choice"] is True
+    assert sampled_identity["top_choice"] is False
+    assert {top.act(features(0), top.initial_state(), epsilon=0.0)[0] for _ in range(20)} == {2}
+    drawn = {sampled.act(features(0), sampled.initial_state(), epsilon=0.0)[0] for _ in range(50)}
+    assert len(drawn) > 1
 
 
 def test_an_arm_that_is_neither_a_name_nor_a_checkpoint_is_refused(tmp_path: Path) -> None:

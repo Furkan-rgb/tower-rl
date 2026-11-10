@@ -126,6 +126,12 @@ def require_selection(selection_path: Path, evaluations: list[ArmEvaluation]) ->
                 f"arm {evaluation.name!r} played {identity.get('name')!r}, but "
                 f"{selection_path} selected {wanted_name!r} of the same run"
             )
+        if identity.get("top_choice", False) != selection.get("top_choice", False):
+            raise SystemExit(
+                f"arm {evaluation.name!r} played with top choice "
+                f"{identity.get('top_choice', False)}, but {selection_path} selected "
+                f"{wanted_name!r} played with top choice {selection.get('top_choice', False)}"
+            )
     return selection
 
 

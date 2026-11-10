@@ -82,6 +82,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 from run_episodes import (  # noqa: E402
     CHECKPOINT_SELECTOR,
     POLICIES,
+    TOP_CHOICE_SELECTOR,
     add_cadence_arguments,
     add_upgrade_availability_argument,
     add_workshop_level_argument,
@@ -987,8 +988,9 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--policy",
         default="scripted",
         help=(
-            f"the arm to watch: one of {sorted(POLICIES)}, or "
-            f"{CHECKPOINT_SELECTOR}<path> for a checkpoint a training run left"
+            f"the arm to watch: one of {sorted(POLICIES)}, "
+            f"{CHECKPOINT_SELECTOR}<path> for a checkpoint a training run left, "
+            f"or {TOP_CHOICE_SELECTOR}<path> for it on its top choice"
         ),
     )
     parser.add_argument(

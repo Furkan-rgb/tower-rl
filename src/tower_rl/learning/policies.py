@@ -652,6 +652,7 @@ def checkpoint_policy(
     workshop_level: int,
     device: torch.device | None = None,
     sampling_seed: str | None = None,
+    top_choice: bool = False,
 ) -> tuple[DreamerBackbone | R2D2Backbone, CheckpointIdentity]:
     """Rebuild the backbone a checkpoint holds, as a policy to evaluate.
 
@@ -679,6 +680,10 @@ def checkpoint_policy(
 
     The identity comes back beside the policy because a record of what this
     played has to name which checkpoint played it.
+
+    `top_choice` makes a DreamerV3 checkpoint play its actor's most likely
+    action rather than sample it (ADR 0021). An R2D2 checkpoint already plays
+    its greedy action at the evaluator's epsilon of 0.
     """
     checkpoint = load(path)
     played = replace(
@@ -695,7 +700,9 @@ def checkpoint_policy(
     if refusals:
         raise ValueError(f"{path} cannot be played here: {'; '.join(refusals)}")
     if checkpoint.identity.backbone == DREAMERV3:
-        return _dreamer_policy(checkpoint, device, sampling_seed), checkpoint.identity
+        backbone = _dreamer_policy(checkpoint, device, sampling_seed)
+        backbone.plays_top_choice = top_choice
+        return backbone, checkpoint.identity
     if checkpoint.identity.backbone == R2D2:
         return _r2d2_policy(checkpoint, device), checkpoint.identity
     raise ValueError(

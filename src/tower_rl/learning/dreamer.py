@@ -438,6 +438,10 @@ class DreamerBackbone:
     #: Compile the two recurrent loops of `learn` and replay them as CUDA
     #: graphs (`_compiled_observe`, `_compiled_imagine_rollout`). None: on CUDA only.
     compiled: bool | None = None
+    #: Play the actor's most likely valid action instead of sampling it. The
+    #: official agent samples in evaluation too, but that sample is the policy's
+    #: own exploration, and `docs/task.md` evaluates exploration-free (ADR 0021).
+    plays_top_choice: bool = False
 
     world_model: WorldModel = field(init=False)
     actor: nn.Sequential = field(init=False)
@@ -514,9 +518,10 @@ class DreamerBackbone:
         """Sample the policy over the valid actions, as the official agent always does.
 
         `epsilon` is ignored: DreamerV3 adds no exploration noise; its policy's
-        own entropy is its exploration, in training and in evaluation alike.
-        Every draw - the latent and the action - comes from `_random`, so each
-        acting copy samples from a stream of its own.
+        own entropy is its exploration. With `plays_top_choice` the most likely
+        valid action is played instead, the first of a tie. Every draw - the
+        latent and the action - comes from `_random`, so each acting copy samples
+        from a stream of its own.
         """
         if not any(features.mask):
             raise ValueError("no action is available in this state")
@@ -536,7 +541,10 @@ class DreamerBackbone:
             log_probs = masked_policy_log_probs(
                 self.actor(torch.cat((deter, stoch), -1)), mask, c.actor_unimix
             )
-            action = int(sample_index(log_probs.exp(), uniform[c.stoch :]).item())
+            if self.plays_top_choice:
+                action = int(log_probs.argmax(-1).item())
+            else:
+                action = int(sample_index(log_probs.exp(), uniform[c.stoch :]).item())
         chosen = functional.one_hot(torch.tensor([action], device=self.device), ACTIONS)
         return action, (deter, stoch, chosen.to(torch.float32))
 

@@ -67,6 +67,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_episodes import (  # noqa: E402
     CHECKPOINT_SELECTOR,
     POLICIES,
+    TOP_CHOICE_SELECTOR,
     add_cadence_arguments,
     add_evaluation_name_argument,
     add_upgrade_availability_argument,
@@ -74,6 +75,7 @@ from run_episodes import (  # noqa: E402
     add_workshop_level_argument,
     checkpoint_evaluation_directory,
     refuse_an_unused_evaluation_name,
+    selected_checkpoint,
 )
 
 from tower_rl.console_timestamp import timestamped_print as print  # noqa: E402
@@ -323,12 +325,13 @@ def checkpoint_arm(selector: str) -> Path | None:
     """
     if selector in POLICIES:
         return None
-    if not selector.startswith(CHECKPOINT_SELECTOR):
+    selected = selected_checkpoint(selector)
+    if selected is None:
         raise SystemExit(
-            f"unknown policy {selector!r}; choose from {sorted(POLICIES)} "
-            f"or {CHECKPOINT_SELECTOR}<path>"
+            f"unknown policy {selector!r}; choose from {sorted(POLICIES)}, "
+            f"{CHECKPOINT_SELECTOR}<path> or {TOP_CHOICE_SELECTOR}<path>"
         )
-    path = Path(selector[len(CHECKPOINT_SELECTOR) :]).expanduser()
+    path, _ = selected
     if not path.is_file():
         raise SystemExit(f"no checkpoint at {path}")
     return path
@@ -461,7 +464,8 @@ def main() -> int:
         default="scripted",
         help=(
             f"the arm every actor plays: one of {sorted(POLICIES)}, or "
-            f"{CHECKPOINT_SELECTOR}<path> for a checkpoint a training run left"
+            f"{CHECKPOINT_SELECTOR}<path> for a checkpoint a training run left, "
+            f"or {TOP_CHOICE_SELECTOR}<path> for it on its top choice"
         ),
     )
     # The standing training renderer, as in `train.py`. Snapshots are

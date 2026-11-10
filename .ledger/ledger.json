@@ -1,5 +1,5 @@
 {
-  "next_id": 196,
+  "next_id": 198,
   "items": [
     {
       "id": 1,
@@ -5108,6 +5108,22 @@
         }
       ],
       "closed_at": "2026-11-10T04:20:28.285803Z"
+    },
+    {
+      "id": 196,
+      "title": "M3-P025, pre-registered: M3-P023's five best period checkpoints played on their top choice (ADR 0021) pick one on set A and report it on a fresh set B: final-wave IQM minus the script's 101.82 on bff836b8 with the 95% interval",
+      "body": "",
+      "status": "In progress",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+    },
+    {
+      "id": 197,
+      "title": "A DreamerV3 checkpoint plays its top choice as --policy checkpoint-top:<path>; every record says top_choice, select_checkpoint refuses a mix and report_arms a set B played the other way (ADR 0021)",
+      "body": "",
+      "status": "In progress",
+      "comments": [],
+      "parent": 196
     }
   ],
   "milestones": [

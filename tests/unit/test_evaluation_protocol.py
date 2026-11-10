@@ -340,6 +340,54 @@ def test_candidates_that_disagree_about_their_run_are_refused(
         invoke(select_checkpoint, [str(run), *[str(item) for item in directories]], monkeypatch)
 
 
+def test_a_selection_on_the_top_choice_is_reported_on_the_top_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Set B has to play the way set A did, so the selection says which way that was."""
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals",
+            path.stem,
+            {"a": waves},
+            {**checkpoint_identity(path), "top_choice": True},
+        )
+        for path, waves in zip(checkpoints, ([5, 6], [7, 8]), strict=True)
+    ]
+    output = tmp_path / "selection.json"
+
+    code = invoke(
+        select_checkpoint,
+        [str(run), *[str(item) for item in directories], "--resamples", "200",
+         "--output", str(output)],
+        monkeypatch,
+    )
+
+    assert code == 0
+    assert f"--policy checkpoint-top:{checkpoints[1]} " in capsys.readouterr().out
+    assert json.loads(output.read_text())["selection"]["top_choice"] is True
+
+
+def test_candidates_that_mix_top_choice_and_sampled_play_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, checkpoints = run_with_checkpoints(tmp_path, [100, 200])
+    directories = [
+        evaluation_directory(
+            tmp_path / "evals", "sampled", {"a": [5, 6]}, checkpoint_identity(checkpoints[0])
+        ),
+        evaluation_directory(
+            tmp_path / "evals",
+            "top",
+            {"a": [7, 8]},
+            {**checkpoint_identity(checkpoints[1]), "top_choice": True},
+        ),
+    ]
+
+    with pytest.raises(SystemExit, match="mix checkpoints played on their top choice"):
+        invoke(select_checkpoint, [str(run), *[str(item) for item in directories]], monkeypatch)
+
+
 def test_candidates_are_ordered_by_decisions_not_by_how_their_names_sort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -653,6 +701,11 @@ def test_a_set_b_that_played_another_model_is_refused(
     )
     with pytest.raises(SystemExit, match="of the same run"):
         invoke(report_arms, [*common, "--selection", str(other_checkpoint)], monkeypatch)
+
+    # The right checkpoint, chosen on its top choice, reported on samples of it.
+    other_play = selection_file(tmp_path / "c", top_choice=True)
+    with pytest.raises(SystemExit, match="played with top choice False"):
+        invoke(report_arms, [*common, "--selection", str(other_play)], monkeypatch)
 
 
 def test_a_report_with_no_checkpoint_arm_cannot_satisfy_a_selection(

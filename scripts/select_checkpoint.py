@@ -38,6 +38,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from run_episodes import CHECKPOINT_SELECTOR, TOP_CHOICE_SELECTOR  # noqa: E402
 
 from tower_rl.environment.project_state import state_directory  # noqa: E402
 from tower_rl.experiment.arm_evaluation import (  # noqa: E402
@@ -82,6 +85,9 @@ class Candidate:
     #: hashes identically, because identity holds nothing that changes as the
     #: run proceeds. `decisions` is what separates them within the run.
     identity_hash: str
+    #: Whether it played its top choice rather than sampling its policy
+    #: (ADR 0021); records from before the choice existed sampled.
+    top_choice: bool
 
     @property
     def name(self) -> str:
@@ -150,6 +156,7 @@ def candidate(directory: Path, run_directory: Path, checkpoints: dict[str, Path]
         checkpoint=path,
         decisions=checkpoint_decisions(path),
         identity_hash=str(digest),
+        top_choice=bool(identity.get("top_choice", False)),
     )
 
 
@@ -162,6 +169,18 @@ def one_run(candidates: list[Candidate]) -> str:
             + ", ".join(f"{item.name} -> {item.identity_hash}" for item in candidates)
         )
     return digests.pop()
+
+
+def one_way_of_playing(candidates: list[Candidate]) -> bool:
+    """Whether every candidate played its top choice, refusing a mix of the two."""
+    ways = {item.top_choice for item in candidates}
+    if len(ways) > 1:
+        raise SystemExit(
+            "these evaluations mix checkpoints played on their top choice with "
+            "ones that sampled their policy: "
+            + ", ".join(f"{item.name} top choice {item.top_choice}" for item in candidates)
+        )
+    return ways.pop()
 
 
 def checkpoint_decisions(path: Path) -> int:
@@ -218,6 +237,7 @@ def main() -> int:
         for directory in arguments.evaluations
     ]
     identity = one_run(candidates)
+    top_choice = one_way_of_playing(candidates)
     scored = [
         (item, score(item.evaluation, resamples=arguments.resamples, seed=arguments.seed))
         for item in candidates
@@ -267,7 +287,8 @@ def main() -> int:
         )
     print(
         "  report it on a fresh set: run_actors.py --policy "
-        f"checkpoint:{selected} --output-directory <new directory>",
+        f"{TOP_CHOICE_SELECTOR if top_choice else CHECKPOINT_SELECTOR}{selected} "
+        "--output-directory <new directory>",
         flush=True,
     )
 
@@ -297,6 +318,7 @@ def main() -> int:
         "checkpoint": str(selected),
         "decisions": best.decisions,
         "checkpoint_identity": identity,
+        "top_choice": top_choice,
         "selected_on": SELECT_ON,
         "iqm": best_numbers[SELECT_ON]["iqm"],
         "interval": [best_numbers[SELECT_ON]["low"], best_numbers[SELECT_ON]["high"]],

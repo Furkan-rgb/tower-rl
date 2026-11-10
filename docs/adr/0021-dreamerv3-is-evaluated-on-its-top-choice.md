@@ -15,8 +15,8 @@ that sample: period means, train.py's final evaluation, and `M3-P024`'s sets A a
 
 On five of `M3-P023`'s checkpoints the sample departs from the actor's most likely
 action on 13–19% of decisions, read offline on `#169`'s fixed states
-(`docs/experiments.md`, `M3-P025`'s result). That is about 30 of an episode's 200 purchases bought for the
-draw, not for the choice. R2D2 is already evaluated on its greedy action, at an
+(`docs/experiments.md`, `M3-P025`'s result). That is about 30 of an episode's 200
+purchases bought for the draw, not for the choice. R2D2 is already evaluated on its greedy action, at an
 epsilon of 0.
 
 `docs/solution.md` 9.4c had read "exploration-free" as no *added* noise, so that the
@@ -52,6 +52,9 @@ which the sampled play does not meet.
 ## Revisit if
 
 - On the same checkpoints, top-choice play is worse than the sample, which would
-  mean the actor relies on its own mixing.
+  mean the actor relies on its own mixing. `M3-P025` came close on d115201: top
+  choice minus sampled −1.38 [−3.19, +0.19], with the sample at 102.06 against
+  100.69. The interval reaches zero, so this is not met. The decision rests on the
+  task's rule, not on the top choice scoring better.
 - A tie between actions is common enough at evaluation that the first-index rule
   decides episodes.

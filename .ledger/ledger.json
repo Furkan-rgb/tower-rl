@@ -4184,6 +4184,10 @@
         {
           "at": "2026-11-10 06:52",
           "text": "M3-P024's result (99bfd1b): learner row not verified (plan_gap trained +0.061 at 60,000). Now blocked on M3-P025 (#196): if its top-choice weights pass, the learner row needs a verified read for M3-P023's learner."
+        },
+        {
+          "at": "2026-11-10 09:31",
+          "text": "Audit #202: five rows cite verifying entries; the learner row is the one missing, and it needs the learner of whichever run passes #203 (a new card under #203's passing run, parented here). Weak spots noted: the observation row does not cite #154's single compression by an entry, and the isolation row now names the run_actors path. The body's '#148 is the learner element's live check' is stale (#148 retired)."
         }
       ],
       "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
@@ -5231,8 +5235,14 @@
       "id": 202,
       "title": "Board audit: 2026-11-10 (after #196)",
       "body": "",
-      "status": "In progress",
-      "comments": []
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-10 09:31",
+          "text": "Applied: #150 commented (learner row the only missing one; weak spots named); docs fixed (architecture.md 477/608, handoff lines 40-46 refreshed with M3-P024/M3-P025, ADR 0021 Revisit-if carries M3-P025's -1.38 readout, solution.md 16 isolation row names the run_actors path). #203 now has #204 (M3-P026) under it. Check 2 (renamed line) found no reader broken."
+        }
+      ],
+      "closed_at": "2026-11-10T08:31:33.845640Z"
     },
     {
       "id": 203,
@@ -5252,7 +5262,12 @@
       "title": "M3-P026, pre-registered: every M3-P023 checkpoint from 70,027 decisions (33) on its top choice, 12 episodes each on set A (M3-P025's five reused), the best reported on a fresh set B against the script's 101.82 with the 95% interval",
       "body": "",
       "status": "In progress",
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-11-10 09:29",
+          "text": "Launched 08:28Z from 07227f7 (state/launch/m3-p026.sh); set A starts at d0070027. Expected ~6.7 h."
+        }
+      ],
       "parent": 203
     }
   ],

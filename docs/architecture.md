@@ -473,9 +473,10 @@ none is part of a run:
    forward pass and so inside an episode, loading the learner's last completed
    step if the copy is older (DreamerV3 is fixed at 1, before every decision,
    as the official agent swaps; 0 refreshes at episode starts only).
-5. `arm.checkpoint` writes the checkpoint, then one pre-registered
-   exploration-free evaluation runs on the final weights — after the budget, so
-   it costs none of it and cannot be chosen after the fact.
+5. `arm.checkpoint` writes the checkpoint, then one pre-registered evaluation
+   runs on the final weights, greedy for R2D2 and sampled for DreamerV3 (ADR
+   0021) — after the budget, so it costs none of it and cannot be chosen after
+   the fact.
 6. The session report and the arm summary are written to the run directory, the
    tracked run is finished in a `finally`, and `tear_down_fleet` puts down every
    bridge and every emulator.
@@ -605,8 +606,9 @@ decision rule is written about, each arm resampled within its own actors — the
 difference in means with Cohen's d beneath it as secondary, and the per-wave
 comparison handed to `experiment.wave_statistics`. Neither script
 starts an emulator, and neither decides a verdict. Given `--mlflow-run`, both
-log their results onto the training run they are about, so the greedy curve
-lands above the exploring one.
+log their results onto the training run they are about, so the evaluated curve
+(greedy, top choice or sampled, by how its sets were played) lands above the
+collection curve.
 
 ### The spectate path
 

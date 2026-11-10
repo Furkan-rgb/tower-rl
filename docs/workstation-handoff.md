@@ -38,11 +38,17 @@ context rather than as current truth. Open work is on the board, milestone
   outcome"). `filling-orders` buys one level and stands until filled. Its floors on
   `bff836b8…` are the script's 101.82 and `random`'s 22.50 (`docs/experiments.md`,
   "Floors on `ws2914c`"). `M3-P023` played it: IQM 84.81 [68.88, 92.81] on its final
-  evaluation, 17 waves below the script (`docs/experiments.md`, `M3-P023`, Result).
+  evaluation, sampled. Its checkpoint d115201, chosen on a set A and played on its
+  top choice (ADR 0021), read 100.69 [99.31, 101.81] on a fresh set B, −1.13
+  [−2.72, +0.13] against the script: level with it, not above. Sampled, the same
+  checkpoint read 102.06 (`docs/experiments.md`, `M3-P025`, Result). `M3-P024`'s
+  64 × 64 batches did worse, 76.25, and ADR 0020 item 5 is back at 16 × 64.
 - **The learner row of §1.1 is not verified.** On `M3-P023`, with the world model at
   ratio 128, unseen deaths read as trained ones do and imagined `WAIT` stays below
   recorded play, but the prior's distance on unseen episodes ends 2.13 times trained,
-  past the bound of two. The actor's preferences move within about 1,000 decisions,
+  past the bound of two. `M3-P024`, read against recent trained deaths (b54d8ef),
+  passes `death_rank` and `prior_kl` and fails `plan_gap` on its trained side by
+  0.011. The actor's preferences move within about 1,000 decisions,
   so one checkpoint stands for a run's policy only loosely (same entry).
 - **Evaluation retries an episode the port could not deliver** (1d6c78e), as a
   collecting actor does. `M3-P023`'s first final evaluation was lost without it.

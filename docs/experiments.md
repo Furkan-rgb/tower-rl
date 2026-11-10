@@ -4925,6 +4925,29 @@ the first three bands.
 - So the shortfall at the wall is in the learner's value, not in an actor that
   ignores a good one. A run that only steadies the actor would keep this value.
 
+**How often the learner met the wall, and whether its world model expects it.**
+
+- Of `M3-P023`'s 1,082 training episodes, 39 reached wave 100 (3.6%) and 16 passed
+  it. Per 15,000 decisions, 0 to 11 reached it. Most late episodes died in the 90s.
+  So the replay holds 29 crossings from wave 99 to 100 among about 150,000 steps.
+- At those crossings the base damage rises a median 7.7%, against 2.1% at the
+  crossings of waves 90 to 98. The checkpoint's prior, one step ahead under the
+  action taken, with mode latents, decoded to the next observation:
+
+| Checkpoint | 99 → 100: predicted / actual (median) | 90–98 crossings: predicted / actual |
+|---|---|---|
+| d115201 | 311 / 403 (−16.8%) | 300 / 345 (−11.7%) |
+| d145014 | 383 / 403 (+2.4%) | 346 / 345 (+5.0%) |
+| latest (d150797) | 313 / 403 (−16.3%) | 290 / 345 (−14.1%) |
+
+- No checkpoint expects the step. The best, d145014, predicts wave 100 as an
+  ordinary wave. The other two predict base damage falling at every wave turn, so
+  their imagination of a wave turn is wrong in general. This reads the prior's mode,
+  not the samples imagination draws, so it is a coarse read.
+- So the learner does not know the wall is coming, and it has met the wall too
+  rarely to learn it. The step is in the observation (the wave and its base damage),
+  so it is learnable in principle. The learner has to see it far more often.
+
 ## `M3-P023`'s learner, read offline with `M3-P024`'s trained side (pre-registered, written before `M3-P025`'s result)
 
 **Date:** 2026-11-10. Board `#200`. The source is the commit that adds this entry.

@@ -5121,9 +5121,15 @@
       "id": 197,
       "title": "A DreamerV3 checkpoint plays its top choice as --policy checkpoint-top:<path>; every record says top_choice, select_checkpoint refuses a mix and report_arms a set B played the other way (ADR 0021)",
       "body": "",
-      "status": "In progress",
-      "comments": [],
-      "parent": 196
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-10 06:51",
+          "text": "ad6238c: --policy checkpoint-top:<path> plays a DreamerV3 checkpoint's most likely valid action (plays_top_choice); records carry top_choice; select_checkpoint refuses a mix, report_arms a set B played the other way. ADR 0021. Unit tests in test_checkpoint_arm and test_evaluation_protocol; device use is M3-P025 (#196)."
+        }
+      ],
+      "parent": 196,
+      "closed_at": "2026-11-10T05:51:06.570842Z"
     }
   ],
   "milestones": [

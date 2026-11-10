@@ -4753,6 +4753,68 @@ episodes old.
   period end. `plan_gap`'s trained side fails the bound by 0.011–0.012 at the last
   two period ends.
 
+## M3-P025: `M3-P023`'s checkpoints on their top choice against the script at Workshop 10 (pre-registered, written before any of its device episodes)
+
+**Date:** 2026-11-10. Board `#196`. The source is the commit that adds this entry.
+
+**Question.** This is `docs/task.md` §1.1's target. Does a learned policy's final-wave
+IQM beat the best script's at Workshop 10, with the 95% stratified bootstrap interval
+of the difference above zero? The policy is `M3-P023`'s actor, played on its top
+choice (ADR 0021). The script is `build-defense-absolute` at `filling-orders` on
+`bff836b8…`: IQM 101.82 [101.18, 102.36], n = 21 ("Floors on `ws2914c`", records
+`state/records/p2914c-floors/`).
+
+**Why this, and why no training.** `M3-P023`'s period means reached 88.30, and its
+final weights, sampled, read 84.81 on 30 episodes. On these checkpoints the sample
+departs from the actor's own most likely action on 13–19% of decisions (`#169`'s fixed
+states, read offline). The task evaluates exploration-free, and that sample is the
+policy's own exploration (ADR 0021). The weights already exist. The question is what
+they score when they are played the way the task evaluates.
+
+**Primary outcome.**
+
+- **Set A, selection.** The checkpoints at the ends of `M3-P023`'s five selection
+  periods with the highest means, from period 2 on, ties to the earlier: d145014
+  (88.30), d115201 (88.28), d100073 (87.39), d105008 (86.27) and d140104 (85.73).
+  Each plays 12 episodes (4 instances × 3) through `run_actors.py --policy
+  checkpoint-top:<path>`, and `select_checkpoint.py` picks the highest final-wave
+  IQM.
+- **Set B, report.** The chosen checkpoint plays 32 fresh episodes (4 × 8) on its top
+  choice, into an empty directory, on the same build, cadence and frame budget.
+- **The read.** As `M3-P024`'s: set B's final-wave IQM minus the script's, by
+  `stratified_bootstrap_difference`. Strata are by instance, the script's three
+  rounds pool by instance, seed 0, 10,000 resamples. The commands are in
+  `state/launch/m3-p025.sh`, machine-local.
+- **Pass** if the interval's lower end is above zero, and **Fail** otherwise. A pass
+  meets the target's result. The verified setup also needs the learner row for the
+  learner that produced these weights, and the other five rows (`#150`).
+
+**Readout, not a gate: the same checkpoint, sampled.** After set B, the chosen
+checkpoint plays 32 more fresh episodes sampling its policy (`checkpoint:<path>`).
+The readout is the difference, top choice minus sampled, by the same bootstrap. This
+is the comparison ADR 0021's first Revisit-if names.
+
+**Stop rules.** A `Traceback`, an actor that fails or withdraws, or invalid episodes
+above 5% of any set stops the protocol. The entry reports it.
+
+**Expected wall time.** At `M3-P023`'s final evaluation, 3.2 minutes an episode,
+set A takes about 13 minutes of play per checkpoint, and sets B and the readout about
+26 minutes each. With seven bring-ups of about 5 minutes, that is about 2.5 hours.
+
+**Known confounds, in advance.**
+
+- n = 1: one training run, one seed.
+- Set A selects among five checkpoints on 12 episodes each, so its winner is partly
+  luck. Set B is fresh, so the reported interval does not carry that luck.
+- The candidates were ranked by sampled period means. Top-choice play may rank them
+  otherwise, and set A measures that ranking.
+- The latent is still drawn from the posterior, so top-choice episodes are not
+  deterministic.
+- The host is shared.
+
+**Safety,** `M3-P019`'s unchanged: clone only, read-only instances, offline, no
+screenshots, no input, no coins or permanent progression.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on

@@ -1,5 +1,5 @@
 {
-  "next_id": 201,
+  "next_id": 202,
   "items": [
     {
       "id": 1,
@@ -5075,7 +5075,7 @@
       "id": 192,
       "title": "train.py's help, errors and usage examples and r2d2.py's docstrings name 0.99991416 per game-second (ADR 0020 item 3) as the discount of learning runs, and 0.997 (ADR 0019) only for choice-points runs",
       "body": "Code half of #184 (audit #190): train.py:18,33,65,92,924,1176; r2d2.py:54-55,110-111. Lands after M3-P024 ends: the run imports train.py from this checkout.",
-      "status": "In progress",
+      "status": "Done",
       "comments": [
         {
           "at": "2026-11-09 22:10",
@@ -5088,9 +5088,14 @@
         {
           "at": "2026-11-10 07:00",
           "text": "Audit #198: waits for M3-P025's (#196) freeze, not M3-P024's; r2d2.py is on run_actors' import path."
+        },
+        {
+          "at": "2026-11-10 09:17",
+          "text": "72892b9: examples, help and the missing-discount error in train.py and r2d2.py's docstrings name 0.99991416 at the order cadences (ADR 0020 item 3) and 0.997 at choice-points (ADR 0019); no 0.999 left. test_train_entry_point discount/help tests pass."
         }
       ],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T08:17:59.812184Z"
     },
     {
       "id": 193,
@@ -5180,9 +5185,15 @@
       "id": 199,
       "title": "Evaluation labels name how a DreamerV3 set was played: select_checkpoint's tracked keys and run_folder.py say top choice or sampled, period means and train.py's final evaluation say sampled, and checkpoint.py's best_period_near_greedy_mean is renamed behind a load-time alias",
       "body": "",
-      "status": "Next",
-      "comments": [],
-      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
+      "status": "Done",
+      "comments": [
+        {
+          "at": "2026-11-10 09:26",
+          "text": "Replaced by #201: renaming checkpoint.py's best_period_near_greedy_mean buys no reader anything, since solution.md 9.2b already says the code's near_greedy names keep R2D2's word; #201 keeps the labels people read."
+        }
+      ],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup",
+      "closed_at": "2026-11-10T08:26:30.191702Z"
     },
     {
       "id": 200,
@@ -5201,6 +5212,14 @@
       ],
       "parent": 150,
       "closed_at": "2026-11-10T08:14:55.492908Z"
+    },
+    {
+      "id": 201,
+      "title": "Evaluation and period labels name whose play they are: period lines and stop messages say sampled for DreamerV3 and near-greedy for R2D2, select_checkpoint's tracked curves are named greedy, top_choice or sampled, and train.py's help and run_folder.py no longer call DreamerV3's sampled evaluation exploration-free or greedy",
+      "body": "",
+      "status": "In progress",
+      "comments": [],
+      "milestone": "M3 A learned policy beats the best script at Workshop 10 on a verified setup"
     }
   ],
   "milestones": [

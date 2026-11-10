@@ -210,6 +210,7 @@ from tower_rl.experiment.training_report import (  # noqa: E402
     REPLAY_BACKUP_DIRECTORY,
     REPLAY_DIRECTORY,
     TrainingReport,
+    collecting_policy,
 )
 from tower_rl.learning.actor import Actor, ActorConfig  # noqa: E402
 from tower_rl.learning.backbone import Backbone  # noqa: E402
@@ -967,7 +968,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=100,
         help="episodes per point of the collection curve the run is read from",
     )
-    # Mid-run exploration-free evaluation is off: the curve is read from the
+    # Mid-run evaluation is off: the curve is read from the
     # collection episodes, and 5-episode points cost device time for a standard
     # error no improvement worth having could clear. A positive period turns the
     # periodic hook back on deliberately.
@@ -976,7 +977,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--evaluation-episodes",
         type=int,
         default=30,
-        help="the pre-registered exploration-free evaluation of the final checkpoint",
+        help=(
+            "episodes of the evaluation of the final weights: greedy for R2D2, "
+            "sampled for DreamerV3, whose checkpoints are evaluated on their top "
+            "choice through run_actors.py (ADR 0021)"
+        ),
     )
     parser.add_argument("--checkpoint-every-episodes", type=int, default=25)
     parser.add_argument(
@@ -996,7 +1001,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "decisions per selection period. A numbered checkpoint is written "
             "where each closes; the arm is the checkpoint of the period with "
-            "the highest near-greedy mean final wave from period 2 on, and "
+            "the highest period mean final wave (R2D2's near-greedy actors, "
+            "DreamerV3's sampled play) from period 2 on, and "
             "early stopping counts these periods"
         ),
     )
@@ -1716,7 +1722,8 @@ def train_session(
                 bar = killed.bar
                 print(
                     f"[{arm.name}] stopped at {killed.decisions} decisions on the kill "
-                    f"bar at {bar.at_decisions}: the near-greedy mean final wave over "
+                    f"bar at {bar.at_decisions}: the {collecting_policy(arm.backbone)} "
+                    f"mean final wave over "
                     f"({bar.window_start_decisions}, {bar.at_decisions}] was "
                     f"{killed.mean_final_wave:.2f} over {killed.near_greedy_episodes} "
                     f"episodes, below {bar.min_mean_final_wave}",
@@ -1729,7 +1736,8 @@ def train_session(
                 # decisions looks like one that was interrupted.
                 print(
                     f"[{arm.name}] stopped early at selection period "
-                    f"{plateau.stopped_at_period}: the near-greedy curve did not "
+                    f"{plateau.stopped_at_period}: the {collecting_policy(arm.backbone)} "
+                    "curve did not "
                     f"improve on {plateau.best_mean_final_wave:.2f} waves for "
                     f"{arguments.early_stop_patience_periods} periods",
                     flush=True,
@@ -1740,9 +1748,10 @@ def train_session(
             # budget is spent.
             resume_point_written = True
             arm.save_resume_point()
-            # The one pre-registered measurement of the run: exploration-free, on
-            # the final weights, sized so its standard error can resolve a real
-            # difference against the scripted floor. Taken after the budget is
+            # The one pre-registered measurement of the run's final weights,
+            # greedy for R2D2 and sampled for DreamerV3 (ADR 0021), sized so its
+            # standard error can resolve a real difference against the scripted
+            # floor. Taken after the budget is
             # spent, so it costs none of the budget and cannot be chosen after
             # the fact from a series of mid-run points.
             # Skipped for a run stopped on a kill bar: whether a killed run's arm

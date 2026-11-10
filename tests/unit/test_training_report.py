@@ -578,3 +578,23 @@ def test_an_invalid_episode_is_logged_and_streamed_as_it_ends(tmp_path: Path) ->
     # The code the tracked series reads it by is on the run's manifest.
     manifest = json.loads((Path(report["run_folder"]) / "manifest.json").read_text())
     assert manifest["episode_termination_codes"]["5"] == "action_pipeline_failed"
+
+
+def test_a_period_mean_is_named_for_whose_play_it_is_of() -> None:
+    """R2D2's period mean is its near-greedy actors'; every DreamerV3 actor samples (ADR 0021)."""
+    from tower_rl.experiment.training_report import collecting_policy
+    from tower_rl.learning.dreamer import DreamerBackbone, DreamerConfig
+    from tower_rl.learning.network import NetworkConfig
+    from tower_rl.learning.r2d2 import R2D2Backbone, R2D2Config
+
+    dreamer = DreamerBackbone(
+        config=DreamerConfig(deter=16, hidden=8, classes=4, units=8, stoch=4, blocks=2)
+    )
+    r2d2 = R2D2Backbone(
+        config=R2D2Config(discount_per_game_second=0.999),
+        network_config=NetworkConfig(hidden=16, identity_dim=4),
+        device=torch.device("cpu"),
+    )
+
+    assert collecting_policy(dreamer) == "sampled"
+    assert collecting_policy(r2d2) == "near-greedy"

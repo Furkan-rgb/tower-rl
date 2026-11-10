@@ -55,6 +55,7 @@ from tower_rl.learning.checkpoint import (
     capture_rng_state,
     write_checkpoint,
 )
+from tower_rl.learning.dreamer import DreamerBackbone
 from tower_rl.learning.dreamer_replay import DreamerReplayImage
 from tower_rl.learning.evaluator import EvaluationReport, to_record
 from tower_rl.learning.learner import IDLE_LOAD, LearnerLoad
@@ -116,6 +117,15 @@ def numbered_checkpoint_name(decisions: int) -> str:
     back out of it - a checkpoint's progress is in the file.
     """
     return f"checkpoint-d{decisions:07d}.pt"
+
+
+def collecting_policy(backbone: Backbone) -> str:
+    """Whose play a period's mean is of: R2D2's near-greedy actors, or DreamerV3's samples.
+
+    Every DreamerV3 actor counts, and it samples (docs/solution.md 9.2b); its
+    checkpoints are evaluated on their top choice instead (ADR 0021).
+    """
+    return "sampled" if isinstance(backbone, DreamerBackbone) else "near-greedy"
 
 
 @dataclass
@@ -571,7 +581,8 @@ class TrainingReport:
             self.run.log_metrics(
                 selection_period_metrics(period), decisions=period.decisions_at_end
             )
-            print(f"[{self.name}] {selection_period_line(period)}", flush=True)
+            line = selection_period_line(period, collecting_policy(self.backbone))
+            print(f"[{self.name}] {line}", flush=True)
 
     def record_decision_time(self, *, final: bool = False) -> None:
         """Emit where the fleet's decision time went since the last emission.

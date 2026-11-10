@@ -7,7 +7,7 @@ state/runs/<run name>/
   replay/d<decisions>/   the buffer saved with latest.pt, which names it
   segments/<n>/          one per sitting: summary.json, train.log and episodes.jsonl
   logs/                  run_stage.sh stage logs, pointed here by --log-directory
-  evaluations/<name>/    per-actor records of a checkpoint of this run played greedily
+  evaluations/<name>/    per-actor records of a checkpoint of this run played as an arm
 ```
 
 The folder is named before anything runs, so a supervisor's log can be pointed

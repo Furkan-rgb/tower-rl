@@ -354,7 +354,8 @@ def selection_period_metrics(period: SelectionPeriod) -> dict[str, float]:
     return metrics
 
 
-def selection_period_line(period: SelectionPeriod) -> str:
+def selection_period_line(period: SelectionPeriod, policy: str) -> str:
+    """One period's close for the log; `policy` names whose play the mean is of."""
     mean = "n/a" if period.mean_final_wave is None else f"{period.mean_final_wave:.2f}"
     best = (
         "n/a"
@@ -363,7 +364,7 @@ def selection_period_line(period: SelectionPeriod) -> str:
     )
     return (
         f"period {period.index} at {period.decisions_at_end} decisions: "
-        f"near-greedy mean final wave {mean} over {period.near_greedy_episodes} "
+        f"{policy} mean final wave {mean} over {period.near_greedy_episodes} "
         f"episodes, best {best}"
     )
 

@@ -368,6 +368,13 @@ def test_a_selection_on_the_top_choice_is_reported_on_the_top_choice(
     assert json.loads(output.read_text())["selection"]["top_choice"] is True
 
 
+def test_a_tracked_curve_is_named_for_how_its_sets_were_played() -> None:
+    """Two ways of playing one checkpoint never share a series (ADR 0021)."""
+    assert select_checkpoint.played_as("r2d2", False) == "greedy"
+    assert select_checkpoint.played_as("dreamerv3", True) == "top_choice"
+    assert select_checkpoint.played_as("dreamerv3", False) == "sampled"
+
+
 def test_candidates_that_mix_top_choice_and_sampled_play_are_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

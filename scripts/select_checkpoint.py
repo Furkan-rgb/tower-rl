@@ -54,6 +54,7 @@ from tower_rl.experiment.comparison import stratified_bootstrap  # noqa: E402
 from tower_rl.experiment.run_folder import run_ids  # noqa: E402
 from tower_rl.experiment.tracking import add_tracking_arguments, tracked_run  # noqa: E402
 from tower_rl.learning.checkpoint import CheckpointError, load  # noqa: E402
+from tower_rl.learning.dreamer import DREAMERV3  # noqa: E402
 
 #: The statistic the selection is made on. `decisions` is reported beside it and
 #: chooses nothing: a checkpoint that survives longer per episode is interesting,
@@ -183,6 +184,13 @@ def one_way_of_playing(candidates: list[Candidate]) -> bool:
     return ways.pop()
 
 
+def played_as(backbone: str, top_choice: bool) -> str:
+    """How a checkpoint's sets were played: R2D2 greedily, DreamerV3 top choice or sampled."""
+    if backbone != DREAMERV3:
+        return "greedy"
+    return "top_choice" if top_choice else "sampled"
+
+
 def checkpoint_decisions(path: Path) -> int:
     """The decisions behind a checkpoint, out of the file's own progress."""
     try:
@@ -294,16 +302,18 @@ def main() -> int:
 
     tracked = tracked_run(arguments)
     if tracked is not None:
-        # Onto the training run's own page, on its decision axis: the greedy
-        # curve is the one question the exploring curve cannot answer, and a
-        # second run holding it would have to be found by hand.
+        # Onto the training run's own page, on its decision axis: the evaluated
+        # curve is the one question the collection curve cannot answer, and a
+        # second run holding it would have to be found by hand. Named for how
+        # the sets were played, so two ways of playing never share a series.
+        played = played_as(load(best.checkpoint).identity.backbone, top_choice)
         for item, numbers in scored:
             entry = numbers[SELECT_ON]
             tracked.log_metrics(
                 {
-                    "greedy_final_wave_iqm": float(entry["iqm"]),
-                    "greedy_final_wave_ci_low": float(entry["low"]),
-                    "greedy_final_wave_ci_high": float(entry["high"]),
+                    f"{played}_final_wave_iqm": float(entry["iqm"]),
+                    f"{played}_final_wave_ci_low": float(entry["low"]),
+                    f"{played}_final_wave_ci_high": float(entry["high"]),
                 },
                 decisions=item.decisions,
             )

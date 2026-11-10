@@ -5070,6 +5070,41 @@ protocol. The partial d87550 set is kept as `bringup-failed-set-a-d0087550/`, no
 used, and the result names every set aside. Nothing else changes. The run continues
 from d87550 with the source of this amendment.
 
+### Result (2026-11-10)
+
+Sources 07227f7, then 7381d43 from d87550. Set A's 28 new sets and set B played from
+08:28Z to 16:23Z, with the stop at 10:12Z in between. Two sets were set aside, each
+for an instance that failed: d87550's first set (bring-up, above), and d147514's
+first, played again whole. Every episode used was valid.
+
+**Primary: Fail. d115201 plays about one wave below the script.**
+
+- **Set A, selection.** All 33 checkpoints on their top choice, 12 episodes each.
+  Their IQMs ran from 25.67 (d110018) to 100.50 (d115201). Next came d127627 at
+  98.00 and d150085 at 97.00, whose intervals overlap d115201's. Six others read
+  91–93, and the rest 48–90. Neighbouring checkpoints 2,500 decisions apart differ by
+  up to 75 waves, d107502 at 80.67 against d110018 at 25.67. `select_checkpoint.py`
+  chose d115201 again.
+- **Set B, report.** By the pooling rule, d115201's report is `M3-P025`'s set B and a
+  new one, 64 episodes.
+
+| Arm on `bff836b8…`, `filling-orders` | n | IQM [95% CI] |
+|---|---|---|
+| `M3-P023` d115201, top choice, both set Bs | 64 | 100.69 [100.09, 101.44] |
+| `build-defense-absolute` (the floors) | 21 | 101.82 [101.18, 102.36] |
+
+- **Against the script: −1.13 [−1.95, −0.15].** The whole interval is below zero.
+  The best weights `M3-P023` left are a little below the script, not level with it.
+- **The new set B by itself** read median 100 and range 91–110. 13 of its 32 episodes
+  ended at exactly wave 100, 7 passed wave 103, and none collapsed early. So the wall
+  at wave 100 is the whole of the gap.
+
+**What this settles.** No `M3-P023` checkpoint beats the script on its top choice. The
+learner's checkpoints vary by up to 75 waves 2,500 decisions apart, and its best one
+stops at the wave-100 step, which its world model does not expect ("What the learner
+sees at the wave-100 wall"). Reaching the target takes a learner that learns that
+step, not a wider selection among these weights.
+
 ## M3-P019: DreamerV3 at Workshop 10 under `M3-P018`'s launch (pre-registered, written before the run)
 
 **Date:** 2026-10-02. Board `#58`. Single seed, single run, from scratch on
